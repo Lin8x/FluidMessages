@@ -1,0 +1,30 @@
+plugins {
+    id 'com.android.application' version '8.9.2'
+    id 'org.jetbrains.kotlin.android' version '2.1.20'
+    id 'org.jetbrains.kotlin.plugin.compose' version '2.1.20'
+}
+android {
+    namespace 'org.fluidmessages'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'org.fluidmessages'
+        minSdk 33
+        targetSdk 35
+        versionCode 14
+        versionName '0.14.0'
+    }
+    buildFeatures { compose true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+kotlin { jvmToolchain(17) }
+
+dependencies {
+    implementation 'androidx.activity:activity:1.10.1'
+    implementation 'androidx.activity:activity-compose:1.10.1'
+    implementation platform('androidx.compose:compose-bom:2025.05.01')
+    implementation 'androidx.compose.material3:material3'
+}

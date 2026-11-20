@@ -1,0 +1,16 @@
+services:
+  fluidmessages:
+    build: ./server
+    environment:
+      FLUID_TOKEN: ${FLUID_TOKEN:?Set a random pairing token in .env or Portainer}
+      FLUID_BACKUP_ONEDRIVE: ${FLUID_BACKUP_ONEDRIVE:-}
+      FLUID_BACKUP_DRIVE: ${FLUID_BACKUP_DRIVE:-}
+      FLUID_BACKUP_S3: ${FLUID_BACKUP_S3:-}
+      RCLONE_CONFIG: /data/rclone.conf
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - fluid-data:/data
+    restart: unless-stopped
+volumes:
+  fluid-data:

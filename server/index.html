@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FluidMessages</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header><a class="brand" href="/">Fluid<span>Messages</span></a><span id="status" role="status">Phone disconnected</span><button id="disconnect" hidden>Disconnect</button></header>
+<main>
+<form id="pair"><h1>Connect to FluidMessages</h1><label>Server pairing token<input id="token" type="password" required autocomplete="off"></label><button class="primary">Connect</button><p id="pair-error" role="alert"></p></form>
+<section id="workspace" hidden>
+<aside><div class="sidebar-head"><h1>Messages</h1><button id="new" type="button">New SMS</button></div><input id="search" type="search" placeholder="Search conversations" aria-label="Search conversations"><nav id="threads" aria-label="Conversations"></nav></aside>
+<article><div class="thread-head"><h2 id="recipient">New SMS</h2><span>SMS</span></div><div id="conversation" aria-label="Messages"></div>
+<form id="schedule"><label>To<input id="address" type="tel" required placeholder="Phone number"></label><label>Message<textarea id="body" maxlength="1600" required rows="2"></textarea></label><div class="schedule-row"><label>Send after<input id="due" type="datetime-local" required></label><button class="primary">Schedule SMS</button></div><p id="schedule-status" role="status"></p></form></article>
+<section class="queue"><h2>Scheduled messages</h2><div id="jobs"></div></section>
+</section>
+</main>
+</body>
+</html>

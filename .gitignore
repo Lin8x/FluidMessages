@@ -1,0 +1,9 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+*.apk
+__pycache__/
+.env
+data/
+.env.emulator.local
