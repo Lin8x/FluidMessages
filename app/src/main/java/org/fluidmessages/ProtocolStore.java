@@ -72,6 +72,7 @@ final class ProtocolStore extends SQLiteOpenHelper {
     void remove(String id) throws IOException {
         getWritableDatabase().delete("messages", "id = ?", new String[]{id});
         Files.deleteIfExists(photoFile(id).toPath());
+        Files.deleteIfExists(attachmentFile(id).toPath());
     }
 
     void putPhoto(String id, byte[] photo) throws IOException {
@@ -85,6 +86,39 @@ final class ProtocolStore extends SQLiteOpenHelper {
         File folder = new File(context.getFilesDir(), "protocol-photos");
         if (!folder.isDirectory() && !folder.mkdirs()) throw new IllegalStateException("Could not open photo storage");
         return new File(folder, id + ".jpg");
+    }
+
+    /** Stores a received or sent attachment under the message id. Size limits are enforced by the caller. */
+    void putFile(String id, java.io.InputStream input, long limit) throws IOException {
+        File file = attachmentFile(id);
+        File partial = new File(file.getPath() + ".part");
+        try (var output = new FileOutputStream(partial)) {
+            byte[] buffer = new byte[64 * 1024];
+            long total = 0;
+            for (int read; (read = input.read(buffer)) > 0; ) {
+                total += read;
+                if (total > limit) throw new IOException("Attachment is too large");
+                output.write(buffer, 0, read);
+            }
+        } catch (IOException error) {
+            Files.deleteIfExists(partial.toPath());
+            throw error;
+        }
+        Files.move(partial.toPath(), file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    File attachmentFile(String id) {
+        if (!id.matches("[A-Za-z0-9_-]{1,100}")) throw new IllegalArgumentException("Unexpected message identifier");
+        File folder = new File(context.getFilesDir(), "protocol-files");
+        if (!folder.isDirectory() && !folder.mkdirs()) throw new IllegalStateException("Could not open attachment storage");
+        return new File(folder, id);
+    }
+
+    /** The local copy of a message's non-photo attachment, or null until it has been downloaded. */
+    Uri file(JSONObject message) {
+        if (message.optJSONObject("attachment") == null) return null;
+        File file = attachmentFile(message.optString("id"));
+        return file.isFile() ? FileProvider.getUriForFile(context, context.getPackageName() + ".backup-files", file) : null;
     }
 
     Uri photo(JSONObject message) {

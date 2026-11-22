@@ -123,9 +123,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private CancellationSignal lockPrompt;
     private final Runnable poll = new Runnable() {
         @Override public void run() {
-            sync(false);
+            int seconds = SyncPolicy.foregroundSeconds(prefs);
+            if (seconds > 0 && SyncPolicy.allowed(MainActivity.this)) sync(false);
             if (resumed) checkUpdates(false);
-            handler.postDelayed(this, 20_000);
+            handler.postDelayed(this, (seconds > 0 ? seconds : 60) * 1000L);
         }
     };
     private final ContentObserver observer = new ContentObserver(handler) {
@@ -186,6 +187,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         super.onStart();
         if (prefs.getBoolean("lock", false) && !unlocked) authenticate();
         handler.post(poll);
+        // Phone-direct connections run while FluidMessages is visible, unless set to stay connected.
+        new Thread(() -> DirectProtocols.foreground(this, true), "fluid-direct-start").start();
     }
     @Override protected void onResume() {
         super.onResume();
@@ -203,6 +206,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
     @Override protected void onStop() {
         handler.removeCallbacks(poll);
+        new Thread(() -> DirectProtocols.foreground(this, false), "fluid-direct-stop").start();
         unlocked = false;
         if (lockPrompt != null) {
             lockPrompt.cancel();
@@ -396,7 +400,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         setupStep = step;
         render("setup");
         OnboardingScreen.mount(root, prefs, step, () -> onboarding(step + 1), () -> onboarding(step - 1),
-            () -> finishSetup(false), () -> finishSetup(true), () -> finishSetup(false), this::recolorWindow);
+            () -> finishSetup(false), () -> finishSetup(true), () -> finishSetup(false), this::recolorWindow,
+            () -> accounts(() -> onboarding(step)));
     }
 
     private void finishSetup(boolean demo) {
@@ -439,7 +444,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     search.matches(contact[0], line.getText(), Objects.toString(line.getAuthor(), "")))) continue;
             ChatLine latest = null;
             for (ChatLine line : lines) if (line.getReactionTarget() == null) latest = line;
-            String preview = latest == null ? "" : latest.getPhoto() == null ? latest.getText() : "Photo · " + latest.getText();
+            String preview = latest == null ? "" : latest.getMedia() == null || latest.getText().equals(latest.getMedia().getCaption())
+                ? latest.getText() : latest.getMedia().getKind().getLabel() + " · " + latest.getText();
             if ("Group".equals(contact[5]) && latest != null && latest.getAuthor() != null) {
                 preview = latest.getAuthor().split(" ", 2)[0] + ": " + preview;
             }
@@ -448,7 +454,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     ? withTime(contact[4], sampleTime(contact)) : latest.getTime(),
                 (contact == SAMPLES[0] || "Group".equals(contact[5])) && sampleReplies.getOrDefault(contact[0], List.of()).isEmpty(), false,
                 samplePhoto(contact[0]), null, 0, sampleFormats(contact).stream().map(format -> format.label)
-                    .collect(java.util.stream.Collectors.joining(" · "))));
+                    .collect(java.util.stream.Collectors.joining(" · ")),
+                sampleSender(contact[0]) == SenderStyle.AUTOMATED, sampleGroupMembers(contact[0])));
         }
         inboxScreen.setThreads(threads);
     }
@@ -461,7 +468,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private List<MessageProtocol> sampleFormats(String[] contact) {
-        if (contact[0].equals("Maya Chen")) return List.of(MessageProtocol.RCS, MessageProtocol.SMS,
+        if (contact[0].equals("Maya Chen")) return List.of(MessageProtocol.RCS,
             MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL);
         return List.of("Group".equals(contact[5]) && sampleSender(contact[0]) == SenderStyle.RCS
             ? MessageProtocol.RCS : MessageProtocol.parse(contact[5]));
@@ -469,10 +476,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     private void sampleChat(String[] contact) {
         var routes = sampleFormats(contact);
-        var format = prefs.getBoolean("combineProtocols", false) && routes.contains(MessageProtocol.SMS)
-            && prefs.getString("protocolRoute.demo:" + contact[0], "").isEmpty()
-            ? MessageProtocol.SMS : MessageProtocol.preferred(prefs, "demo:" + contact[0], routes);
-        sampleChat(contact, format);
+        sampleChat(contact, MessageProtocol.preferred(prefs, "demo:" + contact[0], routes));
     }
 
     private void sampleChat(String[] contact, MessageProtocol format) {
@@ -484,8 +488,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         boolean combined = prefs.getBoolean("combineProtocols", false) && formats.size() > 1;
         var routing = new ChatRouting(format, formats, combined, next -> sampleChat(contact, next), next -> {
             prefs.edit().putString("protocolRoute." + key, next.name()).apply();
-            sampleChat(contact, next);
-        }, "", false);
+            sampleChat(contact, next.family() == format.family() ? format : next);
+        }, "", false, savedRoute(key));
         activeProtocol = format;
         conversationScreen = new ConversationScreen(root, prefs, profile, contact[0], contact[1], contact[5], true,
             sampleSender(contact[0]),
@@ -494,17 +498,32 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 hiddenSampleMessages.computeIfAbsent(key, ignored -> new HashSet<>()).add(line.getId());
                 showSampleLines(contact, replies);
             }), null, sampleMembers(contact),
-            (body, author, target, photo) -> addSampleMessage(contact, replies, body, author, target, photo),
+            (text, author, relation, attachment, via) -> addSampleMessage(contact, replies, author,
+                new OutgoingMessage(key, List.of(), text, attachment, -1, relation), via),
             samplePhoto(contact[0]), null, routing, sampleGroupMembers(contact[0]));
         showSampleLines(contact, replies);
         animateIn(root.getChildAt(0), 10);
     }
 
-    private boolean addSampleMessage(String[] contact, List<ChatLine> replies, String body, String author, String target, Uri photo) {
+    private MessageProtocol savedRoute(String conversation) {
+        String saved = prefs.getString("protocolRoute." + conversation, "");
+        return saved.isEmpty() ? null : MessageProtocol.parse(saved);
+    }
+
+    private boolean addSampleMessage(String[] contact, List<ChatLine> replies, String author, OutgoingMessage message,
+                                     MessageProtocol via) {
+        // Sample attachments stay on this device and in memory only.
+        var attachment = message.getAttachment();
+        Uri photo = message.getPhoto();
+        var other = attachment != null && attachment.isFile() && photo == null ? attachment : null;
+        // Samples use the same fallback text as live chats, so quotes and reactions render identically.
+        String body = message.fallbackBody();
         if (body.isBlank()) return false;
+        var relation = message.getRelation();
+        String target = relation != null && relation.getKind() == RelationKind.REACTION ? relation.getTargetId() : null;
         String id = "reply-" + replies.size();
         replies.add(new ChatLine(id, body, "", author == null, "",
-            DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()), author, target, photo, activeProtocol));
+            DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()), author, target, photo, via, other));
         conversationScreen.setAnimatedId(id);
         showSampleLines(contact, replies);
         if (author == null) feedback(root);
@@ -512,13 +531,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         return true;
     }
 
-    private void forwardSample(String message, Uri photo) {
+    private void forwardSample(String message, Attachment attachment) {
         String[] names = Arrays.stream(SAMPLES).map(contact -> contact[0]).toArray(String[]::new);
         showDialog(dialogBuilder().setTitle("Forward to a sample conversation")
             .setItems(names, (dialog, which) -> {
                 sampleChat(SAMPLES[which]);
                 conversationScreen.setDraft(message);
-                conversationScreen.setDraftPhoto(photo);
+                conversationScreen.setDraftAttachment(attachment);
             }).setNegativeButton("Cancel", null));
     }
 
@@ -541,7 +560,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         boolean combined = prefs.getBoolean("combineProtocols", false);
         var lines = sampleLines(contact, replies);
         conversationScreen.setLines(formats.size() <= 1 || combined ? lines : lines.stream().filter(line ->
-            (line.getFormat() == null ? MessageProtocol.SMS : line.getFormat()) == activeProtocol).toList());
+            (line.getFormat() == null ? MessageProtocol.SMS : line.getFormat()).family() == activeProtocol.family()).toList());
     }
 
     private List<ChatLine> sampleLines(String[] contact, List<ChatLine> replies) {
@@ -564,6 +583,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         }
         if (!contact[3].isEmpty()) {
             messages.add(new ChatLine("sent", contact[3], "", true, "", members.size() > 1 ? "6:34 PM" : "2:01 PM"));
+        }
+        if (contact[0].equals("#radio-club")) {
+            // IRC samples show channel events and /me actions the way the IRC layout draws them.
+            messages.add(0, new ChatLine("irc-join", "orbital joined", contact[4], false, "", "6:58 PM", null, null, null,
+                MessageProtocol.IRC, null, true));
+            messages.add(new ChatLine("irc-action", "/me tunes the dipole for 20 meters", "", false, "", "7:03 PM", "kestrel"));
         }
         if (contact[0].equals("Nora Patel")) {
             messages.add(new ChatLine("demo-quote", "Reply to “Did you want the window seat?”\n\nOnly if you don’t mind.", "", true, "", "2:04 PM"));
@@ -661,7 +686,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     if (Thread.currentThread().isInterrupted()) return;
                     String number = rowAddress(message);
                     var format = MessageProtocol.parse(message.optString("protocol"));
-                    String thread = prefs.getBoolean("combineProtocols", false) ? number : number + "\u001f" + format.name();
+                    String thread = prefs.getBoolean("combineProtocols", false) ? number : number + "\u001f" + format.family().name();
                     boolean visible = switch (selectedFolder) {
                         case "Archived" -> archived.contains(number) && !blocked.contains(number);
                         case "Blocked" -> blocked.contains(number);
@@ -684,10 +709,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     var format = MessageProtocol.parse(message.optString("protocol"));
                     String label = prefs.getBoolean("combineProtocols", false) ? formats(number).stream()
                         .map(item -> item.label).collect(java.util.stream.Collectors.joining(" · ")) : format.label;
-                    String rowKey = prefs.getBoolean("combineProtocols", false) ? number + "\u001f" + format.name() : thread;
+                    String rowKey = prefs.getBoolean("combineProtocols", false) ? number + "\u001f" + format.family().name() : thread;
                     entries.add(new ThreadRow(rowKey, name, initials(name), message.getString("body"),
                         inboxDate(displayedTimestamp(message)), message.optInt("read", 1) == 0,
-                        pinned.contains(number), 0, contact == null ? null : contact.photo(), contactRevision, label));
+                        pinned.contains(number), 0, contact == null ? null : contact.photo(), contactRevision, label,
+                        (format == MessageProtocol.SMS || format == MessageProtocol.MMS) && !number.startsWith("mms:")
+                            && SenderStyle.infer(number) == SenderStyle.AUTOMATED,
+                        number.startsWith("mms:") ? groupMembers(number) : GatewayClient.members(prefs, number)));
                 }
                 if (!Thread.currentThread().isInterrupted()) runOnUiThread(() -> {
                     if (inboxScreen == target && version == inboxVersion && !isDestroyed()) {
@@ -738,7 +766,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         var members = SAMPLE_GROUPS.get(name);
         return members == null ? List.of() : members.stream().map(member ->
             new GroupMember(member, "", null, () -> contactDetails("demo:" + member, member,
-                () -> contactDetails("demo:" + name, name, () -> openSampleThread(name))))).toList();
+                () -> contactDetails("demo:" + name, name, () -> openSampleThread(name))), samplePhoto(member))).toList();
     }
 
     private List<String> groupNumbers(String key) {
@@ -748,6 +776,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private List<GroupMember> groupMembers(String key) {
+        var channel = GatewayClient.channel(prefs, key);
+        if (channel != null) {
+            // IRC channels list nicknames from the live member list on the companion.
+            var nicks = channel.optJSONArray("members");
+            var result = new ArrayList<GroupMember>();
+            for (int i = 0; nicks != null && i < nicks.length() && i < 500; i++) result.add(new GroupMember(nicks.optString(i)));
+            return result;
+        }
         var users = groupNumbers(key);
         if (users.isEmpty()) return GatewayClient.members(prefs, key);
         return users.stream().map(number -> {
@@ -761,10 +797,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         var routes = new ArrayList<>(GatewayClient.formats(prefs, key));
         if (hasRole()) {
             if (key.startsWith("mms:")) routes.add(MessageProtocol.MMS);
-            else if (SmsStore.validRecipient(key)) {
-                routes.add(MessageProtocol.SMS);
-                routes.add(MessageProtocol.MMS);
-            }
+            // One text route per person: SMS upgrades itself to MMS for photos and files.
+            else if (SmsStore.validRecipient(key)) routes.add(MessageProtocol.SMS);
         }
         routes.sort(Comparator.naturalOrder());
         return routes.stream().distinct().toList();
@@ -777,7 +811,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         if (routes.isEmpty()) { toast("This conversation has no message route"); return; }
         var requested = parts.length > 1 && (prefs.getBoolean("combineProtocols", false)
                 ? prefs.getString("protocolRoute." + parts[0], "").isEmpty() : true)
-            ? MessageProtocol.parse(parts[1]) : MessageProtocol.preferred(prefs, parts[0], routes);
+            ? MessageProtocol.concrete(routes, MessageProtocol.parse(parts[1])) : MessageProtocol.preferred(prefs, parts[0], routes);
         chat(parts[0], requested);
     }
 
@@ -846,14 +880,20 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             conversationScreen.setDraft(draft);
             return;
         }
-        if (MessageProtocol.MMS.enabled(prefs) && prefs.getBoolean("protocolAuto", true)) {
+        var choice = GroupRouting.pick(prefs, recipients, this::formats);
+        if (choice.getProtocol() == MessageProtocol.MMS) {
             String group = MmsTransport.thread(this, recipients);
             unsentGroups.put(group, recipients);
             chat(group, MessageProtocol.MMS);
             conversationScreen.setDraft(draft);
             return;
         }
-        if (!MessageProtocol.SMS.enabled(prefs)) { toast(MessageProtocol.SMS.disabledReason(prefs)); return; }
+        // Without a shared group protocol, phone numbers still get the same text one by one.
+        if (!MessageProtocol.SMS.enabled(prefs) || !recipients.stream().allMatch(SmsStore::validRecipient)) {
+            toast(choice.getReason());
+            return;
+        }
+        toast(choice.getReason());
         render("groupSms");
         heading("Multiple recipients", "Inbox", this::inbox);
         var labels = recipients.stream().map(recipient -> {
@@ -865,8 +905,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             new Thread(() -> {
                 int submitted = 0;
                 for (String recipient : recipients) {
-                    try { SmsStore.send(this, recipient, body, sim); submitted++; }
-                    catch (RuntimeException ignored) {}
+                    try {
+                        MessageProtocol.SMS.transport().send(this, new OutgoingMessage(recipient, List.of(recipient), body, null, sim));
+                        submitted++;
+                    } catch (Exception ignored) {}
                 }
                 int count = submitted;
                 runOnUiThread(() -> {
@@ -898,10 +940,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 conversationScreen.setDraft(draft);
             }, next -> {
                 prefs.edit().putString("protocolRoute." + number, next.name()).apply();
-                chat(number, next);
-            }, phone && hasRole() ? "" : GatewayClient.unavailable(prefs, number, format), format == MessageProtocol.MMS);
+                chat(number, next.family() == format.family() ? format : next);
+            }, format.transport().unavailable(this, prefs, number), format.transport().getCapabilities().getAttachments()
+                || (format == MessageProtocol.SMS && MessageProtocol.MMS.enabled(prefs)), savedRoute(number),
+            GatewayClient.encrypted(prefs, number, format) ? Encryption.COMPANION_E2EE : null);
         conversationScreen = new ConversationScreen(root, prefs, profile, name, initials(name), format.label, false,
-            phone && SmsStore.validRecipient(number) ? SenderStyle.infer(number) : SenderStyle.SMS,
+            phone && !number.startsWith("mms:") ? SenderStyle.infer(number) : SenderStyle.SMS,
             phone ? simLabel() : null, this::inbox, () -> contactDetails(number, number, () -> chat(number, format)),
             () -> conversationMenu(number), phone ? this::chooseSim : null, this::forwardLive,
             line -> confirmDelete(() -> {
@@ -910,45 +954,56 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     else ProtocolStore.get(this).remove(line.getId());
                     fillChat();
                 } catch (Exception error) { toast("Could not delete the message"); }
-            }), null, List.of(), (body, author, relation, photo) -> sendRouted(number, format, body, photo),
-            0, match == null ? null : match.photo(), routing, groupMembers(number));
+            }), null, List.of(), (text, author, relation, photo, via) -> sendRouted(via, new OutgoingMessage(number,
+                number.startsWith("mms:") ? groupNumbers(number) : List.of(number), text, photo, prefs.getInt("sim", -1), relation)),
+            0, match == null ? null : match.photo(), routing, groupMembers(number), this::downloadAttachment, line -> {
+                try {
+                    if (line.getFormat() == MessageProtocol.SMS) SmsStore.delete(this, Long.parseLong(line.getId()), number);
+                    else ProtocolStore.get(this).remove(line.getId());
+                    fillChat();
+                } catch (Exception ignored) {}
+            });
         fillChat();
         animateIn(root.getChildAt(0), 10);
     }
 
-    private boolean sendRouted(String number, MessageProtocol format, String body, Uri photo) {
-        if (format == MessageProtocol.SMS && photo == null) {
-            try {
-                SmsStore.send(this, number, body, prefs.getInt("sim", -1));
-                sent();
-                return true;
-            } catch (Exception error) { toast(error.getMessage()); return false; }
-        }
-        try { format.requireEnabled(this); }
-        catch (RuntimeException error) { toast(error.getMessage()); return false; }
-        if (format != MessageProtocol.MMS && !GatewayClient.unavailable(prefs, number, format).isEmpty()) {
-            toast(GatewayClient.unavailable(prefs, number, format));
-            return false;
-        }
-        int selectedSim = prefs.getInt("sim", -1);
+    /** Every live send goes through the protocol's shared transport, including replies and reactions. */
+    private boolean sendRouted(MessageProtocol format, OutgoingMessage message) {
+        var transport = format.transport();
+        String reason = transport.unavailable(this, prefs, message.getConversation());
+        if (!reason.isEmpty()) { toast(reason); return false; }
         var current = conversationScreen;
-        var members = number.startsWith("mms:") ? groupNumbers(number) : List.of(number);
         new Thread(() -> {
             try {
-                if (format == MessageProtocol.MMS) MmsTransport.send(this, members, body, photo, selectedSim);
-                else GatewayClient.send(this, number, format, body);
+                transport.send(this, message);
                 runOnUiThread(() -> { if (conversationScreen == current) sent(); });
             } catch (Exception error) {
                 runOnUiThread(() -> {
                     if (conversationScreen == current) {
-                        current.setDraft(body);
-                        current.setDraftPhoto(photo);
+                        if (message.getRelation() == null || message.getRelation().getKind() == RelationKind.REPLY) {
+                            current.setDraft(message.getText());
+                            current.setDraftAttachment(message.getAttachment());
+                        }
                         current.setError(error.getMessage() == null ? "Could not send " + format.label : error.getMessage());
                     }
                 });
             }
         }, "fluid-send-" + format.name()).start();
         return true;
+    }
+
+    /** Fetches a received attachment the person tapped, then shows it in place. */
+    private void downloadAttachment(ChatLine line) {
+        new Thread(() -> {
+            try {
+                var message = ProtocolStore.get(this).find(line.getId());
+                if (message == null) return;
+                GatewayClient.download(this, message);
+                runOnUiThread(this::fillChat);
+            } catch (Exception error) {
+                runOnUiThread(() -> toast(error.getMessage() == null ? "Could not download the attachment" : error.getMessage()));
+            }
+        }, "fluid-download").start();
     }
 
     private void sent() {
@@ -958,17 +1013,17 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         sync(false);
     }
 
-    private void forwardLive(String body, Uri photo) {
-        if (photo == null) { compose(body); return; }
+    private void forwardLive(String body, Attachment attachment) {
+        if (attachment == null) { compose(body); return; }
         openRecipientPicker(body, recipients -> {
-            if (recipients.size() == 1) chat(recipients.get(0), MessageProtocol.MMS);
+            if (recipients.size() == 1) chat(recipients.get(0));
             else {
                 String group = MmsTransport.thread(this, recipients);
                 unsentGroups.put(group, recipients);
                 chat(group, MessageProtocol.MMS);
             }
             conversationScreen.setDraft(body);
-            conversationScreen.setDraftPhoto(photo);
+            conversationScreen.setDraftAttachment(attachment);
         });
     }
 
@@ -1011,7 +1066,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 JSONObject entry = all.get(i);
                 if (!address.equals(rowAddress(entry))) continue;
                 var format = MessageProtocol.parse(entry.optString("protocol"));
-                if (!prefs.getBoolean("combineProtocols", false) && activeProtocol != format) continue;
+                if (!prefs.getBoolean("combineProtocols", false) && activeProtocol.family() != format.family()) continue;
                 int kind = entry.getInt("type");
                 long date = displayedTimestamp(entry);
                 String status = entry.optString("status", switch (kind) {
@@ -1026,7 +1081,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 }
                 entries.add(new ChatLine(entry.getString("id"), entry.getString("body"),
                     messageDay(day, date), kind != Telephony.Sms.MESSAGE_TYPE_INBOX, status, time.format(new Date(date)),
-                    author.isBlank() ? null : author, null, ProtocolStore.get(this).photo(entry), format));
+                    author.isBlank() ? null : author, entry.optString("reaction_target").isEmpty() ? null
+                        : entry.optString("reaction_target"), ProtocolStore.get(this).photo(entry), format,
+                    Attachment.fromJson(entry.optJSONObject("attachment"), ProtocolStore.get(this).file(entry)),
+                    entry.optBoolean("event")));
             }
             if (animateNextMessage && !entries.isEmpty()) {
                 conversationScreen.setAnimatedId(entries.get(entries.size() - 1).getId());
@@ -1058,6 +1116,59 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             if (conversationScreen != null) conversationScreen.setDraft(draft);
         };
         showContact(key, original, back);
+    }
+
+    private void linkAddress(String key, String name, Runnable done) {
+        var formats = List.of(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC);
+        String[] labels = formats.stream().map(format -> format.label).toArray(String[]::new);
+        showDialog(dialogBuilder().setTitle("Link an address").setItems(labels, (dialog, which) -> {
+            var format = formats.get(which);
+            EditText input = field(switch (format) {
+                case MATRIX -> "@maya:example.org";
+                case XMPP -> "maya@example.org or room@conference.example.org";
+                case EMAIL -> "maya@example.org";
+                default -> "nickname or #channel";
+            });
+            input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+            var group = new android.widget.CheckBox(this);
+            group.setText("This is a group chat");
+            var layout = new LinearLayout(this);
+            layout.setOrientation(LinearLayout.VERTICAL);
+            layout.setPadding(dp(20), dp(8), dp(20), 0);
+            layout.addView(input);
+            if (format == MessageProtocol.XMPP) layout.addView(group);
+            showDialog(dialogBuilder().setTitle(format.label + " for " + name).setView(layout)
+                .setNegativeButton("Cancel", null).setPositiveButton("Link", (inner, button) -> {
+                    String target = input.getText().toString().trim();
+                    new Thread(() -> {
+                        try {
+                            if (DirectProtocols.on(prefs, format)) DirectProtocols.link(this, key, format, target, name, group.isChecked());
+                            else {
+                                GatewayClient.link(prefs, key, format, target, name, group.isChecked());
+                                GatewayClient.refresh(this, prefs);
+                            }
+                            runOnUiThread(() -> { toast(format.label + " linked"); done.run(); });
+                        } catch (Exception error) {
+                            runOnUiThread(() -> toast(error.getMessage()));
+                        }
+                    }, "fluid-link").start();
+                }));
+        }).setNegativeButton("Cancel", null));
+    }
+
+    private void confirmUnlink(String key, MessageProtocol format, Runnable done) {
+        showDialog(dialogBuilder().setTitle("Unlink " + format.label + "?")
+            .setMessage("New " + format.label + " messages stop appearing here. Earlier messages stay.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Unlink", (dialog, which) -> new Thread(() -> {
+                try {
+                    if (DirectProtocols.route(prefs, key, format) != null) DirectProtocols.unlink(this, key, format);
+                    else {
+                        GatewayClient.unlink(prefs, key, format);
+                        GatewayClient.refresh(this, prefs);
+                    }
+                    runOnUiThread(done);
+                } catch (Exception error) { runOnUiThread(() -> toast(error.getMessage())); }
+            }, "fluid-unlink").start()));
     }
 
     private void showContact(String key, String original, Runnable back) {
@@ -1101,8 +1212,22 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 }));
             }
         }
+        if (!sample && (CloudBackup.paired(this) || DirectProtocols.anyOn(prefs))) {
+            // Linked addresses let one contact be reached on several protocols, in one chat when combined.
+            for (var link : GatewayClient.links(prefs, key)) {
+                var format = MessageProtocol.parse(link.optString("protocol"));
+                actions.add(action(format.label + " · " + link.optString("target"), "Linked · tap to unlink",
+                    () -> confirmUnlink(key, format, returnToDetails)));
+            }
+            actions.add(action("Link an address", "Reach " + name + " on Matrix, XMPP, Email, or IRC",
+                () -> linkAddress(key, name, returnToDetails)));
+        }
         refreshContact = returnToDetails;
-        String subtitle = members.isEmpty() ? (sample ? "Sample contact" : phone ? key : "Conversation")
+        var channel = GatewayClient.channel(prefs, key);
+        boolean irc = channel != null || sample && original.startsWith("#");
+        String topic = channel == null ? (irc ? "Antenna tuning tonight at seven" : "") : channel.optString("topic");
+        String subtitle = irc ? (topic.isEmpty() ? "IRC channel" : "Topic: " + topic) + " · " + (members.size() + (channel == null ? 1 : 0)) + " people"
+            : members.isEmpty() ? (sample ? "Sample contact" : phone ? key : "Conversation")
             : (sample ? "Sample group · " : "") + (members.size() + 1) + " members including you";
         ConversationDetails.mount(root, prefs, name, initials(name), subtitle, sample ? samplePhoto(name) : 0,
             contact == null ? null : contact.photo(), phone ? () -> dialContact(key) : null,
@@ -1147,11 +1272,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             new SettingsSection("Personalize", List.of(
                 action("Themes and appearance", "Global themes, wallpapers, colors, and motion", this::theme),
                 action("Messaging", "Timestamps, replies, and reactions", this::messagingSettings),
-                action("Message protocols", "Routing, privacy and transport controls", this::protocolSettings),
+                action("Message protocols", "Text and internet protocols, and how chats combine", this::protocolSettings),
+                action("Accounts", "Matrix, XMPP, Email, and IRC", this::accounts),
                 action("Sample inbox", "Try changes with fictional conversations", this::sampleInbox))),
             new SettingsSection("Data and devices", List.of(
                 action("Backups", "Local files, cloud destinations, and restore", this::backups),
                 action("Web companion", CloudBackup.paired(this) ? "Set up" : "Not set up", this::companion),
+                action("Battery and sync", SyncPolicy.backgroundLabel(SyncPolicy.backgroundMinutes(prefs)) + " in the background",
+                    this::batterySettings),
                 action(locked ? "Turn off app lock" : "Turn on app lock", "Protect FluidMessages with your device lock",
                     () -> toggleLock(locked)))),
             new SettingsSection("Help", List.of(
@@ -1170,12 +1298,18 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             SettingsPages.mountAbout(root, prefs, installed.versionName, installed.getLongVersionCode(), status,
                 ReleaseUpdates.managedByStore(this), checkingUpdates || downloadingUpdate, () -> checkUpdates(true),
                 () -> openWebsite(ReleaseUpdates.REPOSITORY + "/releases"),
-                () -> openWebsite("https://danieljalali.com/FluidMessages/"));
+                () -> openWebsite(HOMEPAGE), ReleaseUpdates.REPOSITORY + "/releases", HOMEPAGE);
         } catch (PackageManager.NameNotFoundException error) { toast("Could not read app version"); }
     }
 
+    private static final String HOMEPAGE = ReleaseUpdates.REPOSITORY;
+
     private void openWebsite(String url) {
-        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); }
+        // Hand the link to the user's default browser in its own task, the same as tapping a link elsewhere.
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT));
+        }
         catch (ActivityNotFoundException error) { toast("No browser is available"); }
     }
 
@@ -1183,6 +1317,20 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         render("protocols");
         heading("Message protocols", "Back", this::settings);
         ProtocolSettingsScreen.mount(root, prefs);
+    }
+
+    private void accounts() { accounts(this::settings); }
+
+    private void accounts(Runnable back) {
+        render("accounts");
+        heading("Accounts", "Back", back);
+        AccountsScreen.mount(root, prefs, this::companion);
+    }
+
+    private void batterySettings() {
+        render("battery");
+        heading("Battery and sync", "Back", this::settings);
+        ProtocolSettingsScreen.mountBattery(root, prefs);
     }
 
     private boolean canPromptUpdate() {
@@ -1872,7 +2020,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 prefs.edit().putString("server", "https://" + endpoint.getRawAuthority())
                     .putString("token", pairingToken)
                     .putBoolean("syncSms", syncMessages.isChecked()).apply();
-                SyncJob.configure(this, syncMessages.isChecked());
+                SyncJob.reschedule(this);
                 if (syncMessages.isChecked()) sync(true);
                 back.run();
                 toast("Companion connection saved");
@@ -1886,7 +2034,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
     private void sync(boolean report) {
         boolean carrierSync = prefs.getBoolean("syncSms", true) && hasRole();
-        if (syncing || !CloudBackup.paired(this) || (!carrierSync && !prefs.getBoolean("syncInternetProtocols", false))) return;
+        if (syncing || !CloudBackup.paired(this) || (!carrierSync && !GatewayClient.wanted(prefs))) return;
         syncing = true;
         new Thread(() -> {
             try {

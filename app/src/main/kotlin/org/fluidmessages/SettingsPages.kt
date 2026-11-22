@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import java.util.function.Consumer
 
 data class SettingsAction(val label: String, val detail: String, val action: Runnable)
@@ -66,7 +67,8 @@ object SettingsPages {
 
     @JvmStatic
     fun mountAbout(root: LinearLayout, prefs: SharedPreferences, version: String, build: Long, status: String,
-                   managed: Boolean, busy: Boolean, check: Runnable, github: Runnable, homepage: Runnable) {
+                   managed: Boolean, busy: Boolean, check: Runnable, github: Runnable, homepage: Runnable,
+                   githubUrl: String, homepageUrl: String) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -92,8 +94,13 @@ object SettingsPages {
                             Text("Check for updates")
                         }
                     }
-                    item { OutlinedButton(onClick = homepage::run, modifier = Modifier.fillMaxWidth()) { Text("FluidMessages website") } }
-                    item { OutlinedButton(onClick = github::run, modifier = Modifier.fillMaxWidth()) { Text("GitHub releases") } }
+                    item {
+                        PreferencesCard("Links") {
+                            LinkRow("Website", homepageUrl, homepage)
+                            HorizontalDivider(Modifier.padding(start = 12.dp))
+                            LinkRow("GitHub releases", githubUrl, github)
+                        }
+                    }
                 }
             }
         }
@@ -118,6 +125,12 @@ object SettingsPages {
                                 exactTimes = it
                                 prefs.edit().putBoolean("exactTimes", it).apply()
                             }
+                        }
+                    }
+                    item {
+                        PreferencesCard("Privacy") {
+                            ProtocolSwitch(prefs, "stripMetadata", "Remove metadata from files you send",
+                                "On every protocol, removes camera, location, author, and editing details from photos, MP4 and WebM video and audio, MP3 tags, PDFs, and Office or OpenDocument files. Other file types are sent as they are.", true)
                         }
                     }
                     item {
@@ -202,5 +215,18 @@ private fun SettingsCards(sections: List<SettingsSection>, header: (@Composable 
                 }
             }
         }
+    }
+}
+
+
+/** A plain link: tapping opens the address in the default browser. */
+@Composable
+private fun LinkRow(title: String, url: String, open: Runnable) {
+    val display = url.removePrefix("https://").removeSuffix("/")
+    Column(Modifier.fillMaxWidth().clickable(onClickLabel = "Open $display in your browser") { open.run() }
+        .padding(horizontal = 12.dp, vertical = 11.dp)) {
+        Text(title, color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp)
+        Text("$display ↗", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp,
+            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
     }
 }

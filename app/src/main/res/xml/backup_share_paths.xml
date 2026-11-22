@@ -3,4 +3,6 @@
     <cache-path name="app_updates" path="app-updates/"/>
     <cache-path name="mms_transfer" path="mms-transfer/"/>
     <files-path name="protocol_photos" path="protocol-photos/"/>
+    <files-path name="protocol_files" path="protocol-files/"/>
+    <cache-path name="attachments" path="attachments/"/>
 </paths>

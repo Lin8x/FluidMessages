@@ -10,6 +10,7 @@ import android.content.Context;
 import org.json.JSONObject;
 import java.io.IOException;
 import java.net.URL;
+import java.util.List;
 import java.nio.charset.StandardCharsets;
 import javax.net.ssl.HttpsURLConnection;
 
@@ -19,18 +20,35 @@ public final class SyncJob extends JobService {
 
     static void configure(Context context, boolean enabled) {
         JobScheduler scheduler = context.getSystemService(JobScheduler.class);
-        if (enabled) {
+        var prefs = SyncPolicy.prefs(context);
+        int minutes = SyncPolicy.backgroundMinutes(prefs);
+        if (enabled && minutes > 0) {
+            // Android batches periodic jobs and never runs them more often than every 15 minutes.
             scheduler.schedule(new JobInfo.Builder(PERIODIC, new ComponentName(context, SyncJob.class))
-                .setPersisted(true).setPeriodic(15 * 60 * 1000L).setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY).build());
+                .setPersisted(true).setPeriodic(Math.max(15, minutes) * 60 * 1000L)
+                .setRequiredNetworkType(SyncPolicy.wifiOnly(prefs) ? JobInfo.NETWORK_TYPE_UNMETERED : JobInfo.NETWORK_TYPE_ANY)
+                .build());
         } else {
             scheduler.cancel(PERIODIC);
         }
     }
 
+    /** Applies the current battery and sync settings to the background job. */
+    static void reschedule(Context context) {
+        var prefs = SyncPolicy.prefs(context);
+        configure(context, DirectProtocols.anyOn(prefs) || CloudBackup.paired(prefs.getString("server", ""), prefs.getString("token", ""))
+            && (prefs.getBoolean("syncSms", true) || GatewayClient.wanted(prefs)));
+    }
+
     @Override public boolean onStartJob(JobParameters parameters) {
         worker = new Thread(() -> {
             try {
-                sync(getApplicationContext());
+                var context = getApplicationContext();
+                if (SyncPolicy.allowed(context)) {
+                    DirectProtocols.poll(context);
+                    try { GatewayClient.refresh(context, SyncPolicy.prefs(context)); } catch (Exception ignored) {}
+                    sync(context);
+                }
                 if (!Thread.currentThread().isInterrupted()) jobFinished(parameters, false);
             } catch (Exception error) {
                 if (!Thread.currentThread().isInterrupted()) jobFinished(parameters, true);
@@ -59,7 +77,9 @@ public final class SyncJob extends JobService {
             if (job == null) break;
             String state = "submitted";
             try {
-                SmsStore.send(context, job.getString("address"), job.getString("body"), preferences.getInt("sim", -1));
+                String recipient = job.getString("address");
+                MessageProtocol.SMS.transport().send(context, new OutgoingMessage(recipient, List.of(recipient),
+                    job.getString("body"), null, preferences.getInt("sim", -1)));
                 submitted = true;
             } catch (Exception error) {
                 state = "failed";

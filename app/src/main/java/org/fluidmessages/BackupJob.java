@@ -68,7 +68,7 @@ public final class BackupJob extends JobService {
         if (prefs.contains(categoryKey(target))) return prefs.getInt(categoryKey(target), 0);
         int categories = 0;
         if (prefs.getBoolean(target == null ? "backupSms" : cloudKey(target, "sms"), target == null)) {
-            categories |= BackupCategory.SMS.getFlag();
+            categories |= BackupCategory.SMS.getFlag() | BackupCategory.PROTOCOLS.getFlag();
         }
         if (prefs.getBoolean(target == null ? "backupTheme" : cloudKey(target, "theme"), true)) {
             categories |= BackupCategory.APPEARANCE.getFlag() | BackupCategory.EFFECTS.getFlag();

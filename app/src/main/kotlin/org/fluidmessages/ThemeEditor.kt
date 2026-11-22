@@ -27,6 +27,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -35,6 +38,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -76,7 +80,7 @@ object ThemeEditor {
 private const val SAVED_PALETTES = "savedColorThemes"
 private const val ACTIVE_PALETTE = "activeColorTheme"
 private const val PALETTE_PREFIX = "custom:"
-private val internetColors = listOf(MessageProtocol.EMAIL, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.IRC)
+private val internetColors = listOf(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)
 private fun colorKey(protocol: MessageProtocol) = protocol.key() + "Color"
 private val colorRoles = internetColors.map(::colorKey) + listOf("accent", "rcsColor", "automatedColor", "incoming", "canvas", "chromeColor", "controlColor")
 private val paletteKeys = listOf("colorTheme", "dark", "classicColors", "contrastColors") + colorRoles +
@@ -170,6 +174,7 @@ internal data class Appearance(
     }
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit) {
     var appearance by remember { mutableStateOf(Appearance.read(prefs)) }
@@ -216,7 +221,22 @@ private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit) {
                     }
                 }
             }
-            item { SampleConversation(appearance) }
+            item {
+                // Opening Inbox and toolbar switches the preview to the inbox, where those settings show.
+                var preview by remember { mutableStateOf("conversation") }
+                LaunchedEffect(openGroup) {
+                    if (openGroup == "inbox") preview = "inbox" else if (openGroup == "bubbles" || openGroup == "colors") preview = "conversation"
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        listOf("conversation" to "Conversation", "inbox" to "Inbox").forEachIndexed { index, (key, label) ->
+                            SegmentedButton(selected = preview == key, onClick = { preview = key },
+                                shape = SegmentedButtonDefaults.itemShape(index, 2)) { Text(label) }
+                        }
+                    }
+                    if (preview == "inbox") InboxPreview(appearance) else SampleConversation(appearance)
+                }
+            }
             item {
                 ThemeDropdown("Appearance mode", if (appearance.dark) "dark" else "light",
                     listOf(Choice("light", "Light"), Choice("dark", "Dark")), appearance.speed) {
@@ -238,14 +258,15 @@ private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit) {
                     ColorDropdown("RCS color (preview)", "rcsColor", appearance.rcs, appearance, prefs, ::change,
                         listOf(MessageStyle.Swatch.INDIGO, MessageStyle.Swatch.PINK, MessageStyle.Swatch.CYAN, MessageStyle.Swatch.MINT))
                     ColorDropdown("Automated color", "automatedColor", appearance.automated, appearance, prefs, ::change)
-                    ColorDropdown("Incoming bubble color", "incoming", appearance.incoming, appearance, prefs, ::change)
-                    ColorDropdown("Background color", "canvas", appearance.canvas, appearance, prefs, ::change)
-                    ColorDropdown("Buttons and unread indicators", "controlColor", appearance.controls, appearance, prefs, ::change)
-                    ColorDropdown("Toolbar and composer tint", "chromeColor", appearance.chrome, appearance, prefs, ::change)
+                    // Every outgoing protocol color sits together, in the same order as the Auto route.
                     for (protocol in internetColors) {
                         ColorDropdown(protocol.label + " color", colorKey(protocol), protocol.tint(appearance).toArgb(),
                             appearance, prefs, ::change)
                     }
+                    ColorDropdown("Incoming bubble color", "incoming", appearance.incoming, appearance, prefs, ::change)
+                    ColorDropdown("Background color", "canvas", appearance.canvas, appearance, prefs, ::change)
+                    ColorDropdown("Buttons and unread indicators", "controlColor", appearance.controls, appearance, prefs, ::change)
+                    ColorDropdown("Toolbar and composer tint", "chromeColor", appearance.chrome, appearance, prefs, ::change)
                 }
             }
             item {
@@ -468,6 +489,9 @@ private fun ColorDropdown(
 
 private fun hex(value: Int) = String.format(Locale.ROOT, "#%06X", value and 0xffffff)
 
+private val internetSamples = listOf(MessageProtocol.MATRIX to "Matrix preview", MessageProtocol.XMPP to "XMPP preview",
+    MessageProtocol.EMAIL to "Email preview", MessageProtocol.IRC to "IRC preview")
+
 @Composable
 internal fun SampleConversation(appearance: Appearance) {
     val radius by animateDpAsState(
@@ -488,6 +512,10 @@ internal fun SampleConversation(appearance: Appearance) {
             SampleBubble("See you there!", sms, radius, appearance, Modifier.align(Alignment.End), outgoing = true)
             SampleBubble("RCS preview", rcs, radius, appearance, Modifier.align(Alignment.End), outgoing = true)
             SampleBubble("Automated preview", automated, radius, appearance, Modifier.align(Alignment.End), outgoing = true)
+            for ((protocol, text) in internetSamples) {
+                val fill by animateColorAsState(protocol.tint(appearance), tween(duration), label = protocol.label + " color")
+                SampleBubble(text, fill, radius, appearance, Modifier.align(Alignment.End), outgoing = true)
+            }
         }
     }
 }

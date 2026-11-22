@@ -136,3 +136,23 @@ dialog .sidebar-head { padding-inline: 0; }
   .topbar button { padding-inline: .48rem; font-size: .78rem; }
   .brand-mark { display: none; }
 }
+
+/* Protocol colors come from the phone's theme; these defaults match the Fluid theme. */
+:root { --rcs: #6b43f0; --rcs-ink: #fff; --matrix: #e2244b; --matrix-ink: #fff; --xmpp: #e2244b; --xmpp-ink: #fff;
+  --email: #c55300; --email-ink: #fff; --irc: #d9262b; --irc-ink: #fff; }
+.out.p-rcs .bubble { background: var(--rcs); color: var(--rcs-ink); }
+.out.p-matrix .bubble { background: var(--matrix); color: var(--matrix-ink); }
+.out.p-xmpp .bubble { background: var(--xmpp); color: var(--xmpp-ink); }
+.out.p-email .bubble { background: var(--email); color: var(--email-ink); }
+.out.p-irc .bubble { background: var(--irc); color: var(--irc-ink); }
+.out.automated .bubble { background: var(--automated); color: var(--automated-ink); }
+.tags { display: flex; gap: .25rem; margin: .1rem 0; }
+.tag { border: 1px solid currentColor; border-radius: 5px; padding: 0 .3rem; font-size: .66rem; line-height: 1.2rem; color: var(--sms); }
+.tag.p-rcs { color: var(--rcs); } .tag.p-matrix { color: var(--matrix); } .tag.p-xmpp { color: var(--xmpp); }
+.tag.p-email { color: var(--email); } .tag.p-irc { color: var(--irc); }
+.message .author, .message .via { display: block; color: var(--muted); font-size: .72rem; margin: 0 .5rem .15rem; }
+.message.failed .message-time { color: #e9152d; font-weight: 600; }
+.event { color: var(--muted); font-style: italic; font-size: .8rem; margin: .2rem 0; }
+.file-card { display: block; margin-bottom: .35rem; font: inherit; background: rgb(0 0 0 / .1); color: inherit; border: 0;
+  border-radius: 8px; padding: .4rem .6rem; cursor: pointer; text-align: start; }
+.readonly { color: var(--muted); padding: .8rem 1rem; margin: 0; }

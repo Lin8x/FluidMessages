@@ -1,0 +1,306 @@
+package org.fluidmessages
+
+import android.content.SharedPreferences
+import android.widget.LinearLayout
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+
+private data class Field(val key: String, val label: String, val hint: String = "", val secret: Boolean = false,
+                         val number: Boolean = false, val optional: Boolean = false)
+
+/** Account forms, matching the companion's account fields. Matrix asks for a password once, then keeps a token. */
+private val forms = mapOf(
+    MessageProtocol.EMAIL to listOf(
+        Field("address", "Email address", "you@example.org"),
+        Field("imap_host", "Incoming mail (IMAP) server", "imap.example.org"),
+        Field("smtp_host", "Outgoing mail (SMTP) server", "smtp.example.org"),
+        Field("imap_user", "Username", "Usually your email address", optional = true),
+        Field("imap_password", "Password or app password", secret = true),
+        Field("poll_minutes", "Check for mail every … minutes", "1, 5, 15, 30, or 60", number = true, optional = true),
+    ),
+    MessageProtocol.MATRIX to listOf(
+        Field("homeserver", "Homeserver", "https://matrix.org"),
+        Field("user_id", "Matrix ID", "@you:matrix.org"),
+        Field("password", "Password", "Used once to sign in; only a session token is saved", secret = true, optional = true),
+        Field("access_token", "Or an access token", "For advanced setups", secret = true, optional = true),
+    ),
+    MessageProtocol.XMPP to listOf(
+        Field("jid", "XMPP address", "you@example.org"),
+        Field("password", "Password", secret = true),
+        Field("host", "Server host", "Leave blank to look it up", optional = true),
+    ),
+    MessageProtocol.IRC to listOf(
+        Field("server", "Server", "irc.libera.chat"),
+        Field("port", "TLS port", "6697", number = true, optional = true),
+        Field("nick", "Nickname"),
+        Field("sasl_user", "SASL account", "Leave blank to use your nickname", optional = true),
+        Field("sasl_password", "SASL password", secret = true, optional = true),
+        Field("channels", "Channels", "#example, #another", optional = true),
+    ),
+)
+
+private val notes = mapOf(
+    MessageProtocol.EMAIL to "Only conversations you link to a contact appear in FluidMessages. Other email stays in your mail app. Each message you send ends with “Sent with FluidMessages”.",
+    MessageProtocol.MATRIX to "Rooms appear when you link them to a contact or group. Through the companion, encrypted rooms work: it becomes one of your Matrix devices and decrypts them. From this phone, only unencrypted rooms can be read and sent to.",
+    MessageProtocol.XMPP to "One-to-one chats and group chats you link appear here. OMEMO encryption isn’t supported, so XMPP shows as encrypted in transit only.",
+    MessageProtocol.IRC to "FluidMessages connects with TLS only. Channels listed here appear in your inbox; direct messages appear for nicks you link.",
+)
+
+object AccountsScreen {
+    @JvmStatic
+    fun mount(root: LinearLayout, prefs: SharedPreferences, openCompanion: Runnable) {
+        val view = ComposeView(root.context)
+        view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+        view.setContent { AppTheme(Appearance.read(prefs)) { Accounts(prefs, openCompanion) } }
+        root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+    }
+}
+
+@Composable
+private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable) {
+    val scope = rememberCoroutineScope()
+    val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(), prefs.getString("token", "").orEmpty())
+    var accounts by remember { mutableStateOf<JSONArray?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var editing by remember { mutableStateOf<MessageProtocol?>(null) }
+    fun load() = scope.launch {
+        error = null
+        runCatching { withContext(Dispatchers.IO) { GatewayClient.accounts(prefs) } }
+            .onSuccess { accounts = it ?: JSONArray() }.onFailure { error = it.message ?: "Couldn’t reach your companion." }
+    }
+    LaunchedEffect(paired) { if (paired) load() else accounts = JSONArray() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun account(protocol: MessageProtocol): JSONObject? = accounts?.let { list ->
+        (0 until list.length()).map { list.getJSONObject(it) }.firstOrNull { it.optString("protocol") == protocol.name.lowercase() }
+    }
+    val current = editing
+    if (current != null) {
+        AccountForm(prefs, current, account(current), { editing = null }) { updated -> accounts = updated; editing = null }
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
+        if (!paired) item {
+            PreferencesCard("Companion") {
+                PreferenceText("Your web companion isn’t paired", "The companion keeps internet connections open so your phone doesn’t have to. You can also connect an account from this phone, which uses more battery.")
+                TextButton(onClick = openCompanion::run, modifier = Modifier.padding(horizontal = 8.dp)) { Text("Set up companion") }
+            }
+        }
+        error?.let { item { Text(it, Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.error) } }
+        item {
+            PreferencesCard("Accounts") {
+                listOf(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC).forEachIndexed { index, protocol ->
+                    if (index > 0) HorizontalDivider(Modifier.padding(start = 15.dp))
+                    val entry = account(protocol)
+                    val direct = DirectProtocols.account(context, protocol)
+                    val detail = when {
+                        direct != null && DirectProtocols.on(prefs, protocol) -> "On this phone · " + summary(protocol, JSONObject().put("fields", direct)) +
+                            if (DirectProtocols.stayConnected(prefs, protocol)) " · stays connected" else ""
+                        accounts == null -> "Checking…"
+                        entry == null -> "Not set up"
+                        entry.has("error") -> entry.optString("error")
+                        entry.optString("source") == "compose" -> "Set in Docker Compose · " + summary(protocol, entry)
+                        else -> "On your companion · " + summary(protocol, entry)
+                    }
+                    PreferenceText(protocol.label, detail, Modifier.fillMaxWidth().clickable(enabled = accounts != null) { editing = protocol }.padding(15.dp))
+                }
+            }
+        }
+        item {
+            Text("Link a contact to their addresses from the contact’s details. Turning a protocol off in Message protocols keeps its account and history.",
+                Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+private fun summary(protocol: MessageProtocol, entry: JSONObject): String {
+    val fields = entry.optJSONObject("fields") ?: return ""
+    return when (protocol) {
+        MessageProtocol.EMAIL -> fields.optString("address")
+        MessageProtocol.MATRIX -> fields.optString("user_id")
+        MessageProtocol.XMPP -> fields.optString("jid")
+        else -> fields.optString("nick") + " on " + fields.optString("server")
+    }
+}
+
+@Composable
+private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, existing: JSONObject?, close: () -> Unit,
+                        saved: (JSONArray) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(), prefs.getString("token", "").orEmpty())
+    val direct = remember { DirectProtocols.account(context, protocol) }
+    // Where the connection runs. "This phone" needs the battery notice accepted first.
+    var onPhone by remember { mutableStateOf(DirectProtocols.on(prefs, protocol) || !paired) }
+    var consent by remember { mutableStateOf(DirectProtocols.on(prefs, protocol)) }
+    var asking by remember { mutableStateOf(false) }
+    var always by remember { mutableStateOf(DirectProtocols.stayConnected(prefs, protocol)) }
+    val readOnly = !onPhone && existing?.optString("source") == "compose"
+    val stored = if (onPhone) JSONObject().apply {
+        direct?.let { account -> for (key in account.keys()) {
+            val secret = forms.getValue(protocol).any { it.key == key && it.secret }
+            put(key, if (secret) JSONObject().put("set", true) else account.get(key))
+        } }
+    } else existing?.optJSONObject("fields") ?: JSONObject()
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    if (asking) BatteryConsent(protocol, { asking = false }) { consent = true; onPhone = true; asking = false }
+    val values = remember(onPhone) {
+        mutableStateMapOf<String, String>().apply {
+            for (field in forms.getValue(protocol)) {
+                val value = stored.opt(field.key)
+                put(field.key, when (value) {
+                    is JSONArray -> (0 until value.length()).joinToString(", ") { value.optString(it) }
+                    is String, is Number -> value.toString()
+                    else -> ""
+                })
+            }
+        }
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text(protocol.label, style = MaterialTheme.typography.headlineSmall) }
+        item { Text(notes.getValue(protocol), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Connect through", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = !onPhone, enabled = paired && !busy, onClick = { onPhone = false },
+                        label = { Text("Companion") })
+                    FilterChip(selected = onPhone, enabled = !busy, onClick = { if (consent) onPhone = true else asking = true },
+                        label = { Text("This phone") })
+                }
+                Text(if (onPhone) "Your phone connects to ${protocol.label} itself." + when (protocol) {
+                        MessageProtocol.IRC, MessageProtocol.XMPP -> " It needs an open connection to receive messages."
+                        else -> " It checks on your Battery and sync schedule."
+                    } else if (paired) "Recommended. Your companion keeps the connection open, and your phone syncs on your Battery and sync schedule."
+                    else "Pair a web companion to connect through it.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                if (onPhone && (protocol == MessageProtocol.IRC || protocol == MessageProtocol.XMPP)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = !always, onClick = { always = false }, label = { Text("While FluidMessages is open") })
+                        FilterChip(selected = always, onClick = { always = true }, label = { Text("Stay connected") })
+                    }
+                    if (always) Text("Keeps a connection open in the background with an ongoing notification. This uses the most battery.",
+                        color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                }
+            }
+        }
+        if (readOnly) item { Text("This account is set in Docker Compose. Change it in your compose environment.", color = MaterialTheme.colorScheme.primary) }
+        for (field in forms.getValue(protocol)) item {
+            val isSet = stored.optJSONObject(field.key)?.optBoolean("set") == true
+            OutlinedTextField(values[field.key].orEmpty(), { values[field.key] = it }, Modifier.fillMaxWidth(),
+                enabled = !readOnly && !busy, singleLine = true, label = { Text(field.label + if (field.optional) " (optional)" else "") },
+                placeholder = { Text(if (field.secret && isSet) "Saved · leave blank to keep" else field.hint) },
+                visualTransformation = if (field.secret) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+                keyboardOptions = KeyboardOptions(keyboardType = when {
+                    field.secret -> KeyboardType.Password
+                    field.number -> KeyboardType.Number
+                    field.key.contains("address") || field.key == "jid" -> KeyboardType.Email
+                    field.key.contains("host") || field.key == "homeserver" || field.key == "server" -> KeyboardType.Uri
+                    else -> KeyboardType.Text
+                }))
+        }
+        error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = close) { Text("Back") }
+                Spacer(Modifier.weight(1f))
+                if ((if (onPhone) direct != null else existing != null) && !readOnly) TextButton(enabled = !busy, onClick = {
+                    busy = true
+                    scope.launch {
+                        runCatching { withContext(Dispatchers.IO) {
+                            if (onPhone) { DirectProtocols.removeAccount(context, protocol); if (paired) GatewayClient.accounts(prefs) else JSONArray() }
+                            else GatewayClient.deleteAccount(prefs, protocol.name.lowercase())
+                        } }.onSuccess { saved(it ?: JSONArray()) }.onFailure { error = it.message; busy = false }
+                    }
+                }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                if (!readOnly) AppButton(enabled = !busy, onClick = {
+                    busy = true
+                    error = null
+                    scope.launch {
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                val fields = JSONObject()
+                                for ((key, value) in values) if (value.isNotBlank() && key != "password" || key == "password" && protocol != MessageProtocol.MATRIX && value.isNotBlank()) {
+                                    when (key) {
+                                        "port", "poll_minutes" -> fields.put(key, value.trim().toInt())
+                                        "channels" -> fields.put(key, JSONArray(value.split(",").map { it.trim() }.filter { it.isNotEmpty() }))
+                                        else -> fields.put(key, value.trim())
+                                    }
+                                }
+                                if (protocol == MessageProtocol.MATRIX && values["password"].orEmpty().isNotBlank()) {
+                                    fields.put("access_token", GatewayClient.matrixLogin(values["homeserver"].orEmpty().trim(),
+                                        values["user_id"].orEmpty().trim(), values["password"].orEmpty(),
+                                        if (onPhone) "FluidMessages on this phone" else "FluidMessages companion"))
+                                }
+                                if (onPhone) {
+                                    checkDirect(protocol, fields)
+                                    DirectProtocols.saveAccount(context, protocol, fields, always)
+                                    SyncJob.reschedule(context)
+                                    if (paired) GatewayClient.accounts(prefs) else JSONArray()
+                                } else {
+                                    // Moving back to the companion turns off the phone connection but keeps its links.
+                                    if (DirectProtocols.on(prefs, protocol)) prefs.edit().putBoolean(DirectProtocols.key(protocol), false).apply()
+                                    DirectProtocols.restart(context)
+                                    GatewayClient.saveAccount(prefs, protocol.name.lowercase(), fields)
+                                }
+                            }
+                        }.onSuccess { saved(it ?: JSONArray()) }.onFailure { error = it.message ?: "Couldn’t save the account."; busy = false }
+                    }
+                }) { Text(if (busy) "Saving…" else "Save") }
+            }
+        }
+    }
+}
+
+
+/** Required fields for a phone connection, checked before saving (the companion checks its own). */
+private fun checkDirect(protocol: MessageProtocol, fields: JSONObject) {
+    val required = when (protocol) {
+        MessageProtocol.EMAIL -> listOf("address", "imap_host", "smtp_host", "imap_password")
+        MessageProtocol.MATRIX -> listOf("homeserver", "user_id", "access_token")
+        MessageProtocol.XMPP -> listOf("jid", "password")
+        else -> listOf("server", "nick")
+    }
+    for (key in required) if (fields.optString(key).isBlank()) throw IllegalArgumentException("Enter " + key.replace("_", " "))
+    if (protocol == MessageProtocol.MATRIX && !fields.getString("homeserver").startsWith("https://"))
+        throw IllegalArgumentException("Enter an https:// homeserver")
+    if (protocol == MessageProtocol.IRC && fields.optInt("port", 6697) in listOf(6667, 194))
+        throw IllegalArgumentException("Use a TLS port such as 6697. FluidMessages doesn’t connect to IRC without TLS.")
+    if (protocol == MessageProtocol.EMAIL && !fields.has("smtp_password")) fields.put("smtp_password", fields.getString("imap_password"))
+}
+
+/** The battery notice. "Continue" stays off until the person turns on "I understand". */
+@Composable
+private fun BatteryConsent(protocol: MessageProtocol, dismiss: () -> Unit, accept: () -> Unit) {
+    var understood by remember { mutableStateOf(false) }
+    AlertDialog(onDismissRequest = dismiss, title = { Text("Connect ${protocol.label} from this phone?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(when (protocol) {
+                    MessageProtocol.IRC, MessageProtocol.XMPP -> "${protocol.label} needs an open connection to receive messages. On this phone that keeps the radio awake while FluidMessages is open, or all the time if you choose Stay connected, which drains the battery noticeably faster."
+                    else -> "Your phone will check ${protocol.label} itself on your Battery and sync schedule, which uses more battery and data than letting your companion do it."
+                })
+                Text("Your account details are encrypted on this phone and aren’t included in backups.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SettingsSwitch("I understand this uses more battery", "", understood) { understood = it }
+            }
+        },
+        confirmButton = { TextButton(enabled = understood, onClick = accept) { Text("Continue") } },
+        dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } })
+}

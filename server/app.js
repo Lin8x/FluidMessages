@@ -5,7 +5,13 @@ const colors = {
   ink: 'ink', muted: 'muted', surface: 'surface', raised: 'raised', line: 'line', outline: 'outline', action: 'action',
   canvas: 'canvas', incoming: 'incoming', incomingInk: 'incoming-ink', sms: 'sms', smsInk: 'sms-ink',
   automated: 'automated', automatedInk: 'automated-ink', accent: 'accent', accentInk: 'accent-ink',
+  rcs: 'rcs', rcsInk: 'rcs-ink', matrix: 'matrix', matrixInk: 'matrix-ink', xmpp: 'xmpp', xmppInk: 'xmpp-ink',
+  email: 'email', emailInk: 'email-ink', irc: 'irc', ircInk: 'irc-ink',
 };
+// Same order and names as the phone. RCS, SMS, and MMS share one text conversation.
+const labels = {rcs: 'RCS', sms: 'SMS', mms: 'MMS', matrix: 'Matrix', xmpp: 'XMPP', email: 'Email', irc: 'IRC'};
+const family = (protocol) => ['rcs', 'mms', undefined, ''].includes(protocol) ? 'sms' : protocol;
+let enabled = new Set(['sms', 'mms', 'matrix', 'xmpp', 'email', 'irc']);
 const verbs = [['Liked', '👍'], ['Loved', '❤️'], ['Disliked', '👎'], ['Laughed at', '😆'],
   ['Emphasized', '‼️'], ['Questioned', '❓']];
 const jobStates = {scheduled: 'Queued', claimed: 'Claimed by phone', submitted: 'Submitted by phone',
@@ -78,7 +84,9 @@ function day(time) {
 }
 
 function initials(address) {
-  return [...address].filter((value) => /\p{L}/u.test(value)).slice(0, 2).join('').toUpperCase() || '●';
+  // First letters of the first two words, so "#radio-club" reads RC and "Maya Chen" reads MC.
+  const words = address.split(/[\s._-]+/).map((word) => [...word].find((value) => /\p{L}/u.test(value))).filter(Boolean);
+  return words.slice(0, 2).join('').toUpperCase() || '●';
 }
 
 function excerpt(value, limit) {
@@ -111,17 +119,34 @@ function fold(history) {
   return shown;
 }
 
+function threadKey(message) {
+  return appearance.combineProtocols ? message.address : message.address + '\u001f' + family(message.protocol);
+}
+
+function threadAddress(key) { return key.split('\u001f')[0]; }
+function threadProtocol(key) { return threads.get(key)?.at(-1)?.protocol || key.split('\u001f')[1] || 'sms'; }
+function threadTitle(key) {
+  const message = (threads.get(key) || []).find((row) => row.title);
+  return message?.title || threadAddress(key);
+}
+// Short codes and sender IDs are automated only for carrier texts; internet IDs often contain letters.
+function automatedThread(key) { return !!key && family(threadProtocol(key)) === 'sms' && automated(threadAddress(key)); }
+function internet(protocol) { return !['sms', 'mms', 'rcs', undefined, ''].includes(protocol); }
+
 function rebuildThreads() {
   threads = new Map();
   for (const message of inbox) {
-    if (!threads.has(message.address)) threads.set(message.address, []);
-    threads.get(message.address).push(message);
+    const key = threadKey(message);
+    if (!threads.has(key)) threads.set(key, []);
+    threads.get(key).push(message);
   }
   for (const [address, messages] of threads) threads.set(address, fold(messages.reverse()));
 }
 
-function setReply(text) {
+let replyId = '';
+function setReply(text, id = '') {
   reply = text;
+  replyId = id;
   get('reply').hidden = !text;
   get('reply-text').textContent = text ? 'Replying to ' + excerpt(text, 130) : '';
 }
@@ -141,7 +166,8 @@ function messageActions(message) {
     button.addEventListener('click', () => { menu.open = false; callback(); });
     menu.append(button);
   };
-  if (senderAddress(active)) action('Reply', () => { setReply(message.body); get('body').focus(); });
+  const sendable = senderAddress(threadAddress(active)) || internet(threadProtocol(active));
+  if (sendable) action('Reply', () => { setReply(message.body, message.id); get('body').focus(); });
   action('Forward', () => {
     const author = message.type === 1 ? excerpt(message.address.replace(/[“”\r\n]/g, ' '), 90) : 'Me';
     const prefix = 'Forwarded “';
@@ -153,14 +179,15 @@ function messageActions(message) {
     drafts.set('', get('body').value);
     get('address').focus();
   });
-  if (senderAddress(active)) {
+  if (sendable) {
     for (const [emoji, verb] of [['👍', 'Liked'], ['❤️', 'Loved'], ['🎉', 'Reacted 🎉 to']]) {
       action(emoji, () => {
         const wire = verb + ' “' + excerpt(message.body, 700) + '”' + (message.type !== 1 ? ' (my message)' : '');
-        queueSms(wire, active, Date.now()).catch(showError);
+        send(wire, '', {kind: 'reaction', target: message.id || '', emoji, own: message.type !== 1}).catch(showError);
       });
     }
   }
+  if (message.attachment) action('Download ' + message.attachment.name, () => download(message).catch(showError));
   return menu;
 }
 
@@ -176,16 +203,29 @@ function showMessages(preserve = false) {
     if (messageDay !== lastDay) conversation.append(element('p', messageDay, 'day'));
     lastDay = messageDay;
     const outgoing = message.type !== 1;
-    const row = element('div', '', outgoing ? 'message out' + (automated(active) ? ' automated' : '') : 'message');
+    if (message.event) { conversation.append(element('p', '— ' + message.body, 'event')); continue; }
+    const protocolClass = ' p-' + (message.protocol || 'sms');
+    const row = element('div', '', (outgoing ? 'message out' + (automatedThread(active) ? ' automated' : '') : 'message') + protocolClass);
+    if (!outgoing && message.author && (internet(message.protocol) || message.protocol === 'mms')) row.append(element('small', message.author, 'author'));
+    if (appearance.combineProtocols && message.protocol) row.append(element('small', labels[message.protocol] || '', 'via'));
     const bubble = element('div', '', 'bubble');
     const quoted = /^Reply to (?:“([\s\S]+?)”|"([\s\S]+?)")\s*\r?\n(?:\r?\n)?([\s\S]+)$/.exec(message.body);
     const forwarded = /^Forwarded (?:“([\s\S]+?)”|"([\s\S]+?)") by (?:“([^”\r\n]+)”|"([^"\r\n]+)")$/.exec(message.body);
     if (quoted) bubble.append(quoteCard('Replying to', quoted[1] || quoted[2]), element('p', quoted[3]));
     else if (forwarded) bubble.append(quoteCard('Forwarded from ' + (forwarded[3] || forwarded[4]), forwarded[1] || forwarded[2]));
     else bubble.textContent = message.body;
+    if (message.attachment) {
+      if (message.body === message.attachment.name) bubble.textContent = '';
+      const file = element('button', '📎 ' + message.attachment.name, 'file-card');
+      file.type = 'button';
+      file.addEventListener('click', () => download(message).catch(showError));
+      bubble.prepend(file);
+    }
     row.append(bubble);
     if (message.reactions.size) row.append(element('span', [...message.reactions.values()].join(' '), 'reaction'));
-    const status = message.type === 5 ? ' · Couldn’t send' : [4, 6].includes(message.type) ? ' · Sending…' : '';
+    const failed = message.type === 5 || (message.status || '').startsWith('Couldn’t send');
+    const status = failed ? ' · Not delivered' : [4, 6].includes(message.type) ? ' · Sending…' : message.status ? ' · ' + message.status : '';
+    if (failed) row.classList.add('failed');
     if (appearance.exactTimes || status) row.append(element('small', clock(timeOf(message)) + status, 'message-time'));
     row.append(messageActions(message));
     conversation.append(row);
@@ -194,16 +234,25 @@ function showMessages(preserve = false) {
   conversation.scrollTop = preserve && !atEnd ? scrollTop : conversation.scrollHeight;
 }
 
-function select(address) {
+function select(key) {
   if (!get('schedule').hidden) drafts.set(active, get('body').value);
-  active = address;
+  active = key;
+  const address = threadAddress(key);
+  const protocol = key ? threadProtocol(key) : 'sms';
   get('workspace').dataset.thread = 'true';
-  get('recipient').textContent = address || 'New SMS';
-  get('avatar').textContent = initials(address);
-  get('transport').textContent = automated(address) ? 'SMS · Automated sender' : 'SMS';
+  get('recipient').textContent = key ? threadTitle(key) : 'New SMS';
+  get('avatar').textContent = initials(key ? threadTitle(key) : '');
+  get('transport').textContent = automatedThread(key) ? 'SMS · Automated sender' : labels[protocol] || 'SMS';
   get('address').value = address;
   get('address-field').hidden = !!address;
-  get('schedule').hidden = !!address && !senderAddress(address);
+  // A protocol turned off on the phone stays readable here too.
+  const off = !enabled.has(family(protocol)) && !enabled.has(protocol);
+  get('readonly').hidden = !off;
+  get('readonly').textContent = off ? (labels[protocol] || 'This protocol') + ' is turned off on your phone. This conversation is read-only.' : '';
+  get('schedule').hidden = off || !!address && !senderAddress(address) && !internet(protocol);
+  get('send').textContent = internet(protocol) ? 'Send ' + labels[protocol] : 'Send SMS';
+  get('body').placeholder = internet(protocol) ? labels[protocol] + ' message' : 'Text message';
+  get('later').hidden = internet(protocol);
   get('body').value = drafts.get(address) || '';
   get('schedule-status').textContent = '';
   setReply('');
@@ -244,23 +293,31 @@ function showThreads() {
   const folder = get('folder').value;
   const selected = appearance.folders || {};
   const rows = [...threads].filter(([address, messages]) => {
-    const blocked = selected.blocked?.includes(address);
-    const archived = selected.archived?.includes(address);
+    const blocked = selected.blocked?.includes(threadAddress(address));
+    const archived = selected.archived?.includes(threadAddress(address));
     const inFolder = folder === 'Blocked' ? blocked : !blocked && (folder === 'Archived' ? archived : !archived);
-    return inFolder && (matches(address, '') || messages.some((message) => matches(address, message.body)));
+    return inFolder && (matches(threadTitle(address), '') || messages.some((message) => matches(threadTitle(address), message.body)));
   });
   const pinned = new Set(selected.pinned || []);
-  rows.sort(([a], [b]) => Number(pinned.has(b)) - Number(pinned.has(a)));
-  for (const [address, messages] of rows) {
+  rows.sort(([a], [b]) => Number(pinned.has(threadAddress(b))) - Number(pinned.has(threadAddress(a))));
+  for (const [key, messages] of rows) {
+    const address = key;
     const message = messages.at(-1);
     const button = element('button', '', 'thread');
     button.type = 'button';
     button.setAttribute('aria-current', String(address === active));
     button.dataset.unread = String(message.type === 1 && message.read === 0);
     const copy = element('span', '', 'thread-copy');
-    copy.append(element('strong', address), element('small', message.body));
+    copy.append(element('strong', threadTitle(key)));
+    if (appearance.protocolTags) {
+      const tags = element('span', '', 'tags');
+      const formats = appearance.combineProtocols ? [...new Set(messages.map((row) => row.protocol || 'sms'))] : [message.protocol || 'sms'];
+      for (const format of formats) tags.append(element('span', automatedThread(key) && family(format) === 'sms' ? 'Automated' : labels[format] || 'SMS', 'tag p-' + format));
+      copy.append(tags);
+    }
+    copy.append(element('small', message.body));
     const time = timeOf(message);
-    button.append(element('span', '', 'indicator'), element('span', initials(address), 'avatar'), copy,
+    button.append(element('span', '', 'indicator'), element('span', initials(threadTitle(key)), 'avatar'), copy,
       element('time', day(time) === 'Today' ? clock(time) : day(time) + (appearance.exactTimes ? ' ' + clock(time) : '')));
     button.addEventListener('click', () => select(address));
     list.append(button);
@@ -300,6 +357,7 @@ async function refresh() {
   if (currentSession !== session || request !== refreshNumber) return;
   if (!refreshed || updated !== snapshot.updated) {
     applyAppearance(snapshot.appearance);
+    if (Array.isArray(snapshot.appearance?.enabledProtocols)) enabled = new Set(snapshot.appearance.enabledProtocols);
     updated = snapshot.updated;
     inbox = snapshot.messages;
     rebuildThreads();
@@ -312,6 +370,29 @@ async function refresh() {
 }
 
 function showError(error) { get('schedule-status').textContent = error.message; }
+
+async function send(body, text, relation, due = Date.now()) {
+  const protocol = threadProtocol(active);
+  if (!internet(protocol)) return queueSms(body, threadAddress(active), due);
+  const currentSession = session;
+  const request = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
+  await api('protocols/send', {address: threadAddress(active), protocol, body, text: text || body, request,
+    relation: relation && relation.target ? relation : undefined});
+  if (currentSession !== session) return;
+  get('schedule-status').textContent = 'Queued on your companion.';
+  refresh().catch(() => { get('status').textContent = 'Sync unavailable'; });
+}
+
+async function download(message) {
+  const response = await fetch('/api/protocols/file?id=' + encodeURIComponent(message.id), {headers: {Authorization: 'Bearer ' + token}});
+  if (!response.ok) throw new Error('The attachment is no longer on the companion.');
+  const url = URL.createObjectURL(await response.blob());
+  const link = element('a', '');
+  link.href = url;
+  link.download = message.attachment.name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
 
 async function queueSms(body, address, due) {
   const currentSession = session;
@@ -392,7 +473,9 @@ get('schedule').addEventListener('submit', async (event) => {
   get('send').disabled = true;
   try {
     const due = get('due').value;
-    await queueSms(body, address, due && get('later').open ? new Date(due).getTime() : Date.now());
+    const when = due && get('later').open ? new Date(due).getTime() : Date.now();
+    if (active && internet(threadProtocol(active))) await send(body, draft, reply ? {kind: 'reply', target: replyId} : null, when);
+    else await queueSms(body, address, when);
     if (currentSession === session && current === active) {
       get('body').value = '';
       drafts.delete(current);

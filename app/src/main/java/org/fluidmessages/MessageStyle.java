@@ -46,25 +46,26 @@ final class MessageStyle {
         }
     }
 
-    // Each theme defines independent light and dark colors for all major surfaces.
+    // Each theme defines independent light and dark colors for all major surfaces. The automated color
+    // stays at least 55° of hue away from that theme's SMS and RCS colors.
     record Colors(int background, int sms, int rcs, int controls, int chrome, int automated) {}
 
     enum Theme {
         FLUID("Fluid", null, null),
         MIDNIGHT("Midnight", new Colors(0xf8f9fe, 0x0088ff, defaultRcs(false, false), CLASSIC_BLUE, 0xeceefa, 0x34c759),
             new Colors(0x08080b, 0x0091ff, defaultRcs(true, false), CLASSIC_BLUE, 0x23242c, 0x30d158)),
-        LAVENDER("Lavender", new Colors(0xfcf8ff, 0x7564d8, 0xc88330, 0x5c43b2, 0xefe7fa, 0x9750c4),
-            new Colors(0x15111e, 0x9481f4, 0xe5ab65, 0xc1a8ff, 0x2e2441, 0xba76f4)),
-        EVERGREEN("Evergreen", new Colors(0xf5fcf8, 0x2d9e78, 0xac8126, 0x176249, 0xe6f4ec, 0x298369),
-            new Colors(0x0d1814, 0x52c59a, 0xd3a846, 0x8bdabb, 0x1b372d, 0x48b38f)),
-        TIDELINE("Tideline", new Colors(0xf5fbff, 0x308fd3, 0xd37548, 0x225d97, 0xe4f2fa, 0x237e91),
-            new Colors(0x0e1721, 0x54b4f6, 0xf5a370, 0x9fdaff, 0x21374a, 0x46b5cb)),
-        EMBER("Ember", new Colors(0xfff9f1, 0xe28b48, 0xce6c6e, 0x923c24, 0xfaeee0, 0xb84e23),
-            new Colors(0x1c120e, 0xf1aa68, 0xf29194, 0xffbc8a, 0x38241b, 0xef8b55)),
-        LOVE("Love", new Colors(0xfff4f8, 0xc14770, 0x947029, 0x9b274f, 0xffe6ef, 0xa94278),
-            new Colors(0x211018, 0xcf507f, 0xd6aa56, 0xffa6c2, 0x3d2231, 0xe875b0)),
-        ROSEWATER("Rosewater", new Colors(0xfff8fa, 0xd5779f, 0xb7784d, 0xa13567, 0xfbe9f0, 0x98506d),
-            new Colors(0x1e1119, 0xf59abf, 0xd99d73, 0xffafd0, 0x3a222d, 0xd983a3));
+        LAVENDER("Lavender", new Colors(0xfcf8ff, 0x7564d8, 0xc88330, 0x5c43b2, 0xefe7fa, 0x2f9e83),
+            new Colors(0x15111e, 0x9481f4, 0xe5ab65, 0xc1a8ff, 0x2e2441, 0x4fc6a6)),
+        EVERGREEN("Evergreen", new Colors(0xf5fcf8, 0x2d9e78, 0xac8126, 0x176249, 0xe6f4ec, 0x3f72c4),
+            new Colors(0x0d1814, 0x52c59a, 0xd3a846, 0x8bdabb, 0x1b372d, 0x74a3f0)),
+        TIDELINE("Tideline", new Colors(0xf5fbff, 0x308fd3, 0xd37548, 0x225d97, 0xe4f2fa, 0x3a9a4a),
+            new Colors(0x0e1721, 0x54b4f6, 0xf5a370, 0x9fdaff, 0x21374a, 0x5cc46d)),
+        EMBER("Ember", new Colors(0xfff9f1, 0xe28b48, 0xce6c6e, 0x923c24, 0xfaeee0, 0x5e8f2e),
+            new Colors(0x1c120e, 0xf1aa68, 0xf29194, 0xffbc8a, 0x38241b, 0x8fc25a)),
+        LOVE("Love", new Colors(0xfff4f8, 0xc14770, 0x947029, 0x9b274f, 0xffe6ef, 0x2c8a6e),
+            new Colors(0x211018, 0xcf507f, 0xd6aa56, 0xffa6c2, 0x3d2231, 0x4fbf98)),
+        ROSEWATER("Rosewater", new Colors(0xfff8fa, 0xd5779f, 0xb7784d, 0xa13567, 0xfbe9f0, 0x4f8a66),
+            new Colors(0x1e1119, 0xf59abf, 0xd99d73, 0xffafd0, 0x3a222d, 0x7cbf93));
 
         final String label;
         private final Colors light;
@@ -77,6 +78,37 @@ final class MessageStyle {
         }
 
         Colors colors(boolean darkMode) { return darkMode ? dark : light; }
+
+        /**
+         * Theme colors for internet protocols, in Matrix, XMPP, Email, IRC order. Fluid uses the Apple
+         * swatches (pink, pink, orange, red). Each other theme picks hues that sit apart from its SMS, RCS,
+         * and automated colors. Dark mode lightens them; bubble shading then keeps white text readable.
+         */
+        Integer protocol(MessageProtocol protocol, boolean darkMode) {
+            int[] set = switch (this) {
+                case FLUID -> null;
+                case MIDNIGHT -> new int[]{0xff2d55, 0xe0408a, 0xff8d28, 0xff383c};
+                case LAVENDER -> new int[]{0xc4508f, 0xa955b8, 0x4f86c6, 0xcf4a4a};
+                case EVERGREEN -> new int[]{0xc2507a, 0x9a5bb5, 0xd9603a, 0xd13f3f};
+                case TIDELINE -> new int[]{0xc24f86, 0x8a62c9, 0xc9a227, 0xc8434a};
+                case EMBER -> new int[]{0xb0508f, 0x7d5fc0, 0x3f86b8, 0x2f9a8c};
+                case LOVE -> new int[]{0x8a5cc4, 0x5b6fd0, 0xe0603a, 0x3a8fbf};
+                case ROSEWATER -> new int[]{0x8c67c7, 0x5f7fce, 0xd4c13a, 0x3d93b8};
+            };
+            int index = switch (protocol) {
+                case MATRIX -> 0;
+                case XMPP -> 1;
+                case EMAIL -> 2;
+                case IRC -> 3;
+                default -> -1;
+            };
+            if (set == null || index < 0) return null;
+            int color = set[index];
+            if (!darkMode) return 0xff000000 | color;
+            return 0xff000000 | Color.rgb(lift(Color.red(color)), lift(Color.green(color)), lift(Color.blue(color)));
+        }
+
+        private static int lift(int channel) { return channel + (255 - channel) * 22 / 100; }
         String wallpaper() { return this == LOVE ? "love" : "none"; }
     }
 
@@ -123,9 +155,11 @@ final class MessageStyle {
         return resolve(prefs, "rcsColor", base);
     }
 
+    // Automated senders always get their own hue, well apart from both SMS and RCS. Green SMS in the
+    // optional setup preset would collide with the default green, so that preset uses purple instead.
     static int automated(SharedPreferences prefs) {
         int base = prefs.getBoolean("classicColors", false)
-            ? Swatch.GREEN.color(prefs.getBoolean("dark", false), false) : opaque(colorsOrFluid(prefs).automated());
+            ? Swatch.PURPLE.color(prefs.getBoolean("dark", false), false) : opaque(colorsOrFluid(prefs).automated());
         return resolve(prefs, "automatedColor", base);
     }
 

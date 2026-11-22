@@ -3,13 +3,16 @@ import hmac
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import time
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote, unquote
 
+import accounts
 import cloud_backup
 import protocol_gateway
 
@@ -23,7 +26,7 @@ def appearance_snapshot(value):
     if not isinstance(value, dict):
         return {}
     clean = {}
-    for key in ("dark", "exactTimes", "mmsReady", "protocolTags", "protocolPrivacy", "combineProtocols", "protocolAuto"):
+    for key in ("dark", "exactTimes", "mmsReady", "protocolTags", "protocolPrivacy", "combineProtocols"):
         if type(value.get(key)) is bool:
             clean[key] = value[key]
     for key, lower, upper in (("radius", 2, 30), ("size", 12, 28), ("padding", 6, 24)):
@@ -35,7 +38,7 @@ def appearance_snapshot(value):
             key: colors[key] for key in ("canvas", "ink", "muted", "surface", "raised", "line", "outline", "action",
                                           "incoming", "incomingInk", "sms", "smsInk",
                                           "automated", "automatedInk", "accent", "accentInk",
-                                          "matrix", "matrixInk", "xmpp", "xmppInk", "email", "emailInk", "irc", "ircInk")
+                                          "rcs", "rcsInk", "matrix", "matrixInk", "xmpp", "xmppInk", "email", "emailInk", "irc", "ircInk")
             if isinstance(colors.get(key), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", colors[key])
         }
     if isinstance(value.get("enabledProtocols"), list):
@@ -98,6 +101,10 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             self.backup_transfer(match[1], fetching=True)
             return
+        match = re.fullmatch(r"/api/protocols/file\?id=([A-Za-z0-9_-]{1,120})", self.path)
+        if match:
+            self.send_file(match[1])
+            return
         with closing(connect()) as db:
             if self.path == "/api/inbox":
                 row = db.execute("""
@@ -110,6 +117,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"messages": messages, "routes": history["routes"], "enabled": history["enabled"],
                                  "updated": row["updated"] if row else None,
                                  "appearance": json.loads(row["appearance"]) if row and row["appearance"] else {}})
+            elif self.path == "/api/protocols/accounts":
+                self.reply(200, {"accounts": gateway.accounts.redacted(), "xmpp": protocol_gateway.xmpp_client.available()})
             elif self.path == "/api/jobs":
                 rows = db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 100").fetchall()
                 internet = db.execute("""SELECT jobs.id, jobs.date AS due, jobs.state, messages.payload
@@ -155,6 +164,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.authorize():
             return
+        if self.path == "/api/protocols/upload":
+            self.upload()
+            return
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= 8_000_000:
@@ -168,6 +180,41 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.reply(200, response)
 
+    def upload(self):
+        self.connection.settimeout(130)
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            name = unquote(self.headers.get("X-Fluid-Name", ""))
+            with closing(connect()) as db, db:
+                response = gateway.store_upload(db, self.rfile, size, self.headers.get("Content-Type"), name)
+        except (ValueError, OSError) as error:
+            self.reply(400, {"error": str(error)})
+        else:
+            self.reply(200, response)
+
+    def send_file(self, message_id):
+        with closing(connect()) as db:
+            row = db.execute("SELECT payload FROM protocol_messages WHERE id=?", (message_id,)).fetchone()
+        attachment = json.loads(row[0]).get("attachment") if row else None
+        try:
+            path = gateway.file_path(message_id)
+        except ValueError:
+            path = None
+        if not attachment or path is None or not path.is_file():
+            self.reply(404, {"error": "Attachment not found"})
+            return
+        size = path.stat().st_size
+        self.send_response(200)
+        # Always a download: the browser never renders received files inside the companion's origin.
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(attachment["name"]))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        with open(path, "rb") as source:
+            shutil.copyfileobj(source, self.wfile)
+
     def mutate(self, data):
         now = int(time.time() * 1000)
         with closing(connect()) as db, db:
@@ -175,6 +222,17 @@ class Handler(BaseHTTPRequestHandler):
                 return gateway.snapshot(db, data.get("enabled"))
             if self.path == "/api/protocols/send":
                 return gateway.enqueue(db, data)
+            if self.path == "/api/protocols/accounts":
+                # Saving replaces the account; a blank password keeps the saved one.
+                gateway.accounts.save(data.get("protocol"), dict(data.get("fields") or {}))
+                return {"accounts": gateway.accounts.redacted()}
+            if self.path == "/api/protocols/accounts/delete":
+                gateway.accounts.delete(data.get("protocol"))
+                return {"accounts": gateway.accounts.redacted()}
+            if self.path == "/api/protocols/routes":
+                return gateway.add_route(db, data)
+            if self.path == "/api/protocols/routes/delete":
+                return gateway.delete_route(db, data)
             if self.path == "/api/sync":
                 messages = data["messages"]
                 if not isinstance(messages, list) or len(messages) > 2000:
@@ -266,6 +324,9 @@ if __name__ == "__main__":
         if not any(column["name"] == "protocol" for column in db.execute("PRAGMA table_info(jobs)")):
             db.execute("ALTER TABLE jobs ADD COLUMN protocol TEXT NOT NULL DEFAULT 'sms'")
         db.executescript(protocol_gateway.SCHEMA)
-    gateway = protocol_gateway.Gateway(connect, protocol_gateway.configured())
+    files = Path(os.environ.get("FLUID_FILES") or DB.parent / "protocol-files")
+    legacy = protocol_gateway.configured()
+    account_store = accounts.AccountStore(DB.parent / "protocol-accounts.json", legacy=legacy)
+    gateway = protocol_gateway.Gateway(connect, legacy, files, account_store)
     gateway.start()
     ThreadingHTTPServer((os.environ.get("FLUID_BIND", "127.0.0.1"), int(os.environ.get("FLUID_PORT", 8080))), Handler).serve_forever()

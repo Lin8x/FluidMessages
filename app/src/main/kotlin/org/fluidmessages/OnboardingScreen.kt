@@ -28,7 +28,7 @@ import java.util.function.IntConsumer
 object OnboardingScreen {
     @JvmStatic
     fun mount(root: LinearLayout, prefs: SharedPreferences, step: Int, next: Runnable, back: Runnable,
-              skip: Runnable, sample: Runnable, inbox: Runnable, recolor: IntConsumer) {
+              skip: Runnable, sample: Runnable, inbox: Runnable, recolor: IntConsumer, accounts: Runnable) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -88,7 +88,7 @@ object OnboardingScreen {
                                         MessageStyle.preset(prefs, it == "classic")
                                         appearance = Appearance.read(prefs)
                                     }
-                                    if (appearance.classic) Text("Automated also uses green.", color = scheme.onSurfaceVariant,
+                                    if (appearance.classic) Text("Automated uses purple so it stays distinct.", color = scheme.onSurfaceVariant,
                                         style = MaterialTheme.typography.bodySmall)
                                 }
                             }
@@ -113,9 +113,38 @@ object OnboardingScreen {
                                     prefs.getString("token", "").orEmpty())
                                 SetupOptions(listOf("App lock" to "Use your phone’s screen lock to protect the inbox.",
                                     "Web companion" to if (paired) "Set up" else "Not set up",
-                                    "Message protocols" to "Preview new formats first, or connect accounts through your companion."))
+                                    "Notifications" to "Message text stays out of notification previews."))
                             }
-                            5 -> item {
+                            5 -> {
+                                item {
+                                    PreferencesCard("Text messages") {
+                                        PreferenceText("RCS, SMS, and MMS", "One conversation per person. RCS is a preview; SMS switches to MMS for files and groups.")
+                                    }
+                                }
+                                item {
+                                    PreferencesCard("Internet protocols") {
+                                        for (protocol in listOf(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)) {
+                                            ProtocolSwitch(prefs, protocol.key(), protocol.label, when (protocol) {
+                                                MessageProtocol.MATRIX -> "Rooms and people on any Matrix homeserver"
+                                                MessageProtocol.XMPP -> "Jabber and other XMPP chat services"
+                                                MessageProtocol.EMAIL -> "Only conversations you choose, never your whole mailbox"
+                                                else -> "Channels and direct messages, over TLS"
+                                            }, true)
+                                        }
+                                    }
+                                }
+                                item {
+                                    val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(),
+                                        prefs.getString("token", "").orEmpty())
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedButton(onClick = accounts::run, modifier = Modifier.fillMaxWidth()) { Text("Set up accounts") }
+                                        Text(if (paired) "Your web companion keeps these connections open, so your phone doesn’t have to."
+                                            else "For the best battery life, pair a web companion to keep these connections open. You can also connect an account from this phone.",
+                                            color = scheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                            6 -> item {
                                 SetupOptions(listOf("Sample inbox" to "Try direct chats and a group chat with fictional contacts.",
                                     "Your SMS inbox" to "Choose FluidMessages as the default SMS app when you’re ready."))
                             }
@@ -139,6 +168,7 @@ object OnboardingScreen {
         "Motion, sound and haptics" to "Decide how a message should feel when it lands or leaves.",
         "Keep a backup" to "Save just the items you need in one file. Backup encryption starts on.",
         "Privacy and the web" to "Choose where your messages go and how you access them.",
+        "Choose your protocols" to "Text messages work right away. Turn on the internet protocols you use, and add accounts when you’re ready.",
         "Ready to text" to "Start with a practice conversation or open your inbox. Carrier MMS and RCS are still in development.",
     )
 }

@@ -369,7 +369,7 @@ fi
 "${device[@]}" shell input keyevent KEYCODE_BACK
 "${device[@]}" shell input keyevent KEYCODE_BACK
 tap_label "Replay setup guide" || fail "Could not open the setup guide."
-setup_pages=("Make it yours" "Pick your colors" "Motion, sound and haptics" "Keep a backup" "Privacy and the web" "Ready to text")
+setup_pages=("Make it yours" "Pick your colors" "Motion, sound and haptics" "Keep a backup" "Privacy and the web" "Choose your protocols" "Ready to text")
 wait_visible "${setup_pages[0]}" || fail "The first setup page did not render."
 for (( index = 1; index < ${#setup_pages[@]}; index++ )); do
     before="${setup_pages[index - 1]}"

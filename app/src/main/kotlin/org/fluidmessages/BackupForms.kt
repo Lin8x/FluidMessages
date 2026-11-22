@@ -29,6 +29,7 @@ enum class BackupCategory(val flag: Int, val label: String) {
     CHAT_THEMES(8, "Per-chat themes"),
     CHAT_SETTINGS(16, "Conversation settings"),
     WALLPAPER_PHOTOS(32, "Wallpaper photos"),
+    PROTOCOLS(64, "MMS, internet messages, and protocol settings"),
 }
 
 data class BackupFormDefaults(val categories: Int, val intervalMinutes: Int, val wifi: Boolean, val savedPassword: Boolean)

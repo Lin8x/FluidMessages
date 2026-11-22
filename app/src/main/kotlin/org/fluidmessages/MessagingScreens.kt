@@ -61,16 +61,19 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.function.Consumer
+import androidx.compose.ui.platform.LocalContext
 import java.util.function.BiConsumer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -87,6 +90,8 @@ internal data class ThreadRow @JvmOverloads constructor(
     val photoUri: Uri? = null,
     val photoRevision: Int = 0,
     val protocol: String = "",
+    val automated: Boolean = false,
+    val members: List<GroupMember> = emptyList(),
 )
 
 internal data class ChatLine @JvmOverloads constructor(
@@ -100,9 +105,16 @@ internal data class ChatLine @JvmOverloads constructor(
     val reactionTarget: String? = null,
     val photo: Uri? = null,
     val format: MessageProtocol? = null,
-)
+    /** Any non-photo attachment. A null uri means it is still on the server and needs downloading. */
+    val attachment: Attachment? = null,
+    /** A channel event such as a join, part, or topic change, shown as a line instead of a message. */
+    val event: Boolean = false,
+) {
+    /** Photo or other attachment, as one value for forwarding and previews. */
+    val media: Attachment? get() = attachment ?: photo?.let(Attachment::photo)
+}
 
-private data class Palette(val appearance: Appearance) {
+internal data class Palette(val appearance: Appearance) {
     val bg = Color(appearance.canvas)
     private val ui = appearance.uiColors
     val ink = Color(ui.ink())
@@ -278,7 +290,7 @@ private fun WelcomeCard(palette: Palette, connect: Runnable, sample: Runnable) {
 }
 
 @Composable
-private fun SearchBox(search: String, palette: Palette, inDock: Boolean = false, change: (String) -> Unit) {
+internal fun SearchBox(search: String, palette: Palette, inDock: Boolean = false, change: (String) -> Unit) {
     val ink = if (inDock) palette.toolbarInk else palette.ink
     val muted = ink.copy(alpha = .70f)
     BasicTextField(
@@ -310,7 +322,7 @@ private fun SearchBox(search: String, palette: Palette, inDock: Boolean = false,
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ConversationRow(thread: ThreadRow, palette: Palette, showProtocol: Boolean, open: () -> Unit, details: () -> Unit, menu: (() -> Unit)?) {
+internal fun ConversationRow(thread: ThreadRow, palette: Palette, showProtocol: Boolean, open: () -> Unit, details: () -> Unit, menu: (() -> Unit)?) {
     val height = when (palette.appearance.density) {
         "compact" -> 64.dp
         "roomy" -> 91.dp
@@ -329,7 +341,9 @@ private fun ConversationRow(thread: ThreadRow, palette: Palette, showProtocol: B
             Box(Modifier.clip(CircleShape).clickable(onClick = details).semantics {
                 contentDescription = "Contact info for ${thread.name}"
             }) {
-                Avatar(thread.initials, thread.name, 48, thread.photo, thread.photoUri, thread.photoRevision)
+                if (thread.members.size > 1 && thread.photo == 0 && thread.photoUri == null)
+                    GroupAvatar(thread.members, 48, palette.bg)
+                else Avatar(thread.initials, thread.name, 48, thread.photo, thread.photoUri, thread.photoRevision)
             }
             Column(Modifier.weight(1f).padding(start = 11.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -342,7 +356,7 @@ private fun ConversationRow(thread: ThreadRow, palette: Palette, showProtocol: B
                     Spacer(Modifier.width(6.dp))
                     DrawGlyph(Glyph.Forward, palette.muted, Modifier.size(12.dp))
                 }
-                if (showProtocol) Text(thread.protocol.ifBlank { "SMS" }, color = palette.action, fontSize = 11.sp)
+                if (showProtocol) ProtocolTags(thread, palette.appearance)
                 Text(thread.preview, Modifier.padding(top = 3.dp, end = 15.dp), color = palette.muted,
                     fontSize = 15.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
@@ -365,7 +379,7 @@ internal class ConversationScreen @JvmOverloads constructor(
     private val details: Runnable,
     private val more: Runnable?,
     private val chooseSim: Runnable?,
-    private val forward: BiConsumer<String, Uri?>,
+    private val forward: BiConsumer<String, Attachment?>,
     private val delete: Consumer<ChatLine>,
     private val send: java.util.function.Predicate<String>?,
     private val sampleMembers: List<String>,
@@ -374,9 +388,14 @@ internal class ConversationScreen @JvmOverloads constructor(
     private val photoUri: Uri? = null,
     private val routing: ChatRouting? = null,
     private val groupMembers: List<GroupMember> = emptyList(),
+    private val download: Consumer<ChatLine>? = null,
+    /** Removes a failed outgoing message without asking, after it is resent or moved back into the composer. */
+    private val removeFailed: Consumer<ChatLine>? = null,
 ) {
     var draft by mutableStateOf("")
-    var draftPhoto by mutableStateOf<Uri?>(null)
+    var draftAttachment by mutableStateOf<Attachment?>(null)
+    fun setDraftPhoto(uri: Uri?) { draftAttachment = uri?.let(Attachment::photo) }
+    private var sendVia by mutableStateOf<MessageProtocol?>(null)
     private var replyTo by mutableStateOf<ChatLine?>(null)
     private val exactTimes = prefs.getBoolean("exactTimes", false)
     var sim by mutableStateOf(initialSim)
@@ -387,28 +406,102 @@ internal class ConversationScreen @JvmOverloads constructor(
     init {
         mount(root, prefs, profile) { palette ->
             val active = routing?.active ?: MessageProtocol.parse(transport)
-            val blocked = active.disabledReason(prefs).ifEmpty { routing?.unavailable.orEmpty() }
-            val categoryColor = if (routing != null && senderStyle != SenderStyle.AUTOMATED)
-                active.tint(palette.appearance) else when (senderStyle) {
+            // What the composer sends with. RCS always offers SMS as the fallback in the same conversation.
+            val sendOptions = routing?.formats.orEmpty().flatMap {
+                if (it == MessageProtocol.RCS && MessageProtocol.SMS !in routing!!.formats) listOf(it, MessageProtocol.SMS) else listOf(it)
+            }
+            val via = sendVia?.takeIf { it in sendOptions } ?: routing?.preferredVia?.takeIf { it in sendOptions } ?: active
+            val blocked = via.disabledReason(prefs).ifEmpty { if (via == active) routing?.unavailable.orEmpty() else "" }
+            fun styleColor(format: MessageProtocol) = if (routing != null && senderStyle != SenderStyle.AUTOMATED)
+                format.tint(palette.appearance) else when (senderStyle) {
                 SenderStyle.AUTOMATED -> Color(palette.appearance.automated)
                 SenderStyle.RCS -> palette.rcs
                 SenderStyle.SMS -> palette.sms
             }
-            val sendColor = profile.outgoing()?.let { Color(it) } ?: categoryColor
+            val activeColor = profile.outgoing()?.let { Color(it) } ?: styleColor(active)
+            val sendColor = if (via == active) activeColor else styleColor(via)
+            var viaMenu by remember { mutableStateOf(false) }
+            fun chooseVia(next: MessageProtocol) {
+                viaMenu = false
+                // Within one conversation (combined, or RCS falling back to SMS) only the next send changes.
+                if (routing?.combined == true || next.family() == active.family()) sendVia = next
+                else routing?.switch?.accept(next)
+            }
             val receiveColor = palette.incoming
             var sendAs by remember { mutableStateOf<String?>(null) }
             val group = sampleMembers.size > 1 || groupMembers.size > 1
-            val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) {
-                if (it != null && (sample || routing?.attachments == true)) draftPhoto = it
+            val context = LocalContext.current
+            // Locations and contact cards work on every protocol; other files need a protocol that carries files.
+            val filesAllowed = sample || if (via == active) routing?.attachments == true else via.transport().capabilities.attachments
+            val sources = AttachmentSource.entries.filter { filesAllowed || !it.needsFiles }
+            var sheet by remember { mutableStateOf(false) }
+            var notice by remember { mutableStateOf<String?>(null) }
+            var recorder by remember { mutableStateOf<VoiceRecorder?>(null) }
+            var cameraTarget by remember { mutableStateOf<Uri?>(null) }
+            fun attach(uri: Uri?, kind: AttachmentKind? = null) {
+                if (uri != null) draftAttachment = runCatching { Attachment.describe(context, uri, kind) }.getOrNull()
             }
-            fun submit(body: String, reactionTarget: String? = null, attachment: Uri? = null): Boolean {
+            val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { attach(it) }
+            val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { taken ->
+                if (taken) attach(cameraTarget, AttachmentKind.PHOTO)
+            }
+            val document = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { attach(it) }
+            val contactPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { picked ->
+                if (picked != null) draftAttachment = runCatching { AttachmentFiles.contactCard(context, picked) }
+                    .onFailure { notice = "Couldn’t read that contact." }.getOrNull()
+            }
+            fun findLocation() {
+                notice = "Finding your location…"
+                AttachmentFiles.currentLocation(context) { fix ->
+                    if (fix == null) notice = "Location isn’t available. Turn on Location in Android settings and try again."
+                    else { notice = null; draftAttachment = Attachment.location(fix.latitude, fix.longitude) }
+                }
+            }
+            val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+                if (it.values.any { granted -> granted }) findLocation() else notice = "Allow location access to share where you are."
+            }
+            fun startRecording() {
+                val next = VoiceRecorder(context)
+                runCatching { next.start() }.onSuccess { recorder = next }
+                    .onFailure { notice = "Couldn’t start recording." }
+            }
+            val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+                if (it) startRecording() else notice = "Allow microphone access to record voice messages."
+            }
+            fun choose(source: AttachmentSource) {
+                sheet = false
+                when (source) {
+                    AttachmentSource.GALLERY -> gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                    AttachmentSource.CAMERA -> {
+                        cameraTarget = AttachmentFiles.uri(context, AttachmentFiles.scratch(context, "jpg"))
+                        runCatching { camera.launch(cameraTarget!!) }.onFailure { notice = "No camera app is available." }
+                    }
+                    AttachmentSource.DOCUMENT -> document.launch(arrayOf("*/*"))
+                    AttachmentSource.AUDIO -> document.launch(arrayOf("audio/*"))
+                    AttachmentSource.CONTACT -> runCatching { contactPicker.launch(null) }.onFailure { notice = "No contacts app is available." }
+                    AttachmentSource.LOCATION -> if (context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED || context.checkSelfPermission(
+                            android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) findLocation()
+                        else locationPermission.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION,
+                            android.Manifest.permission.ACCESS_COARSE_LOCATION))
+                }
+            }
+            fun submit(text: String, relation: MessageRelation? = null, attachment: Attachment? = null): Boolean {
                 if (blocked.isNotEmpty()) {
                     error = blocked
                     return false
                 }
-                return sendSample?.send(body, sendAs, reactionTarget, attachment) ?: send?.test(body) ?: false
+                return sendSample?.send(text, sendAs, relation, attachment, via)
+                    ?: send?.test(OutgoingMessage(name, emptyList(), text, attachment, -1, relation).fallbackBody()) ?: false
             }
+            DisposableEffect(Unit) { onDispose { recorder?.cancel() } }
+            val ircMode = active == MessageProtocol.IRC && routing?.combined != true
             val messages = remember(lines) { foldSmsReactions(lines) }
+            val headerMembers = remember(groupMembers, sampleMembers) {
+                groupMembers.ifEmpty { sampleMembers.map { GroupMember(it) } }
+            }
+            val memberByName = remember(headerMembers) { headerMembers.associateBy { it.name } }
+            val avatarSlot = if (group) 34.dp else 0.dp
             val composerFocus = remember { FocusRequester() }
             val keyboard = LocalSoftwareKeyboardController.current
             LaunchedEffect(replyTo?.id) {
@@ -431,7 +524,8 @@ internal class ConversationScreen @JvmOverloads constructor(
                         Row(Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
                             .clickable(onClickLabel = "Conversation details") { details.run() },
                             verticalAlignment = Alignment.CenterVertically) {
-                            Avatar(initials, name, 39, photo, photoUri)
+                            if (headerMembers.size > 1) GroupAvatar(headerMembers, 39, palette.toolbar)
+                            else Avatar(initials, name, 39, photo, photoUri)
                             Column(Modifier.padding(start = 10.dp)) {
                             Text(name, fontSize = 17.sp, color = chromeInk, fontWeight = FontWeight.SemiBold,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -447,38 +541,28 @@ internal class ConversationScreen @JvmOverloads constructor(
                                 sample && group -> " · ${active.label}"
                                 else -> ""
                             }
-                            Text(mode + category,
-                                color = chromeInk.copy(alpha = .72f), fontSize = 12.sp)
+                            val switchable = routing != null && !routing.combined && routing.formats.size > 1 && routing.switch != null
+                            var historyMenu by remember { mutableStateOf(false) }
+                            Box {
+                                Text(mode + category + if (switchable) "  ▾" else "",
+                                    (if (switchable) Modifier.clip(RoundedCornerShape(6.dp))
+                                        .clickable(onClickLabel = "Switch conversation protocol") { historyMenu = true } else Modifier),
+                                    color = chromeInk.copy(alpha = .72f), fontSize = 12.sp)
+                                if (switchable) DropdownMenu(expanded = historyMenu, onDismissRequest = { historyMenu = false }) {
+                                    for (format in routing!!.formats) DropdownMenuItem(
+                                        text = { Text(if (format == active) "${format.label} ✓" else format.label) },
+                                        onClick = { historyMenu = false; if (format != active) routing.switch!!.accept(format) },
+                                    )
+                                }
+                            }
                             if (prefs.getBoolean("protocolPrivacy", false)) {
-                                Text(active.privacy, color = chromeInk.copy(alpha = .80f), fontSize = 11.sp)
+                                Text((routing?.encryption?.takeIf { via == active } ?: via.transport().capabilities.encryption).label, color = chromeInk.copy(alpha = .80f), fontSize = 11.sp)
                             }
                             }
                         }
                         if (more != null) ActionIcon("Conversation options", Glyph.More, palette.toolbarAction) { more.run() }
                     }
                     if (!floating) HorizontalDivider(color = palette.edge)
-                    if (routing != null && routing.formats.size > 1 && routing.switch != null) {
-                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                            var expanded by remember { mutableStateOf(false) }
-                            if (routing.combined) Text("Send via", color = palette.muted, fontSize = 12.sp)
-                            for (format in routing.formats) {
-                                FilterChip(selected = format == active, onClick = { routing.switch.accept(format) },
-                                    label = { Text(format.label) })
-                            }
-                            if (routing.setDefault != null) Box {
-                                TextButton(onClick = { expanded = true }) { Text("Default protocol") }
-                                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                                    for (format in routing.formats) DropdownMenuItem(
-                                        text = { Text(format.label) }, onClick = {
-                                            expanded = false
-                                            routing.setDefault.accept(format)
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
                     val list = rememberLazyListState()
                     val scrollScope = rememberCoroutineScope()
                     LaunchedEffect(messages.size) {
@@ -503,6 +587,14 @@ internal class ConversationScreen @JvmOverloads constructor(
                                     Text(line.day, color = palette.muted, fontSize = 12.sp)
                                 }
                             }
+                            if (ircMode) {
+                                // IRC reads as a log: one line per message with colored nicks, like IRC clients.
+                                IrcLine(display, palette, sendColor, exactTimes, remember(line.text) { parseQuotedReply(line.text) },
+                                    reply = { if (blocked.isEmpty()) replyTo = line else error = blocked },
+                                    react = { emoji -> submit("", MessageRelation.reaction(line, emoji, line.outgoing)) },
+                                    delete = { delete.accept(line) })
+                                return@itemsIndexed
+                            }
                             val grouped = !beginsDay && previous != null && line.senderKey() == previous.senderKey()
                             val continues = next != null && line.senderKey() == next.senderKey() && (next.day == line.day || next.day.isEmpty())
                             val quoted = remember(line.text) { parseQuotedReply(line.text) }
@@ -514,13 +606,25 @@ internal class ConversationScreen @JvmOverloads constructor(
                                 }
                             }
                             if (group && !grouped && !line.outgoing && line.author != null) {
-                                Text(line.author, Modifier.padding(start = 9.dp, top = 5.dp, bottom = 3.dp),
+                                Text(line.author, Modifier.padding(start = 9.dp + avatarSlot, top = 5.dp, bottom = 3.dp),
                                     color = palette.muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             }
-                            if (routing?.combined == true && line.format != null) {
-                                Text(line.format.label, Modifier.padding(horizontal = 9.dp), color = palette.muted, fontSize = 11.sp)
+                            // Label any message that went another way than the conversation's main protocol.
+                            if (line.format != null && (routing?.combined == true || line.format != active)) {
+                                Text(line.format.label, Modifier.fillMaxWidth().padding(horizontal = 9.dp), color = palette.muted,
+                                    fontSize = 11.sp, textAlign = if (line.outgoing) TextAlign.End else TextAlign.Start)
                             }
-                            val lineColor = line.format?.let { profile.outgoing()?.let(::Color) ?: it.tint(palette.appearance) } ?: sendColor
+                            // Automated senders keep their own color; other bubbles use the protocol they were sent with.
+                            val lineColor = if (senderStyle == SenderStyle.AUTOMATED) activeColor
+                                else line.format?.let { if (it == active) activeColor else it.tint(palette.appearance) } ?: activeColor
+                            val showAvatars = group && !line.outgoing
+                            Row(verticalAlignment = Alignment.Bottom) {
+                            if (showAvatars) Box(Modifier.width(avatarSlot).padding(bottom = 2.dp)) {
+                                val member = line.author?.let(memberByName::get)
+                                if (!continues) Avatar(member?.initials() ?: initialsOf(line.author ?: "?"), line.author ?: "",
+                                    28, member?.photoRes ?: 0, member?.photo)
+                            }
+                            Box(Modifier.weight(1f)) {
                             MessageBubble(line, palette, if (line.outgoing) lineColor else receiveColor, grouped, continues, animatedId == line.id,
                                 exactTimes, display.reactions, quoted, forwarded, sourceIndex?.let { target ->
                                     { scrollScope.launch {
@@ -530,11 +634,26 @@ internal class ConversationScreen @JvmOverloads constructor(
                                     }; Unit }
                                 }, { if (blocked.isEmpty()) replyTo = line else error = blocked }, {
                                     val own = if (sample) line.senderKey() == sendAs else line.outgoing
-                                    submit(emojiReactionSms(it, line.text, own), line.id)
+                                    submit("", MessageRelation.reaction(line, it, own))
                                 },
                                 { forward.accept(if (forwarded != null) line.text else
-                                    forwardAsSms(line.text, if (line.outgoing) "Me" else line.author ?: name), line.photo) },
-                                { delete.accept(line) })
+                                    forwardAsSms(line.text, if (line.outgoing) "Me" else line.author ?: name), line.media) },
+                                { delete.accept(line) }, download?.let { action -> { action.accept(line) } },
+                                removeFailed?.let { remove -> {
+                                    // Resend the same readable text and file, then drop the failed copy.
+                                    val wasReply = quoted != null
+                                    if (submit(if (wasReply) line.text else line.text.takeUnless { it == line.media?.caption }.orEmpty(),
+                                            null, line.media)) remove.accept(line)
+                                    Unit
+                                } },
+                                removeFailed?.let { remove -> {
+                                    draft = quoted?.body ?: line.text.takeUnless { it == line.media?.caption }.orEmpty()
+                                    draftAttachment = line.media
+                                    remove.accept(line)
+                                    composerFocus.requestFocus()
+                                } })
+                            }
+                            }
                         }
                     }
                     replyTo?.let { reply ->
@@ -559,27 +678,65 @@ internal class ConversationScreen @JvmOverloads constructor(
                             }
                         }
                     }
-                    draftPhoto?.let { photo ->
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            AttachmentPhoto(photo, Modifier.size(60.dp), "Selected photo")
-                            Text("Photo ready to send", Modifier.weight(1f).padding(start = 10.dp), color = palette.ink)
-                            ActionIcon("Remove photo", Glyph.Close, palette.toolbarAction) { draftPhoto = null }
+                    draftAttachment?.let { item ->
+                        DraftAttachment(item, palette.ink, palette.muted, { draftAttachment = null }, palette.toolbarAction)
+                    }
+                    notice?.let { Text(it, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                        color = palette.muted, fontSize = 13.sp) }
+                    if (sheet) AttachmentSheet(sources, sendColor, when {
+                        !filesAllowed -> "${via.label} can share locations and contact cards here. Files need another protocol."
+                        via == MessageProtocol.SMS -> "A file turns this text into MMS. Carriers limit MMS size, often to 300 KB–1 MB."
+                        via == MessageProtocol.IRC -> "IRC has no file transfer of its own, so files arrive as a link."
+                        else -> ""
+                    }, { sheet = false }, ::choose)
+                    if (sendOptions.size > 1) Box(Modifier.padding(start = 16.dp, top = 2.dp)) {
+                        val chipFill = accessibleBubbleFill(sendColor)
+                        Text("via ${via.label}  ▾", Modifier.clip(RoundedCornerShape(10.dp)).background(chipFill)
+                            .clickable(onClickLabel = "Choose how to send") { viaMenu = true }
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                            .semantics { contentDescription = "Send via ${via.label}. Choose how to send" },
+                            color = bubbleTextColor(sendColor), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        DropdownMenu(expanded = viaMenu, onDismissRequest = { viaMenu = false }) {
+                            for (format in sendOptions) DropdownMenuItem(
+                                text = { Text(if (format == via) "${format.label} ✓" else format.label) },
+                                onClick = { chooseVia(format) },
+                            )
+                            if (routing?.setDefault != null) {
+                                HorizontalDivider()
+                                DropdownMenuItem(text = { Text("Always use ${via.label} for $name") }, onClick = {
+                                    viaMenu = false
+                                    routing.setDefault.accept(via)
+                                })
+                            }
                         }
                     }
+                    val recording = recorder
                     if (blocked.isNotEmpty()) {
                         Text(blocked, Modifier.fillMaxWidth().padding(16.dp), color = palette.muted, fontSize = 14.sp)
+                    } else if (recording != null) RecordingBar(recording, sendColor, palette.ink, palette.muted, {
+                        recording.cancel(); recorder = null
+                    }) {
+                        recorder = null
+                        val voice = recording.stop()
+                        if (voice == null) notice = "Hold on a little longer to record a voice message."
+                        else if (submit("", replyTo?.let(MessageRelation::reply), voice)) { replyTo = null; sendVia = null; notice = null }
                     } else Composer(draft, { draft = it }, palette, sendColor,
-                        sendAs?.let { "Message from $it" } ?: if (sample) "Practice message" else "Text message",
-                        sim, chooseSim, composerFocus, draftPhoto != null,
-                        if ((sample && active != MessageProtocol.IRC) || routing?.attachments == true)
-                            { { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } }
-                        else null) {
-                        val caption = if (draftPhoto != null) draft.ifBlank { "Photo" } else draft
-                        val body = replyTo?.let { "Reply to “${messageExcerpt(it.text, 240)}”\n\n$caption" } ?: caption
-                        if (submit(body, attachment = draftPhoto)) {
+                        sendAs?.let { "Message from $it" } ?: if (sample) "Practice message"
+                            else if (via == MessageProtocol.SMS || via == MessageProtocol.MMS) "Text message" else "${via.label} message",
+                        sim, chooseSim, composerFocus, draftAttachment != null, { notice = null; sheet = true },
+                        if (sendOptions.size > 1) { { viaMenu = true } } else null,
+                        if (filesAllowed && draftAttachment == null) { {
+                            notice = null
+                            if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                                android.content.pm.PackageManager.PERMISSION_GRANTED) startRecording()
+                            else micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+                        } } else null) {
+                        if (submit(draft, replyTo?.let(MessageRelation::reply), draftAttachment)) {
+                            sendVia = null
                             draft = ""
-                            draftPhoto = null
+                            draftAttachment = null
                             replyTo = null
+                            notice = null
                         }
                     }
                 }
@@ -588,8 +745,9 @@ internal class ConversationScreen @JvmOverloads constructor(
     }
 }
 
+/** Sends what the person typed plus an optional reply or reaction. Live chats hand this to a [MessageTransport]. */
 internal fun interface SampleSend {
-    fun send(text: String, author: String?, reactionTarget: String?, attachment: Uri?): Boolean
+    fun send(text: String, author: String?, relation: MessageRelation?, attachment: Attachment?, via: MessageProtocol): Boolean
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -610,6 +768,9 @@ private fun MessageBubble(
     react: (String) -> Unit,
     forward: () -> Unit,
     delete: () -> Unit,
+    download: (() -> Unit)? = null,
+    retry: (() -> Unit)? = null,
+    edit: (() -> Unit)? = null,
 ) {
     val motion = palette.appearance.speed
     val entrance = remember { Animatable(if (animate && motion > 0) 0f else 1f) }
@@ -670,6 +831,9 @@ private fun MessageBubble(
                     line.photo?.let {
                         AttachmentPhoto(it, Modifier.width(220.dp).height(132.dp).padding(bottom = 5.dp), "Message photo")
                     }
+                    line.attachment?.let { AttachmentContent(it, foreground, download) }
+                    val location = remember(line.text) { if (line.attachment == null) parseLocation(line.text) else null }
+                    location?.let { LocationCard(it, foreground) }
                     if (quoted != null) {
                         val quoteModifier = Modifier
                             .padding(bottom = 7.dp).clip(RoundedCornerShape(9.dp))
@@ -693,8 +857,17 @@ private fun MessageBubble(
                             Text(forwarded.text, color = foreground, fontSize = palette.appearance.size.sp,
                                 lineHeight = (palette.appearance.size + 4).sp)
                         }
-                    } else Text(quoted?.body ?: line.text, fontSize = palette.appearance.size.sp,
-                        lineHeight = (palette.appearance.size + 4).sp, color = foreground)
+                    } else {
+                        // Hide automatic captions ("Photo", a file name) that only repeat the attachment card.
+                        val shown = when {
+                            location != null -> location.note
+                            quoted != null -> quoted.body
+                            line.media != null && line.text == line.media?.caption -> ""
+                            else -> line.text
+                        }
+                        if (shown.isNotEmpty()) Text(shown, fontSize = palette.appearance.size.sp,
+                            lineHeight = (palette.appearance.size + 4).sp, color = foreground)
+                    }
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false },
                     modifier = Modifier.widthIn(max = 310.dp)) {
@@ -755,10 +928,30 @@ private fun MessageBubble(
             if (reactions.isNotEmpty()) Text(reactions.joinToString(" "), Modifier.padding(top = 2.dp)
                 .background(palette.wash, RoundedCornerShape(14.dp)).padding(horizontal = 7.dp, vertical = 2.dp),
                 fontSize = 14.sp)
+            val failed = line.outgoing && line.status.startsWith("Couldn’t send")
             val details = listOfNotNull(line.time.takeIf { (showTime || exactTimes) && it.isNotEmpty() },
-                line.status.takeIf { it.isNotEmpty() }).joinToString(" · ")
+                line.status.takeIf { it.isNotEmpty() && !failed }).joinToString(" · ")
             if (details.isNotEmpty()) Text(details, Modifier.padding(top = 3.dp, end = 4.dp),
                 color = palette.muted, fontSize = 11.sp)
+            if (failed) {
+                // Like a "Not Delivered" notice: red text under the bubble, with resend and edit choices.
+                var failedMenu by remember { mutableStateOf(false) }
+                val red = Color(MessageStyle.Swatch.RED.color(palette.appearance.dark, palette.appearance.contrast))
+                Box {
+                    Text("Not delivered · Tap to resend or edit", Modifier.padding(top = 3.dp, end = 4.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(onClickLabel = "Resend or edit this message") { failedMenu = true }
+                        .padding(horizontal = 2.dp, vertical = 2.dp),
+                        color = red, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    DropdownMenu(expanded = failedMenu, onDismissRequest = { failedMenu = false }) {
+                        if (retry != null) DropdownMenuItem(text = { Text("Try again") }, onClick = { failedMenu = false; retry() })
+                        if (edit != null) DropdownMenuItem(text = { Text("Edit and resend") }, onClick = { failedMenu = false; edit() })
+                        DropdownMenuItem(text = { Text("Delete", color = red) }, onClick = { failedMenu = false; delete() })
+                    }
+                }
+                if (line.status.length > "Couldn’t send".length + 3) Text(line.status.removePrefix("Couldn’t send").trimStart(' ', '·', ':'),
+                    Modifier.padding(end = 4.dp), color = palette.muted, fontSize = 11.sp)
+            }
         }
     }
 }
@@ -834,11 +1027,13 @@ private fun AttachmentPhoto(uri: Uri, modifier: Modifier, description: String) {
     } ?: Box(modifier, contentAlignment = Alignment.Center) { Text("Photo", color = MaterialTheme.colorScheme.onSurfaceVariant) }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Composer(
     draft: String, changed: (String) -> Unit, palette: Palette, sendColor: Color,
     hint: String, sim: String?, chooseSim: Runnable?, focus: FocusRequester,
-    hasPhoto: Boolean, attach: (() -> Unit)?, send: () -> Unit,
+    hasAttachment: Boolean, attach: (() -> Unit)?, longSend: (() -> Unit)? = null, voice: (() -> Unit)? = null,
+    send: () -> Unit,
 ) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -847,8 +1042,8 @@ private fun Composer(
                 Text(sim, color = palette.action, fontSize = 13.sp)
             }
         }
-        if (attach != null) IconButton(onClick = attach, modifier = Modifier.semantics { contentDescription = "Attach photo" }) {
-            Text("+", color = palette.toolbarAction, fontSize = 27.sp)
+        if (attach != null) IconButton(onClick = attach, modifier = Modifier.semantics { contentDescription = "Attach" }) {
+            DrawGlyph(Glyph.Plus, palette.toolbarAction, Modifier.size(24.dp))
         }
         Surface(
             Modifier.weight(1f), color = palette.toolbar, shape = RoundedCornerShape(24.dp),
@@ -869,9 +1064,18 @@ private fun Composer(
                         }
                     },
                 )
-                val ready = draft.isNotBlank() || hasPhoto
-                IconButton(onClick = send, enabled = ready, modifier = Modifier.size(40.dp)
-                    .semantics { contentDescription = "Send message" }) {
+                val ready = draft.isNotBlank() || hasAttachment
+                // With nothing typed, the button records a voice message instead.
+                if (!ready && voice != null) Box(Modifier.size(40.dp).clip(CircleShape)
+                    .clickable(onClickLabel = "Record voice message", onClick = voice)
+                    .semantics { contentDescription = "Record voice message" }, contentAlignment = Alignment.Center) {
+                    DrawGlyph(Glyph.Mic, palette.toolbarAction, Modifier.size(22.dp))
+                } else
+                // Touch and hold Send to pick another protocol, such as SMS instead of RCS.
+                Box(Modifier.size(40.dp).clip(CircleShape).combinedClickable(enabled = ready, role = Role.Button,
+                    onLongClickLabel = if (longSend != null) "Choose how to send" else null,
+                    onLongClick = longSend, onClick = send)
+                    .semantics { contentDescription = "Send message" }, contentAlignment = Alignment.Center) {
                     val color = if (ready) Color(MessageStyle.filledControl(sendColor.toArgb())) else palette.wash
                     Box(Modifier.size(33.dp).background(color, CircleShape), contentAlignment = Alignment.Center) {
                         DrawGlyph(Glyph.Send, if (ready) Color(MessageStyle.filledControlInk(sendColor.toArgb()))
@@ -921,17 +1125,18 @@ internal fun Avatar(initials: String, seed: String, size: Int, photo: Int = 0, p
     }
 }
 
-private enum class Glyph { Settings, Filter, Compose, Search, Close, Back, Forward, More, Send, Person }
+internal enum class Glyph { Settings, Filter, Compose, Search, Close, Back, Forward, More, Send, Person,
+    Plus, Photo, Camera, Document, Music, Pin, Mic, Play, Pause, Video, Stop }
 
 @Composable
-private fun ActionIcon(label: String, glyph: Glyph, color: Color, action: () -> Unit) {
+internal fun ActionIcon(label: String, glyph: Glyph, color: Color, action: () -> Unit) {
     IconButton(onClick = action, modifier = Modifier.semantics { contentDescription = label }) {
         DrawGlyph(glyph, color, Modifier.size(22.dp))
     }
 }
 
 @Composable
-private fun DrawGlyph(glyph: Glyph, color: Color, modifier: Modifier) {
+internal fun DrawGlyph(glyph: Glyph, color: Color, modifier: Modifier) {
     Canvas(modifier) {
         fun point(x: Float, y: Float) = Offset(x * size.width, y * size.height)
         val stroke = 1.65.dp.toPx()
@@ -971,6 +1176,59 @@ private fun DrawGlyph(glyph: Glyph, color: Color, modifier: Modifier) {
                 drawCircle(color, size.width * .16f, point(.5f, .29f))
                 drawOval(color, point(.15f, .48f), Size(size.width * .70f, size.height * .38f))
             }
+            Glyph.Plus -> { line(.5f, .22f, .5f, .78f); line(.22f, .5f, .78f, .5f) }
+            Glyph.Photo -> {
+                drawRoundRect(color, point(.14f, .2f), Size(size.width * .72f, size.height * .6f),
+                    androidx.compose.ui.geometry.CornerRadius(stroke * 2), style = Stroke(stroke))
+                drawCircle(color, stroke * 1.2f, point(.36f, .4f))
+                line(.2f, .74f, .45f, .52f); line(.45f, .52f, .6f, .64f); line(.6f, .64f, .8f, .46f)
+            }
+            Glyph.Camera -> {
+                drawRoundRect(color, point(.12f, .3f), Size(size.width * .76f, size.height * .52f),
+                    androidx.compose.ui.geometry.CornerRadius(stroke * 2), style = Stroke(stroke))
+                line(.36f, .3f, .42f, .2f); line(.42f, .2f, .58f, .2f); line(.58f, .2f, .64f, .3f)
+                drawCircle(color, size.minDimension * .15f, point(.5f, .56f), style = Stroke(stroke))
+            }
+            Glyph.Document -> {
+                val outline = Path().apply {
+                    moveTo(size.width * .26f, size.height * .14f); lineTo(size.width * .6f, size.height * .14f)
+                    lineTo(size.width * .76f, size.height * .3f); lineTo(size.width * .76f, size.height * .86f)
+                    lineTo(size.width * .26f, size.height * .86f); close()
+                }
+                drawPath(outline, color, style = Stroke(stroke, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                line(.36f, .5f, .66f, .5f); line(.36f, .66f, .66f, .66f)
+            }
+            Glyph.Music -> {
+                line(.42f, .7f, .42f, .2f); line(.42f, .2f, .76f, .14f); line(.76f, .14f, .76f, .62f)
+                drawCircle(color, size.minDimension * .1f, point(.33f, .72f))
+                drawCircle(color, size.minDimension * .1f, point(.67f, .64f))
+            }
+            Glyph.Pin -> {
+                drawCircle(color, size.minDimension * .24f, point(.5f, .38f), style = Stroke(stroke))
+                drawCircle(color, stroke * .9f, point(.5f, .38f))
+                line(.33f, .55f, .5f, .86f); line(.67f, .55f, .5f, .86f)
+            }
+            Glyph.Mic -> {
+                drawRoundRect(color, point(.38f, .14f), Size(size.width * .24f, size.height * .44f),
+                    androidx.compose.ui.geometry.CornerRadius(size.width * .12f), style = Stroke(stroke))
+                drawArc(color, 0f, 180f, false, point(.26f, .3f), Size(size.width * .48f, size.height * .42f), style = Stroke(stroke))
+                line(.5f, .72f, .5f, .86f)
+            }
+            Glyph.Play -> drawPath(Path().apply {
+                moveTo(size.width * .32f, size.height * .2f); lineTo(size.width * .8f, size.height * .5f)
+                lineTo(size.width * .32f, size.height * .8f); close()
+            }, color)
+            Glyph.Pause -> {
+                drawRect(color, point(.3f, .22f), Size(size.width * .14f, size.height * .56f))
+                drawRect(color, point(.56f, .22f), Size(size.width * .14f, size.height * .56f))
+            }
+            Glyph.Stop -> drawRoundRect(color, point(.28f, .28f), Size(size.width * .44f, size.height * .44f),
+                androidx.compose.ui.geometry.CornerRadius(stroke))
+            Glyph.Video -> {
+                drawRoundRect(color, point(.12f, .28f), Size(size.width * .5f, size.height * .44f),
+                    androidx.compose.ui.geometry.CornerRadius(stroke * 2), style = Stroke(stroke))
+                line(.62f, .44f, .86f, .3f); line(.86f, .3f, .86f, .7f); line(.86f, .7f, .62f, .56f)
+            }
         }
     }
 }
@@ -1004,4 +1262,124 @@ private fun mount(root: LinearLayout, prefs: SharedPreferences, profile: ChatPro
         AppTheme(resolved) { content(palette) }
     }
     root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+}
+
+
+/**
+ * A small inbox drawn with the real inbox row, search, and dock code, so toolbar finish, search
+ * position, density, and protocol tags preview exactly as they will look.
+ */
+@Composable
+internal fun InboxPreview(appearance: Appearance) {
+    val palette = Palette(appearance)
+    val dock = appearance.searchPosition == "bottom"
+    val rows = listOf(
+        ThreadRow("preview-maya", "Maya Chen", "MC", "See you there!", "9:41 AM", true, false, R.drawable.sample_maya,
+            protocol = "RCS · Matrix · Email"),
+        ThreadRow("preview-jordan", "Jordan Ellis", "JE", "That looks like a great walk.", "Yesterday", false, false,
+            R.drawable.sample_jordan, protocol = "RCS"),
+        ThreadRow("preview-alerts", "Trail Alerts", "TA", "Trail update: the south entrance is open.", "Today", false, false,
+            protocol = "SMS", automated = true),
+        ThreadRow("preview-irc", "#radio-club", "RC", "I’ll bring the analyzer.", "Today", false, false, protocol = "IRC"),
+    )
+    WallpaperSurface("none", palette.bg, Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))) {
+        Box(Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxWidth().padding(bottom = if (dock) 70.dp else 8.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    DrawGlyph(Glyph.Settings, palette.inboxAction, Modifier.padding(12.dp).size(22.dp))
+                    Spacer(Modifier.weight(1f))
+                    if (!dock) DrawGlyph(Glyph.Compose, palette.inboxAction, Modifier.padding(12.dp).size(22.dp))
+                    DrawGlyph(Glyph.Filter, palette.inboxAction, Modifier.padding(12.dp).size(22.dp))
+                }
+                Column(Modifier.padding(horizontal = 18.dp)) {
+                    Text("Messages", color = palette.ink, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                    if (!dock) SearchBox("", palette) {}
+                }
+                Column(Modifier.padding(start = 8.dp, end = 12.dp, top = 6.dp)) {
+                    for (row in rows) ConversationRow(row, palette, true, {}, {}, null)
+                }
+            }
+            if (dock) {
+                val dockColor = if (appearance.toolbarFinish == "plain") palette.bg else palette.toolbar
+                Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    color = dockColor, shape = RoundedCornerShape(27.dp), border = BorderStroke(1.dp, palette.edge)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) { SearchBox("", palette, inDock = true) {} }
+                        DrawGlyph(Glyph.Compose, palette.toolbarAction, Modifier.padding(14.dp).size(22.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+private val nickHues = listOf(0xff3b82c4, 0xffc0504d, 0xff2f9e6e, 0xff9b59b6, 0xffd4842a, 0xff1f9bb0, 0xffc2457a, 0xff6d8a2b)
+
+/** A stable color per nickname, shaded for the background like other text colors. */
+@Composable
+private fun nickColor(nick: String, palette: Palette): Color {
+    val base = Color(nickHues[Math.floorMod(nick.lowercase().hashCode(), nickHues.size)].toInt())
+    return if (palette.appearance.dark) lerp(base, Color.White, .25f) else accessibleBubbleFill(base)
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun IrcLine(display: DisplayMessage, palette: Palette, ownColor: Color, exactTimes: Boolean, quoted: QuotedReply?,
+                    reply: () -> Unit, react: (String) -> Unit, delete: () -> Unit) {
+    val line = display.line
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var menu by remember { mutableStateOf(false) }
+    if (line.event) {
+        Text("— " + line.text, Modifier.fillMaxWidth().padding(vertical = 3.dp, horizontal = 4.dp), color = palette.muted,
+            fontSize = 12.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+        return
+    }
+    val nick = if (line.outgoing) "you" else line.author ?: "?"
+    val action = line.text.startsWith("/me ")
+    val body = when {
+        action -> line.text.removePrefix("/me ")
+        quoted != null -> quoted.body
+        else -> line.text
+    }
+    Box {
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+            .combinedClickable(onClick = {}, onLongClickLabel = "Message actions", onLongClick = { menu = true })
+            .padding(vertical = 3.dp, horizontal = 4.dp)) {
+            if (quoted != null) Text("↳ " + messageExcerpt(quoted.quote, 120), color = palette.muted, fontSize = 12.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val color = if (line.outgoing) accessibleBubbleFill(ownColor) else nickColor(nick, palette)
+            val text = androidx.compose.ui.text.buildAnnotatedString {
+                if (exactTimes && line.time.isNotEmpty()) {
+                    pushStyle(androidx.compose.ui.text.SpanStyle(color = palette.muted, fontSize = 11.sp))
+                    append(line.time + "  ")
+                    pop()
+                }
+                pushStyle(androidx.compose.ui.text.SpanStyle(color = color, fontWeight = FontWeight.SemiBold))
+                append(if (action) "* $nick " else "$nick  ")
+                pop()
+                pushStyle(androidx.compose.ui.text.SpanStyle(color = palette.ink,
+                    fontStyle = if (action) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal))
+                append(body)
+                pop()
+            }
+            Text(text, fontSize = palette.appearance.size.sp, lineHeight = (palette.appearance.size + 5).sp)
+            if (display.reactions.isNotEmpty()) Text(display.reactions.joinToString(" "), fontSize = 13.sp)
+            if (line.outgoing && line.status.startsWith("Couldn’t send")) {
+                Text("Not delivered · " + line.status.removePrefix("Couldn’t send").trimStart(' ', '·'),
+                    color = Color(MessageStyle.Swatch.RED.color(palette.appearance.dark, palette.appearance.contrast)), fontSize = 12.sp)
+            } else if (line.status.isNotEmpty()) Text(line.status, color = palette.muted, fontSize = 11.sp)
+        }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            Row(Modifier.padding(horizontal = 8.dp)) {
+                for (emoji in listOf("👍", "❤️", "😆", "‼️", "❓")) TextButton(onClick = { menu = false; react(emoji) }) { Text(emoji, fontSize = 18.sp) }
+            }
+            DropdownMenuItem(text = { Text("Reply") }, onClick = { menu = false; reply() })
+            DropdownMenuItem(text = { Text("Copy") }, onClick = {
+                menu = false
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(body))
+            })
+            DropdownMenuItem(text = { Text("Delete for me") }, onClick = { menu = false; delete() })
+        }
+    }
 }

@@ -4,15 +4,12 @@ import android.app.Activity;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.Bitmap;
-import android.graphics.ImageDecoder;
 import android.net.Uri;
 import android.telephony.SmsManager;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import androidx.core.content.FileProvider;
 import com.android.messaging.mmslib.pdu.*;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -24,7 +21,6 @@ import org.json.JSONObject;
 final class MmsTransport {
     static final String CHANGED = "org.fluidmessages.PROTOCOL_CHANGED";
     private static final int MAX_DOWNLOAD = 5 * 1024 * 1024;
-    private static final int MAX_PHOTO = 240 * 1024;
 
     static int subscription(int selected) throws IOException {
         int sim = selected < 0 ? SubscriptionManager.getDefaultSmsSubscriptionId() : selected;
@@ -37,35 +33,59 @@ final class MmsTransport {
         return "mms:" + String.join(",", members.stream().map(contacts::key).distinct().sorted().toList());
     }
 
-    static void send(Context context, List<String> members, String body, Uri photo, int selectedSim) throws Exception {
-        MessageProtocol.MMS.requireEnabled(context);
-        if (members.isEmpty() || members.size() > 20 || members.stream().anyMatch(number -> !SmsStore.validRecipient(number))
-                || (body.isBlank() && photo == null) || body.length() > 1600) {
-            throw new IOException("Choose up to 20 phone numbers and enter a message or photo.");
-        }
-        int sim = subscription(selectedSim);
-        byte[] image = photo == null ? null : preparePhoto(context, photo);
-        byte[] pdu = encode(context, members, body, image);
-        String id = "mms-" + UUID.randomUUID();
-        var store = ProtocolStore.get(context);
-        var record = record(context, id, members, "", body, true, System.currentTimeMillis(), image);
-        record.put("status", "Sending…");
-        if (image != null) store.putPhoto(id, image);
-        store.put(record);
-        File spool = spool(context, id);
+    /** The carrier's MMS size limit for this SIM, falling back to a conservative 300 KB. */
+    static long maxSize(int sim) {
         try {
-            Files.write(spool.toPath(), pdu);
-            SmsManager.getSmsManagerForSubscriptionId(sim).sendMultimediaMessage(context, uri(context, spool), null, null,
-                callback(context, id, sim, false));
-        } catch (Exception error) {
-            record.put("status", "Couldn’t send MMS");
-            store.put(record);
-            spool.delete();
-            throw error;
-        } finally { changed(context); }
+            var config = SmsManager.getSmsManagerForSubscriptionId(sim).getCarrierConfigValues();
+            int limit = config.getInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, 300 * 1024);
+            return limit > 0 ? limit : 300 * 1024;
+        } catch (RuntimeException error) { return 300 * 1024; }
     }
 
-    static byte[] encode(Context context, List<String> members, String text, byte[] image) throws Exception {
+    static void send(Context context, List<String> members, String body, Attachment attachment, int selectedSim) throws Exception {
+        MessageProtocol.MMS.requireEnabled(context);
+        if (members.isEmpty() || members.size() > 20 || members.stream().anyMatch(number -> !SmsStore.validRecipient(number))
+                || (body.isBlank() && attachment == null) || body.length() > 1600) {
+            throw new IOException("Choose up to 20 phone numbers and enter a message or attachment.");
+        }
+        int sim = subscription(selectedSim);
+        // Leave room for headers and the text part inside the carrier limit.
+        long limit = Math.max(32 * 1024, maxSize(sim) - 8 * 1024 - body.length() * 4L);
+        MediaSanitizer.Prepared file = attachment == null ? null : MediaSanitizer.prepare(context, attachment, limit);
+        try {
+            byte[] data = file == null ? null : file.bytes();
+            boolean photo = file != null && file.mime().startsWith("image/") && attachment.getKind() == AttachmentKind.PHOTO;
+            byte[] pdu = encode(context, members, body, file == null ? null : file.mime(), file == null ? null : file.name(), data);
+            String id = "mms-" + UUID.randomUUID();
+            var store = ProtocolStore.get(context);
+            var record = record(context, id, members, "", body, true, System.currentTimeMillis(), photo);
+            record.put("status", "Sending…");
+            if (photo) store.putPhoto(id, data);
+            else if (data != null) {
+                record.put("attachment", attached(attachment, file, data.length));
+                try (var input = new java.io.ByteArrayInputStream(data)) { store.putFile(id, input, MediaSanitizer.MAX_FILE); }
+            }
+            if (file != null && !file.cleaned() && MediaSanitizer.enabled(context)) record.put("notice", "Sent with original metadata");
+            store.put(record);
+            File spool = spool(context, id);
+            try {
+                Files.write(spool.toPath(), pdu);
+                SmsManager.getSmsManagerForSubscriptionId(sim).sendMultimediaMessage(context, uri(context, spool), null, null,
+                    callback(context, id, sim, false));
+            } catch (Exception error) {
+                record.put("status", "Couldn’t send MMS");
+                store.put(record);
+                spool.delete();
+                throw error;
+            } finally { changed(context); }
+        } finally { if (file != null) file.delete(); }
+    }
+
+    private static JSONObject attached(Attachment attachment, MediaSanitizer.Prepared file, long size) throws Exception {
+        return attachment.toJson().put("name", file.name()).put("mime", file.mime()).put("size", size);
+    }
+
+    static byte[] encode(Context context, List<String> members, String text, String mime, String name, byte[] file) throws Exception {
         var req = new SendReq();
         req.setTo(members.stream().map(EncodedStringValue::new).toArray(EncodedStringValue[]::new));
         req.setDate(System.currentTimeMillis() / 1000);
@@ -77,7 +97,11 @@ final class MmsTransport {
             caption.setCharset(CharacterSets.UTF_8);
             body.addPart(caption);
         }
-        if (image != null) body.addPart(part("image/jpeg", "photo.jpg", image));
+        if (file != null) {
+            // MMS part names must be ASCII; keep the extension so the receiving phone knows the type.
+            String ascii = name.replaceAll("[^A-Za-z0-9._-]", "_");
+            body.addPart(part(mime, ascii.isEmpty() ? "attachment" : ascii, file));
+        }
         req.setBody(body);
         byte[] pdu = new PduComposer(context, req).make();
         if (pdu == null) throw new IOException("Could not encode the carrier message.");
@@ -92,34 +116,6 @@ final class MmsTransport {
         part.setContentType(ascii(mime));
         part.setData(data);
         return part;
-    }
-
-    private static byte[] preparePhoto(Context context, Uri source) throws IOException {
-        var prefs = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
-        if (!prefs.getBoolean("stripMetadata", true)) {
-            try (var stream = context.getContentResolver().openInputStream(source)) {
-                byte[] jpeg = stream == null ? null : stream.readNBytes(MAX_PHOTO + 1);
-                if (jpeg != null && jpeg.length > 3 && jpeg.length <= MAX_PHOTO &&
-                    (jpeg[0] & 255) == 255 && (jpeg[1] & 255) == 216) return jpeg;
-            }
-            throw new IOException("Turn on Remove photo metadata to convert or resize this picture for MMS.");
-        }
-        Bitmap bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.getContentResolver(), source), (decoder, info, ignored) -> {
-            var size = info.getSize();
-            float scale = Math.min(1f, 960f / Math.max(size.getWidth(), size.getHeight()));
-            decoder.setTargetSize(Math.max(1, Math.round(size.getWidth() * scale)), Math.max(1, Math.round(size.getHeight() * scale)));
-            decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
-        });
-        try {
-            var output = new ByteArrayOutputStream();
-            for (int quality = 84; quality >= 35; quality -= 12) {
-                output.reset();
-                if (bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output) && output.size() <= MAX_PHOTO) {
-                    return output.toByteArray();
-                }
-            }
-            throw new IOException("This picture is too large for MMS.");
-        } finally { bitmap.recycle(); }
     }
 
     static void retrieve(Context context, byte[] notification, int selectedSim) throws Exception {
@@ -211,29 +207,46 @@ final class MmsTransport {
         var body = message.getBody();
         var text = new StringBuilder();
         byte[] image = null;
+        byte[] other = null;
+        String otherType = "", otherName = "";
         if (body != null) for (int i = 0; i < body.getPartsNum(); i++) {
             var part = body.getPart(i);
             byte[] partData = part.getData();
-            if (part.getContentType() == null || partData == null) continue;
-            String type = new String(part.getContentType(), StandardCharsets.US_ASCII);
+            if (part.getContentType() == null || partData == null || partData.length > MAX_DOWNLOAD) continue;
+            String type = new String(part.getContentType(), StandardCharsets.US_ASCII).toLowerCase(java.util.Locale.ROOT);
             if (type.equals("text/plain") && text.length() < 2000) {
                 if (!text.isEmpty()) text.append('\n');
                 text.append(new EncodedStringValue(part.getCharset(), partData).getString());
-            } else if (image == null && type.startsWith("image/") && partData.length <= MAX_DOWNLOAD) image = partData;
+            } else if (image == null && type.startsWith("image/")) {
+                image = partData;
+            } else if (other == null && !type.equals("application/smil") && !type.startsWith("text/plain")) {
+                // Video, audio, contact cards, and other files arrive as one attachment, like a photo.
+                other = partData;
+                otherType = type.equals("text/x-vcard") ? "text/vcard" : type;
+                byte[] label = part.getName() != null ? part.getName() : part.getFilename() != null ? part.getFilename() : part.getContentLocation();
+                otherName = label == null ? "" : MediaSanitizer.safeName(new String(label, StandardCharsets.UTF_8));
+            }
         }
         var record = record(context, id, List.copyOf(members.values()), sender, text.toString(), false,
-            System.currentTimeMillis(), image);
+            System.currentTimeMillis(), image != null);
         if (image != null) ProtocolStore.get(context).putPhoto(id, image);
+        if (other != null) {
+            var kind = Attachment.kindFor(otherType);
+            if (otherName.isEmpty() || otherName.equals("attachment")) otherName = kind.getLabel();
+            record.put("attachment", new Attachment(kind, null, otherName, otherType, other.length).toJson());
+            if (text.isEmpty()) record.put("body", otherName);
+            try (var input = new java.io.ByteArrayInputStream(other)) { ProtocolStore.get(context).putFile(id, input, MAX_DOWNLOAD); }
+        }
         return record;
     }
 
     private static JSONObject record(Context context, String id, List<String> members, String sender, String body,
-                                     boolean outgoing, long date, byte[] photo) throws Exception {
+                                     boolean outgoing, long date, boolean photo) throws Exception {
         return new JSONObject().put("id", id).put("protocol", "mms")
             .put("address", members.size() == 1 ? members.get(0) : thread(context, members))
             .put("members", new JSONArray(members)).put("author", sender)
-            .put("body", body.isBlank() ? (photo == null ? "Multimedia message" : "Photo") : body)
-            .put("date", date).put("type", outgoing ? 2 : 1).put("read", outgoing ? 1 : 0).put("photo", photo != null);
+            .put("body", body.isBlank() ? (photo ? "Photo" : "Multimedia message") : body)
+            .put("date", date).put("type", outgoing ? 2 : 1).put("read", outgoing ? 1 : 0).put("photo", photo);
     }
 
     private static byte[] ascii(String value) { return value.getBytes(StandardCharsets.US_ASCII); }

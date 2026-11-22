@@ -14,6 +14,9 @@ android {
         versionName '0.17.0'
     }
     buildFeatures { compose true }
+    packaging {
+        resources { excludes += ['META-INF/LICENSE*', 'META-INF/NOTICE*', 'META-INF/DEPENDENCIES', 'META-INF/*.md'] }
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -22,9 +25,20 @@ android {
 
 kotlin { jvmToolchain(17) }
 
+// Android ships its own XmlPullParser, which Smack uses; the desktop copies would clash.
+configurations.configureEach { exclude group: 'xpp3' }
+
 dependencies {
     implementation 'androidx.activity:activity:1.10.1'
     implementation 'androidx.activity:activity-compose:1.10.1'
     implementation platform('androidx.compose:compose-bom:2025.05.01')
     implementation 'androidx.compose.material3:material3'
+    // Removes document information and XMP from PDFs before sending (Apache-2.0).
+    // BouncyCastle only serves encrypted PDFs, which are sent unchanged, so it stays out of the APK.
+    implementation('com.tom-roush:pdfbox-android:2.0.27.0') { exclude group: 'org.bouncycastle' }
+    // Connecting from the phone: Email (JavaMail for Android) and XMPP (Smack).
+    implementation 'com.sun.mail:android-mail:1.6.8'
+    implementation 'com.sun.mail:android-activation:1.6.8'
+    implementation 'org.igniterealtime.smack:smack-android-extensions:4.4.8'
+    implementation 'org.igniterealtime.smack:smack-tcp:4.4.8'
 }

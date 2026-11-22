@@ -130,7 +130,15 @@ def smoke_test():
         request("/api/result", {"id": due, "state": "submitted"})
         check({job["id"]: job["state"] for job in request("/api/jobs")} ==
               {cancelled: "cancelled", due: "submitted"}, "Queue state did not persist")
-    print("PASS  Companion assets, authentication, sync, scheduling, cancellation and concurrent claiming")
+        upload = request("/api/protocols/upload", b"fixture", extra_headers={"Content-Type": "text/plain",
+                         "X-Fluid-Name": "notes%20one.txt"})
+        check(re.fullmatch(r"[0-9a-f]{40}", upload.get("upload", "")) is not None, "Attachment upload did not return an id")
+        try:
+            request("/api/protocols/file?id=missing", authorized=True)
+            raise RuntimeError("Companion served an unknown attachment")
+        except HTTPError as error:
+            check(error.code == 404, f"Expected HTTP 404 for a missing attachment, got {error.code}")
+    print("PASS  Companion assets, authentication, sync, scheduling, cancellation, claiming and attachment uploads")
 
 
 def cloud_smoke_test():
@@ -166,6 +174,283 @@ def cloud_smoke_test():
         else:
             raise RuntimeError("The server accepted a backup path instead of a filename")
     print("PASS  Cloud target discovery, dated names, fixed-name replacement, and newest restore across three isolated destinations")
+
+
+def gateway_relations_test():
+    """Replies and reactions use native Matrix and RFC 9078 email features with fictional fixtures."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import sqlite3
+    from email import policy
+    from email.parser import BytesParser
+    import protocol_gateway
+
+    with tempfile.TemporaryDirectory(prefix="fluid-gateway-") as directory:
+        database = str(Path(directory) / "gateway.sqlite")
+
+        def connect():
+            return sqlite3.connect(database)
+
+        with connect() as db:
+            db.executescript(protocol_gateway.SCHEMA)
+        config = {"matrix": {"homeserver": "https://matrix.example.test", "access_token": "fixture",
+                             "user_id": "@me:example.test"},
+                  "email": {"address": "me@example.test", "smtp_host": "smtp.example.test", "smtp_password": "x",
+                            "imap_host": "imap.example.test", "imap_password": "x"},
+                  "routes": [{"address": "maya", "protocol": "matrix", "target": "!room:example.test", "title": "Maya"},
+                             {"address": "maya", "protocol": "email", "target": "maya@example.test", "title": "Maya"}]}
+        gateway = protocol_gateway.Gateway(connect, config, Path(directory) / "files")
+        route = gateway.route("maya", "matrix")
+        sent = []
+
+        def fake_matrix(path, body=None, allow_missing=False, method=None):
+            if allow_missing:
+                return None
+            sent.append((path, body))
+            return {"event_id": "$out" + str(len(sent))}
+
+        gateway.matrix_request = fake_matrix
+
+        def deliver(message, send):
+            # Same bookkeeping as Gateway.sender after a successful send.
+            message.update(send(gateway.route("maya", message["protocol"]), message) or {})
+            with connect() as db:
+                db.execute("UPDATE protocol_messages SET payload=? WHERE id=?", (json.dumps(message), message["id"]))
+        gateway.accept_matrix(route, {"type": "m.room.message", "event_id": "$in1", "sender": "@maya:example.test",
+                                      "origin_server_ts": 1, "content": {"msgtype": "m.text", "body": "Coffee at ten?"}})
+        incoming = gateway.find("maya", "matrix", "event_id", "$in1")
+        check(incoming is not None, "Matrix message did not keep its event ID")
+
+        def enqueue(relation, body, text=""):
+            with connect() as db:
+                return gateway.enqueue(db, {"address": "maya", "protocol": "matrix", "body": body, "text": text,
+                                            "request": secrets.token_hex(8), "relation": relation})["message"]
+
+        reaction = enqueue({"kind": "reaction", "target": incoming["id"], "emoji": "👍"}, "Liked “Coffee at ten?”")
+        check(reaction.get("reaction_target") == incoming["id"], "Reaction lost its target")
+        deliver(reaction, gateway.send_matrix)
+        check(sent[-1][0].startswith("rooms/") and "/send/m.reaction/" in sent[-1][0]
+              and sent[-1][1]["m.relates_to"] == {"rel_type": "m.annotation", "event_id": "$in1", "key": "👍"},
+              "Matrix reaction was not sent as an annotation")
+        reply = enqueue({"kind": "reply", "target": incoming["id"]}, "Reply to “Coffee at ten?”\n\nSure", "Sure")
+        deliver(reply, gateway.send_matrix)
+        check(sent[-1][1] == {"msgtype": "m.text", "body": "Sure", "m.relates_to": {"m.in_reply_to": {"event_id": "$in1"}}},
+              "Matrix reply was not linked natively")
+        try:
+            enqueue({"kind": "reaction", "target": incoming["id"], "emoji": "hello"}, "Reacted hello")
+            raise RuntimeError("Gateway accepted a text reaction")
+        except ValueError:
+            pass
+
+        gateway.accept_matrix(route, {"type": "m.reaction", "event_id": "$in2", "sender": "@maya:example.test",
+                                      "origin_server_ts": 2, "content": {"m.relates_to": {
+                                          "rel_type": "m.annotation", "event_id": "$out2", "key": "❤️"}}})
+        folded = gateway.find("maya", "matrix", "event_id", "$in2")
+        check(folded and folded["reaction_target"] == reply["id"] and folded["body"].startswith("Loved “"),
+              "Incoming Matrix reaction did not fold onto the sent reply")
+        gateway.accept_matrix(route, {"type": "m.room.message", "event_id": "$in3", "sender": "@maya:example.test",
+                                      "origin_server_ts": 3, "content": {"msgtype": "m.text",
+                                      "body": "> <@me:example.test> Sure\n\nGreat",
+                                      "m.relates_to": {"m.in_reply_to": {"event_id": "$out2"}}}})
+        quoted = gateway.find("maya", "matrix", "event_id", "$in3")
+        check(quoted["body"].endswith("\n\nGreat") and quoted["body"].startswith("Reply to “")
+              and quoted["reply_target"] == reply["id"], "Incoming Matrix reply kept its legacy fallback")
+
+        mail_route = gateway.route("maya", "email")
+        gateway.accept_mail(mail_route, "1", 1, b"From: Maya <maya@example.test>\r\nMessage-ID: <m1@example.test>\r\n"
+                            b"Subject: Plans\r\nDate: Mon, 1 Jan 2024 10:00:00 +0000\r\n\r\nSee you there\r\n")
+        first = gateway.find("maya", "email", "mail_id", "<m1@example.test>")
+        outgoing = []
+
+        class FakeSmtp:
+            def __init__(self, *args, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def login(self, *args): pass
+            def send_message(self, envelope, **kwargs): outgoing.append(envelope)
+
+        protocol_gateway.smtplib.SMTP_SSL = FakeSmtp
+        with connect() as db:
+            mail = gateway.enqueue(db, {"address": "maya", "protocol": "email", "body": "Liked “See you there”",
+                                        "request": secrets.token_hex(8),
+                                        "relation": {"kind": "reaction", "target": first["id"], "emoji": "👍"}})["message"]
+        deliver(mail, gateway.send_mail)
+        envelope = outgoing[-1]
+        check(envelope["In-Reply-To"] == "<m1@example.test>" and envelope.get_content_disposition() == "reaction"
+              and envelope.get_content().strip() == "👍" and "FluidMessages" not in envelope.get_content(),
+              "Email reaction does not follow RFC 9078")
+        gateway.accept_mail(mail_route, "1", 2, b"From: maya@example.test\r\nMessage-ID: <m2@example.test>\r\n"
+                            b"In-Reply-To: <m1@example.test>\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                            b"Content-Disposition: reaction\r\n\r\n" + "😆".encode() + b"\r\n")
+        laughed = gateway.find("maya", "email", "mail_id", "<m2@example.test>")
+        check(laughed and laughed["reaction_target"] == first["id"] and laughed["body"].startswith("Laughed at “"),
+              "Incoming email reaction did not fold")
+        # Attachments: upload, attach, send as Matrix media and an email attachment, and receive both.
+        import io
+        pdf = b"%PDF-1.4 fixture"
+        with connect() as db:
+            upload = gateway.store_upload(db, io.BytesIO(pdf), len(pdf), "application/pdf", "plan.pdf")["upload"]
+            try:
+                gateway.store_upload(db, io.BytesIO(b"x"), protocol_gateway.MAX_FILE + 1, "text/plain", "big.txt")
+                raise RuntimeError("Gateway accepted an oversized upload")
+            except ValueError:
+                pass
+            filed = gateway.enqueue(db, {"address": "maya", "protocol": "matrix", "body": "plan.pdf", "text": "",
+                                         "request": secrets.token_hex(8),
+                                         "attachment": {"upload": upload, "kind": "file"}})["message"]
+        check(filed["attachment"]["name"] == "plan.pdf" and gateway.file_path(filed["id"]).read_bytes() == pdf,
+              "Uploaded attachment was not moved onto its message")
+        uploads = []
+
+        def fake_raw(url, data=None, headers=None, method=None, limit=0):
+            uploads.append((url, data, headers))
+            return json.dumps({"content_uri": "mxc://example.test/abc"}).encode()
+
+        gateway.matrix_raw = fake_raw
+        deliver(filed, gateway.send_matrix)
+        check(uploads[-1][1] == pdf and sent[-1][1]["msgtype"] == "m.file" and sent[-1][1]["url"] == "mxc://example.test/abc"
+              and sent[-1][1]["filename"] == "plan.pdf", "Matrix file was not sent through the media repository")
+        with connect() as db:
+            voice_upload = gateway.store_upload(db, io.BytesIO(b"aac"), 3, "audio/mp4", "Voice message")["upload"]
+            voice = gateway.enqueue(db, {"address": "maya", "protocol": "matrix", "body": "Voice message", "text": "",
+                                         "request": secrets.token_hex(8),
+                                         "attachment": {"upload": voice_upload, "kind": "voice", "duration": 4200}})["message"]
+        deliver(voice, gateway.send_matrix)
+        check(sent[-1][1]["msgtype"] == "m.audio" and "org.matrix.msc3245.voice" in sent[-1][1]
+              and sent[-1][1]["info"]["duration"] == 4200, "Voice message was not marked as a Matrix voice note")
+        gateway.matrix_download = lambda mxc: b"\x89PNG fixture"
+        gateway.accept_matrix(route, {"type": "m.room.message", "event_id": "$in4", "sender": "@maya:example.test",
+                                      "origin_server_ts": 4, "content": {"msgtype": "m.image", "body": "lake.png",
+                                      "url": "mxc://example.test/lake", "info": {"mimetype": "image/png", "size": 12}}})
+        photo = gateway.find("maya", "matrix", "event_id", "$in4")
+        check(photo and photo["attachment"]["kind"] == "photo" and gateway.file_path(photo["id"]).read_bytes() == b"\x89PNG fixture",
+              "Incoming Matrix image was not stored")
+        with connect() as db:
+            mail_upload = gateway.store_upload(db, io.BytesIO(pdf), len(pdf), "application/pdf", "plan.pdf")["upload"]
+            mailed = gateway.enqueue(db, {"address": "maya", "protocol": "email", "body": "Here it is", "text": "Here it is",
+                                          "request": secrets.token_hex(8), "attachment": {"upload": mail_upload}})["message"]
+        deliver(mailed, gateway.send_mail)
+        parts = list(outgoing[-1].iter_attachments())
+        check(len(parts) == 1 and parts[0].get_filename() == "plan.pdf" and parts[0].get_content() == pdf
+              and "Sent with FluidMessages" in outgoing[-1].get_body(("plain",)).get_content(), "Email attachment was not sent")
+        raw = (b"From: maya@example.test\r\nMessage-ID: <m3@example.test>\r\nMIME-Version: 1.0\r\n"
+               b"Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nMenu attached\r\n"
+               b"--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=menu.pdf\r\n"
+               b"Content-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQ=\r\n--b--\r\n")
+        gateway.accept_mail(mail_route, "1", 3, raw)
+        menu = gateway.find("maya", "email", "mail_id", "<m3@example.test>")
+        check(menu and menu["attachment"]["name"] == "menu.pdf" and menu["body"] == "Menu attached"
+              and gateway.file_path(menu["id"]).read_bytes() == b"%PDF-1.4", "Incoming email attachment was not stored")
+        import matrix_e2ee
+        if matrix_e2ee.available():
+            # An encrypted image: the companion downloads the ciphertext and decrypts it with the event's key.
+            from nio.crypto.attachments import encrypt_attachment
+            ciphertext, keys = encrypt_attachment(b"\x89PNG secret fixture")
+            gateway.matrix_download = lambda mxc: ciphertext
+            gateway.accept_matrix(route, {"type": "m.room.message", "event_id": "$in5", "sender": "@maya:example.test",
+                                          "origin_server_ts": 5, "content": {"msgtype": "m.image", "body": "lake.png",
+                                          "file": {**keys, "url": "mxc://example.test/secret"}, "info": {"mimetype": "image/png"}}})
+            secret = gateway.find("maya", "matrix", "event_id", "$in5")
+            check(secret and gateway.file_path(secret["id"]).read_bytes() == b"\x89PNG secret fixture",
+                  "Encrypted Matrix attachment was not decrypted")
+            print("PASS  encrypted Matrix attachments decrypt on the companion")
+        else:
+            print("SKIP  Matrix encryption checks (matrix-nio[e2e] is not installed)")
+    print("PASS  companion replies, reactions, and attachments use native Matrix and email features")
+
+
+def protocol_accounts_test():
+    """Account storage, Compose accounts, links, and the IRC client, with fictional fixtures and no network."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import socket
+    import threading
+    import accounts
+    import irc_client
+
+    with tempfile.TemporaryDirectory(prefix="fluid-accounts-") as directory:
+        store = accounts.AccountStore(Path(directory) / "accounts.json", environ={
+            "FLUID_IRC_SERVER": "irc.example.test", "FLUID_IRC_NICK": "fluidtest", "FLUID_IRC_CHANNELS": "#radio-club,#garden",
+            "FLUID_XMPP_JID": "broken"})
+        saved = store.save("email", {"address": "me@example.test", "imap_host": "imap.example.test",
+                                     "smtp_host": "smtp.example.test", "imap_password": "fixture-secret"})
+        check(saved["smtp_password"] == "fixture-secret", "SMTP password should default to the IMAP password")
+        store.save("email", {"address": "me@example.test", "imap_host": "imap.example.test", "smtp_host": "smtp.example.test"})
+        check(store.current()["email"]["imap_password"] == "fixture-secret", "A blank password should keep the saved one")
+        listed = json.dumps(store.redacted())
+        check("fixture-secret" not in listed and '"set": true' in listed, "Account secrets must never be listed")
+        check(oct(Path(directory, "accounts.json").stat().st_mode & 0o777) == "0o600", "Account file must be private")
+        irc = store.current()["irc"]
+        check(irc["port"] == 6697 and irc["channels"] == ["#radio-club", "#garden"], "Compose IRC account was not read")
+        check(any(item.get("error", "").startswith("Docker Compose") for item in store.redacted()),
+              "An invalid Compose account should be reported")
+        for bad in ({"server": "irc.example.test", "nick": "x", "port": 6667},
+                    {"server": "irc.example.test", "nick": "x", "channels": ["radio"]}):
+            try:
+                accounts.validate("irc", bad)
+                raise RuntimeError("Accepted an unsafe IRC account")
+            except ValueError:
+                pass
+        try:
+            store.save("irc", {"server": "x.test", "nick": "y"})
+            raise RuntimeError("Phone changed a Compose account")
+        except ValueError:
+            pass
+
+    # IRC: CAP negotiation, SASL, joins, member list, a tagged message, and a reply, over a local socket pair.
+    server, phone = socket.socketpair()
+    server.settimeout(5)
+    received, states = [], {}
+    client = irc_client.IrcClient({"server": "irc.example.test", "nick": "fluidtest", "sasl_password": "pw",
+                                   "channels": ["#radio-club"]},
+                                  lambda *args: received.append(args), lambda name, state: states.__setitem__(name, state),
+                                  connect=lambda: phone)
+    worker = threading.Thread(target=client.session, daemon=True)
+    worker.start()
+    lines = b""
+
+    def expect(fragment):
+        nonlocal lines
+        deadline = time.time() + 5
+        while fragment not in lines:
+            check(time.time() < deadline, f"IRC client never sent {fragment!r}")
+            lines += server.recv(4096)
+
+    def say(text):
+        server.sendall(text.encode() + b"\r\n")
+
+    expect(b"CAP LS 302")
+    say(":irc.example.test CAP * LS * :sasl message-tags")
+    say(":irc.example.test CAP * LS :server-time echo-message")
+    expect(b"CAP REQ :sasl message-tags server-time echo-message")
+    say(":irc.example.test CAP * ACK :sasl message-tags server-time echo-message")
+    expect(b"AUTHENTICATE PLAIN")
+    say("AUTHENTICATE +")
+    expect(b"AUTHENTICATE ")
+    say(":irc.example.test 903 fluidtest :SASL authentication successful")
+    expect(b"CAP END")
+    say(":irc.example.test 001 fluidtest :Welcome")
+    expect(b"JOIN #radio-club")
+    say(":irc.example.test 332 fluidtest #radio-club :Antenna night")
+    say(":irc.example.test 353 fluidtest = #radio-club :@mosaic +kestrel fluidtest")
+    say(":irc.example.test 366 fluidtest #radio-club :End of NAMES")
+    say("@msgid=abc;time=2026-01-01T10:00:00.000Z :mosaic!m@host PRIVMSG #radio-club :Bring the analyzer")
+    say(":kestrel!k@host PRIVMSG #radio-club :\x01ACTION waves\x01")
+    say("PING :keepalive")
+    expect(b"PONG :keepalive")
+    deadline = time.time() + 5
+    while len(received) < 2 and time.time() < deadline:
+        time.sleep(0.05)
+    check(states.get("#radio-club") == {"topic": "Antenna night", "members": ["fluidtest", "kestrel", "mosaic"]},
+          "IRC channel topic and members were not tracked")
+    check(received[0][:4] == ("#radio-club", "mosaic", "Bring the analyzer", {"msgid": "abc", "time": "2026-01-01T10:00:00.000Z"})
+          and received[0][4] == 1767261600000, "Tagged IRC message was not parsed")
+    check(received[1][2] == "/me waves", "CTCP ACTION was not shown as /me")
+    client.send("#radio-club", "", reply="abc", react="👍")
+    expect("@+draft/reply=abc;+draft/react=👍 TAGMSG #radio-club".encode())
+    client.send("#radio-club", "x" * 900)
+    expect(b"PRIVMSG #radio-club :" + b"x" * 400 + b"\r\nPRIVMSG")
+    client.stopped.set()
+    server.close()
+    print("PASS  protocol accounts stay private, Compose accounts are read-only, and IRC speaks CAP, SASL, and IRCv3 tags")
 
 
 def find_apk(explicit):
@@ -230,6 +515,8 @@ def main():
     try:
         smoke_test()
         cloud_smoke_test()
+        gateway_relations_test()
+        protocol_accounts_test()
         android(args)
         if args.demo:
             demo(args.no_browser)

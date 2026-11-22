@@ -24,8 +24,17 @@ final class Backup {
         "accentSwatch", "rcsColorSwatch", "iphoneColorSwatch", "automatedColorSwatch",
         "canvasSwatch", "incomingSwatch", "controlColorSwatch", "chromeColorSwatch",
         "wallpaper", "searchPosition", "toolbarFinish", "chromeOpacity", "inboxDensity", "bubbleTails",
-        "radius", "size", "padding", "savedColorThemes", "activeColorTheme"
+        "radius", "size", "padding", "savedColorThemes", "activeColorTheme",
+        "protocolMATRIXColor", "protocolXMPPColor", "protocolEMAILColor", "protocolIRCColor",
+        "protocolMATRIXColorSwatch", "protocolXMPPColorSwatch", "protocolEMAILColorSwatch", "protocolIRCColorSwatch"
     };
+    // Protocol choices, links, and battery settings. Account passwords stay on the companion and are never backed up.
+    static final String[] PROTOCOLS = {
+        "protocolRCS", "protocolSMS", "protocolMMS", "protocolMATRIX", "protocolXMPP", "protocolEMAIL", "protocolIRC",
+        "combineProtocols", "protocolTags", "protocolPrivacy", "stripMetadata", GatewayClient.ROUTES, "gatewayChannels",
+        SyncPolicy.FOREGROUND, SyncPolicy.BACKGROUND, SyncPolicy.WIFI_ONLY, SyncPolicy.BATTERY_SAVER, SyncPolicy.DOWNLOADS
+    };
+    private static final long FILE_BUDGET = 24L * 1024 * 1024, FILE_LIMIT = 2L * 1024 * 1024;
     static final String[] EFFECTS = {"speed", "sound", "receiveSound", "haptics", "sendTone", "receiveTone", "sendHaptics"};
     static final String[] SETTINGS = {"pinned", "archived", "blocked", "muted", "exactTimes", BackupNames.KEY, "automaticUpdateChecks"};
     private static final int MAX = 64 * 1024 * 1024;
@@ -61,6 +70,7 @@ final class Backup {
             }
             settings.put("chatProfiles", profiles.toString());
         }
+        if (options.has(BackupCategory.PROTOCOLS)) object.put("protocols", exportProtocols(context, preferences));
         if (options.has(BackupCategory.APPEARANCE) || options.has(BackupCategory.EFFECTS)) object.put("theme", theme);
         if (options.has(BackupCategory.CHAT_SETTINGS) || options.has(BackupCategory.CHAT_THEMES)) object.put("settings", settings);
         byte[] json = object.toString().getBytes(StandardCharsets.UTF_8);
@@ -150,6 +160,8 @@ final class Backup {
             apply(editor, theme, EFFECTS, archivedCategory(object, BackupCategory.EFFECTS));
         }
         if (options.has(BackupCategory.CHAT_SETTINGS)) apply(editor, settings, SETTINGS, archivedCategory(object, BackupCategory.CHAT_SETTINGS));
+        JSONObject protocols = options.has(BackupCategory.PROTOCOLS) ? object.optJSONObject("protocols") : null;
+        if (protocols != null) restored += restoreProtocols(context, protocols, editor);
         if (restoredPhotos.has("global")) editor.putString("wallpaper", restoredPhotos.getString("global"));
         String savedProfiles = options.has(BackupCategory.CHAT_THEMES) && settings != null
             ? settings.optString("chatProfiles") : "";
@@ -178,6 +190,63 @@ final class Backup {
             editor.putString("chatProfiles", current.toString());
         }
         editor.apply();
+        return restored;
+    }
+
+    /**
+     * MMS and internet message history, with small attachments embedded (up to 2 MB each and 24 MB in
+     * all). Larger files are listed but stay on the companion or phone, and show as not downloaded.
+     */
+    private static JSONObject exportProtocols(Context context, SharedPreferences preferences) throws Exception {
+        var store = ProtocolStore.get(context);
+        var messages = new JSONArray();
+        var files = new JSONObject();
+        long budget = FILE_BUDGET;
+        for (JSONObject message : store.read()) {
+            messages.put(message);
+            String id = message.getString("id");
+            for (var file : new java.io.File[]{message.optBoolean("photo") ? store.photoFile(id) : null,
+                    message.has("attachment") ? store.attachmentFile(id) : null}) {
+                if (file == null || !file.isFile() || file.length() > FILE_LIMIT || file.length() > budget) continue;
+                budget -= file.length();
+                files.put((file.getName().endsWith(".jpg") ? "photo:" : "file:") + id,
+                    android.util.Base64.encodeToString(java.nio.file.Files.readAllBytes(file.toPath()), android.util.Base64.NO_WRAP));
+            }
+        }
+        JSONObject settings = new JSONObject();
+        copyPreferences(preferences, PROTOCOLS, settings);
+        for (var entry : preferences.getAll().entrySet()) {
+            if (entry.getKey().startsWith("protocolRoute.") && entry.getValue() instanceof String value) settings.put(entry.getKey(), value);
+        }
+        return new JSONObject().put("messages", messages).put("files", files).put("settings", settings);
+    }
+
+    /** Adds messages that aren't on this phone yet; repeating a restore adds nothing new. */
+    private static int restoreProtocols(Context context, JSONObject protocols, SharedPreferences.Editor editor) throws Exception {
+        var store = ProtocolStore.get(context);
+        var messages = protocols.optJSONArray("messages");
+        var files = protocols.optJSONObject("files");
+        int restored = 0;
+        for (int i = 0; messages != null && i < messages.length(); i++) {
+            var message = messages.optJSONObject(i);
+            if (message == null || !message.optString("id").matches("[A-Za-z0-9_-]{1,100}") || !message.has("date")
+                    || store.find(message.getString("id")) != null) continue;
+            String id = message.getString("id");
+            String photo = files == null ? "" : files.optString("photo:" + id);
+            String file = files == null ? "" : files.optString("file:" + id);
+            if (!photo.isEmpty()) store.putPhoto(id, android.util.Base64.decode(photo, android.util.Base64.NO_WRAP));
+            if (!file.isEmpty()) try (var input = new ByteArrayInputStream(android.util.Base64.decode(file, android.util.Base64.NO_WRAP))) {
+                store.putFile(id, input, FILE_LIMIT);
+            }
+            store.put(message);
+            restored++;
+        }
+        var settings = protocols.optJSONObject("settings");
+        apply(editor, settings, PROTOCOLS, false);
+        if (settings != null) for (var keys = settings.keys(); keys.hasNext();) {
+            String key = keys.next();
+            if (key.startsWith("protocolRoute.") && key.length() < 200) editor.putString(key, settings.optString(key));
+        }
         return restored;
     }
 
@@ -211,6 +280,11 @@ final class Backup {
             || containsAny(settings, SETTINGS))) result.add(BackupCategory.CHAT_SETTINGS.getLabel());
         if (options.has(BackupCategory.CHAT_THEMES) && settings != null && settings.has("chatProfiles")) result.add(BackupCategory.CHAT_THEMES.getLabel());
         if (options.has(BackupCategory.WALLPAPER_PHOTOS) && photos != null) result.add(BackupCategory.WALLPAPER_PHOTOS.getLabel());
+        var protocols = archive.optJSONObject("protocols");
+        if (options.has(BackupCategory.PROTOCOLS) && protocols != null) {
+            var messages = protocols.optJSONArray("messages");
+            result.add((messages == null ? 0 : messages.length()) + " MMS and internet messages, with protocol settings");
+        }
         return result;
     }
 

@@ -17,14 +17,25 @@ internal object CompanionAppearance {
         for (key in listOf("pinned", "archived", "blocked")) {
             folders.put(key, JSONArray(MainActivity.addressList(prefs, key).filter { it in addresses }))
         }
+        val colors = JSONObject()
+        // The browser uses the same theme colors and contrast rule for every protocol.
+        for (protocol in listOf(MessageProtocol.RCS, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)) {
+            val key = protocol.name.lowercase(Locale.ROOT)
+            val base = protocol.tint(appearance)
+            colors.put(key, hex(accessibleBubbleFill(base).toArgb())).put(key + "Ink", hex(bubbleTextColor(base).toArgb()))
+        }
         return JSONObject()
             .put("dark", palette.ink() == android.graphics.Color.WHITE)
             .put("exactTimes", prefs.getBoolean("exactTimes", false))
+            .put("protocolTags", prefs.getBoolean("protocolTags", false))
+            .put("protocolPrivacy", prefs.getBoolean("protocolPrivacy", false))
+            .put("combineProtocols", prefs.getBoolean("combineProtocols", false))
+            .put("enabledProtocols", GatewayClient.enabled(prefs))
             .put("radius", appearance.radius)
             .put("size", appearance.size)
             .put("padding", appearance.padding)
             .put("folders", folders)
-            .put("colors", JSONObject()
+            .put("colors", colors
                 .put("canvas", hex(appearance.canvas))
                 .put("ink", hex(palette.ink()))
                 .put("muted", hex(palette.muted()))

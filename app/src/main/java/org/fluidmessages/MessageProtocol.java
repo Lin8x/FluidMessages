@@ -6,23 +6,24 @@ import java.util.List;
 import java.util.Locale;
 
 enum MessageProtocol {
-    RCS("RCS", "Carrier preview", "Encryption varies by service"),
-    SMS("SMS", "Carrier texts", "No end-to-end encryption"),
-    MMS("MMS", "Carrier groups and pictures", "No end-to-end encryption"),
-    MATRIX("Matrix", "Homeserver rooms", "No end-to-end encryption in supported rooms"),
-    XMPP("XMPP", "Federated chat", "No verified end-to-end encryption"),
-    EMAIL("Email", "IMAP and SMTP", "No end-to-end encryption"),
-    IRC("IRC", "Channels and direct messages", "No end-to-end encryption");
+    RCS("RCS", "Carrier preview"),
+    SMS("SMS", "Carrier texts"),
+    MMS("MMS", "Carrier groups and pictures"),
+    MATRIX("Matrix", "Homeserver rooms"),
+    XMPP("XMPP", "Federated chat"),
+    EMAIL("Email", "IMAP and SMTP"),
+    IRC("IRC", "Channels and direct messages");
 
     final String label;
     final String description;
-    final String privacy;
 
-    MessageProtocol(String label, String description, String privacy) {
+    MessageProtocol(String label, String description) {
         this.label = label;
         this.description = description;
-        this.privacy = privacy;
     }
+
+    /** Sending, capabilities, and encryption status live in the protocol's shared transport. */
+    MessageTransport transport() { return Transports.of(this); }
 
     static MessageProtocol parse(String value) {
         try { return valueOf(value.toUpperCase(Locale.ROOT)); }
@@ -39,16 +40,29 @@ enum MessageProtocol {
         if (!reason.isEmpty()) throw new IllegalStateException(reason);
     }
 
+    /**
+     * RCS, SMS, and MMS are one text conversation. RCS covers it when available, SMS is the fallback,
+     * and MMS is what SMS becomes for photos, files, and groups.
+     */
+    MessageProtocol family() { return this == RCS || this == MMS ? SMS : this; }
+    boolean isText() { return family() == SMS; }
+
+    /** The route this conversation actually uses for {@code requested}, so a text thread opens as RCS, SMS, or MMS. */
+    static MessageProtocol concrete(List<MessageProtocol> routes, MessageProtocol requested) {
+        if (routes.contains(requested)) return requested;
+        for (MessageProtocol route : routes) if (route.family() == requested.family()) return route;
+        return routes.isEmpty() ? requested : routes.get(0);
+    }
+
+    /** A saved per-contact default wins; otherwise the first enabled route in RCS, SMS/MMS, Matrix, XMPP, Email, IRC order. */
     static MessageProtocol preferred(SharedPreferences prefs, String conversation, List<MessageProtocol> routes) {
         if (routes.isEmpty()) throw new IllegalArgumentException("No message routes");
         String saved = prefs.getString("protocolRoute." + conversation, "");
         if (!saved.isEmpty()) {
-            var selected = parse(saved);
+            var selected = concrete(routes, parse(saved));
             if (routes.contains(selected)) return selected;
         }
-        if (prefs.getBoolean("protocolAuto", true)) {
-            for (MessageProtocol format : values()) if (routes.contains(format) && format.enabled(prefs)) return format;
-        }
+        for (MessageProtocol format : values()) if (routes.contains(format) && format.enabled(prefs)) return format;
         return routes.get(0);
     }
 }
