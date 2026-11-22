@@ -2,6 +2,7 @@ package org.fluidmessages
 
 import android.content.Intent
 import android.content.SharedPreferences
+import android.net.Uri
 import android.graphics.ImageDecoder
 import android.widget.LinearLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -140,9 +141,11 @@ internal fun resolveChatAppearance(base: Appearance, profile: ChatProfile): Appe
     val colors = theme?.let { it.colors(base.dark) ?: MessageStyle.fluidColors(base.dark, base.contrast) }
     fun shade(value: Int?, fallback: Int) = value?.or(0xff000000.toInt()) ?: fallback
     return base.copy(
+        theme = theme ?: base.theme,
         canvas = profile.background() ?: shade(colors?.background(), base.canvas),
         accent = profile.outgoing() ?: shade(colors?.sms(), base.accent),
         rcs = profile.outgoing() ?: shade(colors?.rcs(), base.rcs),
+        automated = shade(colors?.automated(), base.automated),
         incoming = profile.incoming() ?: if (theme == null) base.incoming else
             MessageStyle.Swatch.GRAY_5.color(base.dark, base.contrast),
         controls = shade(colors?.controls(), base.controls),
@@ -153,22 +156,20 @@ internal fun resolveChatAppearance(base: Appearance, profile: ChatProfile): Appe
 
 object ConversationDetails {
     @JvmStatic
-    fun mount(root: LinearLayout, prefs: SharedPreferences, name: String, initials: String, subtitle: String, photo: Int,
-              call: Runnable?, edit: Runnable?, actions: List<SettingsAction>) {
+    fun mount(root: LinearLayout, prefs: SharedPreferences, name: String, initials: String, subtitle: String, photo: Int, photoUri: Uri?,
+              call: Runnable?, edit: Runnable?, actions: List<SettingsAction>, members: List<GroupMember>) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
             val appearance = remember { Appearance.read(prefs) }
-            val accent = Color(MessageStyle.Swatch.BLUE.color(appearance.dark, true))
-            MaterialTheme(colorScheme = if (appearance.dark) darkColorScheme(primary = accent)
-                else lightColorScheme(primary = accent)) {
+            AppTheme(appearance) {
                 val scheme = MaterialTheme.colorScheme
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 16.dp, bottom = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(18.dp)) {
                     item {
                         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                            Avatar(initials, name, 80, photo)
+                            Avatar(initials, name, 80, photo, photoUri)
                             Text(name, style = MaterialTheme.typography.headlineSmall, color = scheme.onSurface,
                                 fontWeight = FontWeight.SemiBold)
                             Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
@@ -180,6 +181,7 @@ object ConversationDetails {
                             FilledTonalButton(onClick = edit::run, modifier = Modifier.weight(1f)) { Text("Edit contact") }
                         }
                     }
+                    if (members.isNotEmpty()) item { GroupMembers(members) }
                     item { DetailGroup("Customize", actions.take(1)) }
                     if (actions.size > 1) item { DetailGroup("Conversation", actions.drop(1)) }
                 }
@@ -257,7 +259,7 @@ private fun ProfileForm(prefs: SharedPreferences, key: String) {
         apply(ChatProfile(old.alias(), selected, wallpaper, null, null, null))
     }
     val resolved = resolveChatAppearance(global, profile)
-    MaterialTheme(colorScheme = if (global.dark) darkColorScheme() else lightColorScheme()) {
+    AppTheme(global) {
         Column(Modifier.fillMaxSize()) {
             LazyColumn(
                 modifier = Modifier.weight(1f), contentPadding = PaddingValues(top = 12.dp, bottom = 14.dp),

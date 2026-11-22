@@ -1,3 +1,6 @@
 <paths>
     <cache-path name="shared_backups" path="shared-backups/"/>
+    <cache-path name="app_updates" path="app-updates/"/>
+    <cache-path name="mms_transfer" path="mms-transfer/"/>
+    <files-path name="protocol_photos" path="protocol-photos/"/>
 </paths>

@@ -23,6 +23,7 @@ Run as your regular user. Set ANDROID_HOME if your SDK is outside ~/Android/Sdk.
 Use --open to launch the app without running UI automation.
 Use --apk to test an already-built APK.
 Use --expect-onboarding to assert the first-run screen on a fresh AVD.
+If the installed app uses a different signing key, retry on a separate test AVD.
 HELP
 }
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -76,9 +77,7 @@ fi
 [[ -x "$emulator" && -x "$adb" && -f "$sdk/system-images/android-35/default/$abi/system.img" ]] ||
     fail "SDK packages are missing. Run sdkmanager --licenses and retry."
 
-build_requested=false
 if [[ -z "$apk" ]]; then
-    build_requested=true
     cd "$root"
     if [[ -x ./gradlew ]]; then
         ./gradlew assembleDebug
@@ -92,7 +91,6 @@ fi
 [[ -f "$apk" ]] || fail "APK not found at $apk"
 command -v python3 >/dev/null || fail "Python 3 is required for UI assertions."
 
-device=("$adb" -s "$serial")
 "$adb" start-server >/dev/null
 pid=""
 log=""
@@ -103,7 +101,7 @@ report_emulator_failure() {
             if "$installed"; then
                 printf 'The emulator is still running. Retry with --open to inspect the app manually.\n' >&2
             else
-                printf 'The emulator is still running with its previous app data.\n' >&2
+                printf 'The emulator %s is still running with its app data intact.\n' "$avd" >&2
             fi
         elif [[ -n "$pid" ]]; then
             printf 'Emulator log: %s\n' "$log" >&2
@@ -116,54 +114,82 @@ trap report_emulator_failure EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if "$adb" devices | awk -v serial="$serial" '$1 == serial { found=1 } END { exit !found }'; then
-    running="$("${device[@]}" emu avd name | tr -d '\r' | head -n1)"
-    [[ "$running" == "$avd" ]] || fail "$serial is running $running. Set FLUID_EMULATOR_PORT to an unused even port."
-else
-    if ! "$emulator" -list-avds | grep -Fxq "$avd"; then
-        [[ -x "$tools/avdmanager" ]] || fail "Install Android SDK Command-line Tools to create $avd."
-        "$tools/avdmanager" create avd --name "$avd" --package "$image" --device pixel_7 <<< no
+running_avd() {
+    "$adb" -s "$1" emu avd name | tr -d '\r' | sed -n '1p'
+}
+
+boot_emulator() {
+    local running deadline
+    serial="emulator-$port"
+    device=("$adb" -s "$serial")
+    booted=false
+    pid=""
+    if "$adb" devices | awk -v serial="$serial" '$1 == serial { found=1 } END { exit !found }'; then
+        running="$(running_avd "$serial")"
+        [[ "$running" == "$avd" ]] || fail "$serial is running $running. Set FLUID_EMULATOR_PORT to an unused even port."
+    else
+        if ! "$emulator" -list-avds | grep -Fxq "$avd"; then
+            [[ -x "$tools/avdmanager" ]] || fail "Install Android SDK Command-line Tools to create $avd."
+            "$tools/avdmanager" create avd --name "$avd" --package "$image" --device pixel_7 <<< no
+        fi
+        log="$(mktemp "${TMPDIR:-/tmp}/fluidmessages-emulator.XXXXXX")"
+        nohup "$emulator" -avd "$avd" -port "$port" "${emulator_args[@]}" >"$log" 2>&1 </dev/null &
+        pid=$!
     fi
-    log="$(mktemp "${TMPDIR:-/tmp}/fluidmessages-emulator.XXXXXX")"
-    nohup "$emulator" -avd "$avd" -port "$port" "${emulator_args[@]}" >"$log" 2>&1 </dev/null &
-    pid=$!
-fi
 
-deadline=$((SECONDS + boot_timeout))
-until [[ "$("${device[@]}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)" == 1 ]]; do
-    [[ -z "$pid" ]] || kill -0 "$pid" 2>/dev/null || fail "Emulator exited before booting."
-    (( SECONDS < deadline )) || fail "Emulator did not finish booting within $boot_timeout seconds."
-    sleep 2
-done
-booted=true
+    deadline=$((SECONDS + boot_timeout))
+    until [[ "$("${device[@]}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)" == 1 ]]; do
+        [[ -z "$pid" ]] || kill -0 "$pid" 2>/dev/null || fail "Emulator exited before booting."
+        (( SECONDS < deadline )) || fail "Emulator did not finish booting within $boot_timeout seconds."
+        sleep 2
+    done
+    booted=true
 
-"${device[@]}" shell input keyevent KEYCODE_WAKEUP
-"${device[@]}" shell wm dismiss-keyguard
+    "${device[@]}" shell input keyevent KEYCODE_WAKEUP
+    "${device[@]}" shell wm dismiss-keyguard
+}
+
+recovery_port() {
+    local candidate
+    while read -r candidate; do
+        if [[ "$(running_avd "$candidate" 2>/dev/null)" == "$avd" ]]; then
+            printf '%s\n' "${candidate#emulator-}"
+            return
+        fi
+    done < <("$adb" devices | awk '$1 ~ /^emulator-[0-9]+$/ { print $1 }')
+
+    python3 - <<'PY'
+import socket
+import sys
+
+for port in range(5554, 5683, 2):
+    try:
+        with socket.socket() as console, socket.socket() as adb:
+            console.bind(("127.0.0.1", port))
+            adb.bind(("127.0.0.1", port + 1))
+    except OSError:
+        continue
+    print(port)
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+boot_emulator
 if ! install_output="$("${device[@]}" install -r "$apk" 2>&1)"; then
-    printf '%s\n' "$install_output" >&2
     if [[ "$install_output" != *"INSTALL_FAILED_UPDATE_INCOMPATIBLE"* ]]; then
+        printf '%s\n' "$install_output" >&2
         fail "Android rejected the APK. FluidMessages was not updated."
     fi
-    "$build_requested" ||
-        fail "This APK uses a different key. Select an APK signed with the installed key or use a separate AVD."
-    # Only try a packaged copy of this build version. Never uninstall the existing app.
-    aapt="$sdk/build-tools/35.0.0/aapt"
-    [[ -x "$aapt" ]] ||
-        fail "APK keys differ and aapt is missing. Use --apk with an APK signed with the installed key."
-    built_package="$("$aapt" dump badging "$apk" | sed -n '1p')"
-    version="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<< "$built_package")"
-    [[ "$version" =~ ^[0-9]+([.][0-9]+)*$ ]] || fail "Could not identify a matching packaged build."
-    packaged="$root/dist/FluidMessages-$version-debug.apk"
-    [[ -f "$packaged" ]] ||
-        fail "No matching packaged build exists. Use --apk with an APK signed with the installed key, or use a separate AVD."
-    fallback_package="$("$aapt" dump badging "$packaged" | sed -n '1p')"
-    [[ "$fallback_package" == "$built_package" ]] || fail "The packaged APK does not match the local build version."
-    printf 'Local build key differs. Trying the packaged %s update.\n' "$version"
-    if ! install_output="$("${device[@]}" install -r "$packaged" 2>&1)"; then
+    old_avd="$avd"
+    avd="${avd}_local"
+    port="$(recovery_port)" || fail "No free emulator port is available for $avd."
+    printf 'Signing key differs on %s. Keeping its data and testing this APK on %s.\n' "$old_avd" "$avd"
+    boot_emulator
+    if ! install_output="$("${device[@]}" install -r "$apk" 2>&1)"; then
         printf '%s\n' "$install_output" >&2
-        fail "Android also rejected the packaged update. Use an APK signed with the installed key or a separate AVD."
+        fail "Could not install on $avd. If its signing key changed too, set FLUID_AVD to a new test AVD name and FLUID_EMULATOR_PORT to a free even port."
     fi
-    apk="$packaged"
 fi
 installed=true
 printf '%s\n' "$install_output"
@@ -263,7 +289,7 @@ fi
 tap_label "Settings" || fail "Could not open Settings."
 tap_label "Themes and appearance" || fail "Could not open the appearance editor."
 xml="$(ui)"
-[[ "$xml" == *"Sample conversation"* && "$xml" == *"Coffee at ten?"* ]] ||
+[[ "$xml" == *"Sample conversation"* && "$xml" == *"Coffee at ten?"* && "$xml" == *"Automated preview"* ]] ||
     fail "The sample conversation did not render."
 tap_label "Color theme" || fail "Could not open the primary theme dropdown."
 theme_xml="$(ui)"
@@ -291,6 +317,12 @@ if ! wait_visible "Automated color"; then
 fi
 wait_visible "RCS color (preview)" && wait_visible "Automated color" ||
     fail "The expanded RCS and automated color controls did not render."
+tap_label "RCS color (preview)" || fail "Could not open the RCS color choices."
+rcs_colors="$(ui)"
+for color in Indigo Pink Cyan Mint; do
+    [[ "$rcs_colors" == *"Apple $color"* ]] || fail "Missing a featured RCS color."
+done
+"${device[@]}" shell input keyevent KEYCODE_BACK
 tap_label "Customize colors" || fail "Could not collapse the custom color section."
 if ! tap_label "Close appearance editor" "Done"; then
     "${device[@]}" shell input keyevent KEYCODE_BACK
@@ -344,6 +376,13 @@ for (( index = 1; index < ${#setup_pages[@]}; index++ )); do
     after="${setup_pages[index]}"
     advance_setup "$before" "$after" || fail "Could not advance from $before to $after."
     if [[ "$after" == "Pick your colors" ]]; then
+        if ! wait_visible "SMS/RCS color mapping"; then
+            dimensions="$("${device[@]}" shell wm size | tail -1 | tr -d '\r')"
+            dimensions="${dimensions##*: }"
+            width="${dimensions%x*}"
+            height="${dimensions#*x}"
+            "${device[@]}" shell input swipe "$((width / 2))" "$((height * 4 / 5))" "$((width / 2))" "$((height / 2))" 440
+        fi
         tap_label "SMS/RCS color mapping" || fail "Setup is missing the optional transport palette."
         wait_visible "Green SMS · Blue RCS" || fail "Setup is missing the green SMS and blue RCS choice."
         "${device[@]}" shell input keyevent KEYCODE_BACK
@@ -363,6 +402,9 @@ wait_visible "Avery Brooks" || fail "The sample archive did not show its archive
 tap_label "Filters" && tap_label "Blocked" || fail "Could not open the sample blocked folder."
 wait_visible "Sam Rivera" || fail "The sample blocked folder did not show its fixture thread."
 tap_label "Filters" && tap_label "Inbox" || fail "Could not return to the sample inbox."
+tap_label "Trail Alerts" || fail "Could not open the automated sender preview."
+wait_visible "Reply STOP" && wait_visible 'text="STOP"' || fail "The sample opt-out pair did not render."
+tap_label "Back to messages" || fail "Could not leave the automated sender preview."
 tap_label "Jordan Ellis" || fail "Could not open the sample RCS thread."
 wait_visible "Sample RCS" || fail "The RCS preview did not render."
 tap_label "Jordan Ellis" || fail "Could not open conversation details."

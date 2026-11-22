@@ -16,9 +16,6 @@ import android.util.Base64;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -149,7 +146,7 @@ public final class BackupJob extends JobService {
             var file = java.io.File.createTempFile("fluid-cloud-", ".fmb", context.getCacheDir());
             try {
                 Backup.write(context, Uri.fromFile(file), options, password);
-                CloudBackup.upload(context, target, file, expectedOrigin);
+                CloudBackup.upload(context, target, file, expectedOrigin, BackupNames.fixed(prefs));
                 prefs.edit().putLong(cloudKey(target, "last"), System.currentTimeMillis()).apply();
             } finally { file.delete(); }
         } finally { activeCloud.remove(target); }
@@ -268,18 +265,48 @@ public final class BackupJob extends JobService {
         Uri tree = Uri.parse(selected);
         var resolver = context.getContentResolver();
         Uri parent = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
-        String time = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.ROOT).format(new Date());
-        String name = "FluidMessages_" + (folder.target() == null ? "" : folder.target().id + "_") + time + ".fmb";
-        Uri file = DocumentsContract.createDocument(resolver, parent, "application/octet-stream", name);
+        String fixed = BackupNames.fixed(prefs);
+        String resultName = fixed.isEmpty() ? BackupNames.suggest(prefs) : fixed;
+        Uri previous = fixed.isEmpty() ? null : namedDocument(context, tree, parent, fixed);
+        String stagingName = previous == null ? resultName : "FluidMessages_pending_" + java.util.UUID.randomUUID() + ".tmp";
+        Uri file = DocumentsContract.createDocument(resolver, parent, "application/octet-stream", stagingName);
         if (file == null) throw new IOException("Unable to create backup file");
+        Uri renamedPrevious = null;
         try {
             Backup.write(context, file, options, password);
+            if (previous != null) {
+                renamedPrevious = DocumentsContract.renameDocument(resolver, previous,
+                    "FluidMessages_previous_" + java.util.UUID.randomUUID() + ".fmb");
+                if (renamedPrevious == null) throw new IOException("This folder does not support replacing backups");
+                if (DocumentsContract.renameDocument(resolver, file, resultName) == null) {
+                    throw new IOException("Unable to replace the existing backup");
+                }
+            }
             prefs.edit().putLong(folder.key("last", "lastScheduledBackup"), System.currentTimeMillis()).apply();
         } catch (Exception error) {
+            if (renamedPrevious != null) {
+                try { DocumentsContract.renameDocument(resolver, renamedPrevious, resultName); }
+                catch (Exception ignored) {}
+            }
             try { DocumentsContract.deleteDocument(resolver, file); }
             catch (Exception ignored) {}
             throw error;
         }
+        if (renamedPrevious != null) {
+            try { DocumentsContract.deleteDocument(resolver, renamedPrevious); }
+            catch (Exception ignored) {}
+        }
+    }
+
+    private static Uri namedDocument(Context context, Uri tree, Uri parent, String name) {
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getDocumentId(parent));
+        String[] columns = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME};
+        try (var cursor = context.getContentResolver().query(children, columns, null, null, null)) {
+            if (cursor != null) while (cursor.moveToNext()) {
+                if (name.equals(cursor.getString(1))) return DocumentsContract.buildDocumentUriUsingTree(tree, cursor.getString(0));
+            }
+        }
+        return null;
     }
 
     private static SecretKey key() throws Exception {

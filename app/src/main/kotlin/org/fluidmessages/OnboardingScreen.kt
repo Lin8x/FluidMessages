@@ -37,9 +37,9 @@ object OnboardingScreen {
                 prefs.edit().putBoolean(key, value).apply()
                 appearance = Appearance.read(prefs)
             }
-            val scheme = appColorScheme(appearance)
             SideEffect { recolor.accept(appearance.canvas) }
-            MaterialTheme(colorScheme = scheme) {
+            AppTheme(appearance) {
+                val scheme = MaterialTheme.colorScheme
                 Column(Modifier.fillMaxSize().padding(top = 6.dp)) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween) {
@@ -88,6 +88,8 @@ object OnboardingScreen {
                                         MessageStyle.preset(prefs, it == "classic")
                                         appearance = Appearance.read(prefs)
                                     }
+                                    if (appearance.classic) Text("Automated also uses green.", color = scheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                             2 -> {
@@ -110,7 +112,8 @@ object OnboardingScreen {
                                 val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(),
                                     prefs.getString("token", "").orEmpty())
                                 SetupOptions(listOf("App lock" to "Use your phone’s screen lock to protect the inbox.",
-                                    "Web companion" to if (paired) "Set up" else "Not set up"))
+                                    "Web companion" to if (paired) "Set up" else "Not set up",
+                                    "Message protocols" to "Preview new formats first, or connect accounts through your companion."))
                             }
                             5 -> item {
                                 SetupOptions(listOf("Sample inbox" to "Try direct chats and a group chat with fictional contacts.",
@@ -119,11 +122,11 @@ object OnboardingScreen {
                         }
                     }
                     if (step == steps.lastIndex) {
-                        Button(onClick = sample::run, modifier = Modifier.fillMaxWidth().heightIn(min = 49.dp)) {
+                        AppButton(onClick = sample::run, modifier = Modifier.fillMaxWidth().heightIn(min = 49.dp)) {
                             Text("Open sample inbox")
                         }
                         TextButton(onClick = inbox::run, modifier = Modifier.fillMaxWidth()) { Text("Open my inbox") }
-                    } else Button(onClick = next::run, modifier = Modifier.fillMaxWidth().heightIn(min = 49.dp)) { Text("Continue") }
+                    } else AppButton(onClick = next::run, modifier = Modifier.fillMaxWidth().heightIn(min = 49.dp)) { Text("Continue") }
                 }
             }
         }

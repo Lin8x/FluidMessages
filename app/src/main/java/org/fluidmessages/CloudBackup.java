@@ -37,17 +37,22 @@ final class CloudBackup {
         } finally { connection.disconnect(); }
     }
 
-    static void upload(Context context, Target target, File file, String expectedOrigin) throws Exception {
+    static void upload(Context context, Target target, File file, String expectedOrigin, String fixedName) throws Exception {
         var connection = connect(context, "/" + target.id, "PUT", expectedOrigin);
         try {
             if (file.length() > MAX_BYTES) throw new IOException("Backup is too large for upload");
             connection.setDoOutput(true);
             connection.setRequestProperty("Content-Type", "application/octet-stream");
+            if (!fixedName.isEmpty()) connection.setRequestProperty("X-Fluid-Backup-Name", fixedName);
             connection.setFixedLengthStreamingMode(file.length());
             try (var input = new java.io.FileInputStream(file); var output = connection.getOutputStream()) {
                 input.transferTo(output);
             }
             require(connection, 201);
+            if (!fixedName.isEmpty()) try (var input = connection.getInputStream()) {
+                var result = new JSONObject(new String(input.readNBytes(4096), StandardCharsets.UTF_8));
+                if (!fixedName.equals(result.optString("name"))) throw new IOException("Update the companion to use fixed backup names");
+            }
         } finally { connection.disconnect(); }
     }
 

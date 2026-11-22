@@ -56,9 +56,45 @@ object SettingsPages {
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
             val appearance = Appearance.read(prefs)
-            MaterialTheme(colorScheme = appColorScheme(appearance)) {
+            AppTheme(appearance) {
                 if (header == null) SettingsCards(sections)
                 else SettingsCards(sections) { header(appearance) }
+            }
+        }
+        root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+    }
+
+    @JvmStatic
+    fun mountAbout(root: LinearLayout, prefs: SharedPreferences, version: String, build: Long, status: String,
+                   managed: Boolean, busy: Boolean, check: Runnable, github: Runnable, homepage: Runnable) {
+        val view = ComposeView(root.context)
+        view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+        view.setContent {
+            AppTheme(Appearance.read(prefs)) {
+                var automatic by remember { mutableStateOf(prefs.getBoolean("automaticUpdateChecks", true)) }
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(15.dp)) {
+                    item {
+                        PreferencesCard("Application") { PreferenceText("FluidMessages", "Version ${version} · Build ${build}") }
+                    }
+                    item {
+                        PreferencesCard("App updates") {
+                            if (managed) PreferenceText("Updates managed by your app store", "Open your store to get its latest release.")
+                            else SettingsSwitch("Check automatically", "Check GitHub once a day while the app is open.", automatic) {
+                                automatic = it
+                                prefs.edit().putBoolean("automaticUpdateChecks", it).apply()
+                            }
+                            if (status.isNotEmpty()) PreferenceText(status, "")
+                        }
+                    }
+                    if (!managed) item {
+                        AppButton(onClick = check::run, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                            Text("Check for updates")
+                        }
+                    }
+                    item { OutlinedButton(onClick = homepage::run, modifier = Modifier.fillMaxWidth()) { Text("FluidMessages website") } }
+                    item { OutlinedButton(onClick = github::run, modifier = Modifier.fillMaxWidth()) { Text("GitHub releases") } }
+                }
             }
         }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -70,9 +106,9 @@ object SettingsPages {
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
             val appearance = remember { Appearance.read(prefs) }
-            val scheme = appColorScheme(appearance)
             var exactTimes by remember { mutableStateOf(prefs.getBoolean("exactTimes", false)) }
-            MaterialTheme(colorScheme = scheme) {
+            AppTheme(appearance) {
+                val scheme = MaterialTheme.colorScheme
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(18.dp)) {
                     item {
@@ -101,13 +137,6 @@ object SettingsPages {
     }
 }
 
-internal fun appColorScheme(appearance: Appearance): ColorScheme {
-    val fill = Color(MessageStyle.filledControl(appearance.controls))
-    val ink = Color(MessageStyle.filledControlInk(appearance.controls))
-    return if (appearance.dark) darkColorScheme(primary = fill, onPrimary = ink)
-    else lightColorScheme(primary = fill, onPrimary = ink)
-}
-
 @Composable
 internal fun PreferencesCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     val scheme = MaterialTheme.colorScheme
@@ -129,13 +158,14 @@ internal fun PreferenceText(title: String, detail: String, modifier: Modifier = 
 @Composable
 internal fun SettingsSwitch(title: String, detail: String, checked: Boolean, changed: (Boolean) -> Unit) {
     val scheme = MaterialTheme.colorScheme
+    val fill = Color(MessageStyle.filledControl(LocalControlTint.current))
     val offset by animateDpAsState(if (checked) 21.dp else 3.dp, label = "Switch thumb")
     Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
         .toggleable(value = checked, role = Role.Switch, onValueChange = changed)
         .padding(horizontal = 15.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         PreferenceText(title, detail, Modifier.weight(1f).padding(end = 12.dp))
         Box(Modifier.size(51.dp, 31.dp)
-            .background(if (checked) scheme.primary else scheme.onSurface.copy(alpha = .25f), CircleShape),
+            .background(if (checked) fill else scheme.outline, CircleShape),
             contentAlignment = Alignment.CenterStart) {
             Box(Modifier.offset(x = offset).size(27.dp).background(Color.White, CircleShape))
         }

@@ -47,24 +47,24 @@ final class MessageStyle {
     }
 
     // Each theme defines independent light and dark colors for all major surfaces.
-    record Colors(int background, int sms, int rcs, int controls, int chrome) {}
+    record Colors(int background, int sms, int rcs, int controls, int chrome, int automated) {}
 
     enum Theme {
         FLUID("Fluid", null, null),
-        MIDNIGHT("Midnight", new Colors(0xf8f9fe, 0x0088ff, 0xff8d28, CLASSIC_BLUE, 0xeceefa),
-            new Colors(0x08080b, 0x0091ff, 0xff9230, CLASSIC_BLUE, 0x23242c)),
-        LAVENDER("Lavender", new Colors(0xfcf8ff, 0x7564d8, 0xc88330, 0x5c43b2, 0xefe7fa),
-            new Colors(0x15111e, 0x9481f4, 0xe5ab65, 0xc1a8ff, 0x2e2441)),
-        EVERGREEN("Evergreen", new Colors(0xf5fcf8, 0x2d9e78, 0xac8126, 0x176249, 0xe6f4ec),
-            new Colors(0x0d1814, 0x52c59a, 0xd3a846, 0x8bdabb, 0x1b372d)),
-        TIDELINE("Tideline", new Colors(0xf5fbff, 0x308fd3, 0xd37548, 0x225d97, 0xe4f2fa),
-            new Colors(0x0e1721, 0x54b4f6, 0xf5a370, 0x9fdaff, 0x21374a)),
-        EMBER("Ember", new Colors(0xfff9f1, 0xe28b48, 0xce6c6e, 0x923c24, 0xfaeee0),
-            new Colors(0x1c120e, 0xf1aa68, 0xf29194, 0xffbc8a, 0x38241b)),
-        LOVE("Love", new Colors(0xfff4f8, 0xc14770, 0x947029, 0x9b274f, 0xffe6ef),
-            new Colors(0x211018, 0xcf507f, 0xd6aa56, 0xffa6c2, 0x3d2231)),
-        ROSEWATER("Rosewater", new Colors(0xfff8fa, 0xd5779f, 0xb7784d, 0xa13567, 0xfbe9f0),
-            new Colors(0x1e1119, 0xf59abf, 0xd99d73, 0xffafd0, 0x3a222d));
+        MIDNIGHT("Midnight", new Colors(0xf8f9fe, 0x0088ff, defaultRcs(false, false), CLASSIC_BLUE, 0xeceefa, 0x34c759),
+            new Colors(0x08080b, 0x0091ff, defaultRcs(true, false), CLASSIC_BLUE, 0x23242c, 0x30d158)),
+        LAVENDER("Lavender", new Colors(0xfcf8ff, 0x7564d8, 0xc88330, 0x5c43b2, 0xefe7fa, 0x9750c4),
+            new Colors(0x15111e, 0x9481f4, 0xe5ab65, 0xc1a8ff, 0x2e2441, 0xba76f4)),
+        EVERGREEN("Evergreen", new Colors(0xf5fcf8, 0x2d9e78, 0xac8126, 0x176249, 0xe6f4ec, 0x298369),
+            new Colors(0x0d1814, 0x52c59a, 0xd3a846, 0x8bdabb, 0x1b372d, 0x48b38f)),
+        TIDELINE("Tideline", new Colors(0xf5fbff, 0x308fd3, 0xd37548, 0x225d97, 0xe4f2fa, 0x237e91),
+            new Colors(0x0e1721, 0x54b4f6, 0xf5a370, 0x9fdaff, 0x21374a, 0x46b5cb)),
+        EMBER("Ember", new Colors(0xfff9f1, 0xe28b48, 0xce6c6e, 0x923c24, 0xfaeee0, 0xb84e23),
+            new Colors(0x1c120e, 0xf1aa68, 0xf29194, 0xffbc8a, 0x38241b, 0xef8b55)),
+        LOVE("Love", new Colors(0xfff4f8, 0xc14770, 0x947029, 0x9b274f, 0xffe6ef, 0xa94278),
+            new Colors(0x211018, 0xcf507f, 0xd6aa56, 0xffa6c2, 0x3d2231, 0xe875b0)),
+        ROSEWATER("Rosewater", new Colors(0xfff8fa, 0xd5779f, 0xb7784d, 0xa13567, 0xfbe9f0, 0x98506d),
+            new Colors(0x1e1119, 0xf59abf, 0xd99d73, 0xffafd0, 0x3a222d, 0xd983a3));
 
         final String label;
         private final Colors light;
@@ -94,8 +94,16 @@ final class MessageStyle {
 
     static Colors fluidColors(boolean dark, boolean contrast) {
         return new Colors(dark ? 0xff101012 : Color.WHITE, Swatch.BLUE.color(dark, contrast),
-            Swatch.ORANGE.color(dark, contrast),
-            CLASSIC_BLUE, Swatch.GRAY_6.color(dark, contrast));
+            defaultRcs(dark, contrast),
+            CLASSIC_BLUE, Swatch.GRAY_6.color(dark, contrast), Swatch.GREEN.color(dark, contrast));
+    }
+
+    private static int defaultRcs(boolean dark, boolean contrast) {
+        int indigo = Swatch.INDIGO.color(dark, contrast);
+        int purple = Swatch.PURPLE.color(dark, contrast);
+        return Color.rgb((Color.red(indigo) + Color.red(purple) + 1) / 2,
+            (Color.green(indigo) + Color.green(purple) + 1) / 2,
+            (Color.blue(indigo) + Color.blue(purple) + 1) / 2);
     }
 
     private static Colors colorsOrFluid(SharedPreferences prefs) {
@@ -105,7 +113,7 @@ final class MessageStyle {
 
     static int sms(SharedPreferences prefs) {
         int base = opaque(colorsOrFluid(prefs).sms());
-        if (prefs.getBoolean("classicColors", false)) base = swatch(prefs, Swatch.GREEN);
+        if (prefs.getBoolean("classicColors", false)) base = Swatch.GREEN.color(prefs.getBoolean("dark", false), false);
         return resolve(prefs, "accent", base);
     }
 
@@ -116,7 +124,9 @@ final class MessageStyle {
     }
 
     static int automated(SharedPreferences prefs) {
-        return resolve(prefs, "automatedColor", swatch(prefs, Swatch.GREEN));
+        int base = prefs.getBoolean("classicColors", false)
+            ? Swatch.GREEN.color(prefs.getBoolean("dark", false), false) : opaque(colorsOrFluid(prefs).automated());
+        return resolve(prefs, "automatedColor", base);
     }
 
     static int canvas(SharedPreferences prefs) {
@@ -128,18 +138,53 @@ final class MessageStyle {
     }
 
     static int controls(SharedPreferences prefs) {
-        Colors colors = themeColors(prefs);
-        boolean darkCanvas = Color.luminance(canvas(prefs)) <= .27f;
+        Colors colors = theme(prefs).colors(textOn(canvas(prefs)) == Color.WHITE);
         int base = colors == null ? CLASSIC_BLUE : opaque(colors.controls());
-        // If a custom background crosses light/dark, use the readable blue for that background.
-        if (colors != null && theme(prefs) != Theme.MIDNIGHT && darkCanvas != prefs.getBoolean("dark", false)) {
-            base = Swatch.BLUE.color(darkCanvas, true);
-        }
         return resolve(prefs, "controlColor", base);
     }
 
     static int chrome(SharedPreferences prefs) {
         return resolve(prefs, "chromeColor", opaque(colorsOrFluid(prefs).chrome()));
+    }
+
+    record UiColors(int ink, int muted, int surface, int raised, int outline, int divider, int action) {}
+
+    static UiColors uiColors(SharedPreferences prefs) {
+        return uiColors(theme(prefs), canvas(prefs), controls(prefs), prefs.getBoolean("contrastColors", false));
+    }
+
+    static UiColors uiColors(Theme theme, int canvas, int controls, boolean contrast) {
+        int ink = textOn(canvas);
+        boolean dark = ink == Color.WHITE;
+        Colors colors = theme.colors(dark);
+        int tone = opaque((colors == null ? fluidColors(dark, contrast) : colors).chrome());
+        int surface = mix(canvas, tone, .72f);
+        int raised = tone;
+        int reference = (Color.luminance(canvas) > Color.luminance(raised)) == dark ? canvas : raised;
+        return new UiColors(ink, towardContrast(mix(ink, surface, .27f), reference, ink, 4.5),
+            surface, raised, towardContrast(mix(surface, ink, .37f), reference, ink, 3),
+            mix(surface, ink, .15f), towardContrast(controls, reference, ink, 4.5));
+    }
+
+    private static int mix(int from, int to, float amount) {
+        return Color.rgb(Math.round(Color.red(from) * (1 - amount) + Color.red(to) * amount),
+            Math.round(Color.green(from) * (1 - amount) + Color.green(to) * amount),
+            Math.round(Color.blue(from) * (1 - amount) + Color.blue(to) * amount));
+    }
+
+    private static int towardContrast(int color, int background, int ink, double minimum) {
+        boolean lighter = ink == Color.WHITE;
+        float base = Color.luminance(background);
+        int low = 0;
+        int high = 255;
+        while (low < high) {
+            int middle = (low + high) / 2;
+            float luminance = Color.luminance(mix(color, ink, middle / 255f));
+            double ratio = lighter ? (luminance + .05) / (base + .05) : (base + .05) / (luminance + .05);
+            if (ratio >= minimum) high = middle;
+            else low = middle + 1;
+        }
+        return mix(color, ink, low / 255f);
     }
 
     static int swatch(SharedPreferences prefs, Swatch color) {
@@ -159,7 +204,8 @@ final class MessageStyle {
 
     static void preset(SharedPreferences prefs, boolean classic) {
         prefs.edit().putBoolean("classicColors", classic)
-            .remove("accent").remove("accentSwatch").remove("rcsColor").remove("rcsColorSwatch").apply();
+            .remove("accent").remove("accentSwatch").remove("rcsColor").remove("rcsColorSwatch")
+            .remove("automatedColor").remove("automatedColorSwatch").apply();
     }
 
     static int textOn(int background) {

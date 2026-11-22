@@ -6,6 +6,11 @@ import android.content.Intent;
 
 public final class MmsDelivery extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
-        SmsDelivery.notify(context, "MMS received · downloads unavailable in this build", "");
+        var pending = goAsync();
+        new Thread(() -> {
+            try { MmsTransport.retrieve(context, intent.getByteArrayExtra("data"), intent.getIntExtra("subscription", -1)); }
+            catch (Exception error) { SmsDelivery.notify(context, "Could not download MMS", ""); }
+            finally { pending.finish(); }
+        }, "fluid-mms-download").start();
     }
 }

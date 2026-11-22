@@ -12,6 +12,8 @@ import android.telephony.SubscriptionManager;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 
 final class SmsStore {
     private static final Uri SMS = Telephony.Sms.CONTENT_URI;
@@ -53,8 +55,8 @@ final class SmsStore {
     }
 
     static void send(Context context, String address, String body, int sim) {
-        if (address == null || !address.matches("[+0-9*#(). -]{1,40}") || !address.matches(".*[0-9].*")
-                || body == null || body.isBlank() || body.length() > 1600) {
+        MessageProtocol.SMS.requireEnabled(context);
+        if (!validRecipient(address) || body == null || body.isBlank() || body.length() > 1600) {
             throw new IllegalArgumentException("Enter a phone number and 1–1,600 characters");
         }
         if (sim < 0) sim = SubscriptionManager.getDefaultSmsSubscriptionId();
@@ -75,6 +77,22 @@ final class SmsStore {
             updateType(context, uri, Telephony.Sms.MESSAGE_TYPE_FAILED);
             throw error;
         }
+    }
+
+    static List<String> recipients(String input) {
+        var addresses = new LinkedHashMap<String, String>();
+        for (String part : input.split("[,;\\n]")) {
+            String address = part.trim();
+            if (address.isEmpty()) continue;
+            if (!validRecipient(address)) throw new IllegalArgumentException("Enter valid phone numbers");
+            addresses.putIfAbsent(address.replaceAll("[(). -]", ""), address);
+        }
+        if (addresses.isEmpty()) throw new IllegalArgumentException("Enter a phone number");
+        return List.copyOf(addresses.values());
+    }
+
+    static boolean validRecipient(String address) {
+        return address != null && address.matches("[+0-9*#(). -]{1,40}") && address.matches(".*[0-9].*");
     }
 
     static void delete(Context context, long id, String address) {

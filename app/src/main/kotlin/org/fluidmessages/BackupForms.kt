@@ -44,7 +44,7 @@ object BackupForms {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
-            MaterialTheme(colorScheme = appColorScheme(Appearance.read(prefs))) {
+            AppTheme(Appearance.read(prefs)) {
                 BackupForm(mode, smsAllowed, defaults, submit::accept)
             }
         }
@@ -56,7 +56,7 @@ object BackupForms {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
-            MaterialTheme(colorScheme = appColorScheme(Appearance.read(prefs))) {
+            AppTheme(Appearance.read(prefs)) {
                 var working by remember { mutableStateOf(false) }
                 Column(Modifier.fillMaxSize().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
                     Text("Items selected for restore", color = MaterialTheme.colorScheme.onSurface,
@@ -68,7 +68,7 @@ object BackupForms {
                     }
                     Text("Existing messages are checked for duplicates.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.weight(1f))
-                    Button(onClick = { working = true; restore.run() }, enabled = !working && summary.isNotEmpty(),
+                    AppButton(onClick = { working = true; restore.run() }, enabled = !working && summary.isNotEmpty(),
                         modifier = Modifier.fillMaxWidth()) { Text(if (working) "Restoring…" else "Restore selected items") }
                 }
             }
@@ -178,7 +178,7 @@ private fun BackupForm(mode: BackupFormMode, smsAllowed: Boolean, defaults: Back
             }
         }
         if (error.isNotEmpty()) Text(error, color = scheme.error, modifier = Modifier.padding(bottom = 7.dp))
-        Button(onClick = {
+        AppButton(onClick = {
             error = when {
                 scheduled && (m > 59 || interval !in 15..10080) -> "Choose an interval from 15 minutes to 7 days."
                 categories == 0 -> "Choose at least one item."

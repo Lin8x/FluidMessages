@@ -34,8 +34,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -47,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -77,7 +76,9 @@ object ThemeEditor {
 private const val SAVED_PALETTES = "savedColorThemes"
 private const val ACTIVE_PALETTE = "activeColorTheme"
 private const val PALETTE_PREFIX = "custom:"
-private val colorRoles = listOf("accent", "rcsColor", "automatedColor", "incoming", "canvas", "chromeColor", "controlColor")
+private val internetColors = listOf(MessageProtocol.EMAIL, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.IRC)
+private fun colorKey(protocol: MessageProtocol) = protocol.key() + "Color"
+private val colorRoles = internetColors.map(::colorKey) + listOf("accent", "rcsColor", "automatedColor", "incoming", "canvas", "chromeColor", "controlColor")
 private val paletteKeys = listOf("colorTheme", "dark", "classicColors", "contrastColors") + colorRoles +
     colorRoles.map { it + "Swatch" }
 
@@ -131,6 +132,7 @@ internal data class Appearance(
     val size: Int,
     val padding: Int,
     val speed: Int,
+    val protocolColors: Map<MessageProtocol, Int>,
 ) {
     companion object {
         fun read(prefs: SharedPreferences): Appearance {
@@ -157,6 +159,12 @@ internal data class Appearance(
                 size = prefs.getInt("size", 16).coerceIn(12, 28),
                 padding = prefs.getInt("padding", 12).coerceIn(6, 24),
                 speed = prefs.getInt("speed", 220).coerceIn(0, 800),
+                protocolColors = internetColors.mapNotNull { protocol ->
+                    val key = colorKey(protocol)
+                    val value = MessageStyle.selection(prefs, key)?.color(dark, prefs.getBoolean("contrastColors", false))
+                        ?: prefs.getInt(key, 0).takeIf { prefs.contains(key) }
+                    value?.let { protocol to it }
+                }.toMap(),
             )
         }
     }
@@ -185,9 +193,9 @@ private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit) {
         change { putString(SAVED_PALETTES, library.toString()).putString(ACTIVE_PALETTE, name) }
         savePalette = false
     }
-    val scheme = appColorScheme(appearance)
     SideEffect { recolor(appearance.canvas) }
-    MaterialTheme(colorScheme = scheme) {
+    AppTheme(appearance) {
+        val scheme = MaterialTheme.colorScheme
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(vertical = 12.dp),
@@ -227,12 +235,17 @@ private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit) {
                         change { putBoolean("contrastColors", it == "increased") }
                     }
                     ColorDropdown("SMS color", "accent", appearance.accent, appearance, prefs, ::change)
-                    ColorDropdown("RCS color (preview)", "rcsColor", appearance.rcs, appearance, prefs, ::change)
+                    ColorDropdown("RCS color (preview)", "rcsColor", appearance.rcs, appearance, prefs, ::change,
+                        listOf(MessageStyle.Swatch.INDIGO, MessageStyle.Swatch.PINK, MessageStyle.Swatch.CYAN, MessageStyle.Swatch.MINT))
                     ColorDropdown("Automated color", "automatedColor", appearance.automated, appearance, prefs, ::change)
                     ColorDropdown("Incoming bubble color", "incoming", appearance.incoming, appearance, prefs, ::change)
                     ColorDropdown("Background color", "canvas", appearance.canvas, appearance, prefs, ::change)
                     ColorDropdown("Buttons and unread indicators", "controlColor", appearance.controls, appearance, prefs, ::change)
                     ColorDropdown("Toolbar and composer tint", "chromeColor", appearance.chrome, appearance, prefs, ::change)
+                    for (protocol in internetColors) {
+                        ColorDropdown(protocol.label + " color", colorKey(protocol), protocol.tint(appearance).toArgb(),
+                            appearance, prefs, ::change)
+                    }
                 }
             }
             item {
@@ -357,7 +370,7 @@ internal fun ThemeDropdown(
     Box(Modifier.fillMaxWidth()) {
         Row(
             Modifier.fillMaxWidth().heightIn(min = 60.dp).clip(RoundedCornerShape(14.dp))
-                .background(scheme.onSurface.copy(alpha = .055f))
+                .background(scheme.surfaceContainerLow)
                 .clickable(role = Role.Button, onClickLabel = "Choose $label") { expanded = true }
                 .semantics {
                     contentDescription = label
@@ -406,15 +419,19 @@ private fun ColorDot(value: Int) {
 private fun ColorDropdown(
     label: String, key: String, value: Int, appearance: Appearance, prefs: SharedPreferences,
     change: (SharedPreferences.Editor.() -> Unit) -> Unit,
+    featured: List<MessageStyle.Swatch> = emptyList(),
 ) {
     val swatch = MessageStyle.selection(prefs, key)
     val custom = prefs.contains(key) && swatch == null
     var editingHex by remember(swatch, custom) { mutableStateOf(false) }
     var editingColor by remember { mutableStateOf(false) }
-    val options = listOf(Choice("default", "Theme default", if (!custom && swatch == null) value else null),
+    val options = listOf(Choice("default", "Theme default", if (!custom && swatch == null) value else null)) +
+        featured.map { Choice(it.name, "Apple ${it.label}", it.color(appearance.dark, appearance.contrast)) } +
+        listOf(
             Choice("visual", "Custom color", if (custom) value else null),
             Choice("custom", "Enter a hex code")) +
-        MessageStyle.Swatch.values().map { Choice(it.name, it.label, it.color(appearance.dark, appearance.contrast)) }
+        MessageStyle.Swatch.values().filterNot { it in featured }
+            .map { Choice(it.name, it.label, it.color(appearance.dark, appearance.contrast)) }
     Column {
         ThemeDropdown(label, swatch?.name ?: if (custom) "visual" else "default", options, appearance.speed) { choice ->
             if (choice == "visual") {
@@ -468,9 +485,9 @@ internal fun SampleConversation(appearance: Appearance) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Sample conversation", color = readableOn(canvas), fontWeight = FontWeight.Medium)
             SampleBubble("Coffee at ten?", incoming, radius, appearance, Modifier.align(Alignment.Start))
-            SampleBubble("See you there2!", sms, radius, appearance, Modifier.align(Alignment.End), outgoing = true)
+            SampleBubble("See you there!", sms, radius, appearance, Modifier.align(Alignment.End), outgoing = true)
             SampleBubble("RCS preview", rcs, radius, appearance, Modifier.align(Alignment.End), outgoing = true)
-            SampleBubble("Auto preview", automated, radius, appearance, Modifier.align(Alignment.End), outgoing = true)
+            SampleBubble("Automated preview", automated, radius, appearance, Modifier.align(Alignment.End), outgoing = true)
         }
     }
 }

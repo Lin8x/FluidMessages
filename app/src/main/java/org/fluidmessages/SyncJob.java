@@ -52,18 +52,27 @@ public final class SyncJob extends JobService {
         String token = preferences.getString("token", "");
         if (!CloudBackup.paired(url, token) || !preferences.getBoolean("syncSms", true)
             || !context.getSystemService(RoleManager.class).isRoleHeld(RoleManager.ROLE_SMS)) return;
-        post(url, token, "sync", new JSONObject().put("messages", SmsStore.read(context, 2000)));
+        publishInbox(context, preferences, url, token);
+        boolean submitted = false;
         for (int count = 0; count < 10 && !Thread.currentThread().isInterrupted(); count++) {
             JSONObject job = post(url, token, "claim", new JSONObject()).optJSONObject("job");
             if (job == null) break;
             String state = "submitted";
             try {
                 SmsStore.send(context, job.getString("address"), job.getString("body"), preferences.getInt("sim", -1));
+                submitted = true;
             } catch (Exception error) {
                 state = "failed";
             }
             post(url, token, "result", new JSONObject().put("id", job.getLong("id")).put("state", state));
         }
+        if (submitted && !Thread.currentThread().isInterrupted()) publishInbox(context, preferences, url, token);
+    }
+
+    private static void publishInbox(Context context, android.content.SharedPreferences prefs, String url, String token) throws Exception {
+        var messages = SmsStore.read(context, 2000);
+        post(url, token, "sync", new JSONObject().put("messages", messages)
+            .put("appearance", CompanionAppearance.snapshot(prefs, messages)));
     }
 
     private static JSONObject post(String root, String token, String endpoint, JSONObject data) throws Exception {

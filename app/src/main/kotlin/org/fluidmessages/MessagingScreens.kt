@@ -1,5 +1,11 @@
 package org.fluidmessages
 
+import android.graphics.ImageDecoder
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+
 import android.content.SharedPreferences
 import android.widget.LinearLayout
 import androidx.compose.animation.core.Animatable
@@ -36,6 +42,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -63,6 +71,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.function.Consumer
+import java.util.function.BiConsumer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 internal data class ThreadRow @JvmOverloads constructor(
     val id: String,
@@ -73,6 +84,9 @@ internal data class ThreadRow @JvmOverloads constructor(
     val unread: Boolean,
     val pinned: Boolean,
     val photo: Int = 0,
+    val photoUri: Uri? = null,
+    val photoRevision: Int = 0,
+    val protocol: String = "",
 )
 
 internal data class ChatLine @JvmOverloads constructor(
@@ -84,12 +98,16 @@ internal data class ChatLine @JvmOverloads constructor(
     val time: String,
     val author: String? = null,
     val reactionTarget: String? = null,
+    val photo: Uri? = null,
+    val format: MessageProtocol? = null,
 )
 
 private data class Palette(val appearance: Appearance) {
     val bg = Color(appearance.canvas)
-    val ink = if (bg.luminance() > .27f) Color(0xff151821) else Color(0xfff5f7fa)
-    val blue = Color(appearance.controls)
+    private val ui = appearance.uiColors
+    val ink = Color(ui.ink())
+    val action = Color(ui.action())
+    private val controlTint = Color(appearance.controls)
     private val tint = Color(appearance.chrome)
     val toolbar = when (appearance.toolbarFinish) {
         "floating" -> tint.copy(alpha = appearance.chromeOpacity / 100f)
@@ -102,10 +120,10 @@ private data class Palette(val appearance: Appearance) {
     val toolbarAction = coloredActionAgainst(toolbarBackground)
 
     private fun coloredActionAgainst(background: Color): Color {
-        val light = maxOf(blue.red, blue.green, blue.blue)
-        val dark = minOf(blue.red, blue.green, blue.blue)
+        val light = maxOf(controlTint.red, controlTint.green, controlTint.blue)
+        val dark = minOf(controlTint.red, controlTint.green, controlTint.blue)
         // A toolbar action needs a visible tint and at least 3:1 contrast against its surface.
-        if (light - dark >= .10f && contrast(blue, background) >= 3f) return blue
+        if (light - dark >= .10f && contrast(controlTint, background) >= 3f) return controlTint
         val standardBlue = Color(MessageStyle.Swatch.BLUE.color(background.luminance() <= .27f, true))
         if (contrast(standardBlue, background) >= 3f) return standardBlue
         val navy = Color(0xff00346d)
@@ -118,9 +136,9 @@ private data class Palette(val appearance: Appearance) {
         val b = background.luminance()
         return (maxOf(a, b) + .05f) / (minOf(a, b) + .05f)
     }
-    val muted = ink.copy(alpha = .70f)
-    val edge = ink.copy(alpha = .12f)
-    val wash = ink.copy(alpha = .055f)
+    val muted = Color(ui.muted())
+    val edge = Color(ui.divider())
+    val wash = Color(ui.surface())
     val incoming = Color(appearance.incoming)
     val sms = Color(appearance.accent)
     val rcs = Color(appearance.rcs)
@@ -142,6 +160,7 @@ internal class InboxScreen(
     private val connect: Runnable,
     private val open: Consumer<String>,
     private val more: Consumer<String>,
+    private val details: Consumer<String>,
 ) {
     private var search by mutableStateOf(initialSearch)
     var threads by mutableStateOf(emptyList<ThreadRow>())
@@ -214,7 +233,7 @@ internal class InboxScreen(
                                     bottom = if (dock) 87.dp else 16.dp),
                             ) {
                                 items(threads, key = { it.id }) { thread ->
-                                    ConversationRow(thread, palette, { open.accept(thread.id) },
+                                    ConversationRow(thread, palette, prefs.getBoolean("protocolTags", false), { open.accept(thread.id) }, { details.accept(thread.id) },
                                         if (sample) null else ({ more.accept(thread.id) }))
                                 }
                             }
@@ -253,11 +272,8 @@ private fun WelcomeCard(palette: Palette, connect: Runnable, sample: Runnable) {
         Text("Set up your inbox", color = palette.ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
         Text("Choose FluidMessages as your default SMS app to view conversations and send texts.",
             color = palette.muted, style = MaterialTheme.typography.bodyLarge)
-        Button(onClick = connect::run, colors = ButtonDefaults.buttonColors(
-            containerColor = Color(MessageStyle.filledControl(palette.appearance.controls)),
-            contentColor = Color(MessageStyle.filledControlInk(palette.appearance.controls)),
-        )) { Text("Set as default SMS app") }
-        TextButton(onClick = sample::run) { Text("Open sample inbox", color = palette.blue) }
+        AppButton(onClick = connect::run) { Text("Set as default SMS app") }
+        TextButton(onClick = sample::run) { Text("Open sample inbox") }
     }
 }
 
@@ -270,7 +286,7 @@ private fun SearchBox(search: String, palette: Palette, inDock: Boolean = false,
         onValueChange = change,
         singleLine = true,
         textStyle = TextStyle(color = ink, fontSize = 16.sp),
-        cursorBrush = SolidColor(palette.blue),
+        cursorBrush = SolidColor(palette.action),
         modifier = Modifier.fillMaxWidth().padding(top = if (inDock) 0.dp else 13.dp, bottom = if (inDock) 0.dp else 5.dp)
             .semantics { contentDescription = "Search messages" },
         decorationBox = { inner ->
@@ -294,7 +310,7 @@ private fun SearchBox(search: String, palette: Palette, inDock: Boolean = false,
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ConversationRow(thread: ThreadRow, palette: Palette, open: () -> Unit, menu: (() -> Unit)?) {
+private fun ConversationRow(thread: ThreadRow, palette: Palette, showProtocol: Boolean, open: () -> Unit, details: () -> Unit, menu: (() -> Unit)?) {
     val height = when (palette.appearance.density) {
         "compact" -> 64.dp
         "roomy" -> 91.dp
@@ -308,9 +324,13 @@ private fun ConversationRow(thread: ThreadRow, palette: Palette, open: () -> Uni
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.width(10.dp)) {
-                if (thread.unread) Box(Modifier.size(6.dp).background(palette.blue, CircleShape))
+                if (thread.unread) Box(Modifier.size(6.dp).background(palette.inboxAction, CircleShape))
             }
-            Avatar(thread.initials, thread.name, 48, thread.photo)
+            Box(Modifier.clip(CircleShape).clickable(onClick = details).semantics {
+                contentDescription = "Contact info for ${thread.name}"
+            }) {
+                Avatar(thread.initials, thread.name, 48, thread.photo, thread.photoUri, thread.photoRevision)
+            }
             Column(Modifier.weight(1f).padding(start = 11.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -322,6 +342,7 @@ private fun ConversationRow(thread: ThreadRow, palette: Palette, open: () -> Uni
                     Spacer(Modifier.width(6.dp))
                     DrawGlyph(Glyph.Forward, palette.muted, Modifier.size(12.dp))
                 }
+                if (showProtocol) Text(thread.protocol.ifBlank { "SMS" }, color = palette.action, fontSize = 11.sp)
                 Text(thread.preview, Modifier.padding(top = 3.dp, end = 15.dp), color = palette.muted,
                     fontSize = 15.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
@@ -330,7 +351,7 @@ private fun ConversationRow(thread: ThreadRow, palette: Palette, open: () -> Uni
     }
 }
 
-internal class ConversationScreen(
+internal class ConversationScreen @JvmOverloads constructor(
     root: LinearLayout,
     prefs: SharedPreferences,
     profile: ChatProfile,
@@ -344,14 +365,18 @@ internal class ConversationScreen(
     private val details: Runnable,
     private val more: Runnable?,
     private val chooseSim: Runnable?,
-    private val forward: Consumer<String>,
+    private val forward: BiConsumer<String, Uri?>,
     private val delete: Consumer<ChatLine>,
     private val send: java.util.function.Predicate<String>?,
     private val sampleMembers: List<String>,
     private val sendSample: SampleSend?,
     private val photo: Int,
+    private val photoUri: Uri? = null,
+    private val routing: ChatRouting? = null,
+    private val groupMembers: List<GroupMember> = emptyList(),
 ) {
     var draft by mutableStateOf("")
+    var draftPhoto by mutableStateOf<Uri?>(null)
     private var replyTo by mutableStateOf<ChatLine?>(null)
     private val exactTimes = prefs.getBoolean("exactTimes", false)
     var sim by mutableStateOf(initialSim)
@@ -361,17 +386,27 @@ internal class ConversationScreen(
 
     init {
         mount(root, prefs, profile) { palette ->
-            val categoryColor = when {
-                sample && transport == "RCS" -> palette.rcs
-                senderStyle == SenderStyle.AUTOMATED -> Color(palette.appearance.automated)
-                else -> null
+            val active = routing?.active ?: MessageProtocol.parse(transport)
+            val blocked = active.disabledReason(prefs).ifEmpty { routing?.unavailable.orEmpty() }
+            val categoryColor = if (routing != null && senderStyle != SenderStyle.AUTOMATED)
+                active.tint(palette.appearance) else when (senderStyle) {
+                SenderStyle.AUTOMATED -> Color(palette.appearance.automated)
+                SenderStyle.RCS -> palette.rcs
+                SenderStyle.SMS -> palette.sms
             }
-            val sendColor = profile.outgoing()?.let { Color(it) } ?: categoryColor ?: palette.sms
+            val sendColor = profile.outgoing()?.let { Color(it) } ?: categoryColor
             val receiveColor = palette.incoming
             var sendAs by remember { mutableStateOf<String?>(null) }
-            val group = sampleMembers.size > 1
-            fun submit(body: String, reactionTarget: String? = null): Boolean {
-                return sendSample?.send(body, sendAs, reactionTarget) ?: send?.test(body) ?: false
+            val group = sampleMembers.size > 1 || groupMembers.size > 1
+            val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) {
+                if (it != null && (sample || routing?.attachments == true)) draftPhoto = it
+            }
+            fun submit(body: String, reactionTarget: String? = null, attachment: Uri? = null): Boolean {
+                if (blocked.isNotEmpty()) {
+                    error = blocked
+                    return false
+                }
+                return sendSample?.send(body, sendAs, reactionTarget, attachment) ?: send?.test(body) ?: false
             }
             val messages = remember(lines) { foldSmsReactions(lines) }
             val composerFocus = remember { FocusRequester() }
@@ -396,23 +431,54 @@ internal class ConversationScreen(
                         Row(Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
                             .clickable(onClickLabel = "Conversation details") { details.run() },
                             verticalAlignment = Alignment.CenterVertically) {
-                            Avatar(initials, name, 39, photo)
+                            Avatar(initials, name, 39, photo, photoUri)
                             Column(Modifier.padding(start = 10.dp)) {
                             Text(name, fontSize = 17.sp, color = chromeInk, fontWeight = FontWeight.SemiBold,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
                             val mode = when {
-                                group -> "Sample group · ${sampleMembers.size + 1} members"
-                                sample -> "Sample $transport"
-                                else -> transport
+                                sample && group -> "Sample group · ${sampleMembers.size + 1} members"
+                                group -> "${groupMembers.size + 1} members · ${active.label}"
+                                sample -> "Sample ${routing?.active?.label ?: transport}"
+                                else -> routing?.active?.label ?: transport
                             }
-                            val category = if (transport == "SMS" && senderStyle == SenderStyle.AUTOMATED) " · Automated sender" else ""
+                            val category = when {
+                                senderStyle == SenderStyle.AUTOMATED -> " · Automated sender"
+                                sample && group && active == MessageProtocol.RCS -> " · RCS preview"
+                                sample && group -> " · ${active.label}"
+                                else -> ""
+                            }
                             Text(mode + category,
                                 color = chromeInk.copy(alpha = .72f), fontSize = 12.sp)
+                            if (prefs.getBoolean("protocolPrivacy", false)) {
+                                Text(active.privacy, color = chromeInk.copy(alpha = .80f), fontSize = 11.sp)
+                            }
                             }
                         }
                         if (more != null) ActionIcon("Conversation options", Glyph.More, palette.toolbarAction) { more.run() }
                     }
                     if (!floating) HorizontalDivider(color = palette.edge)
+                    if (routing != null && routing.formats.size > 1 && routing.switch != null) {
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                            var expanded by remember { mutableStateOf(false) }
+                            if (routing.combined) Text("Send via", color = palette.muted, fontSize = 12.sp)
+                            for (format in routing.formats) {
+                                FilterChip(selected = format == active, onClick = { routing.switch.accept(format) },
+                                    label = { Text(format.label) })
+                            }
+                            if (routing.setDefault != null) Box {
+                                TextButton(onClick = { expanded = true }) { Text("Default protocol") }
+                                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                    for (format in routing.formats) DropdownMenuItem(
+                                        text = { Text(format.label) }, onClick = {
+                                            expanded = false
+                                            routing.setDefault.accept(format)
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
                     val list = rememberLazyListState()
                     val scrollScope = rememberCoroutineScope()
                     LaunchedEffect(messages.size) {
@@ -451,19 +517,23 @@ internal class ConversationScreen(
                                 Text(line.author, Modifier.padding(start = 9.dp, top = 5.dp, bottom = 3.dp),
                                     color = palette.muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             }
-                            MessageBubble(line, palette, if (line.outgoing) sendColor else receiveColor, grouped, continues, animatedId == line.id,
+                            if (routing?.combined == true && line.format != null) {
+                                Text(line.format.label, Modifier.padding(horizontal = 9.dp), color = palette.muted, fontSize = 11.sp)
+                            }
+                            val lineColor = line.format?.let { profile.outgoing()?.let(::Color) ?: it.tint(palette.appearance) } ?: sendColor
+                            MessageBubble(line, palette, if (line.outgoing) lineColor else receiveColor, grouped, continues, animatedId == line.id,
                                 exactTimes, display.reactions, quoted, forwarded, sourceIndex?.let { target ->
                                     { scrollScope.launch {
                                         val listIndex = target + if (error != null) 1 else 0
                                         if (palette.appearance.speed == 0) list.scrollToItem(listIndex)
                                         else list.animateScrollToItem(listIndex)
                                     }; Unit }
-                                }, { replyTo = line }, {
+                                }, { if (blocked.isEmpty()) replyTo = line else error = blocked }, {
                                     val own = if (sample) line.senderKey() == sendAs else line.outgoing
                                     submit(emojiReactionSms(it, line.text, own), line.id)
                                 },
                                 { forward.accept(if (forwarded != null) line.text else
-                                    forwardAsSms(line.text, if (line.outgoing) "Me" else line.author ?: name)) },
+                                    forwardAsSms(line.text, if (line.outgoing) "Me" else line.author ?: name), line.photo) },
                                 { delete.accept(line) })
                         }
                     }
@@ -476,7 +546,7 @@ internal class ConversationScreen(
                             ActionIcon("Cancel reply", Glyph.Close, palette.toolbarAction) { replyTo = null }
                         }
                     }
-                    if (sampleMembers.isNotEmpty()) {
+                    if (sampleMembers.isNotEmpty() && blocked.isEmpty()) {
                         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically) {
@@ -489,12 +559,26 @@ internal class ConversationScreen(
                             }
                         }
                     }
-                    Composer(draft, { draft = it }, palette, sendColor,
+                    draftPhoto?.let { photo ->
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            AttachmentPhoto(photo, Modifier.size(60.dp), "Selected photo")
+                            Text("Photo ready to send", Modifier.weight(1f).padding(start = 10.dp), color = palette.ink)
+                            ActionIcon("Remove photo", Glyph.Close, palette.toolbarAction) { draftPhoto = null }
+                        }
+                    }
+                    if (blocked.isNotEmpty()) {
+                        Text(blocked, Modifier.fillMaxWidth().padding(16.dp), color = palette.muted, fontSize = 14.sp)
+                    } else Composer(draft, { draft = it }, palette, sendColor,
                         sendAs?.let { "Message from $it" } ?: if (sample) "Practice message" else "Text message",
-                        sim, chooseSim, composerFocus) {
-                        val body = replyTo?.let { "Reply to “${messageExcerpt(it.text, 240)}”\n\n$draft" } ?: draft
-                        if (submit(body)) {
+                        sim, chooseSim, composerFocus, draftPhoto != null,
+                        if ((sample && active != MessageProtocol.IRC) || routing?.attachments == true)
+                            { { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } }
+                        else null) {
+                        val caption = if (draftPhoto != null) draft.ifBlank { "Photo" } else draft
+                        val body = replyTo?.let { "Reply to “${messageExcerpt(it.text, 240)}”\n\n$caption" } ?: caption
+                        if (submit(body, attachment = draftPhoto)) {
                             draft = ""
+                            draftPhoto = null
                             replyTo = null
                         }
                     }
@@ -505,7 +589,7 @@ internal class ConversationScreen(
 }
 
 internal fun interface SampleSend {
-    fun send(text: String, author: String?, reactionTarget: String?): Boolean
+    fun send(text: String, author: String?, reactionTarget: String?, attachment: Uri?): Boolean
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -583,6 +667,9 @@ private fun MessageBubble(
                     ) }
                     .padding(horizontal = padding.dp, vertical = (padding * .72f).dp)) {
                     val foreground = bubbleTextColor(chosenFill)
+                    line.photo?.let {
+                        AttachmentPhoto(it, Modifier.width(220.dp).height(132.dp).padding(bottom = 5.dp), "Message photo")
+                    }
                     if (quoted != null) {
                         val quoteModifier = Modifier
                             .padding(bottom = 7.dp).clip(RoundedCornerShape(9.dp))
@@ -722,16 +809,46 @@ internal fun Modifier.bubbleTail(fill: Color, enabled: Boolean, outgoing: Boolea
 }
 
 @Composable
+private fun AttachmentPhoto(uri: Uri, modifier: Modifier, description: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val bitmap by produceState<ImageBitmap?>(null, uri) {
+        value = withContext(Dispatchers.IO) {
+            try {
+                val resource = if (uri.scheme == "android.resource" && uri.authority == context.packageName)
+                    uri.lastPathSegment?.toIntOrNull() else null
+                val source = if (resource != null) ImageDecoder.createSource(context.resources, resource)
+                    else ImageDecoder.createSource(context.contentResolver, uri)
+                ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    val size = info.size
+                    val scale = (900f / maxOf(size.width, size.height)).coerceAtMost(1f)
+                    decoder.setTargetSize((size.width * scale).toInt().coerceAtLeast(1),
+                        (size.height * scale).toInt().coerceAtLeast(1))
+                }.asImageBitmap()
+            } catch (_: java.io.IOException) { null }
+              catch (_: SecurityException) { null }
+              catch (_: IllegalArgumentException) { null }
+        }
+    }
+    bitmap?.let {
+        Image(it, description, modifier.clip(RoundedCornerShape(11.dp)), contentScale = ContentScale.Crop)
+    } ?: Box(modifier, contentAlignment = Alignment.Center) { Text("Photo", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+}
+
+@Composable
 private fun Composer(
     draft: String, changed: (String) -> Unit, palette: Palette, sendColor: Color,
-    hint: String, sim: String?, chooseSim: Runnable?, focus: FocusRequester, send: () -> Unit,
+    hint: String, sim: String?, chooseSim: Runnable?, focus: FocusRequester,
+    hasPhoto: Boolean, attach: (() -> Unit)?, send: () -> Unit,
 ) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (sim != null && chooseSim != null) {
             TextButton(onClick = chooseSim::run, contentPadding = PaddingValues(horizontal = 7.dp)) {
-                Text(sim, color = palette.blue, fontSize = 13.sp)
+                Text(sim, color = palette.action, fontSize = 13.sp)
             }
+        }
+        if (attach != null) IconButton(onClick = attach, modifier = Modifier.semantics { contentDescription = "Attach photo" }) {
+            Text("+", color = palette.toolbarAction, fontSize = 27.sp)
         }
         Surface(
             Modifier.weight(1f), color = palette.toolbar, shape = RoundedCornerShape(24.dp),
@@ -744,7 +861,7 @@ private fun Composer(
                     modifier = Modifier.weight(1f).focusRequester(focus).padding(top = 9.dp, bottom = 9.dp, end = 5.dp)
                         .semantics { contentDescription = hint },
                     textStyle = TextStyle(color = palette.toolbarInk, fontSize = 16.sp, lineHeight = 21.sp),
-                    cursorBrush = SolidColor(palette.blue),
+                    cursorBrush = SolidColor(palette.action),
                     decorationBox = { inner ->
                         Box {
                             if (draft.isEmpty()) Text(hint, color = palette.toolbarInk.copy(alpha = .65f), fontSize = 16.sp)
@@ -752,7 +869,7 @@ private fun Composer(
                         }
                     },
                 )
-                val ready = draft.isNotBlank()
+                val ready = draft.isNotBlank() || hasPhoto
                 IconButton(onClick = send, enabled = ready, modifier = Modifier.size(40.dp)
                     .semantics { contentDescription = "Send message" }) {
                     val color = if (ready) Color(MessageStyle.filledControl(sendColor.toArgb())) else palette.wash
@@ -767,7 +884,26 @@ private fun Composer(
 }
 
 @Composable
-internal fun Avatar(initials: String, seed: String, size: Int, photo: Int = 0) {
+internal fun Avatar(initials: String, seed: String, size: Int, photo: Int = 0, photoUri: Uri? = null, photoRevision: Int = 0) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val thumbnail by produceState<ImageBitmap?>(null, photoUri, photoRevision) {
+        value = null
+        value = photoUri?.let { uri ->
+            withContext(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openInputStream(uri)?.use {
+                        android.graphics.BitmapFactory.decodeStream(it)?.asImageBitmap()
+                    }
+                } catch (_: java.io.IOException) { null }
+                  catch (_: SecurityException) { null }
+                  catch (_: IllegalArgumentException) { null }
+            }
+        }
+    }
+    thumbnail?.let {
+        Image(it, contentDescription = null, modifier = Modifier.size(size.dp).clip(CircleShape), contentScale = ContentScale.Crop)
+        return
+    }
     if (photo != 0) {
         Image(painterResource(photo), contentDescription = null,
             modifier = Modifier.size(size.dp).clip(CircleShape), contentScale = ContentScale.Crop)
@@ -865,7 +1001,7 @@ private fun mount(root: LinearLayout, prefs: SharedPreferences, profile: ChatPro
     val view = ComposeView(root.context)
     view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
     view.setContent {
-        MaterialTheme(colorScheme = appColorScheme(resolved)) { content(palette) }
+        AppTheme(resolved) { content(palette) }
     }
     root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
 }

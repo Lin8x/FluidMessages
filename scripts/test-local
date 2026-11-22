@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -49,8 +50,9 @@ def companion(port, token, cloud_fixtures=False):
         origin = f"http://127.0.0.1:{port}"
         opener = build_opener(ProxyHandler({}))
 
-        def request(path, body=None, authorized=True, method=None):
+        def request(path, body=None, authorized=True, method=None, extra_headers=None):
             headers = {"Authorization": "Bearer " + token} if authorized else {}
+            headers.update(extra_headers or {})
             data = body if isinstance(body, bytes) else json.dumps(body).encode() if body is not None else None
             with opener.open(Request(origin + path, data=data, headers=headers, method=method), timeout=5) as response:
                 content = response.read()
@@ -107,6 +109,16 @@ def smoke_test():
         messages = sample_messages()
         request("/api/sync", {"messages": messages})
         check(request("/api/inbox")["messages"] == messages, "Synced inbox differs from the phone snapshot")
+        appearance = {"dark": True, "exactTimes": True, "radius": 19, "folders": {"archived": [messages[0]["address"]]},
+                      "colors": {"sms": "#457abc", "surface": "#172e26", "raised": "#1b372d", "action": "#8bdabb",
+                                 "ink": "#ffffff", "muted": "#bfccc7", "line": "#3a4d45", "outline": "#697b73"}}
+        request("/api/sync", {"messages": messages, "appearance": {**appearance, "size": 900,
+                "colors": {**appearance["colors"], "accent": "url(invalid)"}}})
+        snapshot = request("/api/inbox")
+        check(snapshot["messages"] == messages and snapshot["appearance"] == appearance,
+              "Inbox and appearance snapshot were not saved together")
+        request("/api/sync", {"messages": messages})
+        check(request("/api/inbox")["appearance"] == {}, "Older Android sync should use the companion theme")
         now = int(time.time() * 1000)
         draft = {"address": messages[0]["address"], "body": "Test only", "due": now + 60_000}
         cancelled = request("/api/schedule", draft)["id"]
@@ -137,11 +149,23 @@ def cloud_smoke_test():
         newest = b"FMB1\x01newest fixture"
         for target in CLOUD_TARGETS:
             path = "/api/backups/" + target
-            request(path, older, method="PUT")
+            dated = request(path, older, method="PUT")["name"]
+            check(re.fullmatch(r"FluidMessages_\d{4}-\d{2}-\d{2}_.+\.fmb", dated), "Missing readable backup date")
             time.sleep(.005)
             request(path, newest, method="PUT")
             check(request(path + "/latest") == newest, f"The latest {target} backup did not round-trip")
-    print("PASS  Cloud target discovery, archive validation, and newest downloads across three isolated rclone destinations")
+            fixed = {"X-Fluid-Backup-Name": "My current backup.fmb"}
+            request(path, newest, method="PUT", extra_headers=fixed)
+            response = request(path, older, method="PUT", extra_headers=fixed)
+            check(response["name"] == fixed["X-Fluid-Backup-Name"], "Fixed name was lost")
+            check(request(path + "/latest") == older, "The fixed backup did not get replaced")
+        try:
+            request("/api/backups/drive", older, method="PUT", extra_headers={"X-Fluid-Backup-Name": "../outside.fmb"})
+        except HTTPError as error:
+            check(error.code == 400, "Invalid backup name produced the wrong response")
+        else:
+            raise RuntimeError("The server accepted a backup path instead of a filename")
+    print("PASS  Cloud target discovery, dated names, fixed-name replacement, and newest restore across three isolated destinations")
 
 
 def find_apk(explicit):

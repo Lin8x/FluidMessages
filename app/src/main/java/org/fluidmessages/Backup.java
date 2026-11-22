@@ -27,7 +27,7 @@ final class Backup {
         "radius", "size", "padding", "savedColorThemes", "activeColorTheme"
     };
     static final String[] EFFECTS = {"speed", "sound", "receiveSound", "haptics", "sendTone", "receiveTone", "sendHaptics"};
-    static final String[] SETTINGS = {"pinned", "archived", "blocked", "muted", "exactTimes", "senderCategories"};
+    static final String[] SETTINGS = {"pinned", "archived", "blocked", "muted", "exactTimes", BackupNames.KEY, "automaticUpdateChecks"};
     private static final int MAX = 64 * 1024 * 1024;
 
     record Options(int categories) {
