@@ -23,6 +23,11 @@ except ImportError:
     ENCRYPTION_ENABLED = False
 
 
+# Matrix call signaling, decrypted in encrypted rooms, for the browser and phone call screens.
+CALL_EVENTS = tuple(getattr(nio, name) for name in ("CallInviteEvent", "CallAnswerEvent", "CallCandidatesEvent", "CallHangupEvent")
+                    if nio is not None and hasattr(nio, name))
+
+
 def available():
     return nio is not None and ENCRYPTION_ENABLED
 
@@ -74,8 +79,8 @@ class MatrixE2ee:
         client.restore_login(self.account["user_id"], whoami.device_id, self.account["access_token"])
         self.client = client
         client.add_event_callback(self.event, (nio.RoomMessageText, nio.RoomMessageNotice, nio.RoomMessageEmote,
-                                               nio.RoomMessageMedia, nio.RoomEncryptedMedia, nio.ReactionEvent,
-                                               nio.MegolmEvent))
+                                               nio.RoomMessageMedia, nio.RoomEncryptedMedia, nio.ReactionEvent, nio.RedactionEvent,
+                                               nio.MegolmEvent, *CALL_EVENTS))
         if client.should_upload_keys:
             await client.keys_upload()
         self.ready.set()

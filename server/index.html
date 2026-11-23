@@ -4,21 +4,30 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FluidMessages</title>
+<link rel="icon" type="image/webp" href="/icon.webp">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#3bb85f">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="stylesheet" href="/style.css">
+<script src="/call.js" defer></script>
 <script src="/app.js" defer></script>
+<script src="/companion.js" defer></script>
 </head>
 <body>
 <header class="topbar">
-  <span class="brand"><span class="brand-mark" aria-hidden="true"></span>FluidMessages</span>
+  <span class="brand"><img class="brand-mark" src="/icon.webp" alt="" width="28" height="28">FluidMessages</span>
   <span id="status" class="status" role="status">Disconnected</span>
   <button id="open-queue" type="button" hidden>Scheduled</button>
   <button id="disconnect" type="button" hidden>Disconnect</button>
 </header>
 <main>
   <form id="pair" class="pair">
+    <img class="app-icon" src="/icon.webp" alt="FluidMessages icon" width="96" height="96">
     <h1>Messages on the web</h1>
-    <p>Connect to your Android inbox with the pairing token from your companion server.</p>
-    <label>Pairing token<input id="token" type="password" required autocomplete="off"></label>
+    <p>Sign in with your server’s access token (FLUID_TOKEN). Matrix, XMPP, Email, and IRC work here on their own; texts go through your Android phone once it’s connected.</p>
+    <label>Access token<input id="token" type="password" required autocomplete="off"></label>
+    <label class="remember"><input id="remember" type="checkbox"> Keep me signed in on this browser</label>
     <button class="primary">Connect</button>
     <p id="pair-error" role="alert"></p>
   </form>
@@ -41,6 +50,7 @@
         <button id="back" class="icon-button" type="button" aria-label="Back to messages">‹</button>
         <span id="avatar" class="avatar" aria-hidden="true"></span>
         <div><h2 id="recipient">Messages</h2><span id="transport"></span></div>
+        <button id="call" class="call-button" type="button" hidden title="Call from your phone">Call</button>
       </div>
       <div id="conversation" aria-label="Messages" tabindex="0"></div>
       <p id="readonly" class="readonly" role="status" hidden></p>

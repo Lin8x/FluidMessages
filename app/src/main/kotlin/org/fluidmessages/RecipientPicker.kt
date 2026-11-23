@@ -22,9 +22,37 @@ import java.util.function.Function
 
 data class Recipient(val key: String, val name: String, val address: String, val recent: Boolean, val photo: Uri?)
 
+/**
+ * What a typed address can become. Only protocols that are turned on and have an account (on the companion
+ * or this phone) are offered; a turned-on protocol without an account offers to add one instead.
+ */
+internal data class AddressOption(val protocol: MessageProtocol, val target: String) {
+    /** Passed back to MainActivity, which links it to a conversation and opens the chat. */
+    val encoded: String get() = protocol.name.lowercase() + ":" + target
+}
+
+private val emailOrJid = Regex("[^@\\s<>]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
+private val matrixId = Regex("@[a-z0-9._=\\-/+]{1,255}:[A-Za-z0-9.:-]{1,255}")
+private val ircChannel = Regex("[#&][^\\s,]{1,49}")
+
+internal fun addressOptions(query: String, available: Set<MessageProtocol>): List<AddressOption> {
+    val text = query.trim()
+    val options = mutableListOf<AddressOption>()
+    if (matrixId.matches(text)) options += AddressOption(MessageProtocol.MATRIX, text)
+    else if (emailOrJid.matches(text)) {
+        options += AddressOption(MessageProtocol.EMAIL, text.lowercase())
+        options += AddressOption(MessageProtocol.XMPP, text.lowercase())
+    } else if (ircChannel.matches(text)) options += AddressOption(MessageProtocol.IRC, text)
+    else if (text.startsWith("irc:", ignoreCase = true) && text.length > 4) options += AddressOption(MessageProtocol.IRC, text.substring(4))
+    return options.filter { it.protocol in available }
+}
+
 internal class RecipientPicker(
     root: LinearLayout, prefs: SharedPreferences, allowContacts: Runnable, keyForNumber: Function<String, String>,
     proceed: Consumer<List<String>>,
+    /** Protocols you can message now, and turned-on protocols that still need an account. */
+    available: Set<MessageProtocol> = emptySet(), needsAccount: Set<MessageProtocol> = emptySet(),
+    addAccount: Runnable? = null,
 ) {
     var recipients by mutableStateOf(emptyList<Recipient>())
     var contactsAllowed by mutableStateOf(false)
@@ -50,6 +78,8 @@ internal class RecipientPicker(
                     } catch (_: IllegalArgumentException) { emptyList() }
                 }
                 val typed = typedNumbers.singleOrNull()
+                val addresses = remember(query) { addressOptions(query, available) }
+                val missing = remember(query) { addressOptions(query, needsAccount) }
                 fun toggle(recipient: Recipient) {
                     selected = if (selected.any { it.key == recipient.key }) selected.filterNot { it.key == recipient.key }
                         else selected + recipient
@@ -61,7 +91,15 @@ internal class RecipientPicker(
                 }
                 Column(Modifier.fillMaxSize().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     OutlinedTextField(query, { query = it.take(100) }, Modifier.fillMaxWidth(), singleLine = true,
-                        label = { Text("Name or phone number") },
+                        label = { Text(if (available.isEmpty()) "Name or phone number" else "Name, phone number, or address") },
+                        supportingText = if (available.isEmpty()) null else ({
+                            Text("You can also enter " + available.joinToString(", ") { protocol -> when (protocol) {
+                                MessageProtocol.MATRIX -> "a Matrix ID"
+                                MessageProtocol.XMPP -> "an XMPP address"
+                                MessageProtocol.EMAIL -> "an email address"
+                                else -> "an IRC #channel or irc:nick"
+                            } } + ".")
+                        }),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { addNumbers() }))
                     if (selected.isNotEmpty()) {
@@ -80,8 +118,19 @@ internal class RecipientPicker(
                         if (typed != null && results.none { it.key == typed.key }) item {
                             TextButton(onClick = { toggle(typed) }) { Text("Use ${typed.address}") }
                         }
-                        if (results.isEmpty() && typedNumbers.isEmpty()) item {
-                            Text(if (loading) "Loading recipients…" else if (search.empty()) "Enter a phone number to start"
+                        for (option in addresses) item {
+                            TextButton(onClick = { toggle(Recipient(option.encoded, option.target, option.encoded, false, null)) }) {
+                                Text("Message ${option.target} with ${option.protocol.label}")
+                            }
+                        }
+                        for (option in missing) item {
+                            TextButton(enabled = addAccount != null, onClick = { addAccount?.run() }) {
+                                Text("Add a ${option.protocol.label} account to message ${option.target}")
+                            }
+                        }
+                        if (results.isEmpty() && typedNumbers.isEmpty() && addresses.isEmpty() && missing.isEmpty()) item {
+                            Text(if (loading) "Loading recipients…" else if (search.empty()) (if (available.isEmpty()) "Enter a phone number to start"
+                                else "Enter a phone number or an address to start")
                                 else "No matching recipients", Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         items(results, key = { it.key }) { recipient ->

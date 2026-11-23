@@ -28,7 +28,8 @@ import java.util.function.IntConsumer
 object OnboardingScreen {
     @JvmStatic
     fun mount(root: LinearLayout, prefs: SharedPreferences, step: Int, next: Runnable, back: Runnable,
-              skip: Runnable, sample: Runnable, inbox: Runnable, recolor: IntConsumer, accounts: Runnable) {
+              skip: Runnable, sample: Runnable, inbox: Runnable, recolor: IntConsumer, accounts: Runnable,
+              web: Runnable, learnWeb: Runnable, backups: Runnable) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -57,7 +58,7 @@ object OnboardingScreen {
                     }
                     LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(top = 14.dp, bottom = 14.dp),
                         verticalArrangement = Arrangement.spacedBy(15.dp)) {
-                        val (title, subtitle) = steps[step]
+                        val (key, title, subtitle) = steps[step]
                         item {
                             Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                                 Text(title, fontSize = 32.sp, lineHeight = 36.sp, color = scheme.onSurface,
@@ -65,9 +66,75 @@ object OnboardingScreen {
                                 Text(subtitle, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
                             }
                         }
-                        when (step) {
-                            0 -> item { SampleConversation(appearance) }
-                            1 -> {
+                        when (key) {
+                            "welcome" -> item { SampleConversation(appearance) }
+                            "tabs" -> {
+                                item { TabsIllustration(appearance.speed) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.PHONE, "Phone", "Calls, favorites, contacts, keypad"),
+                                        Tip(TipIcon.CHAT, "Messages", "Every chat in one place"),
+                                        Tip(TipIcon.PRACTICE, "Practice first", "Settings → Help → Sample inbox")), appearance.speed)
+                                }
+                            }
+                            "ways" -> {
+                                item { WaysIllustration(appearance) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.CHAT, "Texts work right away", "Using your phone plan"),
+                                        Tip(TipIcon.TAG, "Tags show how", "SMS, Matrix, Email, and more"),
+                                        Tip(TipIcon.PEOPLE, "More ways? We ask", "Pick how to reach someone each time")), appearance.speed)
+                                }
+                            }
+                            "locks" -> {
+                                item { LocksIllustration(appearance.speed) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.LOCK, "Green", "Only you and them can read it"),
+                                        Tip(TipIcon.LOCK, "Yellow", "Protected on the way, but the service can read it"),
+                                        Tip(TipIcon.LOCK, "Red, open", "Not encrypted, like regular texts"),
+                                        Tip(TipIcon.CHAT, "Where to look", "Next to the name at the top of a chat. Tap it to learn more.")), appearance.speed)
+                                }
+                            }
+                            "protect" -> {
+                                item { PrivacyToolsIllustration(appearance.speed) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.FINGER, "App lock", "Settings → Privacy and security"),
+                                        Tip(TipIcon.LOCK, "Lock one chat", "A chat’s ⋯ menu → Lock this chat"),
+                                        Tip(TipIcon.FOLDER, "Hidden chats", "Inbox filter menu → Hidden chats"),
+                                        Tip(TipIcon.MASK, "Decoy mode", "Shows pretend chats if someone else has your phone")), appearance.speed)
+                                }
+                            }
+                            "disappear" -> {
+                                item { DisappearingIllustration(appearance.speed) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.TIMER, "For one chat", "A chat’s ⋯ menu → Disappearing messages"),
+                                        Tip(TipIcon.OPTIONAL, "For every chat", "Settings → Privacy and security"),
+                                        Tip(TipIcon.CHAT, "Older messages stay", "Only new messages disappear")), appearance.speed)
+                                }
+                            }
+                            "calls" -> {
+                                item { CallsIllustration(appearance.speed) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.PHONE, "Phone calls", "Use your phone number, from the Phone tab"),
+                                        Tip(TipIcon.PEOPLE, "Internet calls", "Voice and video with Matrix contacts"),
+                                        Tip(TipIcon.OPTIONAL, "Meeting links", "Optional: Settings → Chats and calls → Calls")), appearance.speed)
+                                }
+                            }
+                            "computer" -> {
+                                item { ComputerIllustration(appearance.speed) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.LAPTOP, "Set it up", "Connect this phone to FluidMessages Web") { web.run() },
+                                        Tip(TipIcon.PRACTICE, "How it works", "Step-by-step setup guide, opens in your browser") { learnWeb.run() },
+                                        Tip(TipIcon.OPTIONAL, "Not needed", "Your phone works on its own. Skip this if you like.")), appearance.speed)
+                                }
+                            }
+                            "colors" -> {
+                                item { ColorsIllustration(appearance) }
                                 item { SampleConversation(appearance) }
                                 item {
                                     ThemeDropdown("Color theme", appearance.theme.name,
@@ -92,7 +159,8 @@ object OnboardingScreen {
                                         style = MaterialTheme.typography.bodySmall)
                                 }
                             }
-                            2 -> {
+                            "motion" -> {
+                                item { MotionIllustration(appearance.speed) }
                                 item {
                                     ThemeDropdown("Motion preset", appearance.speed.toString(),
                                         listOf(Choice("0", "Off"), Choice("130", "Quick"), Choice("220", "Standard"),
@@ -104,18 +172,24 @@ object OnboardingScreen {
                                 }
                                 item { FeedbackOptions(prefs, appearance.speed) }
                             }
-                            3 -> item {
-                                SetupOptions(listOf("Export or restore a file" to "Choose SMS, themes, settings, wallpaper photos, or any combination.",
-                                    "Back up on a schedule" to "Use a device folder or a writable folder from a compatible storage app."))
+                            "backup" -> {
+                                item { BackupIllustration(appearance.speed) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.FOLDER, "Save a backup file", "Pick exactly what to include") { backups.run() },
+                                        Tip(TipIcon.TIMER, "Back up automatically", "On a schedule, to a folder you choose"),
+                                        Tip(TipIcon.LAPTOP, "Or to the cloud", "OneDrive, Google Drive, or S3, through FluidMessages Web"),
+                                        Tip(TipIcon.LOCK, "Password-protected", "Only you can open your backups")), appearance.speed)
+                                }
                             }
-                            4 -> item {
-                                val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(),
-                                    prefs.getString("token", "").orEmpty())
-                                SetupOptions(listOf("App lock" to "Use your phone’s screen lock to protect the inbox.",
-                                    "Web companion" to if (paired) "Set up" else "Not set up",
-                                    "Notifications" to "Message text stays out of notification previews."))
-                            }
-                            5 -> {
+                            "services" -> {
+                                item {
+                                    val on = remember(appearance) {
+                                        listOf(MessageProtocol.SMS, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)
+                                            .filter { it.enabled(prefs) }.map { if (it == MessageProtocol.SMS) "SMS" else it.label }.toSet()
+                                    }
+                                    ServicesIllustration(appearance.speed, on)
+                                }
                                 item {
                                     PreferencesCard("Text messages") {
                                         PreferenceText("RCS, SMS, and MMS", "One conversation per person. RCS is a preview; SMS switches to MMS for files and groups.")
@@ -135,18 +209,23 @@ object OnboardingScreen {
                                 }
                                 item {
                                     val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(),
-                                        prefs.getString("token", "").orEmpty())
+                                        Privacy.token(prefs))
                                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                         OutlinedButton(onClick = accounts::run, modifier = Modifier.fillMaxWidth()) { Text("Set up accounts") }
-                                        Text(if (paired) "Your web companion keeps these connections open, so your phone doesn’t have to."
-                                            else "For the best battery life, pair a web companion to keep these connections open. You can also connect an account from this phone.",
+                                        Text(if (paired) "FluidMessages Web keeps these connections open, so your phone doesn’t have to."
+                                            else "For the best battery life, pair FluidMessages Web to keep these connections open. You can also connect an account from this phone.",
                                             color = scheme.onSurfaceVariant)
                                     }
                                 }
                             }
-                            6 -> item {
-                                SetupOptions(listOf("Sample inbox" to "Try direct chats and a group chat with fictional contacts.",
-                                    "Your SMS inbox" to "Choose FluidMessages as the default SMS app when you’re ready."))
+                            "ready" -> {
+                                item { ReadyIllustration(appearance.speed) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.PRACTICE, "Practice first", "Pretend chats and calls, nothing is sent") { sample.run() },
+                                        Tip(TipIcon.CHAT, "Make it your texting app", "In your inbox, tap Set as default SMS app"),
+                                        Tip(TipIcon.OPTIONAL, "Come back anytime", "Settings → Help → Setup guide")), appearance.speed)
+                                }
                             }
                         }
                     }
@@ -163,13 +242,19 @@ object OnboardingScreen {
     }
 
     private val steps = listOf(
-        "Make it yours" to "Welcome to FluidMessages. Start with a look you like and try the sample inbox before connecting SMS.",
-        "Pick your colors" to "Choose a preset and preview your bubbles. You can fine-tune colors and wallpapers any time.",
-        "Motion, sound and haptics" to "Decide how a message should feel when it lands or leaves.",
-        "Keep a backup" to "Save just the items you need in one file. Backup encryption starts on.",
-        "Privacy and the web" to "Choose where your messages go and how you access them.",
-        "Choose your protocols" to "Text messages work right away. Turn on the internet protocols you use, and add accounts when you’re ready.",
-        "Ready to text" to "Start with a practice conversation or open your inbox. Carrier MMS and RCS are still in development.",
+        Triple("welcome", "Welcome", "Your texts, calls, and chats, all in one place."),
+        Triple("tabs", "Two tabs", "Phone on the left. Messages on the right."),
+        Triple("ways", "One inbox", "Texts and other chat apps, side by side."),
+        Triple("locks", "Who can read it?", "Every chat shows a small lock."),
+        Triple("protect", "Keep chats private", "Lock the app, a chat, or tuck chats away."),
+        Triple("disappear", "Disappearing messages", "Messages can remove themselves after a while."),
+        Triple("calls", "Calls", "Call from the Phone tab, or from a chat."),
+        Triple("colors", "Pick your colors", "Choose a look and preview your bubbles. You can change it any time."),
+        Triple("motion", "Motion, sound and haptics", "Decide how a message should feel when it arrives or sends."),
+        Triple("backup", "Keep a backup", "Save your messages and settings to a file, so you don’t lose them if you change phones. Backups are password-protected."),
+        Triple("computer", "On a computer too", "Optional. Set it up later if you like."),
+        Triple("services", "Choose your services", "Texts work right away. Turn on any other chat services you use, and sign in when you’re ready."),
+        Triple("ready", "You’re ready", "Practice with pretend chats first, or open your real inbox. RCS (the newer texting standard) isn’t available in FluidMessages yet."),
     )
 }
 

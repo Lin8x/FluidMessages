@@ -3,6 +3,7 @@ package org.fluidmessages
 import android.content.SharedPreferences
 import android.widget.LinearLayout
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.toggleable
@@ -21,13 +22,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.function.Consumer
 
-data class SettingsAction(val label: String, val detail: String, val action: Runnable)
+/**
+ * One row in a settings or details list. Information rows aren't tappable and show an info mark instead of an
+ * arrow; a row with an encryption level shows its colored badge.
+ */
+data class SettingsAction @JvmOverloads constructor(val label: String, val detail: String, val action: Runnable,
+                                                    val info: Boolean = false, val security: Encryption? = null,
+                                                    /** On or off for a switch row; null for rows that open something. */
+                                                    val toggle: Boolean? = null)
 data class SettingsSection(val label: String, val entries: List<SettingsAction>)
 
 object SettingsPages {
@@ -42,7 +51,7 @@ object SettingsPages {
         mountCards(root, prefs, sections) { appearance ->
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 ThemeDropdown("Backup method", if (phone) "phone" else "companion",
-                    listOf(Choice("phone", "Phone"), Choice("companion", "Companion")), appearance.speed) {
+                    listOf(Choice("phone", "Phone"), Choice("companion", "FluidMessages Web")), appearance.speed) {
                     changed.accept(it == "phone")
                 }
                 if (description.isNotEmpty()) Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -77,7 +86,15 @@ object SettingsPages {
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(15.dp)) {
                     item {
-                        PreferencesCard("Application") { PreferenceText("FluidMessages", "Version ${version} · Build ${build}") }
+                        Column(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Image(painterResource(R.drawable.fluid_icon_art), contentDescription = "FluidMessages icon",
+                                modifier = Modifier.size(112.dp).clip(RoundedCornerShape(28.dp)))
+                            Text("FluidMessages", style = MaterialTheme.typography.headlineSmall,
+                                color = MaterialTheme.colorScheme.onSurface, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                            Text("Version ${version} · Build ${build}", style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                     item {
                         PreferencesCard("App updates") {
@@ -199,8 +216,12 @@ private fun SettingsCards(sections: List<SettingsSection>, header: (@Composable 
                     .background(scheme.surfaceContainer)) {
                     section.entries.forEachIndexed { index, entry ->
                         if (index > 0) HorizontalDivider(Modifier.padding(start = 16.dp), color = scheme.outlineVariant)
+                        if (entry.toggle != null) {
+                            SettingsSwitch(entry.label, entry.detail, entry.toggle) { entry.action.run() }
+                            return@forEachIndexed
+                        }
                         Row(Modifier.fillMaxWidth().heightIn(min = 55.dp)
-                            .clickable(role = Role.Button, onClick = entry.action::run)
+                            .then(if (entry.info) Modifier else Modifier.clickable(role = Role.Button, onClick = entry.action::run))
                             .padding(horizontal = 15.dp, vertical = 11.dp),
                             verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
@@ -208,8 +229,7 @@ private fun SettingsCards(sections: List<SettingsSection>, header: (@Composable 
                                 if (entry.detail.isNotEmpty()) Text(entry.detail, color = scheme.onSurfaceVariant,
                                     style = MaterialTheme.typography.bodySmall)
                             }
-                            Text("›", Modifier.padding(start = 10.dp), color = scheme.primary,
-                                style = MaterialTheme.typography.titleLarge)
+                            RowEnd(entry, scheme.primary, scheme.onSurfaceVariant)
                         }
                     }
                 }

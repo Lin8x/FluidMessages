@@ -12,12 +12,13 @@ import org.json.JSONObject
  * reply or reaction feature receive the structured [MessageRelation]. All of them also get a readable
  * fallback body that FluidMessages can turn back into a quote card or folded reaction.
  */
-internal enum class Encryption(val label: String) {
+enum class Encryption(val label: String) {
     NONE("Not encrypted"),
     IN_TRANSIT("Encrypted in transit · not end-to-end"),
     END_TO_END("End-to-end encrypted"),
-    PREVIEW("Preview · no carrier encryption yet"),
-    COMPANION_E2EE("End-to-end encrypted · decrypted on your companion"),
+    PREVIEW("RCS isn’t available in FluidMessages yet"),
+    COMPANION_E2EE("End-to-end encrypted · decrypted on FluidMessages Web"),
+    FLUIDMESSAGES("Encrypted by FluidMessages with the key you share"),
 }
 
 internal data class TransportCapabilities(
@@ -39,9 +40,16 @@ internal data class MessageRelation(
     val targetAuthor: String = "",
     val emoji: String = "",
     val ownMessage: Boolean = false,
+    /** Taking back [emoji]: sent again on the same message. */
+    val removed: Boolean = false,
+    /** The sender's earlier reaction that [emoji] replaces, or "". */
+    val previous: String = "",
 ) {
+    /** A removal or a change of an earlier reaction. */
+    val revises: Boolean get() = kind == RelationKind.REACTION && (removed || previous.isNotEmpty())
+
     fun toJson(): JSONObject = JSONObject().put("kind", kind.name.lowercase()).put("target", targetId ?: "")
-        .put("emoji", emoji).put("own", ownMessage)
+        .put("emoji", emoji).put("own", ownMessage).put("removed", removed).put("previous", previous)
 
     companion object {
         @JvmStatic fun reply(target: ChatLine) = MessageRelation(RelationKind.REPLY, target.id, target.text, target.author.orEmpty())
@@ -62,6 +70,14 @@ internal data class OutgoingMessage @JvmOverloads constructor(
 ) {
     val photo: Uri? get() = attachment?.takeIf { it.kind == AttachmentKind.PHOTO }?.uri
 
+    /**
+     * What the transport sends. Matrix and XMPP remove and change reactions natively; every other protocol
+     * sends the readable text, so people on other apps know what changed.
+     */
+    fun forTransport(protocol: MessageProtocol): OutgoingMessage =
+        if (relation?.revises == true && protocol != MessageProtocol.MATRIX && protocol != MessageProtocol.XMPP)
+            copy(text = fallbackBody(), relation = null) else this
+
     /** The attachment travels as a file, rather than as text such as a location link. */
     val hasFile: Boolean get() = attachment?.isFile == true
 
@@ -75,7 +91,12 @@ internal data class OutgoingMessage @JvmOverloads constructor(
         }
         return when (relation?.kind) {
             RelationKind.REPLY -> "Reply to “${messageExcerpt(relation.targetText, 240)}”\n\n$caption"
-            RelationKind.REACTION -> emojiReactionSms(relation.emoji, relation.targetText, relation.ownMessage)
+            RelationKind.REACTION -> when {
+                relation.removed -> reactionRemovedSms(relation.emoji, relation.targetText, relation.ownMessage)
+                relation.previous.isNotEmpty() ->
+                    reactionChangedSms(relation.previous, relation.emoji, relation.targetText, relation.ownMessage)
+                else -> emojiReactionSms(relation.emoji, relation.targetText, relation.ownMessage)
+            }
             RelationKind.FORWARD -> forwardAsSms(relation.targetText, relation.targetAuthor)
             null -> caption
         }
@@ -155,9 +176,12 @@ private class CompanionTransport(
         }
 
     override fun send(context: Context, message: OutgoingMessage) {
+        // FluidMessages encryption, when this chat or protocol uses it, scrambles the text before it leaves the phone.
+        val text = SmsCrypto.outgoing(context, message.conversation, protocol, message.text)
+        val body = SmsCrypto.outgoing(context, message.conversation, protocol, message.fallbackBody())
         if (DirectProtocols.on(DirectProtocols.prefs(context), protocol)) return DirectProtocols.send(context, message.conversation,
-            protocol, message.text, message.fallbackBody(), message.relation, message.attachment?.takeIf { it.isFile })
-        GatewayClient.send(context, message.conversation, protocol, message.text, message.fallbackBody(), message.relation,
+            protocol, text, body, message.relation, message.attachment?.takeIf { it.isFile })
+        GatewayClient.send(context, message.conversation, protocol, text, body, message.relation,
             message.attachment?.takeIf { it.isFile }, capabilities.attachments)
     }
 }
@@ -204,7 +228,7 @@ internal object GroupRouting {
             if (reachable.values.all { protocol in it }) {
                 // New Matrix, XMPP, and IRC groups are created on the companion, not from the phone yet.
                 return if (protocol == MessageProtocol.MMS) Choice(protocol, "")
-                else Choice(null, "Everyone has ${protocol.label}, but new ${protocol.label} groups are created on your companion for now.")
+                else Choice(null, "Everyone has ${protocol.label}, but new ${protocol.label} groups are created on FluidMessages Web for now.")
             }
         }
         val phones = members.all { SmsStore.validRecipient(it) }

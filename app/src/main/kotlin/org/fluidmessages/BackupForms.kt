@@ -114,10 +114,10 @@ private fun BackupForm(mode: BackupFormMode, smsAllowed: Boolean, defaults: Back
                     BackupFormMode.SHARE -> "Create a backup and pass it to an app you choose from the Android share menu."
                     BackupFormMode.RESTORE -> "Choose what to restore, then open a FluidMessages backup file."
                     BackupFormMode.CLOUD_RESTORE -> "Download and review the newest archive before restoring."
-                    BackupFormMode.CLOUD_NOW -> "Create and upload a backup through your paired companion."
+                    BackupFormMode.CLOUD_NOW -> "Create and upload a backup through FluidMessages Web."
                     BackupFormMode.LOCAL -> "Choose a device folder or a writable folder offered by a storage app."
                     BackupFormMode.LOCAL_EXISTING -> "Update the interval or contents. Your current folder stays selected."
-                    BackupFormMode.CLOUD -> "Save recurring backups through your paired companion."
+                    BackupFormMode.CLOUD -> "Save recurring backups through FluidMessages Web."
                 }, color = scheme.onSurfaceVariant)
             }
             if (scheduled) item {

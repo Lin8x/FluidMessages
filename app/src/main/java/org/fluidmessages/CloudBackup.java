@@ -20,7 +20,7 @@ final class CloudBackup {
 
     static boolean paired(Context context) {
         var prefs = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
-        return paired(prefs.getString("server", ""), prefs.getString("token", ""));
+        return paired(prefs.getString("server", ""), Privacy.token(prefs));
     }
 
     static boolean paired(String origin, String token) { return hasTlsScheme(origin) && token.trim().length() >= 32; }
@@ -51,7 +51,7 @@ final class CloudBackup {
             require(connection, 201);
             if (!fixedName.isEmpty()) try (var input = connection.getInputStream()) {
                 var result = new JSONObject(new String(input.readNBytes(4096), StandardCharsets.UTF_8));
-                if (!fixedName.equals(result.optString("name"))) throw new IOException("Update the companion to use fixed backup names");
+                if (!fixedName.equals(result.optString("name"))) throw new IOException("Update FluidMessages Web to use fixed backup names");
             }
         } finally { connection.disconnect(); }
     }
@@ -83,14 +83,14 @@ final class CloudBackup {
         var prefs = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
         var settings = prefs.getAll();
         String origin = settings.get("server") instanceof String value ? value : "";
-        if (!hasTlsScheme(origin)) throw new IOException("Pair an HTTPS companion first");
-        if (expectedOrigin != null && !expectedOrigin.equals(origin)) throw new IOException("The paired companion has changed");
+        if (!hasTlsScheme(origin)) throw new IOException("Pair an FluidMessages Web first");
+        if (expectedOrigin != null && !expectedOrigin.equals(origin)) throw new IOException("The FluidMessages Web has changed");
         var connection = (HttpsURLConnection) new URL(origin + "/api/backups" + suffix).openConnection();
         connection.setInstanceFollowRedirects(false);
         connection.setConnectTimeout(10000);
         connection.setReadTimeout(195000);
         connection.setRequestMethod(method);
-        String token = settings.get("token") instanceof String value ? value : "";
+        String token = Privacy.token(prefs);
         connection.setRequestProperty("Authorization", "Bearer " + token);
         return connection;
     }

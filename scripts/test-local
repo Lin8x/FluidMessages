@@ -130,6 +130,15 @@ def smoke_test():
         request("/api/result", {"id": due, "state": "submitted"})
         check({job["id"]: job["state"] for job in request("/api/jobs")} ==
               {cancelled: "cancelled", due: "submitted"}, "Queue state did not persist")
+        call = request("/api/call", {"address": messages[0]["address"]})["id"]
+        claimed = request("/api/claim", {})["job"]
+        check(claimed and claimed["id"] == call and claimed["protocol"] == "call", "Call request was not handed to the phone")
+        request("/api/result", {"id": call, "state": "submitted"})
+        try:
+            request("/api/call", {"address": "not a number"})
+            raise RuntimeError("Companion accepted a call to a non-number")
+        except HTTPError as error:
+            check(error.code == 400, f"Expected HTTP 400 for an invalid call, got {error.code}")
         upload = request("/api/protocols/upload", b"fixture", extra_headers={"Content-Type": "text/plain",
                          "X-Fluid-Name": "notes%20one.txt"})
         check(re.fullmatch(r"[0-9a-f]{40}", upload.get("upload", "")) is not None, "Attachment upload did not return an id")
@@ -138,7 +147,7 @@ def smoke_test():
             raise RuntimeError("Companion served an unknown attachment")
         except HTTPError as error:
             check(error.code == 404, f"Expected HTTP 404 for a missing attachment, got {error.code}")
-    print("PASS  Companion assets, authentication, sync, scheduling, cancellation, claiming and attachment uploads")
+    print("PASS  Companion assets, authentication, sync, scheduling, cancellation, claiming, click-to-call and attachment uploads")
 
 
 def cloud_smoke_test():
@@ -358,6 +367,261 @@ def gateway_relations_test():
     print("PASS  companion replies, reactions, and attachments use native Matrix and email features")
 
 
+def reaction_revisions_test():
+    """Removing or changing a reaction is native on Matrix and XMPP, with fictional fixtures."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import sqlite3
+    import protocol_gateway
+
+    with tempfile.TemporaryDirectory(prefix="fluid-revisions-") as directory:
+        database = str(Path(directory) / "gateway.sqlite")
+
+        def connect():
+            return sqlite3.connect(database)
+
+        with connect() as db:
+            db.executescript(protocol_gateway.SCHEMA)
+        config = {"matrix": {"homeserver": "https://matrix.example.test", "access_token": "fixture",
+                             "user_id": "@me:example.test"},
+                  "routes": [{"address": "maya", "protocol": "matrix", "target": "!room:example.test", "title": "Maya"},
+                             {"address": "leo", "protocol": "xmpp", "target": "leo@example.test", "title": "Leo"}]}
+        gateway = protocol_gateway.Gateway(connect, config, Path(directory) / "files")
+        sent, stanzas = [], []
+
+        def fake_matrix(path, body=None, allow_missing=False, method=None):
+            if allow_missing:
+                return None
+            sent.append((path, body))
+            return {"event_id": "$out" + str(len(sent))}
+
+        class FakeXmpp:
+            def send(self, to, text, group=False, reply=None, reply_author=None, react=None, file=None):
+                stanzas.append({"to": to, "text": text, "reply": reply, "react": react})
+                return "xout" + str(len(stanzas))
+
+        gateway.matrix_request = fake_matrix
+        gateway.client = lambda protocol: FakeXmpp()
+
+        def send(address, protocol, relation, body):
+            with connect() as db:
+                message = gateway.enqueue(db, {"address": address, "protocol": protocol, "body": body, "text": "",
+                                               "request": secrets.token_hex(8), "relation": relation})["message"]
+            route = gateway.route(address, protocol)
+            message.update({"matrix": gateway.send_matrix, "xmpp": gateway.send_xmpp}[protocol](route, message) or {})
+            message["status"] = "Sent"
+            with connect() as db:
+                db.execute("UPDATE protocol_messages SET payload=? WHERE id=?", (json.dumps(message), message["id"]))
+            return message
+
+        route = gateway.route("maya", "matrix")
+        gateway.accept_matrix(route, {"type": "m.room.message", "event_id": "$in1", "sender": "@maya:example.test",
+                                      "origin_server_ts": 1, "content": {"msgtype": "m.text", "body": "Coffee at ten?"}})
+        coffee = gateway.find("maya", "matrix", "event_id", "$in1")
+        send("maya", "matrix", {"kind": "reaction", "target": coffee["id"], "emoji": "👍"}, "Liked “Coffee at ten?”")
+        first = sent[-1]
+        send("maya", "matrix", {"kind": "reaction", "target": coffee["id"], "emoji": "❤️", "previous": "👍"},
+             "Changed reaction from 👍 to ❤️ on “Coffee at ten?”")
+        check(sent[-2][0].startswith("rooms/") and "/redact/%24out1/" in sent[-2][0] and sent[-2][1] == {}
+              and sent[-1][1]["m.relates_to"]["key"] == "❤️" and first[1]["m.relates_to"]["key"] == "👍",
+              "Changing a Matrix reaction did not redact the old one and send the new one")
+        changed_event = "$out" + str(len(sent))
+        count = len(sent)
+        removal = send("maya", "matrix", {"kind": "reaction", "target": coffee["id"], "emoji": "❤️", "removed": True},
+                       "Removed a heart from “Coffee at ten?”")
+        check(len(sent) == count + 1 and "/redact/" + changed_event.replace("$", "%24") + "/" in sent[-1][0]
+              and removal.get("reaction_target") == coffee["id"], "Removing a Matrix reaction did not redact it")
+        try:
+            with connect() as db:
+                gateway.enqueue(db, {"address": "maya", "protocol": "matrix", "body": "x", "request": secrets.token_hex(8),
+                                     "relation": {"kind": "reaction", "target": coffee["id"], "emoji": "👍",
+                                                  "previous": "hello"}})
+            raise RuntimeError("Gateway accepted a text previous reaction")
+        except ValueError:
+            pass
+        gateway.accept_matrix(route, {"type": "m.reaction", "event_id": "$in2", "sender": "@maya:example.test",
+                                      "origin_server_ts": 2, "content": {"m.relates_to": {
+                                          "rel_type": "m.annotation", "event_id": "$in1", "key": "😆"}}})
+        gateway.accept_matrix(route, {"type": "m.room.redaction", "event_id": "$in3", "sender": "@maya:example.test",
+                                      "origin_server_ts": 3, "redacts": "$in2", "content": {}})
+        taken = gateway.find("maya", "matrix", "event_id", "$in3")
+        check(taken and taken["body"] == "Removed a laugh from “Coffee at ten?”" and taken["reaction_target"] == coffee["id"],
+              "A redacted Matrix reaction was not recorded as a removal")
+
+        gateway.accept_xmpp("leo@example.test", "leo@example.test", "Lunch?", "x1", 1, False, {})
+        lunch = gateway.find("leo", "xmpp", "xmpp_id", "x1")
+        gateway.accept_xmpp("leo@example.test", "leo@example.test", "", "x2", 2, False, {"reaction": "👍", "reaction_to": "x1"})
+        gateway.accept_xmpp("leo@example.test", "leo@example.test", "", "x3", 3, False, {"reaction": "", "reaction_to": "x1"})
+        taken = gateway.find("leo", "xmpp", "xmpp_id", "x3")
+        check(taken and taken["body"] == "Removed a like from “Lunch?”" and taken["reaction_target"] == lunch["id"],
+              "An empty XMPP reaction set was not recorded as a removal")
+        send("leo", "xmpp", {"kind": "reaction", "target": lunch["id"], "emoji": "❤️", "previous": "👍"},
+             "Changed reaction from 👍 to ❤️ on “Lunch?”")
+        check(stanzas[-1]["react"] == ["❤️"] and stanzas[-1]["reply"] == "x1", "Changing an XMPP reaction did not send the new set")
+        send("leo", "xmpp", {"kind": "reaction", "target": lunch["id"], "emoji": "❤️", "removed": True},
+             "Removed a heart from “Lunch?”")
+        check(stanzas[-1]["react"] == [], "Removing an XMPP reaction did not send an empty set")
+    print("PASS  removing and changing reactions is native on Matrix and XMPP and recorded from others")
+
+
+def email_quotes_test():
+    """Incoming email replies lose the quoted history, with fictional fixtures."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import sqlite3
+    import protocol_gateway
+
+    with tempfile.TemporaryDirectory(prefix="fluid-mail-") as directory:
+        database = str(Path(directory) / "gateway.sqlite")
+
+        def connect():
+            return sqlite3.connect(database)
+
+        with connect() as db:
+            db.executescript(protocol_gateway.SCHEMA)
+        config = {"email": {"address": "me@example.test", "smtp_host": "smtp.example.test", "smtp_password": "x",
+                            "imap_host": "imap.example.test", "imap_password": "x"},
+                  "routes": [{"address": "maya", "protocol": "email", "target": "maya@example.test", "title": "Maya"}]}
+        gateway = protocol_gateway.Gateway(connect, config, Path(directory) / "files")
+        route = gateway.route("maya", "email")
+
+        def mail(uid, message_id, body, reply_to=""):
+            headers = (f"From: Maya <maya@example.test>\r\nMessage-ID: {message_id}\r\nSubject: Plans\r\n"
+                       f"Date: Mon, 1 Jan 2024 10:0{uid}:00 +0000\r\n")
+            if reply_to:
+                headers += f"In-Reply-To: {reply_to}\r\n"
+            gateway.accept_mail(route, "1", uid, (headers + "\r\n" + body).encode())
+            return gateway.find("maya", "email", "mail_id", message_id)
+
+        first = mail(1, "<m1@example.test>", "Lunch on Friday?")
+        check(first["read"] == 0, "A new email arrived already read")
+        with connect() as db, db:
+            check(gateway.mark_read(db, {"ids": [first["id"]]}) == {"read": 1}, "Reading an email did not mark it read")
+        check(gateway.find("maya", "email", "id", first["id"])["read"] == 1, "The read email still shows as unread")
+        try:
+            with connect() as db:
+                gateway.mark_read(db, {"ids": "everything"})
+            raise RuntimeError("Gateway accepted an invalid read request")
+        except ValueError:
+            pass
+        second = mail(2, "<m2@example.test>", "hello there\r\n\r\nOn Sun, Nov 22, 2026 at 11:47 PM\r\n"
+                      "<me@example.test> wrote:\r\n\r\n> hello\r\n>\r\n> Sent with FluidMessages\r\n>\r\n",
+                      "<m1@example.test>")
+        check(second["body"] == "hello there" and "reply_target" not in second,
+              "An email reply to the latest message kept its quoted history")
+        third = mail(3, "<m3@example.test>", "Yes, Friday works\r\n\r\nOn Mon, Maya <maya@example.test> wrote:\r\n> Lunch on Friday?\r\n",
+                     "<m1@example.test>")
+        check(third["body"] == "Reply to “Lunch on Friday?”\n\nYes, Friday works" and third["reply_target"] == first["id"],
+              "An email reply to an older message did not become a reply card")
+        with connect() as db, db:
+            old = dict(first, id="mail-old", body="Old reply\n\nOn Sun, Maya wrote:\n> earlier", mail_id="<old@example.test>")
+            db.execute("INSERT INTO protocol_messages VALUES (?, ?, ?)", ("mail-old", 0, json.dumps(old)))
+        gateway.strip_stored_quotes()
+        check(gateway.find("maya", "email", "id", "mail-old")["body"] == "Old reply", "Stored emails kept their quoted history")
+    print("PASS  incoming email replies drop the quoted history, and reading a message clears it everywhere")
+
+
+def privacy_calls_test():
+    """Hidden chats, disappearing messages, group members, and call relay on the companion, with fictional fixtures."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import sqlite3
+    import protocol_gateway
+
+    with tempfile.TemporaryDirectory(prefix="fluid-privacy-") as directory:
+        database = str(Path(directory) / "gateway.sqlite")
+
+        def connect():
+            return sqlite3.connect(database)
+
+        with connect() as db:
+            db.executescript(protocol_gateway.SCHEMA)
+        config = {"matrix": {"homeserver": "https://matrix.example.test", "user_id": "@me:example.test", "access_token": "x"},
+                  "routes": [{"address": "maya", "protocol": "matrix", "target": "!maya:example.test", "title": "Maya"},
+                             {"address": "club", "protocol": "matrix", "target": "!club:example.test", "title": "Club",
+                              "group": True},
+                             {"address": "jordan", "protocol": "email", "target": "jordan@example.test", "title": "Jordan"}]}
+        gateway = protocol_gateway.Gateway(connect, config, Path(directory) / "files")
+        sent = []
+        gateway.matrix_request = lambda path, body=None, allow_missing=False, method=None: (
+            sent.append((path, body, method)) or {"event_id": "$sent" + str(len(sent))})
+        now = gateway.time()
+        maya, jordan = gateway.route("maya", "matrix"), gateway.route("jordan", "email")
+        gateway.add_incoming(gateway.message(maya, "m-old", "Old news", False, now - 7200_000))
+        gateway.add_incoming(gateway.message(maya, "m-new", "Fresh", False, now))
+        mine = gateway.message(maya, "m-mine", "Mine", True, now - 7200_000, "Sent")
+        mine["event_id"] = "$mine"
+        gateway.add_incoming(mine)
+        gateway.add_incoming(gateway.message(jordan, "j-1", "Quarterly plans", False, now))
+        gateway.add_incoming(gateway.message(maya, "m-before", "From before the timer", False, now - 5 * 3600_000))
+
+        with connect() as db, db:
+            gateway.save_settings(db, {"hidden_protocols": ["EMAIL"], "disappearing": {"default": 0, "chats": {"maya": 3600},
+                                                                         "since": {"maya": now - 3 * 3600_000}}},
+                                  from_phone=True)
+            shown = {message["id"] for message in gateway.snapshot(db)["messages"]}
+        check("j-1" not in shown, "A protocol hidden on the phone still showed on the companion")
+        check("m-old" not in shown and "m-new" in shown, "An expired message still showed, or a fresh one was hidden")
+        check(gateway.sweep_expired() == 2, "Expired messages were not deleted")
+        check(any(path.startswith("rooms/%21maya%3Aexample.test/redact/%24mine/") for path, _, _ in sent),
+              "Your own expired Matrix message was not redacted")
+        check(gateway.find("maya", "matrix", "id", "m-new") is not None, "A message within its timer was deleted")
+        check(gateway.find("maya", "matrix", "id", "m-before") is not None, "Turning on a timer deleted earlier messages")
+        with connect() as db, db:
+            gateway.save_settings(db, {"disappearing": {"default": 0, "chats": {"jordan": 60}}})
+        check(gateway.sweep_expired() == 0, "A timer set in the browser deleted earlier messages")
+
+        with connect() as db, db:
+            gateway.save_settings(db, {"follow_phone": False, "disappearing": {"default": 60, "chats": {}}})
+            gateway.save_settings(db, {"disappearing": {"default": 0, "chats": {}}, "hidden_protocols": []}, from_phone=True)
+            settings = gateway.settings(db)
+        check(settings["disappearing"]["default"] == 60 and settings["hidden_protocols"] == [],
+              "Companion settings did not stay its own when not following the phone")
+        with connect() as db, db:
+            gateway.save_settings(db, {"fluid_encryption": {"protocols": ["sms"], "chats": {"maya": "on"}}}, from_phone=True)
+            reset = gateway.save_settings(db, {"reset": True})
+        check(reset["disappearing"]["default"] == 0 and reset["follow_phone"] and reset["fluid_encryption"]["chats"] == {"maya": "on"},
+              "Resetting companion settings lost the phone's encryption info or kept old timers")
+        try:
+            with connect() as db:
+                gateway.save_settings(db, {"disappearing": {"default": -5, "chats": {}}})
+            raise RuntimeError("Companion accepted a negative timer")
+        except ValueError:
+            pass
+
+        with connect() as db:
+            gateway.change_member(db, {"address": "club", "protocol": "matrix", "action": "add", "member": "@sam:example.test"})
+            gateway.change_member(db, {"address": "club", "protocol": "matrix", "action": "remove", "member": "@sam:example.test"})
+        check(sent[-2][0].endswith("/invite") and sent[-1][0].endswith("/kick") and sent[-1][1]["user_id"] == "@sam:example.test",
+              "Inviting or removing a Matrix member did not reach the room")
+        for bad in ({"address": "club", "protocol": "matrix", "action": "add", "member": "sam"},
+                    {"address": "jordan", "protocol": "email", "action": "add", "member": "x@example.test"},
+                    {"address": "club", "protocol": "matrix", "action": "ban", "member": "@sam:example.test"}):
+            try:
+                with connect() as db:
+                    gateway.change_member(db, bad)
+                raise RuntimeError("Companion accepted an invalid member change")
+            except ValueError:
+                pass
+
+        invite = {"type": "m.call.invite", "event_id": "$call", "sender": "@maya:example.test", "origin_server_ts": gateway.time(),
+                  "content": {"call_id": "c1", "party_id": "p1", "version": "1", "lifetime": 60000,
+                              "offer": {"type": "offer", "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"}}}
+        gateway.accept_matrix(maya, invite)
+        events = gateway.call_events(0)
+        check(events["events"][0]["type"] == "m.call.invite" and events["events"][0]["live"], "An incoming call did not ring")
+        check(gateway.call_events(events["next"])["events"] == [], "Call events repeated after they were read")
+        check(gateway.find("maya", "matrix", "event_id", "$call") is None
+              and any(m.get("event") and m["body"].startswith("Voice call") for m in gateway.snapshot(connect())["messages"]),
+              "The call was not noted in the conversation")
+        gateway.send_call({"address": "maya", "protocol": "matrix", "type": "m.call.answer",
+                           "content": {"call_id": "c1", "party_id": "p2", "version": "1", "answer": {"type": "answer", "sdp": "v=0"}}})
+        check("/send/m.call.answer/" in sent[-1][0], "Answering a call did not send the Matrix answer event")
+        try:
+            gateway.send_call({"address": "jordan", "protocol": "email", "type": "m.call.invite", "content": {}})
+            raise RuntimeError("Companion relayed a call outside Matrix")
+        except ValueError:
+            pass
+    print("PASS  hidden protocols, disappearing timers, group members, and call signaling on the companion")
+
+
 def protocol_accounts_test():
     """Account storage, Compose accounts, links, and the IRC client, with fictional fixtures and no network."""
     sys.path.insert(0, str(ROOT / "server"))
@@ -516,6 +780,9 @@ def main():
         smoke_test()
         cloud_smoke_test()
         gateway_relations_test()
+        reaction_revisions_test()
+        email_quotes_test()
+        privacy_calls_test()
         protocol_accounts_test()
         android(args)
         if args.demo:

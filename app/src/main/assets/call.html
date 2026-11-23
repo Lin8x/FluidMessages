@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; media-src blob: 'self'; connect-src 'self' wss:">
+<title>Call</title>
+<script src="call.js"></script>
+<script src="jingle.js"></script>
+<script src="jssip.min.js"></script>
+<style>.fluid-call { background: transparent !important; } .fluid-call-remote { background: transparent !important; }</style>
+</head>
+<body style="margin:0;background:#0d0f14">
+<script>
+'use strict';
+// Glue between the shared call code and the phone: signals go through FluidBridge to the app.
+const waiting = new Map();
+let nextRequest = 0;
+let call = null;
+function bridge(method, ...args) {
+  return new Promise((resolve, reject) => {
+    const id = String(++nextRequest);
+    waiting.set(id, {resolve, reject});
+    FluidBridge[method](id, ...args);
+  });
+}
+function fluidResolve(id, ok, value) {
+  const request = waiting.get(id);
+  if (!request) return;
+  waiting.delete(id);
+  if (ok) request.resolve(value); else request.reject(new Error(value));
+}
+function fluidEvent(event) { if (call) call.handle(event); }
+function fluidLeave() { if (call && !call.ended) call.hangup(); }
+// Controls every call screen on the phone shares: speaker, camera flip, and recording (when the call allows it).
+function sharedControls(options, getPeer, getStreams) {
+  let speaker = !!options.video;
+  let facing = 'user';
+  let recorder = null;
+  let chunks = Promise.resolve();
+  const controls = {
+    speakerOn: speaker,
+    onSpeaker: () => { speaker = !speaker; FluidBridge.speaker(speaker); return speaker; },
+    onFlip: async () => {
+      const [local] = getStreams();
+      const pc = getPeer();
+      if (!local || !pc) return;
+      facing = facing === 'user' ? 'environment' : 'user';
+      await fluidFlipCamera(pc, local, facing);
+    },
+  };
+  if (options.recording) controls.onRecord = async () => {
+    if (recorder) {
+      await recorder.stop();
+      await chunks;
+      recorder = null;
+      FluidBridge.recordingStop();
+      return false;
+    }
+    const [local, remote] = getStreams();
+    recorder = new FluidRecorder(local, remote, !!options.video, (blob) => {
+      // Chunks go to the app in order, as Base64.
+      chunks = chunks.then(() => new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => { FluidBridge.recordingChunk(String(reader.result).split(',')[1] || ''); resolve(); };
+        reader.readAsDataURL(blob);
+      }));
+    });
+    FluidBridge.recordingStart(recorder.mime, recorder.video, options.title || 'Call');
+    recorder.start();
+    return true;
+  };
+  controls.stopRecording = async () => { if (recorder) { await recorder.stop(); await chunks; recorder = null; FluidBridge.recordingStop(); } };
+  return controls;
+}
+
+// The sample inbox's pretend call: the real screen, with no microphone, network, or call history.
+function demoCall(options) {
+  let speaker = !!options.video;
+  const view = new FluidCallView({title: options.title || 'Call', video: false, security: options.security,
+    onHangup: () => view.setState('Call ended', true),
+    onMute: () => (view.muted = !view.muted), onCamera: () => false, speakerOn: speaker,
+    onSpeaker: () => (speaker = !speaker),
+    onKeypad: options.keypad ? () => {} : undefined, onHold: options.keypad ? () => (view.held = !view.held) : undefined,
+    onRecord: options.recording ? () => (view.recordingOn = !view.recordingOn) : undefined});
+  view.onClose = () => FluidBridge.finished();
+  setTimeout(() => view.setState('Ringing…', false), 1200);
+  setTimeout(() => view.setState('Connected', false), 3200);
+}
+
+// A SIP call through your provider, using JsSIP over a secure WebSocket.
+function sipCall(options, iceServers) {
+  const account = options.sip || {};
+  if (!account.ws || !account.uri) { FluidBridge.finished(); return; }
+  JsSIP.debug.disable('JsSIP:*');
+  const ua = new JsSIP.UA({sockets: [new JsSIP.WebSocketInterface(account.ws)], uri: account.uri, password: account.password,
+    authorization_user: account.user || undefined, display_name: account.display || undefined, register: false, session_timers: false});
+  let session = null;
+  let connectedAt = 0;
+  let ended = false;
+  let muted = false;
+  const started = Date.now();
+  const remote = new MediaStream();
+  let held = false;
+  const shared = sharedControls(options, () => session?.connection, () => [
+    session ? new MediaStream(session.connection.getSenders().map((sender) => sender.track).filter(Boolean)) : null, remote]);
+  const view = new FluidCallView({title: options.title || 'Call', video: options.video, security: options.security, ...shared,
+    onKeypad: (digit) => { if (session) session.sendDTMF(digit); },
+    onHold: () => { if (!session) return false; held = !held; if (held) session.hold(); else session.unhold(); return held; },
+    onHangup: () => { if (session) session.terminate(); else finish('Call ended'); },
+    onMute: () => { muted = !muted; if (session) { if (muted) session.mute(); else session.unmute(); } return muted; },
+    onCamera: () => { const off = !session?.isMuted().video; if (session) { if (off) session.mute({video: true}); else session.unmute({video: true}); } return off; }});
+  view.onClose = () => FluidBridge.finished();
+  function finish(text) {
+    if (ended) return;
+    ended = true;
+    shared.stopRecording();
+    view.setState(text, true);
+    FluidBridge.report(JSON.stringify({callId: 'sip-' + started, incoming: false, connected: !!connectedAt, started,
+      seconds: connectedAt ? Math.round((Date.now() - connectedAt) / 1000) : 0}));
+    try { ua.stop(); } catch (error) { /* already closed */ }
+  }
+  ua.on('connected', () => {
+    if (session) return;
+    view.setState('Calling…', false);
+    session = ua.call(options.target, {mediaConstraints: {audio: true, video: !!options.video}, pcConfig: {iceServers}});
+    session.connection.addEventListener('track', (event) => {
+      if (!remote.getTracks().includes(event.track)) remote.addTrack(event.track);
+      const local = new MediaStream(session.connection.getSenders().map((sender) => sender.track).filter(Boolean));
+      view.streams(local, remote);
+    });
+    session.on('progress', () => view.setState('Ringing…', false));
+    session.on('confirmed', () => { connectedAt = Date.now(); view.setState('Connected', false); });
+    session.on('ended', () => finish('Call ended'));
+    session.on('failed', (event) => finish(event.cause === JsSIP.C.causes.BUSY ? 'Busy'
+      : event.cause === JsSIP.C.causes.REJECTED ? 'Declined' : event.cause === JsSIP.C.causes.CANCELED ? 'Call ended' : 'Couldn’t connect: ' + event.cause));
+  });
+  ua.on('disconnected', () => { if (!session) finish('Couldn’t reach the SIP server'); });
+  view.setState('Connecting to your SIP provider…', false);
+  ua.start();
+}
+
+// The always-ready SIP agent: stays registered with your provider and holds incoming calls until you answer.
+let agentUa = null;
+let agentSession = null;
+let agentAnswered = false;
+
+function fluidAgent(account) {
+  if (!account || !account.ws || !account.uri) return;
+  JsSIP.debug.disable('JsSIP:*');
+  agentUa = new JsSIP.UA({sockets: [new JsSIP.WebSocketInterface(account.ws)], uri: account.uri, password: account.password,
+    authorization_user: account.user || undefined, display_name: account.display || undefined, register: true, session_timers: false});
+  agentUa.on('registered', () => FluidBridge.status('Online'));
+  agentUa.on('unregistered', () => FluidBridge.status('Offline'));
+  agentUa.on('registrationFailed', (event) => FluidBridge.status('Couldn’t sign in: ' + event.cause));
+  agentUa.on('disconnected', () => FluidBridge.status('Reconnecting…'));
+  agentUa.on('newRTCSession', (event) => {
+    if (event.originator !== 'remote') return;
+    // One call at a time: anyone else hears busy.
+    if (agentSession) { event.session.terminate({status_code: 486, reason_phrase: 'Busy Here'}); return; }
+    agentSession = event.session;
+    agentAnswered = false;
+    const from = event.request.from;
+    event.session.on('failed', () => { if (!agentAnswered) { agentSession = null; FluidBridge.missed(); } });
+    event.session.on('ended', () => { if (!agentAnswered) { agentSession = null; FluidBridge.missed(); } });
+    FluidBridge.incoming(JSON.stringify({id: 'sip-' + Date.now(), uri: from.uri.toString().replace(/^sip:/, ''),
+      user: from.uri.user || '', name: from.display_name || ''}));
+  });
+  agentUa.start();
+}
+
+function fluidAgentStop() { try { if (agentUa) agentUa.stop(); } catch (error) { /* already stopped */ } }
+
+let agentView = null;
+async function agentShow(options) {
+  const session = agentSession;
+  if (!session) { FluidBridge.finished(); return; }
+  let iceServers = [];
+  try { iceServers = JSON.parse(await bridge('ice')); } catch (error) { /* direct connections still work on open networks */ }
+  const remote = new MediaStream();
+  let connectedAt = 0;
+  let muted = false;
+  let held = false;
+  let done = false;
+  const started = Date.now();
+  const shared = sharedControls(options, () => session.connection, () => [
+    session.connection ? new MediaStream(session.connection.getSenders().map((sender) => sender.track).filter(Boolean)) : null, remote]);
+  const finish = (text) => {
+    if (done) return;
+    done = true;
+    shared.stopRecording();
+    agentView.setState(text, true);
+    if (agentAnswered) FluidBridge.report(JSON.stringify({connected: !!connectedAt, started,
+      seconds: connectedAt ? Math.round((Date.now() - connectedAt) / 1000) : 0}));
+    agentSession = null;
+    agentAnswered = false;
+  };
+  agentView = new FluidCallView({title: options.title || 'Call', video: false, incoming: true, security: options.security, ...shared,
+    onAnswer: () => {
+      agentAnswered = true;
+      agentView.showActive();
+      session.on('confirmed', () => { connectedAt = Date.now(); agentView.setState('Connected', false); });
+      session.on('ended', () => finish('Call ended'));
+      session.on('failed', () => finish('Call ended'));
+      session.answer({mediaConstraints: {audio: true, video: false}, pcConfig: {iceServers}});
+      session.connection.addEventListener('track', (event) => {
+        if (!remote.getTracks().includes(event.track)) remote.addTrack(event.track);
+        agentView.streams(null, remote);
+      });
+    },
+    onDecline: () => { session.terminate({status_code: 603}); agentView.setState('Declined', true); agentSession = null; },
+    onHangup: () => session.terminate(),
+    onMute: () => { muted = !muted; if (muted) session.mute(); else session.unmute(); return muted; },
+    onCamera: () => false,
+    onKeypad: (digit) => session.sendDTMF(digit),
+    onHold: () => { held = !held; if (held) session.hold(); else session.unhold(); return held; }});
+  agentView.onClose = () => { agentView = null; FluidBridge.finished(); };
+}
+
+function agentHide() { if (agentView) { agentView.root.remove(); agentView = null; } }
+
+async function fluidStart(options) {
+  if (options.demo) { demoCall(options); return; }
+  if (options.protocol === 'sip') {
+    let servers = [];
+    try { servers = JSON.parse(await bridge('ice')); } catch (error) { /* direct connections still work on open networks */ }
+    sipCall(options, servers);
+    return;
+  }
+  let iceServers = [];
+  try { iceServers = JSON.parse(await bridge('ice')); } catch (error) { /* direct connections still work on open networks */ }
+  let view;
+  let declined = false;
+  const started = Date.now();
+  const Engine = options.protocol === 'xmpp' ? FluidXmppCall : FluidCall;
+  call = new Engine({signal: (type, content) => bridge('send', type, JSON.stringify(content)),
+    send: (xml) => bridge('sendXml', xml), self: options.self, peer: options.peer, video: options.video, iceServers,
+    onState: (text, ended) => {
+      if (ended) shared.stopRecording();
+      view.setState(text, ended);
+      if (ended) FluidBridge.report(JSON.stringify({callId: call.callId, incoming: !!options.invite, connected: !!call.connectedAt,
+        declined, started, seconds: call.connectedAt ? Math.round((Date.now() - call.connectedAt) / 1000) : 0}));
+    },
+    onStreams: (local, remote) => view.streams(local, remote)});
+  const shared = sharedControls(options, () => call.pc || call.peer, () => [call.local, call.remote]);
+  view = new FluidCallView({title: options.title || 'Call', video: options.video, incoming: !!options.invite, security: options.security, ...shared,
+    onAnswer: () => { view.showActive(); call.answer(options.invite).catch((error) => call.finish(error.message)); },
+    onDecline: () => { declined = true; call.decline(); }, onHangup: () => call.hangup(), onMute: () => call.toggleMute(), onCamera: () => call.toggleCamera()});
+  view.onClose = () => FluidBridge.finished();
+  if (!options.invite) call.start().catch((error) => call.finish(error.name === 'NotAllowedError' ? 'Microphone or camera blocked' : error.message));
+}
+</script>
+</body>
+</html>

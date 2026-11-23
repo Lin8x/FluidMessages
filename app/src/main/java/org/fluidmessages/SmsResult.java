@@ -20,6 +20,9 @@ public final class SmsResult extends BroadcastReceiver {
         if (count >= total) {
             SmsStore.updateType(context, uri, failed ? Telephony.Sms.MESSAGE_TYPE_FAILED : Telephony.Sms.MESSAGE_TYPE_SENT);
             progress.edit().remove(key + "_count").remove(key + "_failed").apply();
+            // A finished text in a hidden conversation moves into the vault now that its status is known.
+            var pending = goAsync();
+            new Thread(() -> { try { HiddenChats.sweep(context); } finally { pending.finish(); } }, "fluid-hide-sent").start();
         } else {
             progress.edit().putInt(key + "_count", count).putBoolean(key + "_failed", failed).apply();
         }

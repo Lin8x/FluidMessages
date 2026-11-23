@@ -49,6 +49,7 @@ final class MmsTransport {
             throw new IOException("Choose up to 20 phone numbers and enter a message or attachment.");
         }
         int sim = subscription(selectedSim);
+        body = SmsCrypto.outgoing(context, thread(context, members), MessageProtocol.MMS, body);
         // Leave room for headers and the text part inside the carrier limit.
         long limit = Math.max(32 * 1024, maxSize(sim) - 8 * 1024 - body.length() * 4L);
         MediaSanitizer.Prepared file = attachment == null ? null : MediaSanitizer.prepare(context, attachment, limit);
@@ -181,29 +182,31 @@ final class MmsTransport {
         String sender = address(message.getFrom());
         if (!SmsStore.validRecipient(sender)) return null;
         var contacts = new ContactDirectory(context);
-        String own = "";
-        if (sim >= 0) {
-            try {
-                String number = context.getSystemService(TelephonyManager.class).createForSubscriptionId(sim).getLine1Number();
-                if (number != null && !number.isBlank()) own = contacts.key(number);
-            } catch (RuntimeException ignored) {}
-        }
-        if (own.isEmpty()) {
-            var prefs = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
-            String number = prefs.getString("mmsOwnNumber", "");
-            if (!number.isBlank()) own = contacts.key(number);
-        }
-        Map<String, String> members = new LinkedHashMap<>();
-        members.put(contacts.key(sender), sender);
+        var prefs = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
+        String own = ownNumber(context, sim, prefs, contacts);
+        String senderKey = contacts.key(sender);
+        // Everyone the message was addressed to except the sender. Your own number is always among them.
+        Map<String, String> recipients = new LinkedHashMap<>();
         for (var addresses : new EncodedStringValue[][]{message.getTo(), message.getCc()}) {
             if (addresses == null) continue;
             for (var value : addresses) {
                 String number = address(value);
                 if (!SmsStore.validRecipient(number)) continue;
                 String key = contacts.key(number);
-                if (!key.equals(own)) members.putIfAbsent(key, number);
+                if (!key.equals(senderKey)) recipients.putIfAbsent(key, number);
             }
         }
+        if (own.isEmpty() || !recipients.containsKey(own)) {
+            String learned = learnOwnNumber(context, sender, recipients);
+            if (!learned.isEmpty()) {
+                own = learned;
+                prefs.edit().putString("mmsOwnNumber", recipients.get(learned)).apply();
+                regroup(context, recipients.get(learned));
+            }
+        }
+        Map<String, String> members = new LinkedHashMap<>();
+        members.put(senderKey, sender);
+        for (var entry : recipients.entrySet()) if (!entry.getKey().equals(own)) members.putIfAbsent(entry.getKey(), entry.getValue());
         var body = message.getBody();
         var text = new StringBuilder();
         byte[] image = null;
@@ -238,6 +241,63 @@ final class MmsTransport {
             try (var input = new java.io.ByteArrayInputStream(other)) { ProtocolStore.get(context).putFile(id, input, MAX_DOWNLOAD); }
         }
         return record;
+    }
+
+    /** This SIM's number when Android knows it, otherwise the one learned from earlier group messages. */
+    private static String ownNumber(Context context, int sim, android.content.SharedPreferences prefs, ContactDirectory contacts) {
+        if (sim >= 0) {
+            try {
+                String number = context.getSystemService(SubscriptionManager.class).getPhoneNumber(sim);
+                if (number != null && !number.isBlank()) return contacts.key(number);
+            } catch (RuntimeException ignored) {}
+            try {
+                String number = context.getSystemService(TelephonyManager.class).createForSubscriptionId(sim).getLine1Number();
+                if (number != null && !number.isBlank()) return contacts.key(number);
+            } catch (RuntimeException ignored) {}
+        }
+        String saved = prefs.getString("mmsOwnNumber", "");
+        return saved.isBlank() ? "" : contacts.key(saved);
+    }
+
+    /**
+     * Many carriers don't tell Android the phone's own number, so work it out: a message addressed to one number
+     * was addressed to you, and in a group you already have, the one recipient who isn't in it is you.
+     */
+    private static String learnOwnNumber(Context context, String sender, Map<String, String> recipients) throws Exception {
+        if (recipients.size() == 1) return recipients.keySet().iterator().next();
+        if (recipients.isEmpty()) return "";
+        var known = new HashSet<String>();
+        for (var item : ProtocolStore.get(context).read()) {
+            String address = item.optString("address");
+            if (address.startsWith("mms:")) known.add(address);
+        }
+        for (String candidate : recipients.keySet()) {
+            var others = new ArrayList<String>();
+            others.add(sender);
+            for (var entry : recipients.entrySet()) if (!entry.getKey().equals(candidate)) others.add(entry.getValue());
+            if (known.contains(thread(context, others))) return candidate;
+        }
+        return "";
+    }
+
+    /** Moves group messages that were filed with your own number back into the group you're in. */
+    private static void regroup(Context context, String ownNumber) throws Exception {
+        var contacts = new ContactDirectory(context);
+        String own = contacts.key(ownNumber);
+        var store = ProtocolStore.get(context);
+        for (var item : store.read()) {
+            if (!"mms".equals(item.optString("protocol")) || !item.optString("address").startsWith("mms:")) continue;
+            var members = item.optJSONArray("members");
+            if (members == null) continue;
+            var kept = new ArrayList<String>();
+            for (int i = 0; i < members.length(); i++) {
+                String number = members.optString(i);
+                if (!contacts.key(number).equals(own)) kept.add(number);
+            }
+            if (kept.size() == members.length() || kept.isEmpty()) continue;
+            item.put("members", new JSONArray(kept)).put("address", kept.size() == 1 ? kept.get(0) : thread(context, kept));
+            store.put(item);
+        }
     }
 
     private static JSONObject record(Context context, String id, List<String> members, String sender, String body,

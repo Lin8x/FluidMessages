@@ -94,23 +94,47 @@ function excerpt(value, limit) {
   return chars.length > limit ? chars.slice(0, limit).join('') + '…' : value;
 }
 
+const nouns = {'a like': '👍', 'a heart': '❤️', 'a dislike': '👎', 'a laugh': '😆', 'an exclamation': '‼️',
+  'a question mark': '❓'};
+const isEmoji = (value) => value && value.length <= 64 && /[\p{Emoji_Presentation}\p{Extended_Pictographic}\u20E3]/u.test(value);
+
+// Same wording as the phone: added, removed (as iPhones word it), or changed reactions.
+function parseReaction(body) {
+  const own = body.endsWith(' (my message)');
+  const wire = own ? body.slice(0, -13) : body;
+  const unquote = (text) => (/^“([\s\S]+)”$/.exec(text) || /^"([\s\S]+)"$/.exec(text) || [])[1];
+  const known = verbs.find(([verb]) => wire.startsWith(verb + ' '));
+  if (known) return {change: 'add', emoji: known[1], quote: unquote(wire.slice(known[0].length + 1)), own};
+  let match = /^Reacted (\S{1,64}) to ([\s\S]+)$/.exec(wire);
+  if (match && isEmoji(match[1])) return {change: 'add', emoji: match[1], quote: unquote(match[2]), own};
+  match = /^Removed (.{1,64}?) from ([\s\S]+)$/.exec(wire);
+  if (match && (nouns[match[1]] || isEmoji(match[1]))) {
+    return {change: 'remove', emoji: nouns[match[1]] || match[1], quote: unquote(match[2]), own};
+  }
+  match = /^Changed reaction from (\S{1,64}) to (\S{1,64}) on ([\s\S]+)$/.exec(wire);
+  if (match && isEmoji(match[2])) return {change: 'change', emoji: match[2], quote: unquote(match[3]), own};
+  return null;
+}
+
+// One reaction per sender: yourself for sent messages, otherwise the group member who sent it.
+const senderKey = (message) => message.type === 1 ? 'from:' + (message.author || '') : 'me';
+
 function fold(history) {
   const shown = [];
   for (const message of history) {
-    const own = message.body.endsWith(' (my message)');
-    const wire = own ? message.body.slice(0, -13) : message.body;
-    const known = verbs.find(([verb]) => wire.startsWith(verb + ' '));
-    const custom = /^Reacted (\S{1,64}) to ([\s\S]+)$/.exec(wire);
-    const emoji = known?.[1] || (custom && /[\p{Emoji_Presentation}\p{Extended_Pictographic}\u20E3]/u.test(custom[1]) ? custom[1] : '');
-    const quote = known ? wire.slice(known[0].length + 1) : custom?.[2];
-    const quoted = quote && (/^“([\s\S]+)”$/.exec(quote) || /^"([\s\S]+)"$/.exec(quote));
-    if (emoji && quoted && ![4, 5, 6].includes(message.type)) {
-      const matches = [...shown].reverse().filter((row) =>
-        row.body === quoted[1] || excerpt(row.body, 700) === quoted[1]);
-      const target = matches.find((row) => ((row.type === 1) === (message.type === 1)) === own)
-        || (!own && matches[0]);
+    const parsed = [4, 5, 6].includes(message.type) ? null : parseReaction(message.body);
+    if (parsed?.quote) {
+      const quoted = parsed.quote;
+      const prefix = quoted.endsWith('…') && quoted.length > 20 ? quoted.slice(0, -1) : null;
+      const matches = [...shown].reverse().filter((row) => row.body === quoted || excerpt(row.body, 700) === quoted
+        || (prefix && row.body.startsWith(prefix)));
+      const target = (message.reaction_target && shown.find((row) => row.id === message.reaction_target))
+        || matches.find((row) => (senderKey(row) === senderKey(message)) === parsed.own)
+        || (!parsed.own && matches[0]);
       if (target) {
-        target.reactions.set(message.type === 1, emoji);
+        const key = senderKey(message);
+        target.reactions.delete(key);
+        if (parsed.change !== 'remove') target.reactions.set(key, parsed.emoji);
         continue;
       }
     }
@@ -127,7 +151,8 @@ function threadAddress(key) { return key.split('\u001f')[0]; }
 function threadProtocol(key) { return threads.get(key)?.at(-1)?.protocol || key.split('\u001f')[1] || 'sms'; }
 function threadTitle(key) {
   const message = (threads.get(key) || []).find((row) => row.title);
-  return message?.title || threadAddress(key);
+  const route = typeof routes === 'undefined' ? null : routes.find((item) => item.address === threadAddress(key));
+  return message?.title || route?.title || threadAddress(key);
 }
 // Short codes and sender IDs are automated only for carrier texts; internet IDs often contain letters.
 function automatedThread(key) { return !!key && family(threadProtocol(key)) === 'sms' && automated(threadAddress(key)); }
@@ -135,7 +160,10 @@ function internet(protocol) { return !['sms', 'mms', 'rcs', undefined, ''].inclu
 
 function rebuildThreads() {
   threads = new Map();
+  const now = Date.now();
   for (const message of inbox) {
+    // Disappearing messages leave the screen when their time is up, before the next sync deletes them.
+    if (message.expires && message.expires <= now) continue;
     const key = threadKey(message);
     if (!threads.has(key)) threads.set(key, []);
     threads.get(key).push(message);
@@ -182,8 +210,22 @@ function messageActions(message) {
   if (sendable) {
     for (const [emoji, verb] of [['👍', 'Liked'], ['❤️', 'Loved'], ['🎉', 'Reacted 🎉 to']]) {
       action(emoji, () => {
-        const wire = verb + ' “' + excerpt(message.body, 700) + '”' + (message.type !== 1 ? ' (my message)' : '');
-        send(wire, '', {kind: 'reaction', target: message.id || '', emoji, own: message.type !== 1}).catch(showError);
+        const own = message.type !== 1;
+        const quote = '“' + excerpt(message.body, 700) + '”' + (own ? ' (my message)' : '');
+        const current = message.reactions.get('me');
+        // Your current reaction again takes it back; a different one replaces it. Matrix and XMPP do that natively;
+        // the readable text goes everywhere else.
+        const native = ['matrix', 'xmpp'].includes(message.protocol);
+        const relation = (extra) => native ? {kind: 'reaction', target: message.id || '', emoji, own, ...extra} : undefined;
+        if (current === emoji) {
+          const noun = Object.keys(nouns).find((key) => nouns[key] === emoji) || emoji;
+          send('Removed ' + noun + ' from ' + quote, '', relation({removed: true})).catch(showError);
+        } else if (current) {
+          send('Changed reaction from ' + current + ' to ' + emoji + ' on ' + quote, '', relation({previous: current}))
+            .catch(showError);
+        } else {
+          send(verb + ' ' + quote, '', {kind: 'reaction', target: message.id || '', emoji, own}).catch(showError);
+        }
       });
     }
   }
@@ -214,6 +256,12 @@ function showMessages(preserve = false) {
     if (quoted) bubble.append(quoteCard('Replying to', quoted[1] || quoted[2]), element('p', quoted[3]));
     else if (forwarded) bubble.append(quoteCard('Forwarded from ' + (forwarded[3] || forwarded[4]), forwarded[1] || forwarded[2]));
     else bubble.textContent = message.body;
+    if (/^FM1:/.test(message.body || '')) {
+      // FluidMessages encryption: only phones with the shared key can read it.
+      bubble.textContent = '🔒 Encrypted with FluidMessages. Read it on your phone.';
+      bubble.classList.add('sealed');
+    }
+    if (typeof moneyCard === 'function') moneyCard(message, bubble);
     if (message.attachment) {
       if (message.body === message.attachment.name) bubble.textContent = '';
       const file = element('button', '📎 ' + message.attachment.name, 'file-card');
@@ -253,11 +301,24 @@ function select(key) {
   get('send').textContent = internet(protocol) ? 'Send ' + labels[protocol] : 'Send SMS';
   get('body').placeholder = internet(protocol) ? labels[protocol] + ' message' : 'Text message';
   get('later').hidden = internet(protocol);
+  // Click-to-call: your phone shows a "Tap to call" notification with the number ready to dial.
+  get('call').hidden = !key || internet(protocol) || !senderAddress(address) || automatedThread(key);
   get('body').value = drafts.get(address) || '';
   get('schedule-status').textContent = '';
   setReply('');
+  markRead(key);
   showMessages();
   showThreads();
+  if (typeof updateCallButtons === 'function') updateCallButtons();
+}
+
+// Opening an internet conversation reads it everywhere. Texts are marked read when you open them on the phone.
+function markRead(key) {
+  const unread = (threads.get(key) || []).filter((row) => row.type === 1 && row.read === 0 && internet(row.protocol));
+  if (!unread.length) return;
+  for (const row of unread) row.read = 1;
+  for (const row of inbox) if (unread.some((item) => item.id === row.id)) row.read = 1;
+  api('protocols/read', {ids: unread.map((row) => row.id)}).catch(() => {});
 }
 
 function nearbyWord(a, b) {
@@ -292,7 +353,7 @@ function showThreads() {
   const matches = messageMatcher(filter);
   const folder = get('folder').value;
   const selected = appearance.folders || {};
-  const rows = [...threads].filter(([address, messages]) => {
+  const rows = [...threads].filter(([address, messages]) => messages.length).filter(([address, messages]) => {
     const blocked = selected.blocked?.includes(threadAddress(address));
     const archived = selected.archived?.includes(threadAddress(address));
     const inFolder = folder === 'Blocked' ? blocked : !blocked && (folder === 'Archived' ? archived : !archived);
@@ -300,6 +361,10 @@ function showThreads() {
   });
   const pinned = new Set(selected.pinned || []);
   rows.sort(([a], [b]) => Number(pinned.has(threadAddress(b))) - Number(pinned.has(threadAddress(a))));
+  // Same rule as the phone: Automatic shows tags once more than one kind of conversation is present.
+  const mode = appearance.tagMode || (appearance.protocolTags ? 'always' : 'auto');
+  const families = new Set([...threads.values()].flatMap((messages) => messages.map((row) => family(row.protocol || 'sms'))));
+  const showTags = mode === 'always' || (mode === 'auto' && families.size > 1);
   for (const [key, messages] of rows) {
     const address = key;
     const message = messages.at(-1);
@@ -309,13 +374,13 @@ function showThreads() {
     button.dataset.unread = String(message.type === 1 && message.read === 0);
     const copy = element('span', '', 'thread-copy');
     copy.append(element('strong', threadTitle(key)));
-    if (appearance.protocolTags) {
+    if (showTags) {
       const tags = element('span', '', 'tags');
       const formats = appearance.combineProtocols ? [...new Set(messages.map((row) => row.protocol || 'sms'))] : [message.protocol || 'sms'];
       for (const format of formats) tags.append(element('span', automatedThread(key) && family(format) === 'sms' ? 'Automated' : labels[format] || 'SMS', 'tag p-' + format));
       copy.append(tags);
     }
-    copy.append(element('small', message.body));
+    copy.append(element('small', /^FM1:/.test(message.body || '') ? '🔒 Encrypted with FluidMessages' : message.body));
     const time = timeOf(message);
     button.append(element('span', '', 'indicator'), element('span', initials(threadTitle(key)), 'avatar'), copy,
       element('time', day(time) === 'Today' ? clock(time) : day(time) + (appearance.exactTimes ? ' ' + clock(time) : '')));
@@ -334,7 +399,7 @@ function showJobs(jobs) {
   if (!jobs.length) queue.append(element('p', 'No scheduled messages', 'placeholder'));
   for (const job of jobs) {
     const row = element('div', '', 'job');
-    row.append(element('strong', job.address), element('p', job.body),
+    row.append(element('strong', job.address), element('p', job.protocol === 'call' ? 'Call request' : job.body),
       element('small', new Date(job.due).toLocaleString() + ' · ' + (jobStates[job.state] || job.state)));
     if (job.state === 'scheduled') {
       const cancel = element('button', 'Cancel');
@@ -357,6 +422,7 @@ async function refresh() {
   if (currentSession !== session || request !== refreshNumber) return;
   if (!refreshed || updated !== snapshot.updated) {
     applyAppearance(snapshot.appearance);
+    if (typeof routes !== 'undefined') routes = snapshot.routes || [];
     if (Array.isArray(snapshot.appearance?.enabledProtocols)) enabled = new Set(snapshot.appearance.enabledProtocols);
     updated = snapshot.updated;
     inbox = snapshot.messages;
@@ -365,7 +431,8 @@ async function refresh() {
     showMessages(true);
     refreshed = true;
   }
-  get('status').textContent = updated ? 'Phone synced ' + new Date(updated).toLocaleTimeString() : 'Waiting for Android sync';
+  get('status').textContent = updated ? 'Phone synced ' + new Date(updated).toLocaleTimeString()
+    : 'No phone connected · internet chats work here';
   showJobs(jobs);
 }
 
@@ -379,13 +446,13 @@ async function send(body, text, relation, due = Date.now()) {
   await api('protocols/send', {address: threadAddress(active), protocol, body, text: text || body, request,
     relation: relation && relation.target ? relation : undefined});
   if (currentSession !== session) return;
-  get('schedule-status').textContent = 'Queued on your companion.';
+  get('schedule-status').textContent = 'Queued on FluidMessages Web.';
   refresh().catch(() => { get('status').textContent = 'Sync unavailable'; });
 }
 
 async function download(message) {
   const response = await fetch('/api/protocols/file?id=' + encodeURIComponent(message.id), {headers: {Authorization: 'Bearer ' + token}});
-  if (!response.ok) throw new Error('The attachment is no longer on the companion.');
+  if (!response.ok) throw new Error('The attachment is no longer on FluidMessages Web.');
   const url = URL.createObjectURL(await response.blob());
   const link = element('a', '');
   link.href = url;
@@ -406,9 +473,12 @@ get('pair').addEventListener('submit', async (event) => {
   event.preventDefault();
   const currentSession = ++session;
   token = get('token').value.trim();
+  const remember = get('remember').checked;
   try {
     await refresh();
     if (currentSession !== session) return;
+    // Like "keep me signed in": the token stays in this browser until you choose Disconnect.
+    if (remember) localStorage.setItem('fluidToken', token);
     get('pair').reset();
     get('pair-error').textContent = '';
     get('pair').hidden = true;
@@ -423,6 +493,7 @@ get('pair').addEventListener('submit', async (event) => {
 });
 get('disconnect').addEventListener('click', () => {
   ++session;
+  localStorage.removeItem('fluidToken');
   token = '';
   inbox = [];
   threads.clear();
@@ -462,6 +533,14 @@ get('open-queue').addEventListener('click', () => {
 });
 get('close-queue').addEventListener('click', () => get('queue').close());
 get('cancel-reply').addEventListener('click', () => setReply(''));
+get('call').addEventListener('click', async () => {
+  get('call').disabled = true;
+  try {
+    await api('call', {address: threadAddress(active)});
+    get('schedule-status').textContent = 'Sent to your phone. Tap the notification there to call.';
+  } catch (error) { showError(error); }
+  finally { setTimeout(() => { get('call').disabled = false; }, 3000); }
+});
 get('schedule').addEventListener('submit', async (event) => {
   event.preventDefault();
   const currentSession = session;
@@ -492,3 +571,10 @@ setInterval(() => {
     if (token) get('status').textContent = 'Sync unavailable';
   });
 }, 5000);
+
+// Signs back in automatically when this browser was told to keep you signed in.
+if (localStorage.getItem('fluidToken')) {
+  get('token').value = localStorage.getItem('fluidToken');
+  get('remember').checked = true;
+  get('pair').requestSubmit();
+}

@@ -49,6 +49,12 @@ final class DirectProtocols {
         JSONObject send(Context context, JSONObject route, JSONObject message, MediaSanitizer.Prepared file) throws Exception;
         /** Whether this protocol needs an always-open connection to receive messages. */
         boolean persistent();
+        /** Invites or removes someone in a group. Needs the right permission in that room or channel. */
+        default void changeMember(Context context, JSONObject route, boolean add, String member) throws Exception {
+            throw new UnsupportedOperationException("This protocol can't change group members");
+        }
+        /** Takes back one of your sent messages for everyone, where the protocol allows it. */
+        default void retract(Context context, JSONObject route, JSONObject record) throws Exception {}
     }
 
     private DirectProtocols() {}
@@ -198,7 +204,8 @@ final class DirectProtocols {
         var prefs = prefs(app);
         boolean service = false;
         for (MessageProtocol protocol : new MessageProtocol[]{MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC}) {
-            var account = on(prefs, protocol) && protocol.enabled(prefs) ? account(app, protocol) : null;
+            // A protocol turned off for messages stays connected when it's still allowed for calls.
+            var account = on(prefs, protocol) && (protocol.enabled(prefs) || Calling.keepsConnected(prefs, protocol)) ? account(app, protocol) : null;
             var existing = clients.get(protocol);
             boolean always = account != null && stayConnected(prefs, protocol);
             boolean wanted = account != null && (foreground || always);
@@ -220,7 +227,7 @@ final class DirectProtocols {
                 client.start(app, account);
             }
         }
-        ProtocolService.update(app, service);
+        ProtocolService.update(app, service || SipAgent.alwaysOn(prefs));
     }
 
     /** One background check for protocols that don't keep a connection open (from the periodic job). */
@@ -259,8 +266,11 @@ final class DirectProtocols {
             if (store.find(record.getString("id")) != null) return;
             store.put(record);
             MmsTransport.changed(context);
-            if (record.optInt("type") == 1 && !record.optBoolean("event")) SmsDelivery.notify(context, "New " +
-                MessageProtocol.parse(record.getString("protocol")).label + " message", record.getString("address"));
+            if (record.optInt("type") == 1 && !record.optBoolean("event")) {
+                if (HiddenChats.rowHidden(prefs(context), record)) SmsDelivery.notifyHidden(context);
+                else SmsDelivery.notify(context, "New " + MessageProtocol.parse(record.getString("protocol")).label
+                    + " message", record.getString("address"));
+            }
         } catch (Exception ignored) {}
     }
 
@@ -285,6 +295,8 @@ final class DirectProtocols {
         if (client == null) throw new IllegalStateException(format.label + " isn’t connected. Open FluidMessages and try again.");
         String id = "direct-" + UUID.randomUUID();
         var message = record(route, id, body, true, System.currentTimeMillis(), "").put("status", "Sending…").put("text", text);
+        int disappear = Disappearing.seconds(prefs, address);
+        if (disappear > 0) message.put("expire_seconds", disappear);
         var store = ProtocolStore.get(context);
         if (relation != null) {
             var target = relation.getTargetId() == null ? null : store.find(relation.getTargetId());
@@ -293,7 +305,13 @@ final class DirectProtocols {
                 for (String field : new String[]{"event_id", "mail_id", "mail_subject", "xmpp_id", "irc_msgid", "author"}) {
                     if (target.has(field)) json.put(field, target.get(field));
                 }
-                if (relation.getKind() == RelationKind.REACTION) message.put("reaction_target", target.getString("id"));
+                if (relation.getKind() == RelationKind.REACTION) {
+                    message.put("reaction_target", target.getString("id"));
+                    if (relation.getRevises()) {
+                        String earlier = previousReactionEvent(store, address, target.getString("id"));
+                        if (!earlier.isEmpty()) json.put("previous_event", earlier);
+                    }
+                }
                 if (relation.getKind() == RelationKind.REPLY) message.put("reply_target", target.getString("id"));
             }
             message.put("relation", json);
@@ -321,6 +339,47 @@ final class DirectProtocols {
             if (file != null) file.delete();
             MmsTransport.changed(context);
         }
+    }
+
+    /** The phone's own XMPP connection, for XMPP calls; null when XMPP isn't connected from this phone. */
+    static DirectXmpp xmpp() {
+        synchronized (DirectProtocols.class) { return clients.get(MessageProtocol.XMPP) instanceof DirectXmpp client ? client : null; }
+    }
+
+    /** The phone's own Matrix connection, for calls in chats it links directly; null otherwise. */
+    static DirectMatrix matrix() {
+        synchronized (DirectProtocols.class) { return clients.get(MessageProtocol.MATRIX) instanceof DirectMatrix client ? client : null; }
+    }
+
+    static void changeMember(Context context, String address, MessageProtocol format, boolean add, String member) throws Exception {
+        var route = route(prefs(context), address, format);
+        if (route == null) throw new IllegalStateException("Link this group first");
+        DirectClient client;
+        synchronized (DirectProtocols.class) { client = clients.get(format); }
+        if (client == null) throw new IllegalStateException(format.label + " isn’t connected. Open FluidMessages and try again.");
+        client.changeMember(context, route, add, member.trim());
+    }
+
+    /** Takes back a sent message on Matrix or XMPP when it disappears. Companion-linked chats are handled there. */
+    static void retract(Context context, JSONObject record) throws Exception {
+        var format = MessageProtocol.parse(record.optString("protocol"));
+        var route = route(prefs(context), record.optString("address"), format);
+        if (route == null) return;
+        DirectClient client;
+        synchronized (DirectProtocols.class) { client = clients.get(format); }
+        if (client != null) client.retract(context, route, record);
+    }
+
+    /** The event of your latest reaction on a message, which a removal or change takes back; "" if it's gone. */
+    static String previousReactionEvent(ProtocolStore store, String address, String target) throws Exception {
+        for (JSONObject item : store.read()) {
+            if (!address.equals(item.optString("address")) || item.optInt("type") != 2
+                    || !target.equals(item.optString("reaction_target"))) continue;
+            var earlier = item.optJSONObject("relation");
+            if (earlier != null && earlier.optBoolean("removed")) return "";
+            return item.optString("status").equals("Sent") ? item.optString("event_id") : "";
+        }
+        return "";
     }
 
     static String unavailable(SharedPreferences prefs, String address, MessageProtocol format) {

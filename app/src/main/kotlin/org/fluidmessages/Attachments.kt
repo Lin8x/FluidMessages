@@ -111,6 +111,7 @@ internal data class Attachment @JvmOverloads constructor(
 internal enum class AttachmentSource(val label: String, val glyph: Glyph, val needsFiles: Boolean = true) {
     GALLERY("Photos and videos", Glyph.Photo), CAMERA("Camera", Glyph.Camera), DOCUMENT("Document", Glyph.Document),
     AUDIO("Audio", Glyph.Music), LOCATION("Location", Glyph.Pin, false), CONTACT("Contact", Glyph.Person, false),
+    MONEY("Money", Glyph.Money, false),
 }
 
 // A location travels as a map link so it reads correctly on every protocol and in other apps.

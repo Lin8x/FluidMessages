@@ -7,6 +7,7 @@ losing messages). Supports one-to-one chats and group chats (MUC), message carbo
 XMPP as encrypted in transit only.
 """
 import asyncio
+import xml.etree.ElementTree as ET
 import threading
 import time
 
@@ -90,11 +91,15 @@ class XmppClient:
             author = "" if outgoing else msg["from"].bare
         extra = {}
         reactions = msg["reactions"]
-        if reactions["id"]:
+        retract = msg.xml.find("{urn:xmpp:message-retract:1}retract")
+        if retract is not None and retract.get("id"):
+            # XEP-0424: the sender took a message back.
+            extra = {"retract": retract.get("id")}
+            text = ""
+        elif reactions["id"]:
             values = list(reactions.get_values())
-            if not values:
-                return  # An empty set removes a reaction; FluidMessages keeps the last one shown.
-            extra = {"reaction": values[-1], "reaction_to": reactions["id"]}
+            # An empty set takes the sender's reaction back.
+            extra = {"reaction": values[-1] if values else "", "reaction_to": reactions["id"]}
             text = ""
         else:
             text = msg["body"]
@@ -114,6 +119,26 @@ class XmppClient:
             raise ConnectionError("XMPP isn’t connected yet")
         return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result(timeout)
 
+    def change_member(self, room, add, member):
+        """Invites an address to a group chat, or kicks a nickname from it (kicking needs moderator rights)."""
+        async def apply():
+            muc = self.client.plugin["xep_0045"]
+            if add:
+                muc.invite(room, member)
+            else:
+                await muc.set_role(room, member, "none", reason="Removed from the group")
+        return self.call(apply())
+
+    def retract(self, to, message_id, group=False):
+        """XEP-0424: takes back a sent message for everyone whose client supports it."""
+        async def deliver():
+            msg = self.client.make_message(mto=to, mbody="This message was removed.", mtype="groupchat" if group else "chat")
+            msg.xml.append(ET.Element("{urn:xmpp:message-retract:1}retract", {"id": message_id}))
+            msg.xml.append(ET.Element("{urn:xmpp:fallback:0}fallback", {"for": "urn:xmpp:message-retract:1"}))
+            msg.enable("store")
+            msg.send()
+        return self.call(deliver())
+
     def send(self, to, text, group=False, reply=None, reply_author=None, react=None, file=None):
         """Sends a message and returns its id. file is (path, name, mime) for HTTP File Upload."""
         async def deliver():
@@ -126,7 +151,7 @@ class XmppClient:
                 body = url if not text else text + "\n" + url
             if react is not None:
                 msg = self.client.make_message(mto=to, mtype=mtype)
-                self.client.plugin["xep_0444"].set_reactions(msg, reply, [react])
+                self.client.plugin["xep_0444"].set_reactions(msg, reply, react if isinstance(react, list) else [react])
                 msg.enable("store")
             elif reply:
                 msg = self.client.plugin["xep_0461"].make_reply(reply_author or to, reply, mto=to, mbody=body, mtype=mtype)

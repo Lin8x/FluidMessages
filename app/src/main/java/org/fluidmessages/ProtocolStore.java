@@ -18,10 +18,12 @@ import org.json.JSONObject;
 final class ProtocolStore extends SQLiteOpenHelper {
     private static ProtocolStore instance;
     private static final int MAX_HISTORY = 2000;
+    /** Bumped on every write, so cached message lists know when to reload. */
+    static final java.util.concurrent.atomic.AtomicInteger revision = new java.util.concurrent.atomic.AtomicInteger();
     private final Context context;
 
     private ProtocolStore(Context context) {
-        super(context, "protocol-history.db", null, 1);
+        super(context, "protocol-history.db", null, 2);
         this.context = context;
     }
 
@@ -33,16 +35,63 @@ final class ProtocolStore extends SQLiteOpenHelper {
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE messages (id TEXT PRIMARY KEY, date INTEGER NOT NULL, payload TEXT NOT NULL)");
         db.execSQL("CREATE INDEX recent_messages ON messages (date DESC)");
+        db.execSQL("CREATE TABLE hidden (id TEXT PRIMARY KEY, date INTEGER NOT NULL, sealed TEXT NOT NULL)");
     }
 
-    @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {}
+    @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        if (oldVersion < 2) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS hidden (id TEXT PRIMARY KEY, date INTEGER NOT NULL, sealed TEXT NOT NULL)");
+            // Messages saved before encryption at rest are sealed in place.
+            try (var cursor = db.query("messages", new String[]{"id", "payload"}, null, null, null, null, null)) {
+                while (cursor.moveToNext()) {
+                    if (Privacy.sealed(cursor.getString(1))) continue;
+                    ContentValues row = new ContentValues();
+                    row.put("payload", Privacy.seal(prefs(), cursor.getString(1)));
+                    db.update("messages", row, "id = ?", new String[]{cursor.getString(0)});
+                }
+            }
+        }
+    }
+
+    private android.content.SharedPreferences prefs() { return context.getSharedPreferences("fluid", Context.MODE_PRIVATE); }
+
+    private JSONObject decode(String payload) throws Exception { return new JSONObject(Privacy.open(prefs(), payload)); }
+
+    // Hidden chats: rows sealed to the vault key, readable only while hidden chats are open.
+
+    void putHidden(JSONObject message) throws Exception {
+        ContentValues row = new ContentValues();
+        row.put("id", message.getString("id"));
+        row.put("date", message.optLong("date"));
+        row.put("sealed", Privacy.vaultSeal(prefs(), message.toString()));
+        getWritableDatabase().insertWithOnConflict("hidden", null, row, SQLiteDatabase.CONFLICT_REPLACE);
+        revision.incrementAndGet();
+    }
+
+    List<JSONObject> readHidden() {
+        var result = new ArrayList<JSONObject>();
+        if (!Privacy.vaultOpen()) return result;
+        try (var cursor = getReadableDatabase().query("hidden", new String[]{"sealed"}, null, null, null, null, "date DESC")) {
+            while (cursor.moveToNext()) {
+                try { result.add(new JSONObject(Privacy.vaultOpen(cursor.getString(0))).put("hidden", true)); }
+                catch (Exception skipped) {}
+            }
+        }
+        return result;
+    }
+
+    void removeHidden(String id) {
+        getWritableDatabase().delete("hidden", "id = ?", new String[]{id});
+        revision.incrementAndGet();
+    }
 
     void put(JSONObject message) throws Exception {
         ContentValues row = new ContentValues();
         row.put("id", message.getString("id"));
         row.put("date", message.getLong("date"));
-        row.put("payload", message.toString());
+        row.put("payload", Privacy.seal(prefs(), message.toString()));
         getWritableDatabase().insertWithOnConflict("messages", null, row, SQLiteDatabase.CONFLICT_REPLACE);
+        revision.incrementAndGet();
     }
 
     void putBatch(JSONArray rows) throws Exception {
@@ -56,7 +105,7 @@ final class ProtocolStore extends SQLiteOpenHelper {
 
     JSONObject find(String id) throws Exception {
         try (var cursor = getReadableDatabase().query("messages", new String[]{"payload"}, "id = ?", new String[]{id}, null, null, null)) {
-            return cursor.moveToFirst() ? new JSONObject(cursor.getString(0)) : null;
+            return cursor.moveToFirst() ? decode(cursor.getString(0)) : null;
         }
     }
 
@@ -64,13 +113,14 @@ final class ProtocolStore extends SQLiteOpenHelper {
         var result = new ArrayList<JSONObject>();
         try (var cursor = getReadableDatabase().query("messages", new String[]{"payload"}, null, null, null, null,
                 "date DESC, id DESC", Integer.toString(MAX_HISTORY))) {
-            while (cursor.moveToNext()) result.add(new JSONObject(cursor.getString(0)));
+            while (cursor.moveToNext()) result.add(decode(cursor.getString(0)));
         }
         return result;
     }
 
     void remove(String id) throws IOException {
         getWritableDatabase().delete("messages", "id = ?", new String[]{id});
+        revision.incrementAndGet();
         Files.deleteIfExists(photoFile(id).toPath());
         Files.deleteIfExists(attachmentFile(id).toPath());
     }

@@ -1,4 +1,4 @@
-"""Single-phone LAN companion. Run behind a TLS reverse proxy."""
+"""Single-phone LAN FluidMessages Web. Run behind a TLS reverse proxy."""
 import hmac
 import json
 import os
@@ -20,7 +20,11 @@ ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get("FLUID_DB", "data/fluid.sqlite"))
 TOKEN = os.environ.get("FLUID_TOKEN", "")
 FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
-         "/style.css": ("style.css", "text/css")}
+         "/style.css": ("style.css", "text/css"), "/icon.webp": ("icon.webp", "image/webp"),
+         "/companion.js": ("companion.js", "text/javascript"), "/call.js": ("shared/call.js", "text/javascript"),
+         "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/sw.js": ("sw.js", "text/javascript"),
+         "/icons/icon-192.png": ("icons/icon-192.png", "image/png"), "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
+         "/icons/apple-touch-icon.png": ("icons/apple-touch-icon.png", "image/png")}
 
 def appearance_snapshot(value):
     if not isinstance(value, dict):
@@ -41,6 +45,9 @@ def appearance_snapshot(value):
                                           "rcs", "rcsInk", "matrix", "matrixInk", "xmpp", "xmppInk", "email", "emailInk", "irc", "ircInk")
             if isinstance(colors.get(key), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", colors[key])
         }
+    for key in ("tagMode", "encryptionMode"):
+        if value.get(key) in ("auto", "always", "off"):
+            clean[key] = value[key]
     if isinstance(value.get("enabledProtocols"), list):
         clean["enabledProtocols"] = [key for key in ("sms", "mms", "matrix", "xmpp", "email", "irc")
                                      if key in value["enabledProtocols"]]
@@ -55,6 +62,12 @@ def appearance_snapshot(value):
             for key in ("pinned", "archived", "blocked") if isinstance(folders.get(key), list)
         }
     return clean
+
+
+def settings_view(db):
+    """FluidMessages Web's own settings, and whether a phone has synced, so the browser works with or without one."""
+    row = db.execute("SELECT updated FROM inbox WHERE id=1").fetchone()
+    return {**gateway.settings(db), "phone": {"paired": row is not None, "last_sync": row[0] if row else None}}
 
 
 def connect():
@@ -72,7 +85,8 @@ class Handler(BaseHTTPRequestHandler):
     def reply(self, status, payload, content_type="application/json"):
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(status)
-        self.send_header("Content-Type", content_type + "; charset=utf-8")
+        text = content_type.startswith(("text/", "application/json", "application/manifest"))
+        self.send_header("Content-Type", content_type + ("; charset=utf-8" if text else ""))
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -83,7 +97,7 @@ class Handler(BaseHTTPRequestHandler):
     def authorize(self):
         header = self.headers.get("Authorization", "")
         if not hmac.compare_digest(header.encode(), ("Bearer " + TOKEN).encode()):
-            self.reply(401, {"error": "Enter the server pairing token"})
+            self.reply(401, {"error": "Enter the server access token"})
             return False
         return True
 
@@ -112,11 +126,20 @@ class Handler(BaseHTTPRequestHandler):
                     FROM inbox LEFT JOIN phone_appearance ON inbox.id=phone_appearance.id WHERE inbox.id=1
                 """).fetchone()
                 history = gateway.snapshot(db)
-                messages = (json.loads(row["content"]) if row else []) + history["messages"]
+                settings = gateway.settings(db)
+                phone = gateway.visible(settings, json.loads(row["content"]) if row else [])
+                messages = phone + history["messages"]
                 messages.sort(key=lambda message: message["date"], reverse=True)
                 self.reply(200, {"messages": messages, "routes": history["routes"], "enabled": history["enabled"],
                                  "updated": row["updated"] if row else None,
                                  "appearance": json.loads(row["appearance"]) if row and row["appearance"] else {}})
+            elif self.path.startswith("/api/calls?since="):
+                since = self.path.removeprefix("/api/calls?since=")
+                self.reply(200, gateway.call_events(int(since) if since.isdigit() else 0))
+            elif self.path == "/api/calls/ice":
+                self.reply(200, gateway.ice_servers())
+            elif self.path == "/api/settings":
+                self.reply(200, settings_view(db))
             elif self.path == "/api/protocols/accounts":
                 self.reply(200, {"accounts": gateway.accounts.redacted(), "xmpp": protocol_gateway.xmpp_client.available()})
             elif self.path == "/api/jobs":
@@ -229,8 +252,17 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/protocols/accounts/delete":
                 gateway.accounts.delete(data.get("protocol"))
                 return {"accounts": gateway.accounts.redacted()}
+            if self.path == "/api/protocols/read":
+                return gateway.mark_read(db, data)
             if self.path == "/api/protocols/routes":
                 return gateway.add_route(db, data)
+            if self.path == "/api/calls/send":
+                return gateway.send_call(data)
+            if self.path == "/api/protocols/members":
+                return gateway.change_member(db, data)
+            if self.path == "/api/settings":
+                gateway.save_settings(db, data)
+                return settings_view(db)
             if self.path == "/api/protocols/routes/delete":
                 return gateway.delete_route(db, data)
             if self.path == "/api/sync":
@@ -248,6 +280,9 @@ class Handler(BaseHTTPRequestHandler):
                     if "thumbnail" in message and (not isinstance(message["thumbnail"], str)
                             or len(message["thumbnail"]) > 160_000 or not re.fullmatch(r"[A-Za-z0-9+/=]+", message["thumbnail"])):
                         raise ValueError("Invalid MMS thumbnail")
+                privacy = data.get("privacy")
+                if isinstance(privacy, dict):
+                    gateway.save_settings(db, privacy, from_phone=True)
                 db.execute("INSERT OR REPLACE INTO inbox VALUES (1, ?, ?)", (json.dumps(messages), now))
                 db.execute("INSERT OR REPLACE INTO phone_appearance VALUES (1, ?)",
                            (json.dumps(appearance_snapshot(data.get("appearance"))),))
@@ -274,8 +309,20 @@ class Handler(BaseHTTPRequestHandler):
                 job = db.execute("INSERT INTO jobs (address, body, due, state, protocol) VALUES (?, ?, ?, 'scheduled', ?)",
                                  (address, body, due, format))
                 return {"id": job.lastrowid}
+            if self.path == "/api/call":
+                # Click-to-call: the phone shows a "Tap to call" notification that opens its dialer.
+                address = data["address"]
+                if not isinstance(address, str) or not re.fullmatch(r"\+?[0-9][0-9(). -]{2,38}", address):
+                    raise ValueError("Calls need a phone number")
+                if db.execute("SELECT count(*) FROM jobs WHERE protocol='call' AND due>?", (now - 60_000,)).fetchone()[0] >= 5:
+                    raise ValueError("Too many call requests. Try again in a minute.")
+                job = db.execute("INSERT INTO jobs (address, body, due, state, protocol) VALUES (?, '', ?, 'scheduled', 'call')",
+                                 (address, now))
+                return {"id": job.lastrowid}
             if self.path == "/api/claim":
                 db.execute("BEGIN IMMEDIATE")
+                # A call request is only useful right away; after two minutes it expires instead of ringing later.
+                db.execute("UPDATE jobs SET state='failed' WHERE protocol='call' AND state='scheduled' AND due<?", (now - 120_000,))
                 job = db.execute("SELECT * FROM jobs WHERE state='scheduled' AND due<=? ORDER BY due,id LIMIT 1",
                                  (now,)).fetchone()
                 if job:

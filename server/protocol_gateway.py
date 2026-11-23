@@ -4,6 +4,7 @@ from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import make_msgid, parsedate_to_datetime, parseaddr
+import collections
 import hashlib
 import imaplib
 import json
@@ -14,6 +15,7 @@ import smtplib
 import ssl
 import threading
 import time
+import uuid
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
@@ -32,6 +34,11 @@ MAX_MAIL_WITH_FILES = 35 * 1024 * 1024
 KINDS = ("photo", "video", "audio", "voice", "file", "contact")
 MIME = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,62}/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}")
 MAX_MATRIX = 5 * 1024 * 1024
+# Matrix VoIP (v1) call signaling. The browser or phone runs the WebRTC call; the companion only relays these.
+CALL_TYPES = ("m.call.invite", "m.call.candidates", "m.call.answer", "m.call.hangup", "m.call.select_answer",
+              "m.call.reject", "m.call.negotiate")
+# Lets other FluidMessages apps remove a message on the same timer; other Matrix clients ignore it.
+DISAPPEAR = "org.fluidmessages.disappear_after"
 EMAIL = re.compile(r"[^@\s<>\x00-\x1f]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
 NUMBER = re.compile(r"\+?[0-9][0-9(). -]{2,38}")
 ROOM = re.compile(r"![^\s/\x00-\x1f]{1,250}")
@@ -48,6 +55,60 @@ def reaction_text(emoji, quote):
     verb = REACTION_VERBS.get(emoji)
     quoted = "“" + excerpt(quote, 700) + "”"
     return f"{verb} {quoted}" if verb else f"Reacted {emoji} to {quoted}"
+
+
+REACTION_NOUNS = {"👍": "a like", "❤️": "a heart", "👎": "a dislike", "😆": "a laugh", "‼️": "an exclamation",
+                  "❓": "a question mark"}
+
+
+def removed_text(emoji, quote):
+    """Worded the way iPhones send it, matching reactionRemovedSms on Android."""
+    return f"Removed {REACTION_NOUNS.get(emoji, emoji)} from “{excerpt(quote, 700)}”"
+
+
+def changed_text(previous, emoji, quote):
+    return f"Changed reaction from {previous} to {emoji} on “{excerpt(quote, 700)}”"
+
+
+def revises(relation):
+    """A removal or a change of an earlier reaction."""
+    return relation.get("kind") == "reaction" and (relation.get("removed") or relation.get("previous"))
+
+
+ATTRIBUTION_START = re.compile(r"\s*(On|Am|Le|El|Il|Em|Op)\b.*")
+ATTRIBUTION_END = re.compile(r"\s*(On|Am|Le|El|Il|Em|Op)\b.{0,400}?\b(wrote|schrieb|a écrit|escribió|ha scritto|escreveu|schreef)"
+                             r"\b.{0,200}:\s*", re.S)
+ORIGINAL_MESSAGE = re.compile(r"\s*-{2,}\s*Original Message\s*-{2,}\s*", re.I)
+HEADER_FROM = re.compile(r"\s*\*?From:\*?\s.+")
+HEADER_NEXT = re.compile(r"\s*\*?(Sent|Date|To|Subject):\*?\s.*")
+
+
+def strip_quoted_email(text):
+    """Mirrors stripQuotedEmail on Android: drops the quoted earlier conversation under an email reply."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    rule = lambda line: not line.strip() or set(line.strip()) <= {"_", "-"}
+    cut, skip = len(lines), 0
+    for i, line in enumerate(lines):
+        size = next((extra + 1 for extra in range(4) if ATTRIBUTION_START.fullmatch(line) and i + extra < len(lines)
+                     and ATTRIBUTION_END.fullmatch(" ".join(lines[i:i + extra + 1]))), 0)
+        attribution = size > 0
+        outlook = ORIGINAL_MESSAGE.fullmatch(line) or (
+            HEADER_FROM.fullmatch(line) and any(i + n < len(lines) and HEADER_NEXT.fullmatch(lines[i + n]) for n in range(1, 5))
+            and (i == 0 or rule(lines[i - 1])))
+        trailing = line.lstrip().startswith(">") and all(not rest.strip() or rest.lstrip().startswith(">") for rest in lines[i:])
+        if attribution or outlook or trailing:
+            cut, skip = i, size
+            break
+    kept = lines[:cut]
+    while kept and rule(kept[-1]):
+        kept.pop()
+    kept = "\n".join(kept).strip()
+    if kept:
+        return kept
+    # Everything sat under the quote (an inline reply): drop the "wrote:" line and the quoted lines only.
+    rest = lines[:cut] + lines[cut + skip:]
+    inline = "\n".join(line for line in rest if not line.lstrip().startswith(">")).strip()
+    return inline or text.strip()
 
 
 def reply_text(quote, body):
@@ -119,6 +180,9 @@ class Gateway:
         self.http = build_opener(HTTPSHandler(context=self.tls), NoRedirect())
         self.wake = threading.Event()
         self.clients = {}
+        self.calls = collections.deque(maxlen=400)
+        self.call_number = 0
+        self.call_lock = threading.Lock()
         self.legacy_routes = self.validate_routes(config.get("routes") or [])
 
     @property
@@ -201,7 +265,7 @@ class Gateway:
 
     def delete_route(self, db, data):
         if any(r["address"] == data.get("address") and r["protocol"] == data.get("protocol") for r in self.legacy_routes):
-            raise ValueError("This link is set in the companion’s configuration file")
+            raise ValueError("This link is set in FluidMessages Web’s configuration file")
         db.execute("DELETE FROM protocol_routes WHERE address=? AND protocol=?", (data.get("address"), data.get("protocol")))
         self.refresh_clients()
         return {"deleted": True}
@@ -226,6 +290,8 @@ class Gateway:
             if size > 5 * 1024 * 1024:
                 break
             messages.append(json.loads(row[0]))
+        settings = self.settings(db)
+        messages = self.visible(settings, messages)
         channels = {}
         for key, value in db.execute("SELECT key, value FROM protocol_state WHERE key LIKE 'channel:%'"):
             channels[key.removeprefix("channel:")] = json.loads(value)
@@ -235,9 +301,251 @@ class Gateway:
             if route.get("via") == "matrix" and secure is not None:
                 item["encrypted"] = secure.encrypted(route["target"])
             return item
-        return {"messages": messages, "routes": [shown(route) for route in self.routes], "enabled": sorted(self.enabled(db)), "channels": channels,
+        routes = [shown(route) for route in self.routes if not self.hidden(settings, route)]
+        return {"messages": messages, "routes": routes, "enabled": sorted(self.enabled(db)), "channels": channels,
                 "accounts": [{"protocol": account["protocol"], "source": account["source"]}
                              for account in self.accounts.redacted()]}
+
+    @staticmethod
+    def mark_read(db, data):
+        """Marks received messages read, by id or for a whole conversation, so every device clears the unread dot."""
+        ids, address = data.get("ids", []), data.get("address", "")
+        if not isinstance(ids, list) or len(ids) > 2000 or any(not isinstance(item, str) or len(item) > 120 for item in ids) \
+                or not isinstance(address, str) or len(address) > 300 or not ids and not address:
+            raise ValueError("Invalid read request")
+        wanted, changed = set(ids), 0
+        for key, payload in db.execute("SELECT id, payload FROM protocol_messages").fetchall():
+            item = json.loads(payload)
+            if item.get("type") != 1 or item.get("read", 1) == 1 or not (key in wanted or address and item["address"] == address):
+                continue
+            item["read"] = 1
+            db.execute("UPDATE protocol_messages SET payload=? WHERE id=?", (json.dumps(item), key))
+            changed += 1
+        return {"read": changed}
+
+    # Companion settings, privacy, and disappearing messages
+
+    DEFAULT_SETTINGS = {"follow_phone": True, "fluid_encryption": {"protocols": [], "chats": {}}, "disappearing": {"default": 0, "default_since": 0, "chats": {}, "since": {}},
+                        "hidden_protocols": [], "hidden_addresses": []}
+
+    def settings(self, db):
+        """Settings FluidMessages Web uses on its own. With follow_phone on, the phone's copy replaces them on each sync."""
+        row = db.execute("SELECT value FROM protocol_state WHERE key='settings'").fetchone()
+        stored = json.loads(row[0]) if row else {}
+        return {**self.DEFAULT_SETTINGS, **stored}
+
+    @staticmethod
+    def clean_timers(value):
+        if not isinstance(value, dict):
+            raise ValueError("Invalid disappearing settings")
+        default = value.get("default", 0)
+        chats = value.get("chats", {})
+        default_since, since = value.get("default_since", 0), value.get("since", {})
+        if type(default) is not int or not 0 <= default <= 366 * 86400 or not isinstance(chats, dict) or len(chats) > 5000 \
+                or type(default_since) is not int or default_since < 0 or not isinstance(since, dict):
+            raise ValueError("Invalid disappearing settings")
+        clean, starts = {}, {}
+        for key, seconds in chats.items():
+            if not isinstance(key, str) or len(key) > 300 or type(seconds) is not int or not 0 <= seconds <= 366 * 86400:
+                raise ValueError("Invalid disappearing settings")
+            clean[key] = seconds
+            start = since.get(key, 0)
+            starts[key] = start if type(start) is int and start >= 0 else 0
+        return {"default": default, "default_since": default_since, "chats": clean, "since": starts}
+
+    @staticmethod
+    def clean_list(value, limit=5000):
+        if not isinstance(value, list) or len(value) > limit or any(not isinstance(item, str) or len(item) > 300 for item in value):
+            raise ValueError("Invalid privacy settings")
+        return value
+
+    def save_settings(self, db, data, from_phone=False):
+        current = self.settings(db)
+        if data.get("reset") is True and not from_phone:
+            # Back to defaults, keeping what the phone hides and encrypts, which only the phone can change.
+            current = {**json.loads(json.dumps(self.DEFAULT_SETTINGS)),
+                       **{key: current[key] for key in ("hidden_protocols", "hidden_addresses", "fluid_encryption")}}
+            db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('settings', ?)", (json.dumps(current),))
+            return current
+        if from_phone and not current["follow_phone"]:
+            # The companion was set to use its own settings; keep the phone's hidden lists, which only ever hide more.
+            data = {key: data[key] for key in ("hidden_protocols", "hidden_addresses", "fluid_encryption") if key in data}
+        if "follow_phone" in data:
+            if type(data["follow_phone"]) is not bool:
+                raise ValueError("Invalid setting")
+            current["follow_phone"] = data["follow_phone"]
+        if "disappearing" in data:
+            timers = self.clean_timers(data["disappearing"])
+            if not from_phone:
+                # A timer changed in the browser starts now, so earlier messages stay.
+                before, now = current["disappearing"], self.time()
+                if timers["default"] != before.get("default"):
+                    timers["default_since"] = now
+                for key, seconds in timers["chats"].items():
+                    timers["since"][key] = now if before.get("chats", {}).get(key) != seconds else before.get("since", {}).get(key, now)
+            current["disappearing"] = timers
+        for key in ("hidden_protocols", "hidden_addresses"):
+            if key in data:
+                current[key] = self.clean_list(data[key])
+        if from_phone and isinstance(data.get("fluid_encryption"), dict):
+            fluid = data["fluid_encryption"]
+            chats = fluid.get("chats", {})
+            if not isinstance(chats, dict) or len(chats) > 5000 or any(
+                    not isinstance(key, str) or len(key) > 300 or value not in ("on", "off") for key, value in chats.items()):
+                raise ValueError("Invalid encryption settings")
+            current["fluid_encryption"] = {"protocols": self.clean_list(fluid.get("protocols", []), 20), "chats": chats}
+        db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('settings', ?)", (json.dumps(current),))
+        return current
+
+    def hidden(self, settings, message):
+        """Chats hidden on the phone stay out of FluidMessages Web too."""
+        protocol = family = message.get("protocol") or "sms"
+        if protocol in ("mms", "rcs"):
+            family = "sms"
+        return family.upper() in settings["hidden_protocols"] or message.get("address") in settings["hidden_addresses"]
+
+    @staticmethod
+    def expiry(settings, message):
+        if isinstance(message.get("expires"), int) and message["expires"] > 0:
+            return message["expires"]
+        timers = settings["disappearing"]
+        address = message.get("address")
+        if address in timers["chats"]:
+            seconds, since = timers["chats"][address], timers.get("since", {}).get(address, 0)
+        else:
+            seconds, since = timers["default"], timers.get("default_since", 0)
+        # Only messages from after the timer was turned on disappear.
+        return message["date"] + seconds * 1000 if seconds > 0 and message["date"] >= since else 0
+
+    def visible(self, settings, messages, now=None):
+        now = now or self.time()
+        return [m for m in messages if not self.hidden(settings, m) and not 0 < self.expiry(settings, m) <= now]
+
+    def sweep_expired(self):
+        """Deletes FluidMessages Web copies whose time is up, and takes back your own Matrix and XMPP messages."""
+        now = self.time()
+        with closing(self.connect()) as db, db:
+            settings = self.settings(db)
+            gone = []
+            for key, payload in db.execute("SELECT id, payload FROM protocol_messages").fetchall():
+                message = json.loads(payload)
+                if 0 < self.expiry(settings, message) <= now:
+                    gone.append(message)
+                    db.execute("DELETE FROM protocol_messages WHERE id=?", (key,))
+        for message in gone:
+            try:
+                path = self.file_path(message["id"])
+                if path.is_file():
+                    path.unlink()
+            except (ValueError, OSError):
+                pass
+            if message.get("type") != 2:
+                continue
+            route = self.route(message["address"], message["protocol"])
+            try:
+                if route and route.get("via") == "matrix" and message.get("event_id"):
+                    room = quote(route["target"], safe="")
+                    self.matrix_request("rooms/" + room + "/redact/" + quote(message["event_id"], safe="") + "/"
+                                        + message["id"] + "-expire", {"reason": "Disappearing message"}, method="PUT")
+                elif route and route.get("via") == "xmpp" and message.get("xmpp_id"):
+                    self.client("xmpp").retract(route["target"], message["xmpp_id"], route.get("group"))
+            except Exception:
+                pass
+        return len(gone)
+
+    def expirer(self):
+        while True:
+            try:
+                self.sweep_expired()
+            except Exception:
+                pass
+            time.sleep(20)
+
+    # Calls
+
+    def call_event(self, route, event, content):
+        """Queues call signaling for browsers and phones, and notes the call in the conversation."""
+        date = event.get("origin_server_ts") if type(event.get("origin_server_ts")) is int else self.time()
+        # Invites older than their lifetime are missed calls, not ringing ones (sync can deliver old events).
+        lifetime = content.get("lifetime") if type(content.get("lifetime")) is int else 60_000
+        live = self.time() - date < lifetime
+        with self.call_lock:
+            self.call_number += 1
+            self.calls.append({"seq": self.call_number, "address": route["address"], "protocol": route["protocol"],
+                               "title": route["title"], "type": event["type"], "content": content,
+                               "sender": bounded(event.get("sender"), 300), "date": date, "live": live})
+        if event["type"] == "m.call.invite":
+            video = "m=video" in str((content.get("offer") or {}).get("sdp", ""))
+            record = self.message(route, "call-" + hashlib.sha256(event["event_id"].encode()).hexdigest(),
+                                  ("Video call" if video else "Voice call") + (" from " + route["title"] if live else " · missed"),
+                                  False, date, author=bounded(event.get("sender"), 120))
+            record["event"] = True
+            self.add_incoming(record)
+
+    def call_events(self, since):
+        with self.call_lock:
+            return {"events": [item for item in self.calls if item["seq"] > since], "next": self.call_number}
+
+    def send_call(self, data):
+        address, protocol, kind, content = (data.get(key) for key in ("address", "protocol", "type", "content"))
+        route = self.route(address, protocol) if isinstance(address, str) and isinstance(protocol, str) else None
+        if route is None or route.get("via") != "matrix":
+            raise ValueError("Calls from FluidMessages Web work in Matrix conversations")
+        if kind not in CALL_TYPES or not isinstance(content, dict) or len(json.dumps(content)) > 64_000:
+            raise ValueError("Invalid call signal")
+        transaction = "call-" + uuid.uuid4().hex
+        secure = self.clients.get("matrix", (None, None))[1]
+        if secure is not None:
+            return {"event_id": secure.send(route["target"], kind, content, transaction)}
+        response = self.matrix_request("rooms/" + quote(route["target"], safe="") + "/send/" + kind + "/" + transaction,
+                                       content, method="PUT")
+        return {"event_id": response["event_id"]}
+
+    def ice_servers(self):
+        """TURN from the Matrix homeserver, plus any servers set with FLUID_ICE_SERVERS (a JSON list)."""
+        servers = []
+        try:
+            extra = json.loads(os.environ.get("FLUID_ICE_SERVERS", "[]"))
+            if isinstance(extra, list):
+                servers += [item for item in extra if isinstance(item, dict) and item.get("urls")]
+        except ValueError:
+            pass
+        if self.matrix.get("access_token"):
+            try:
+                turn = self.matrix_request("voip/turnServer") or {}
+                if isinstance(turn.get("uris"), list) and turn["uris"]:
+                    servers.append({"urls": [uri for uri in turn["uris"] if isinstance(uri, str)],
+                                    "username": str(turn.get("username", "")), "credential": str(turn.get("password", ""))})
+            except Exception:
+                pass
+        return {"iceServers": servers}
+
+    def change_member(self, db, data):
+        """Invites or removes someone in a Matrix room, XMPP group chat, or IRC channel."""
+        address, protocol, action, member = (data.get(key) for key in ("address", "protocol", "action", "member"))
+        route = self.route(address, protocol) if isinstance(address, str) and isinstance(protocol, str) else None
+        if route is None:
+            raise ValueError("Link this group first")
+        if action not in ("add", "remove") or not isinstance(member, str) or not 0 < len(member.strip()) <= 300:
+            raise ValueError("Enter who to add or remove")
+        member, add, via = member.strip(), action == "add", route.get("via")
+        if via == "matrix":
+            if not re.fullmatch(r"@[^:\s]+:[^\s]+", member):
+                raise ValueError("Enter a Matrix ID like @maya:example.org")
+            body = {"user_id": member} if add else {"user_id": member, "reason": "Removed from the group"}
+            self.matrix_request("rooms/" + quote(route["target"], safe="") + ("/invite" if add else "/kick"), body, method="POST")
+        elif via == "xmpp":
+            if not route.get("group"):
+                raise ValueError("Only XMPP group chats have members to change")
+            self.client("xmpp").change_member(route["target"], add, member)
+        elif via == "irc":
+            if not route["target"].startswith("#") or not re.fullmatch(r"[^\s,:#]{1,64}", member):
+                raise ValueError("Enter a nickname in an IRC channel")
+            self.client("irc").write(("INVITE " + member + " " + route["target"]) if add
+                                     else ("KICK " + route["target"] + " " + member + " :Removed from the channel"))
+        else:
+            raise ValueError("This group's protocol can't change members")
+        return {"ok": True}
 
     def route(self, address, protocol):
         return next((route for route in self.routes if route["address"] == address and route["protocol"] == protocol), None)
@@ -280,7 +588,30 @@ class Gateway:
         for key in ("event_id", "mail_id", "mail_subject", "xmpp_id", "irc_msgid", "author"):
             if found and isinstance(found.get(key), str):
                 result[key] = found[key]
+        if kind == "reaction":
+            removed, previous = value.get("removed", False), value.get("previous", "")
+            if type(removed) is not bool or not isinstance(previous, str) or previous and not is_emoji(previous):
+                raise ValueError("Invalid message relation")
+            if removed or previous:
+                result["removed"], result["previous"] = removed, previous
+                if found:
+                    earlier = self.previous_reaction(db, route, found["id"])
+                    if earlier:
+                        result["previous_event"] = earlier
         return result, text
+
+    @staticmethod
+    def previous_reaction(db, route, target):
+        """The event of your latest reaction on a message, which a removal or change takes back."""
+        for row in db.execute("SELECT payload FROM protocol_messages ORDER BY date DESC, rowid DESC LIMIT 1500"):
+            item = json.loads(row[0])
+            if item["address"] != route["address"] or item["protocol"] != route["protocol"] or item["type"] != 2 \
+                    or item.get("reaction_target") != target:
+                continue
+            if (item.get("relation") or {}).get("removed") or item.get("status") != "Sent":
+                return ""
+            return item.get("event_id", "")
+        return ""
 
     def file_path(self, message_id):
         if not isinstance(message_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", message_id):
@@ -354,6 +685,10 @@ class Gateway:
         if db.execute("SELECT count(*) FROM protocol_jobs WHERE date>=?", (cutoff,)).fetchone()[0] >= 30:
             raise ValueError("Too many messages queued. Try again in a minute.")
         message = self.message(route, message_id, body, True, now, "Queued" if due <= now else "Scheduled")
+        settings = self.settings(db)
+        seconds = settings["disappearing"]["chats"].get(route["address"], settings["disappearing"]["default"])
+        if seconds > 0:
+            message["expire_seconds"] = seconds
         if attachment:
             upload = attachment.pop("upload")
             message["attachment"] = attachment
@@ -421,6 +756,30 @@ class Gateway:
             db.execute("INSERT OR IGNORE INTO protocol_messages VALUES (?, ?, ?)",
                        (message["id"], message["date"], json.dumps(message)))
 
+    def latest_id(self, address):
+        """The newest message in a conversation, on any protocol."""
+        with closing(self.connect()) as db:
+            for row in db.execute("SELECT payload FROM protocol_messages ORDER BY date DESC, rowid DESC LIMIT 1500"):
+                item = json.loads(row[0])
+                if item["address"] == address:
+                    return item["id"]
+        return ""
+
+    def strip_stored_quotes(self):
+        """Once: removes quoted history from emails received before FluidMessages stripped it."""
+        if self.state("mail:quotes-stripped"):
+            return
+        with closing(self.connect()) as db, db:
+            for key, payload in db.execute("SELECT id, payload FROM protocol_messages").fetchall():
+                item = json.loads(payload)
+                if item.get("protocol") != "email" or item.get("type") != 1 or item.get("reaction_target"):
+                    continue
+                cleaned = strip_quoted_email(item["body"])
+                if cleaned and cleaned != item["body"]:
+                    item["body"] = cleaned
+                    db.execute("UPDATE protocol_messages SET payload=? WHERE id=?", (json.dumps(item), key))
+        self.save_state("mail:quotes-stripped", "1")
+
     def state(self, key):
         with closing(self.connect()) as db:
             row = db.execute("SELECT value FROM protocol_state WHERE key=?", (key,)).fetchone()
@@ -453,7 +812,7 @@ class Gateway:
                 subject = previous["mail_subject"]
                 envelope.replace_header("Subject", subject if subject.lower().startswith("re:") else "Re: " + subject)
         attachment = message.get("attachment")
-        if relation.get("kind") == "reaction" and relation.get("mail_id"):
+        if relation.get("kind") == "reaction" and relation.get("mail_id") and not revises(relation):
             # RFC 9078: a reaction is a reply whose only text part is the emoji, marked as a reaction.
             envelope.set_content(relation["emoji"], disposition="reaction")
         elif relation.get("kind") == "reply" and relation.get("mail_id"):
@@ -509,7 +868,7 @@ class Gateway:
                 or str(message.get("Auto-Submitted", "no")).lower() != "no"):
             return
         reaction = next((part for part in message.walk() if part.get_content_disposition() == "reaction"), None)
-        target = None
+        target = reply_target = None
         if reaction is not None:
             emoji = reaction.get_content().strip() if isinstance(reaction.get_content(), str) else ""
             replied = str(message.get("In-Reply-To", "")).strip()
@@ -520,7 +879,13 @@ class Gateway:
         else:
             body = message.get_body(preferencelist=("plain",))
             text = body.get_content() if body is not None and isinstance(body.get_content(), str) else ""
-            text = text.removesuffix("\n\nSent with FluidMessages\n").strip()
+            text = strip_quoted_email(text.removesuffix("\n\nSent with FluidMessages\n"))
+            # The quoted history is gone; a reply card stands in when they answer an older email than the latest.
+            replied = str(message.get("In-Reply-To", "")).strip()
+            answered = self.find(route["address"], "email", "mail_id", replied) if replied else None
+            if answered is not None and answered["id"] != self.latest_id(route["address"]) and text:
+                text = reply_text(answered["body"], text)
+                reply_target = answered["id"]
             # The first attachment comes along; the companion keeps it for the phone to download.
             for part in message.iter_attachments():
                 data = part.get_payload(decode=True)
@@ -542,6 +907,8 @@ class Gateway:
         record["mail_subject"] = bounded(str(message.get("Subject", "")), 120)
         if target is not None:
             record["reaction_target"] = target["id"]
+        if reply_target is not None:
+            record["reply_target"] = reply_target
         if attached is not None:
             record["attachment"] = attached[0]
             self.file_path(record["id"]).write_bytes(attached[1])
@@ -568,9 +935,19 @@ class Gateway:
         room = quote(route["target"], safe="")
         secure = self.clients.get("matrix", (None, None))[1]
         if secure is None and self.matrix_request("rooms/" + room + "/state/m.room.encryption", allow_missing=True) is not None:
-            raise ValueError("This room is end-to-end encrypted. Install matrix-nio[e2e] on the companion to use it.")
+            raise ValueError("This room is end-to-end encrypted. Install matrix-nio[e2e] on FluidMessages Web to use it.")
         relation = message.get("relation") or {}
         event = relation.get("event_id")
+        if revises(relation) and event:
+            # Taking back a reaction redacts its event; a change redacts the old one, then sends the new one.
+            earlier = relation.get("previous_event")
+            if earlier:
+                self.matrix_request("rooms/" + room + "/redact/" + quote(earlier, safe="") + "/" + message["id"] + "-redact",
+                                    {}, method="PUT")
+                if relation.get("removed"):
+                    return {"redacted": earlier}
+            elif relation.get("removed"):
+                relation = {}  # Nothing native to take back: say it in text instead.
         if relation.get("kind") == "reaction" and event:
             content = {"m.relates_to": {"rel_type": "m.annotation", "event_id": event, "key": relation["emoji"]}}
             if secure is not None:
@@ -584,6 +961,8 @@ class Gateway:
             # Matrix v1.13 replies carry no quoted fallback; the relation links the original event.
             content = {"msgtype": "m.text", "body": message.get("text") or message["body"],
                        "m.relates_to": {"m.in_reply_to": {"event_id": event}}}
+        if message.get("expire_seconds"):
+            content[DISAPPEAR] = message["expire_seconds"]
         if secure is not None:
             return {"event_id": secure.send(route["target"], "m.room.message", content, message["id"])}
         response = self.matrix_request("rooms/" + room + "/send/m.room.message/" + message["id"], content, method="PUT")
@@ -641,7 +1020,7 @@ class Gateway:
     def receive_matrix(self):
         rooms = {route["target"]: route for route in self.routes if route.get("via") == "matrix"}
         filter = {"presence": {"types": []}, "room": {"rooms": list(rooms), "timeline": {"limit": 60,
-                  "types": ["m.room.message", "m.room.encrypted", "m.reaction"]}}}
+                  "types": ["m.room.message", "m.room.encrypted", "m.reaction", "m.room.redaction", *CALL_TYPES]}}}
         args = {"filter": json.dumps(filter, separators=(",", ":")), "timeout": 10_000}
         if token := self.state("matrix:since"):
             args["since"] = token
@@ -660,6 +1039,9 @@ class Gateway:
         content = event.get("content", {})
         if not isinstance(content, dict):
             return
+        if event.get("type") in CALL_TYPES:
+            self.call_event(route, event, content)
+            return
         relates = content.get("m.relates_to") if isinstance(content.get("m.relates_to"), dict) else {}
         stable = hashlib.sha256(event["event_id"].encode()).hexdigest()
         date = event.get("origin_server_ts")
@@ -670,6 +1052,24 @@ class Gateway:
             if relates.get("rel_type") != "m.annotation" or target is None or not is_emoji(relates.get("key")):
                 return
             record = self.message(route, "matrix-" + stable, reaction_text(relates["key"], target["body"]), False, date,
+                                  author=author)
+            record["reaction_target"] = target["id"]
+            record["reaction"] = relates["key"]
+        elif event.get("type") == "m.room.redaction":
+            # Someone took back a reaction: record it as a removal so the bubble updates.
+            redacts = event.get("redacts") or content.get("redacts")
+            reaction = self.find(route["address"], route["protocol"], "event_id", redacts)
+            if reaction is not None and not reaction.get("reaction"):
+                # A deleted or disappearing message goes from the companion too.
+                with closing(self.connect()) as db, db:
+                    db.execute("DELETE FROM protocol_messages WHERE id=?", (reaction["id"],))
+                return
+            if reaction is None:
+                return
+            target = self.find(route["address"], route["protocol"], "id", reaction.get("reaction_target"))
+            if target is None:
+                return
+            record = self.message(route, "matrix-" + stable, removed_text(reaction["reaction"], target["body"]), False, date,
                                   author=author)
             record["reaction_target"] = target["id"]
         elif event.get("type") == "m.room.message" and content.get("msgtype") in ("m.image", "m.video", "m.audio", "m.file") \
@@ -706,6 +1106,8 @@ class Gateway:
             record = self.message(route, "matrix-" + stable, body, False, date, author=author)
             if target is not None:
                 record["reply_target"] = target["id"]
+            if type(content.get(DISAPPEAR)) is int and 0 < content[DISAPPEAR] <= 366 * 86400:
+                record["expires"] = date + content[DISAPPEAR] * 1000
         else:
             return
         record["event_id"] = event["event_id"]
@@ -721,10 +1123,20 @@ class Gateway:
                 pass
             time.sleep(interval() if callable(interval) else interval)
 
+    def active(self, protocol):
+        """Turned on in the phone's settings and not connected from the phone instead."""
+        with closing(self.connect()) as db:
+            return protocol in self.enabled(db)
+
     def uses(self, via):
-        return lambda: bool(self.accounts.current().get(via)) and any(r.get("via", r["protocol"]) == via for r in self.routes)
+        return lambda: (bool(self.accounts.current().get(via)) and self.active(via)
+                        and any(r.get("via", r["protocol"]) == via for r in self.routes))
 
     def start(self):
+        try:
+            self.strip_stored_quotes()
+        except Exception:
+            pass
         threading.Thread(target=self.sender, daemon=True, name="protocol-sender").start()
         mail_interval = lambda: 60 * int(self.email.get("poll_minutes", 1))
         threading.Thread(target=self.receiver, args=(self.receive_mail, mail_interval, self.uses("email")),
@@ -733,6 +1145,7 @@ class Gateway:
         threading.Thread(target=self.receiver, args=(self.receive_matrix, 5, plain_matrix),
                          daemon=True, name="protocol-matrix").start()
         threading.Thread(target=self.supervise, daemon=True, name="protocol-clients").start()
+        threading.Thread(target=self.expirer, daemon=True, name="protocol-disappearing").start()
 
     def supervise(self):
         while True:
@@ -746,7 +1159,7 @@ class Gateway:
         """Starts, restarts, or stops the long-lived IRC, XMPP, and encrypted Matrix sessions to match accounts and links."""
         accounts = self.accounts.current()
         routes = self.routes
-        matrix = accounts.get("matrix")
+        matrix = accounts.get("matrix") if self.active("matrix") else None
         wanted = json.dumps(matrix, sort_keys=True) if matrix and matrix_e2ee.available() and any(
             r.get("via") == "matrix" for r in routes) else None
         current = self.clients.get("matrix")
@@ -760,7 +1173,7 @@ class Gateway:
                 self.clients["matrix"] = (wanted, secure)
                 threading.Thread(target=self.guard, args=(secure.run,), daemon=True, name="protocol-matrix-e2ee").start()
         for protocol in ("irc", "xmpp"):
-            account = accounts.get(protocol)
+            account = accounts.get(protocol) if self.active(protocol) else None
             native = [r for r in routes if r["protocol"] == protocol and r.get("via") == protocol]
             wanted = None
             if account and (native or protocol == "irc" and account.get("channels")):
@@ -804,7 +1217,7 @@ class Gateway:
     def client(self, protocol):
         entry = self.clients.get(protocol)
         if entry is None:
-            raise ConnectionError(protocol.upper() + " isn’t connected. Check the account on your companion.")
+            raise ConnectionError(protocol.upper() + " isn’t connected. Check the account on FluidMessages Web.")
         return entry[1]
 
     # IRC
@@ -851,7 +1264,9 @@ class Gateway:
         client = self.client("irc")
         reply = relation.get("irc_msgid")
         tagged = reply and "message-tags" in client.caps
-        if relation.get("kind") == "reaction":
+        if revises(relation):
+            client.send(route["target"], message["body"])  # IRC has no way to take a reaction back.
+        elif relation.get("kind") == "reaction":
             if tagged:
                 client.send(route["target"], "", reply=reply, react=relation["emoji"])
             else:
@@ -876,12 +1291,29 @@ class Gateway:
         if outgoing and self.find(route["address"], "xmpp", "xmpp_id", message_id):
             return  # Our own message reflected back by a group or carbon.
         stable = hashlib.sha256(f"{conversation}:{message_id}:{date}".encode()).hexdigest()
-        if extra.get("reaction"):
+        if "retract" in extra:
+            target = self.find(route["address"], "xmpp", "xmpp_id", extra["retract"])
+            if target is not None and (outgoing or target.get("author") == author):
+                with closing(self.connect()) as db, db:
+                    db.execute("DELETE FROM protocol_messages WHERE id=?", (target["id"],))
+            return
+        if "reaction" in extra:
             target = self.find(route["address"], "xmpp", "xmpp_id", extra["reaction_to"])
-            if target is None or not is_emoji(extra["reaction"]):
+            if target is None:
                 return
-            record = self.message(route, "xmpp-" + stable, reaction_text(extra["reaction"], target["body"]), outgoing, date,
-                                  author=author)
+            if not extra["reaction"]:
+                # An empty set takes the sender's reaction back.
+                earlier = self.earlier_reaction(route, target["id"], author, outgoing)
+                if not earlier:
+                    return
+                record = self.message(route, "xmpp-" + stable, removed_text(earlier, target["body"]), outgoing, date,
+                                      author=author)
+            elif not is_emoji(extra["reaction"]):
+                return
+            else:
+                record = self.message(route, "xmpp-" + stable, reaction_text(extra["reaction"], target["body"]), outgoing,
+                                      date, author=author)
+                record["reaction"] = extra["reaction"]
             record["reaction_target"] = target["id"]
         else:
             target = self.find(route["address"], "xmpp", "xmpp_id", extra.get("reply_to")) if extra.get("reply_to") else None
@@ -913,6 +1345,16 @@ class Gateway:
         record["body"] = record["body"].replace(url, "").strip() or name
         self.file_path(record["id"]).write_bytes(data)
 
+    def earlier_reaction(self, route, target, author, outgoing):
+        """The emoji this sender last reacted with on a message, so a removal can say which one."""
+        with closing(self.connect()) as db:
+            for row in db.execute("SELECT payload FROM protocol_messages ORDER BY date DESC, rowid DESC LIMIT 1500"):
+                item = json.loads(row[0])
+                if item["address"] == route["address"] and item.get("reaction_target") == target \
+                        and (item["type"] == 2 if outgoing else item.get("author") == author):
+                    return item.get("reaction", "")
+        return ""
+
     def send_xmpp(self, route, message):
         relation = message.get("relation") or {}
         attachment = message.get("attachment")
@@ -923,7 +1365,9 @@ class Gateway:
         if reply and route.get("group") and relation.get("author"):
             author = route["target"] + "/" + relation["author"]
         if relation.get("kind") == "reaction" and reply:
-            sent = client.send(route["target"], "", route.get("group"), reply=reply, react=relation["emoji"])
+            # XEP-0444 replaces your whole set: none takes the reaction back, one emoji changes it.
+            react = [] if relation.get("removed") else [relation["emoji"]]
+            sent = client.send(route["target"], "", route.get("group"), reply=reply, react=react)
         else:
             text = message.get("text") if reply and relation.get("kind") == "reply" else message["body"]
             if attachment and not message.get("text"):

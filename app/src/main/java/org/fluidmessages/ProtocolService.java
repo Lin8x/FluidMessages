@@ -47,15 +47,17 @@ public final class ProtocolService extends Service {
                 names.append(protocol.label);
             }
         }
+        if (SipAgent.alwaysOn(prefs)) names.append(names.length() > 0 ? ", " : "").append("SIP calls");
         var open = PendingIntent.getActivity(this, 7, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
         Notification notification = new Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
             .setContentTitle("Staying connected")
-            .setContentText(names.length() == 0 ? "Internet protocols" : names + " on this phone")
+            .setContentText(names.length() == 0 ? "Internet protocols" : names + " · ready on this phone")
             .setContentIntent(open).setOngoing(true).setVisibility(Notification.VISIBILITY_PUBLIC).build();
         startForeground(41, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         // After Android restarts the service, reconnect the clients. update() sees the service running and doesn't loop.
         DirectProtocols.restart(this);
+        SipAgent.sync(this);
         return START_STICKY;
     }
 

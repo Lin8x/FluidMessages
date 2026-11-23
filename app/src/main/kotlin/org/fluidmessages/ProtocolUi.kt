@@ -138,8 +138,10 @@ object ProtocolSettingsScreen {
                         PreferencesCard("Conversations") {
                             ProtocolSwitch(prefs, "combineProtocols", "Combine linked conversations",
                                 "Show every protocol for a contact in one chat and label how each message was sent.", false)
-                            ProtocolSwitch(prefs, "protocolTags", "Show inbox protocol tags", "Show the protocols available in each chat.", false)
-                            ProtocolSwitch(prefs, "protocolPrivacy", "Show encryption status", "Show protection below the conversation title.", false)
+                            DisplayModeChoice(prefs, DisplayRules.TAGS, "Inbox protocol tags",
+                                "Automatic shows tags once you use more than one protocol.")
+                            DisplayModeChoice(prefs, DisplayRules.ENCRYPTION, "Encryption status",
+                                "Shows a colored lock under the chat name: green for end-to-end or FluidMessages encryption, yellow for in transit only, red for not encrypted. Every chat’s Security section says the same.")
                         }
                     }
                     item {
@@ -217,5 +219,54 @@ internal fun BatteryAndSync(prefs: SharedPreferences, context: android.content.C
         }
         ProtocolSwitch(prefs, SyncPolicy.BATTERY_SAVER, "Pause during Battery Saver",
             "Skip automatic checks while Android Battery Saver is on.", true)
+    }
+}
+
+
+/**
+ * Tags and the encryption line default to Automatic: they appear only when they tell you something, so a
+ * person who only texts never sees them. Always and Off are there for people who want them fixed.
+ */
+object DisplayRules {
+    const val TAGS = "tagMode"
+    const val ENCRYPTION = "encryptionMode"
+    private val legacy = mapOf(TAGS to "protocolTags", ENCRYPTION to "protocolPrivacy")
+
+    @JvmStatic
+    fun mode(prefs: SharedPreferences, key: String): String {
+        prefs.getString(key, null)?.let { return it }
+        // Earlier versions had on/off switches; keep a choice someone already made.
+        val old = legacy.getValue(key)
+        return if (!prefs.contains(old)) "auto" else if (prefs.getBoolean(old, false)) "always" else "off"
+    }
+
+    /** Tags show in Automatic mode when the inbox holds more than one kind of conversation. */
+    internal fun showTags(prefs: SharedPreferences, threads: List<ThreadRow>): Boolean = when (mode(prefs, TAGS)) {
+        "always" -> true
+        "off" -> false
+        else -> threads.flatMap { row ->
+            row.protocol.ifBlank { "SMS" }.split(" · ").map { label ->
+                MessageProtocol.values().firstOrNull { it.label == label }?.family() ?: MessageProtocol.SMS
+            }
+        }.distinct().size > 1
+    }
+
+    /** Whether the chat header shows its encryption badge. Automatic shows it whenever the level is known. */
+    internal fun encryptionLine(prefs: SharedPreferences, encryption: Encryption): String? = when (mode(prefs, ENCRYPTION)) {
+        "off" -> null
+        else -> encryption.label
+    }
+}
+
+@Composable
+internal fun DisplayModeChoice(prefs: SharedPreferences, key: String, title: String, detail: String) {
+    var mode by remember(key) { mutableStateOf(DisplayRules.mode(prefs, key)) }
+    Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        ThemeDropdown(title, mode, listOf(Choice("auto", "Automatic"), Choice("always", "Always"), Choice("off", "Off")),
+            Appearance.read(prefs).speed) {
+            mode = it
+            prefs.edit().putString(key, it).apply()
+        }
+        Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
     }
 }

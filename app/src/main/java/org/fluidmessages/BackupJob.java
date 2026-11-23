@@ -102,7 +102,7 @@ public final class BackupJob extends JobService {
 
     static void configureCloud(Context context, CloudBackup.Target target, Backup.Options options,
                                String password, int minutes, boolean wifiOnly) throws Exception {
-        if (!CloudBackup.paired(context)) throw new IOException("Pair the HTTPS companion first");
+        if (!CloudBackup.paired(context)) throw new IOException("Pair FluidMessages Web first");
         var prefs = context.getSharedPreferences("fluid", MODE_PRIVATE);
         String secret = schedulePassword(prefs, target, password);
         var request = new JobInfo.Builder(cloudJobId(target), new ComponentName(context, BackupJob.class))
@@ -131,7 +131,7 @@ public final class BackupJob extends JobService {
         if (interval(prefs, target) == 0) throw new IOException("Enable a schedule first");
         String expectedOrigin = prefs.getString(cloudKey(target, "origin"), "");
         if (expectedOrigin.isEmpty() || !expectedOrigin.equals(prefs.getString("server", ""))) {
-            throw new IOException("Update this backup schedule for the current companion");
+            throw new IOException("Update this backup schedule for the current FluidMessages Web");
         }
         var options = new Backup.Options(categories(prefs, target));
         runCloud(context, target, options, unseal(prefs.getString(secretKey(target), "")), expectedOrigin);

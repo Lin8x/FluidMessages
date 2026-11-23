@@ -82,7 +82,7 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
         var prefs = DirectProtocols.prefs(context);
         var filter = new JSONObject().put("presence", new JSONObject().put("types", new JSONArray()))
             .put("room", new JSONObject().put("rooms", new JSONArray(rooms.keySet())).put("timeline", new JSONObject()
-                .put("limit", 30).put("types", new JSONArray().put("m.room.message").put("m.room.encrypted").put("m.reaction"))));
+                .put("limit", 30).put("types", new JSONArray(CallHub.TYPES).put("m.room.message").put("m.room.encrypted").put("m.reaction").put("m.room.redaction"))));
         String since = prefs.getString("direct.matrix.since", "");
         String query = "sync?timeout=" + timeout + "&filter=" + URLEncoder.encode(filter.toString(), StandardCharsets.UTF_8)
             + (since.isEmpty() ? "" : "&since=" + URLEncoder.encode(since, StandardCharsets.UTF_8));
@@ -107,6 +107,10 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
         String author = event.optString("sender");
         var content = event.optJSONObject("content");
         if (content == null) return;
+        if (CallHub.TYPES.contains(event.optString("type"))) {
+            CallHub.incoming(context, address, route.optString("title", address), event);
+            return;
+        }
         var relates = content.optJSONObject("m.relates_to");
         JSONObject record;
         switch (event.optString("type")) {
@@ -115,17 +119,34 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
                 var target = DirectProtocols.findBy(context, address, "event_id", relates.optString("event_id"));
                 if (target == null) return;
                 record = DirectProtocols.record(route, id, MessageInteractionsKt.emojiReactionSms(relates.optString("key"),
+                    target.optString("body"), false), false, date, author).put("reaction_target", target.getString("id"))
+                    .put("reaction", relates.optString("key"));
+            }
+            case "m.room.redaction" -> {
+                // Someone took back a reaction: record it as a removal so the bubble updates.
+                String redacts = event.optString("redacts", content.optString("redacts"));
+                var reaction = DirectProtocols.findBy(context, address, "event_id", redacts);
+                if (reaction != null && reaction.optString("reaction").isEmpty()) {
+                    // A deleted or disappearing message goes from this phone too.
+                    ProtocolStore.get(context).remove(reaction.getString("id"));
+                    MmsTransport.changed(context);
+                    return;
+                }
+                if (reaction == null) return;
+                var target = ProtocolStore.get(context).find(reaction.optString("reaction_target"));
+                if (target == null) return;
+                record = DirectProtocols.record(route, id, MessageInteractionsKt.reactionRemovedSms(reaction.getString("reaction"),
                     target.optString("body"), false), false, date, author).put("reaction_target", target.getString("id"));
             }
             case "m.room.encrypted" -> record = DirectProtocols.record(route, id,
-                "Encrypted message. Connect Matrix through your companion to read encrypted rooms.", false, date, author);
+                "Encrypted message. Connect Matrix through FluidMessages Web to read encrypted rooms.", false, date, author);
             case "m.room.message" -> {
                 String type = content.optString("msgtype");
                 String body = content.optString("body");
                 if (type.equals("m.image") || type.equals("m.video") || type.equals("m.audio") || type.equals("m.file")) {
                     String url = content.optString("url");
                     if (url.isEmpty()) {
-                        record = DirectProtocols.record(route, id, "Encrypted file. Connect Matrix through your companion to open it.", false, date, author);
+                        record = DirectProtocols.record(route, id, "Encrypted file. Connect Matrix through FluidMessages Web to open it.", false, date, author);
                         break;
                     }
                     var info = content.optJSONObject("info");
@@ -149,6 +170,8 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
                     }
                     record = DirectProtocols.record(route, id, type.equals("m.emote") ? "/me " + body : body, false, date, author);
                     if (target != null) record.put("reply_target", target.getString("id"));
+                    int disappear = content.optInt(DISAPPEAR, 0);
+                    if (disappear > 0) record.put("expires", date + disappear * 1000L);
                 } else return;
             }
             default -> { return; }
@@ -173,10 +196,23 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
     @Override public JSONObject send(Context context, JSONObject route, JSONObject message, MediaSanitizer.Prepared file) throws Exception {
         String room = route.getString("target");
         String encodedRoom = URLEncoder.encode(room, StandardCharsets.UTF_8);
-        if (isEncrypted(room)) throw new IllegalStateException("This room is end-to-end encrypted. Connect Matrix through your companion to send here.");
+        if (isEncrypted(room)) throw new IllegalStateException("This room is end-to-end encrypted. Connect Matrix through FluidMessages Web to send here.");
         var relation = message.optJSONObject("relation");
         String event = relation == null ? "" : relation.optString("event_id");
         String transaction = URLEncoder.encode(message.getString("id"), StandardCharsets.UTF_8);
+        boolean revises = relation != null && "reaction".equals(relation.optString("kind"))
+            && (relation.optBoolean("removed") || !relation.optString("previous").isEmpty());
+        if (revises && !event.isEmpty()) {
+            // Taking back a reaction redacts its event; a change redacts the old one, then sends the new one.
+            String earlier = relation.optString("previous_event");
+            if (!earlier.isEmpty()) {
+                json("PUT", "rooms/" + encodedRoom + "/redact/" + URLEncoder.encode(earlier, StandardCharsets.UTF_8) + "/"
+                    + transaction + "-redact", new JSONObject(), 30_000);
+            } else if (relation.optBoolean("removed")) {
+                relation = null;  // Nothing native to take back: say it in text instead.
+            }
+            if (relation != null && relation.optBoolean("removed")) return new JSONObject().put("redacted", earlier);
+        }
         if (relation != null && "reaction".equals(relation.optString("kind")) && !event.isEmpty()) {
             var content = new JSONObject().put("m.relates_to", new JSONObject().put("rel_type", "m.annotation")
                 .put("event_id", event).put("key", relation.optString("emoji")));
@@ -211,8 +247,45 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
         } else {
             content = new JSONObject().put("msgtype", "m.text").put("body", message.getString("body"));
         }
+        if (message.optInt("expire_seconds") > 0) content.put(DISAPPEAR, message.optInt("expire_seconds"));
         return new JSONObject().put("event_id", json("PUT", "rooms/" + encodedRoom + "/send/m.room.message/" + transaction,
             content, 30_000).getString("event_id"));
+    }
+
+    /** Lets other FluidMessages apps remove the message on the same timer; other clients ignore it. */
+    static final String DISAPPEAR = "org.fluidmessages.disappear_after";
+
+    @Override public void changeMember(Context context, JSONObject route, boolean add, String member) throws Exception {
+        if (!member.matches("@[^:\\s]+:[^\\s]+")) throw new IllegalArgumentException("Enter a Matrix ID like @maya:example.org");
+        json("POST", "rooms/" + URLEncoder.encode(route.getString("target"), StandardCharsets.UTF_8) + (add ? "/invite" : "/kick"),
+            add ? new JSONObject().put("user_id", member) : new JSONObject().put("user_id", member).put("reason", "Removed from the group"),
+            30_000);
+    }
+
+    /** Sends one Matrix VoIP signaling event for the call screen. */
+    void sendCall(JSONObject route, String type, JSONObject content) throws Exception {
+        json("PUT", "rooms/" + URLEncoder.encode(route.getString("target"), StandardCharsets.UTF_8) + "/send/" + type + "/"
+            + "call-" + java.util.UUID.randomUUID(), content, 30_000);
+    }
+
+    /** The homeserver's TURN relay, which calls need when both people are behind strict networks. */
+    JSONArray iceServers() {
+        var servers = new JSONArray();
+        try {
+            var turn = json("GET", "voip/turnServer", null, 15_000);
+            var uris = turn.optJSONArray("uris");
+            if (uris != null && uris.length() > 0) servers.put(new JSONObject().put("urls", uris)
+                .put("username", turn.optString("username")).put("credential", turn.optString("password")));
+        } catch (Exception ignored) {}
+        return servers;
+    }
+
+    @Override public void retract(Context context, JSONObject route, JSONObject record) throws Exception {
+        String event = record.optString("event_id");
+        if (event.isEmpty()) return;
+        json("PUT", "rooms/" + URLEncoder.encode(route.getString("target"), StandardCharsets.UTF_8) + "/redact/"
+            + URLEncoder.encode(event, StandardCharsets.UTF_8) + "/" + URLEncoder.encode(record.getString("id"), StandardCharsets.UTF_8)
+            + "-expire", new JSONObject().put("reason", "Disappearing message"), 30_000);
     }
 
     private boolean isEncrypted(String room) throws Exception {

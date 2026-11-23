@@ -31,7 +31,7 @@ final class Backup {
     // Protocol choices, links, and battery settings. Account passwords stay on the companion and are never backed up.
     static final String[] PROTOCOLS = {
         "protocolRCS", "protocolSMS", "protocolMMS", "protocolMATRIX", "protocolXMPP", "protocolEMAIL", "protocolIRC",
-        "combineProtocols", "protocolTags", "protocolPrivacy", "stripMetadata", GatewayClient.ROUTES, "gatewayChannels",
+        "combineProtocols", "protocolTags", "protocolPrivacy", DisplayRules.TAGS, DisplayRules.ENCRYPTION, "stripMetadata", GatewayClient.ROUTES, "gatewayChannels",
         SyncPolicy.FOREGROUND, SyncPolicy.BACKGROUND, SyncPolicy.WIFI_ONLY, SyncPolicy.BATTERY_SAVER, SyncPolicy.DOWNLOADS
     };
     private static final long FILE_BUDGET = 24L * 1024 * 1024, FILE_LIMIT = 2L * 1024 * 1024;

@@ -57,7 +57,7 @@ private val forms = mapOf(
 
 private val notes = mapOf(
     MessageProtocol.EMAIL to "Only conversations you link to a contact appear in FluidMessages. Other email stays in your mail app. Each message you send ends with “Sent with FluidMessages”.",
-    MessageProtocol.MATRIX to "Rooms appear when you link them to a contact or group. Through the companion, encrypted rooms work: it becomes one of your Matrix devices and decrypts them. From this phone, only unencrypted rooms can be read and sent to.",
+    MessageProtocol.MATRIX to "Rooms appear when you link them to a contact or group. Through FluidMessages Web, encrypted rooms work: it becomes one of your Matrix devices and decrypts them. From this phone, only unencrypted rooms can be read and sent to.",
     MessageProtocol.XMPP to "One-to-one chats and group chats you link appear here. OMEMO encryption isn’t supported, so XMPP shows as encrypted in transit only.",
     MessageProtocol.IRC to "FluidMessages connects with TLS only. Channels listed here appear in your inbox; direct messages appear for nicks you link.",
 )
@@ -75,14 +75,14 @@ object AccountsScreen {
 @Composable
 private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable) {
     val scope = rememberCoroutineScope()
-    val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(), prefs.getString("token", "").orEmpty())
+    val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(), Privacy.token(prefs))
     var accounts by remember { mutableStateOf<JSONArray?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<MessageProtocol?>(null) }
     fun load() = scope.launch {
         error = null
         runCatching { withContext(Dispatchers.IO) { GatewayClient.accounts(prefs) } }
-            .onSuccess { accounts = it ?: JSONArray() }.onFailure { error = it.message ?: "Couldn’t reach your companion." }
+            .onSuccess { accounts = it ?: JSONArray() }.onFailure { error = it.message ?: "Couldn’t reach FluidMessages Web." }
     }
     LaunchedEffect(paired) { if (paired) load() else accounts = JSONArray() }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -96,9 +96,9 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable) {
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
         if (!paired) item {
-            PreferencesCard("Companion") {
-                PreferenceText("Your web companion isn’t paired", "The companion keeps internet connections open so your phone doesn’t have to. You can also connect an account from this phone, which uses more battery.")
-                TextButton(onClick = openCompanion::run, modifier = Modifier.padding(horizontal = 8.dp)) { Text("Set up companion") }
+            PreferencesCard("FluidMessages Web") {
+                PreferenceText("FluidMessages Web isn’t set up", "FluidMessages Web keeps internet connections open so your phone doesn’t have to. You can also connect an account from this phone, which uses more battery.")
+                TextButton(onClick = openCompanion::run, modifier = Modifier.padding(horizontal = 8.dp)) { Text("Set up FluidMessages Web") }
             }
         }
         error?.let { item { Text(it, Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.error) } }
@@ -115,7 +115,7 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable) {
                         entry == null -> "Not set up"
                         entry.has("error") -> entry.optString("error")
                         entry.optString("source") == "compose" -> "Set in Docker Compose · " + summary(protocol, entry)
-                        else -> "On your companion · " + summary(protocol, entry)
+                        else -> "On FluidMessages Web · " + summary(protocol, entry)
                     }
                     PreferenceText(protocol.label, detail, Modifier.fillMaxWidth().clickable(enabled = accounts != null) { editing = protocol }.padding(15.dp))
                 }
@@ -143,7 +143,7 @@ private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, exi
                         saved: (JSONArray) -> Unit) {
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
-    val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(), prefs.getString("token", "").orEmpty())
+    val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(), Privacy.token(prefs))
     val direct = remember { DirectProtocols.account(context, protocol) }
     // Where the connection runs. "This phone" needs the battery notice accepted first.
     var onPhone by remember { mutableStateOf(DirectProtocols.on(prefs, protocol) || !paired) }
@@ -180,15 +180,16 @@ private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, exi
                 Text("Connect through", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = !onPhone, enabled = paired && !busy, onClick = { onPhone = false },
-                        label = { Text("Companion") })
+                        label = { Text("FluidMessages Web") })
                     FilterChip(selected = onPhone, enabled = !busy, onClick = { if (consent) onPhone = true else asking = true },
                         label = { Text("This phone") })
                 }
-                Text(if (onPhone) "Your phone connects to ${protocol.label} itself." + when (protocol) {
+                Text(if (onPhone) "Your phone connects to ${protocol.label} itself" +
+                    (if (paired) ", and FluidMessages Web pauses this account so messages arrive once." else ".") + when (protocol) {
                         MessageProtocol.IRC, MessageProtocol.XMPP -> " It needs an open connection to receive messages."
                         else -> " It checks on your Battery and sync schedule."
-                    } else if (paired) "Recommended. Your companion keeps the connection open, and your phone syncs on your Battery and sync schedule."
-                    else "Pair a web companion to connect through it.",
+                    } else if (paired) "Recommended. FluidMessages Web keeps the connection open, and your phone syncs on your Battery and sync schedule."
+                    else "Pair FluidMessages Web to connect through it.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 if (onPhone && (protocol == MessageProtocol.IRC || protocol == MessageProtocol.XMPP)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -246,7 +247,7 @@ private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, exi
                                 if (protocol == MessageProtocol.MATRIX && values["password"].orEmpty().isNotBlank()) {
                                     fields.put("access_token", GatewayClient.matrixLogin(values["homeserver"].orEmpty().trim(),
                                         values["user_id"].orEmpty().trim(), values["password"].orEmpty(),
-                                        if (onPhone) "FluidMessages on this phone" else "FluidMessages companion"))
+                                        if (onPhone) "FluidMessages on this phone" else "FluidMessages Web"))
                                 }
                                 if (onPhone) {
                                     checkDirect(protocol, fields)
@@ -294,7 +295,7 @@ private fun BatteryConsent(protocol: MessageProtocol, dismiss: () -> Unit, accep
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(when (protocol) {
                     MessageProtocol.IRC, MessageProtocol.XMPP -> "${protocol.label} needs an open connection to receive messages. On this phone that keeps the radio awake while FluidMessages is open, or all the time if you choose Stay connected, which drains the battery noticeably faster."
-                    else -> "Your phone will check ${protocol.label} itself on your Battery and sync schedule, which uses more battery and data than letting your companion do it."
+                    else -> "Your phone will check ${protocol.label} itself on your Battery and sync schedule, which uses more battery and data than letting FluidMessages Web do it."
                 })
                 Text("Your account details are encrypted on this phone and aren’t included in backups.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant)

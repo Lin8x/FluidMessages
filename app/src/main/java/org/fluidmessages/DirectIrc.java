@@ -336,6 +336,14 @@ final class DirectIrc implements DirectProtocols.DirectClient {
         return lines;
     }
 
+    @Override public void changeMember(Context context, JSONObject route, boolean add, String member) throws Exception {
+        String channel = route.getString("target");
+        if (!channel.startsWith("#")) throw new IllegalStateException("Only IRC channels have members to change");
+        if (!member.matches("[^\\s,:#]{1,64}")) throw new IllegalArgumentException("Enter a nickname");
+        // Kicking needs channel operator status; invites may need it on invite-only channels.
+        write(add ? "INVITE " + member + " " + channel : "KICK " + channel + " " + member + " :Removed from the channel");
+    }
+
     private static String hash(String value) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));

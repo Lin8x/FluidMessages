@@ -88,6 +88,18 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
                 CarbonManager.getInstanceFor(next).addCarbonCopyReceivedListener((direction, carbon, wrapper) ->
                     received(direction == CarbonExtension.Direction.sent ? carbon.getTo().asEntityBareJidIfPossible()
                         : carbon.getFrom().asEntityBareJidIfPossible(), carbon, direction == CarbonExtension.Direction.sent));
+                // XMPP calls: Jingle session requests and call ringing (XEP-0353) go to the call screen.
+                next.registerIQRequestHandler(new org.jivesoftware.smack.iqrequest.AbstractIqRequestHandler("jingle", "urn:xmpp:jingle:1",
+                        org.jivesoftware.smack.packet.IQ.Type.set, org.jivesoftware.smack.iqrequest.IQRequestHandler.Mode.async) {
+                    @Override public org.jivesoftware.smack.packet.IQ handleIQRequest(org.jivesoftware.smack.packet.IQ request) {
+                        if (request.getFrom() != null) CallHub.xmppStanza(context, request.getFrom().toString(), request.toXML().toString());
+                        return org.jivesoftware.smack.packet.IQ.createResultIQ(request);
+                    }
+                });
+                next.addAsyncStanzaListener(stanza -> {
+                    if (stanza.getFrom() != null) CallHub.xmppStanza(context, stanza.getFrom().toString(), stanza.toXML().toString());
+                }, stanza -> stanza instanceof Message message && message.getExtensions().stream()
+                    .anyMatch(extension -> CallHub.JINGLE_MESSAGE.equals(extension.getNamespace())));
                 next.connect().login();
                 connection = next;
                 try { CarbonManager.getInstanceFor(next).enableCarbons(); } catch (Exception ignored) {}
@@ -131,13 +143,32 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
             long date = delay == null ? System.currentTimeMillis() : delay.getStamp().getTime();
             String id = "xmpp-" + hash(conversation + ":" + messageId + ":" + date);
             JSONObject record;
+            var retract = element(message, "retract", RETRACT);
+            if (retract != null) {
+                // XEP-0424: the sender took the message back, so it goes here too.
+                var target = DirectProtocols.findBy(context, address, "xmpp_id", retract.getAttributeValue("id"));
+                if (target != null && (outgoing || author.equals(target.optString("author")))) {
+                    ProtocolStore.get(context).remove(target.getString("id"));
+                    MmsTransport.changed(context);
+                }
+                return;
+            }
             var reactions = element(message, "reactions", REACTIONS);
             if (reactions != null) {
                 var target = DirectProtocols.findBy(context, address, "xmpp_id", reactions.getAttributeValue("id"));
-                var first = reactions.getFirstElement("reaction");
-                if (target == null || first == null || first.getText() == null) return;
-                record = DirectProtocols.record(route, id, MessageInteractionsKt.emojiReactionSms(first.getText(), target.optString("body"), false),
-                    outgoing, date, author).put("reaction_target", target.getString("id"));
+                if (target == null) return;
+                var all = reactions.getElements("reaction");
+                var last = all.isEmpty() ? null : all.get(all.size() - 1).getText();
+                if (last == null || last.isBlank()) {
+                    // XEP-0444 sends the sender's whole set; an empty set takes their reaction back.
+                    String earlier = earlierReaction(address, target.getString("id"), author, outgoing);
+                    if (earlier.isEmpty()) return;
+                    record = DirectProtocols.record(route, id, MessageInteractionsKt.reactionRemovedSms(earlier, target.optString("body"), false),
+                        outgoing, date, author).put("reaction_target", target.getString("id"));
+                } else {
+                    record = DirectProtocols.record(route, id, MessageInteractionsKt.emojiReactionSms(last, target.optString("body"), false),
+                        outgoing, date, author).put("reaction_target", target.getString("id")).put("reaction", last);
+                }
             } else {
                 String body = message.getBody();
                 if (body == null) return;
@@ -154,6 +185,11 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
                 String url = oob(message);
                 record = DirectProtocols.record(route, id, body, outgoing, date, author);
                 if (target != null) record.put("reply_target", target.getString("id"));
+                var disappear = element(message, "disappear", DISAPPEAR);
+                if (disappear != null) {
+                    try { record.put("expires", date + Math.max(0, Integer.parseInt(disappear.getAttributeValue("seconds"))) * 1000L); }
+                    catch (NumberFormatException ignored) {}
+                }
                 if (url != null && SyncPolicy.autoDownload(context)) fetch(record, url);
             }
             DirectProtocols.incoming(context, record.put("xmpp_id", messageId));
@@ -190,6 +226,59 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
         } catch (Exception ignored) {}
     }
 
+    /** The emoji this sender last reacted with on a message, so a removal can say which one. */
+    private String earlierReaction(String address, String target, String author, boolean outgoing) {
+        try {
+            for (JSONObject item : ProtocolStore.get(context).read()) {
+                if (address.equals(item.optString("address")) && target.equals(item.optString("reaction_target"))
+                        && (outgoing ? item.optInt("type") == 2 : author.equals(item.optString("author")))) {
+                    return item.optString("reaction");
+                }
+            }
+        } catch (Exception ignored) {}
+        return "";
+    }
+
+    private static final String RETRACT = "urn:xmpp:message-retract:1";
+
+    /** Sends a call stanza the call screen built (Jingle IQ or a ringing message). */
+    void sendRaw(String xml) throws Exception {
+        var current = connection;
+        if (current == null || !current.isAuthenticated()) throw new IllegalStateException("XMPP isn’t connected yet");
+        current.sendStanza(org.jivesoftware.smack.util.PacketParserUtils.parseStanza(xml));
+    }
+
+    /** This device's full address, which Jingle sessions name as the caller or answerer. */
+    String self() {
+        var current = connection;
+        return current == null || current.getUser() == null ? "" : current.getUser().toString();
+    }
+    /** Lets other FluidMessages apps remove the message on the same timer; other clients ignore it. */
+    private static final String DISAPPEAR = "urn:fluidmessages:disappear:0";
+
+    @Override public void changeMember(Context context, JSONObject route, boolean add, String member) throws Exception {
+        var current = connection;
+        if (current == null || !current.isAuthenticated()) throw new IllegalStateException("XMPP isn’t connected yet");
+        if (!route.optBoolean("group")) throw new IllegalStateException("Only XMPP group chats have members to change");
+        MultiUserChat muc = MultiUserChatManager.getInstanceFor(current).getMultiUserChat(JidCreate.entityBareFrom(route.getString("target")));
+        // Adding invites an address; removing kicks someone by their nickname in the room, which needs moderator rights.
+        if (add) muc.invite(JidCreate.entityBareFrom(member), "");
+        else muc.kickParticipant(Resourcepart.from(member), "Removed from the group");
+    }
+
+    @Override public void retract(Context context, JSONObject route, JSONObject record) throws Exception {
+        var current = connection;
+        String target = record.optString("xmpp_id");
+        if (current == null || !current.isAuthenticated() || target.isEmpty()) return;
+        var builder = StanzaBuilder.buildMessage().to(route.getString("target"))
+            .ofType(route.optBoolean("group") ? Message.Type.groupchat : Message.Type.chat)
+            .setBody("This message was removed.");
+        builder.addExtension(StandardExtensionElement.builder("retract", RETRACT).addAttribute("id", target).build());
+        builder.addExtension(StandardExtensionElement.builder("fallback", "urn:xmpp:fallback:0").addAttribute("for", RETRACT).build());
+        builder.addExtension(StandardExtensionElement.builder("store", "urn:xmpp:hints").build());
+        current.sendStanza(builder.build());
+    }
+
     @Override public JSONObject send(Context context, JSONObject route, JSONObject message, MediaSanitizer.Prepared file) throws Exception {
         var current = connection;
         long deadline = System.currentTimeMillis() + 15_000;
@@ -204,8 +293,10 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
         MessageBuilder builder = StanzaBuilder.buildMessage().to(route.getString("target"))
             .ofType(group ? Message.Type.groupchat : Message.Type.chat);
         if (relation != null && "reaction".equals(relation.optString("kind")) && !reply.isEmpty()) {
-            builder.addExtension(StandardExtensionElement.builder("reactions", REACTIONS).addAttribute("id", reply)
-                .addElement("reaction", relation.optString("emoji")).build());
+            // XEP-0444 replaces your whole set: none takes the reaction back, one emoji changes it.
+            var reactions = StandardExtensionElement.builder("reactions", REACTIONS).addAttribute("id", reply);
+            if (!relation.optBoolean("removed")) reactions.addElement("reaction", relation.optString("emoji"));
+            builder.addExtension(reactions.build());
             builder.addExtension(StandardExtensionElement.builder("store", "urn:xmpp:hints").build());
         } else {
             String body = !reply.isEmpty() && "reply".equals(relation.optString("kind")) ? message.optString("text") : message.getString("body");
@@ -221,6 +312,8 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
                 builder.addExtension(StandardExtensionElement.builder("reply", REPLY).addAttribute("to", to).addAttribute("id", reply).build());
             }
             builder.setBody(body);
+            if (message.optInt("expire_seconds") > 0) builder.addExtension(StandardExtensionElement.builder("disappear", DISAPPEAR)
+                .addAttribute("seconds", Integer.toString(message.optInt("expire_seconds"))).build());
         }
         Message stanza = builder.build();
         current.sendStanza(stanza);

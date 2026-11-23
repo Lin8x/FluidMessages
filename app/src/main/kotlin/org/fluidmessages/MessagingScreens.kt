@@ -21,6 +21,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -126,7 +127,7 @@ internal data class Palette(val appearance: Appearance) {
         "tinted" -> tint
         else -> bg
     }
-    private val toolbarBackground = toolbar.compositeOver(bg)
+    val toolbarBackground = toolbar.compositeOver(bg)
     val toolbarInk = Color(MessageStyle.textOn(toolbarBackground.toArgb()))
     val inboxAction = coloredActionAgainst(bg)
     val toolbarAction = coloredActionAgainst(toolbarBackground)
@@ -173,8 +174,16 @@ internal class InboxScreen(
     private val open: Consumer<String>,
     private val more: Consumer<String>,
     private val details: Consumer<String>,
+    /** Sample inbox only: puts every sample conversation back the way it started. */
+    private val resetSample: Runnable? = null,
+    /** The live inbox only: opens the Calls tab from the bottom tab bar. */
+    private val calls: Runnable? = null,
+    /** Inbox folders in the filter menu; Hidden chats appears when it's set up and not left out of Settings. */
+    private val folders: List<String> = listOf("Inbox", "Archived", "Blocked"),
 ) {
     private var search by mutableStateOf(initialSearch)
+    /** Clears the search field, e.g. after it was used to open hidden chats. */
+    fun clearSearch() { search = "" }
     var threads by mutableStateOf(emptyList<ThreadRow>())
     var error by mutableStateOf<String?>(null)
 
@@ -202,7 +211,7 @@ internal class InboxScreen(
                         Box {
                             ActionIcon("Filters", Glyph.Filter, palette.inboxAction) { expanded = true }
                             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                                for (option in listOf("Inbox", "Archived", "Blocked")) {
+                                for (option in folders) {
                                     DropdownMenuItem(
                                         text = { Text(option) },
                                         trailingIcon = if (option == folder) ({ Text("✓", color = palette.inboxAction) }) else null,
@@ -223,7 +232,15 @@ internal class InboxScreen(
                         fontWeight = FontWeight.Bold,
                     )
                     if (sample) {
-                        Text("Sample inbox", Modifier.padding(top = 3.dp), color = palette.muted, fontSize = 14.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Sample inbox", Modifier.padding(top = 3.dp), color = palette.muted, fontSize = 14.sp)
+                            if (resetSample != null) {
+                                Spacer(Modifier.width(4.dp))
+                                TextButton(onClick = { resetSample.run() }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                    Text("Reset", color = palette.action, fontSize = 14.sp)
+                                }
+                            }
+                        }
                     }
                     if (!dock && (sample || connected)) SearchBox(search, palette, change = editSearch)
                 }
@@ -239,14 +256,21 @@ internal class InboxScreen(
                                 fontSize = 16.sp,
                             )
                         } else {
+                            val showTags = remember(threads) { DisplayRules.showTags(prefs, threads) }
+                            val listState = rememberLazyListState()
+                            val stretch = rememberInboxOverscroll(palette.appearance.speed)
                             LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier.fillMaxSize().elasticWhenShort(stretch, listState),
+                                state = listState,
                                 contentPadding = PaddingValues(start = 14.dp, end = 18.dp, top = 8.dp,
                                     bottom = if (dock) 87.dp else 16.dp),
+                                overscrollEffect = stretch,
                             ) {
-                                items(threads, key = { it.id }) { thread ->
-                                    ConversationRow(thread, palette, prefs.getBoolean("protocolTags", false), { open.accept(thread.id) }, { details.accept(thread.id) },
-                                        if (sample) null else ({ more.accept(thread.id) }))
+                                itemsIndexed(threads, key = { _, thread -> thread.id }) { index, thread ->
+                                    Box(Modifier.elasticRow(stretch, listState, index)) {
+                                        ConversationRow(thread, palette, showTags, { open.accept(thread.id) }, { details.accept(thread.id) },
+                                            if (sample) null else ({ more.accept(thread.id) }))
+                                    }
                                 }
                             }
                         }
@@ -268,6 +292,7 @@ internal class InboxScreen(
                         }
                     }
                 }
+                calls?.let { MainTabBar(palette, false, it, {}) }
             }
         }
     }
@@ -435,6 +460,7 @@ internal class ConversationScreen @JvmOverloads constructor(
             val filesAllowed = sample || if (via == active) routing?.attachments == true else via.transport().capabilities.attachments
             val sources = AttachmentSource.entries.filter { filesAllowed || !it.needsFiles }
             var sheet by remember { mutableStateOf(false) }
+            var moneyDialog by remember { mutableStateOf(false) }
             var notice by remember { mutableStateOf<String?>(null) }
             var recorder by remember { mutableStateOf<VoiceRecorder?>(null) }
             var cameraTarget by remember { mutableStateOf<Uri?>(null) }
@@ -477,6 +503,7 @@ internal class ConversationScreen @JvmOverloads constructor(
                         runCatching { camera.launch(cameraTarget!!) }.onFailure { notice = "No camera app is available." }
                     }
                     AttachmentSource.DOCUMENT -> document.launch(arrayOf("*/*"))
+                    AttachmentSource.MONEY -> moneyDialog = true
                     AttachmentSource.AUDIO -> document.launch(arrayOf("audio/*"))
                     AttachmentSource.CONTACT -> runCatching { contactPicker.launch(null) }.onFailure { notice = "No contacts app is available." }
                     AttachmentSource.LOCATION -> if (context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -543,20 +570,25 @@ internal class ConversationScreen @JvmOverloads constructor(
                             }
                             val switchable = routing != null && !routing.combined && routing.formats.size > 1 && routing.switch != null
                             var historyMenu by remember { mutableStateOf(false) }
-                            Box {
-                                Text(mode + category + if (switchable) "  ▾" else "",
-                                    (if (switchable) Modifier.clip(RoundedCornerShape(6.dp))
-                                        .clickable(onClickLabel = "Switch conversation protocol") { historyMenu = true } else Modifier),
-                                    color = chromeInk.copy(alpha = .72f), fontSize = 12.sp)
-                                if (switchable) DropdownMenu(expanded = historyMenu, onDismissRequest = { historyMenu = false }) {
-                                    for (format in routing!!.formats) DropdownMenuItem(
-                                        text = { Text(if (format == active) "${format.label} ✓" else format.label) },
-                                        onClick = { historyMenu = false; if (format != active) routing.switch!!.accept(format) },
-                                    )
+                            val protection = routing?.encryption?.takeIf { via == active } ?: via.transport().capabilities.encryption
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box {
+                                    Text(mode + category + if (switchable) "  ▾" else "",
+                                        (if (switchable) Modifier.clip(RoundedCornerShape(6.dp))
+                                            .clickable(onClickLabel = "Switch conversation protocol") { historyMenu = true } else Modifier),
+                                        color = chromeInk.copy(alpha = .72f), fontSize = 12.sp)
+                                    if (switchable) DropdownMenu(expanded = historyMenu, onDismissRequest = { historyMenu = false }) {
+                                        for (format in routing!!.formats) DropdownMenuItem(
+                                            text = { Text(if (format == active) "${format.label} ✓" else format.label) },
+                                            onClick = { historyMenu = false; if (format != active) routing.switch!!.accept(format) },
+                                        )
+                                    }
                                 }
-                            }
-                            if (prefs.getBoolean("protocolPrivacy", false)) {
-                                Text((routing?.encryption?.takeIf { via == active } ?: via.transport().capabilities.encryption).label, color = chromeInk.copy(alpha = .80f), fontSize = 11.sp)
+                                // A small colored padlock; the details' Security section explains it.
+                                if (DisplayRules.encryptionLine(prefs, protection) != null) {
+                                    SecurityLock(protection, palette.toolbarBackground, Modifier.padding(start = 5.dp)
+                                        .clickable(onClickLabel = "Encryption details") { details.run() })
+                                }
                             }
                             }
                         }
@@ -587,12 +619,9 @@ internal class ConversationScreen @JvmOverloads constructor(
                                     Text(line.day, color = palette.muted, fontSize = 12.sp)
                                 }
                             }
-                            if (ircMode) {
-                                // IRC reads as a log: one line per message with colored nicks, like IRC clients.
-                                IrcLine(display, palette, sendColor, exactTimes, remember(line.text) { parseQuotedReply(line.text) },
-                                    reply = { if (blocked.isEmpty()) replyTo = line else error = blocked },
-                                    react = { emoji -> submit("", MessageRelation.reaction(line, emoji, line.outgoing)) },
-                                    delete = { delete.accept(line) })
+                            if (line.event) {
+                                // Channel events (joins, parts, topic changes) are small outlined notes in the IRC color.
+                                ChannelEvent(line, palette, MessageProtocol.IRC.tint(palette.appearance))
                                 return@itemsIndexed
                             }
                             val grouped = !beginsDay && previous != null && line.senderKey() == previous.senderKey()
@@ -605,7 +634,19 @@ internal class ConversationScreen @JvmOverloads constructor(
                                     source == section.quote || messageExcerpt(source, 240) == section.quote
                                 }
                             }
-                            if (group && !grouped && !line.outgoing && line.author != null) {
+                            if (ircMode && !line.outgoing && line.author != null && (!grouped || previous?.event == true)) {
+                                // IRC keeps normal bubbles but always names the speaker in their nick color, with the time.
+                                Text(androidx.compose.ui.text.buildAnnotatedString {
+                                    pushStyle(androidx.compose.ui.text.SpanStyle(color = nickColor(line.author, palette), fontWeight = FontWeight.SemiBold))
+                                    append(line.author)
+                                    pop()
+                                    if (line.time.isNotEmpty()) {
+                                        pushStyle(androidx.compose.ui.text.SpanStyle(color = palette.muted))
+                                        append("  " + line.time)
+                                        pop()
+                                    }
+                                }, Modifier.padding(start = 9.dp + avatarSlot, top = 5.dp, bottom = 3.dp), fontSize = 12.sp)
+                            } else if (group && !grouped && !line.outgoing && line.author != null) {
                                 Text(line.author, Modifier.padding(start = 9.dp + avatarSlot, top = 5.dp, bottom = 3.dp),
                                     color = palette.muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             }
@@ -634,7 +675,10 @@ internal class ConversationScreen @JvmOverloads constructor(
                                     }; Unit }
                                 }, { if (blocked.isEmpty()) replyTo = line else error = blocked }, {
                                     val own = if (sample) line.senderKey() == sendAs else line.outgoing
-                                    submit("", MessageRelation.reaction(line, it, own))
+                                    // Tapping your current reaction takes it back; another one replaces it.
+                                    val current = display.bySender[if (sample) sendAs else null]
+                                    submit("", MessageRelation(RelationKind.REACTION, line.id, line.text, line.author.orEmpty(),
+                                        it, own, removed = current == it, previous = if (current != null && current != it) current else ""))
                                 },
                                 { forward.accept(if (forwarded != null) line.text else
                                     forwardAsSms(line.text, if (line.outgoing) "Me" else line.author ?: name), line.media) },
@@ -683,6 +727,7 @@ internal class ConversationScreen @JvmOverloads constructor(
                     }
                     notice?.let { Text(it, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
                         color = palette.muted, fontSize = 13.sp) }
+                    if (moneyDialog) MoneyDialog({ moneyDialog = false }) { text -> submit(text) }
                     if (sheet) AttachmentSheet(sources, sendColor, when {
                         !filesAllowed -> "${via.label} can share locations and contact cards here. Files need another protocol."
                         via == MessageProtocol.SMS -> "A file turns this text into MMS. Carriers limit MMS size, often to 300 KB–1 MB."
@@ -834,6 +879,8 @@ private fun MessageBubble(
                     line.attachment?.let { AttachmentContent(it, foreground, download) }
                     val location = remember(line.text) { if (line.attachment == null) parseLocation(line.text) else null }
                     location?.let { LocationCard(it, foreground) }
+                    val money = remember(line.text) { if (line.attachment == null) parseMoney(line.text) else null }
+                    money?.let { MoneyCard(it, line.outgoing, foreground) }
                     if (quoted != null) {
                         val quoteModifier = Modifier
                             .padding(bottom = 7.dp).clip(RoundedCornerShape(9.dp))
@@ -859,14 +906,19 @@ private fun MessageBubble(
                         }
                     } else {
                         // Hide automatic captions ("Photo", a file name) that only repeat the attachment card.
+                        val action = line.text.startsWith("/me ")
                         val shown = when {
                             location != null -> location.note
+                            money != null -> ""
                             quoted != null -> quoted.body
                             line.media != null && line.text == line.media?.caption -> ""
+                            // IRC and Matrix actions read as "* name does something".
+                            action -> "* " + (if (line.outgoing) "you" else line.author ?: "") + " " + line.text.removePrefix("/me ")
                             else -> line.text
                         }
                         if (shown.isNotEmpty()) Text(shown, fontSize = palette.appearance.size.sp,
-                            lineHeight = (palette.appearance.size + 4).sp, color = foreground)
+                            lineHeight = (palette.appearance.size + 4).sp, color = foreground,
+                            fontStyle = if (action) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal)
                     }
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false },
@@ -1126,7 +1178,7 @@ internal fun Avatar(initials: String, seed: String, size: Int, photo: Int = 0, p
 }
 
 internal enum class Glyph { Settings, Filter, Compose, Search, Close, Back, Forward, More, Send, Person,
-    Plus, Photo, Camera, Document, Music, Pin, Mic, Play, Pause, Video, Stop }
+    Plus, Photo, Camera, Document, Music, Pin, Mic, Play, Pause, Video, Stop, Money }
 
 @Composable
 internal fun ActionIcon(label: String, glyph: Glyph, color: Color, action: () -> Unit) {
@@ -1224,6 +1276,13 @@ internal fun DrawGlyph(glyph: Glyph, color: Color, modifier: Modifier) {
             }
             Glyph.Stop -> drawRoundRect(color, point(.28f, .28f), Size(size.width * .44f, size.height * .44f),
                 androidx.compose.ui.geometry.CornerRadius(stroke))
+            Glyph.Money -> {
+                // A banknote: outline, a coin in the middle, and corner marks.
+                drawRoundRect(color, point(.1f, .27f), Size(size.width * .8f, size.height * .46f),
+                    androidx.compose.ui.geometry.CornerRadius(stroke * 1.4f), style = Stroke(stroke))
+                drawCircle(color, size.minDimension * .11f, point(.5f, .5f), style = Stroke(stroke))
+                drawCircle(color, stroke * .7f, point(.24f, .5f)); drawCircle(color, stroke * .7f, point(.76f, .5f))
+            }
             Glyph.Video -> {
                 drawRoundRect(color, point(.12f, .28f), Size(size.width * .5f, size.height * .44f),
                     androidx.compose.ui.geometry.CornerRadius(stroke * 2), style = Stroke(stroke))
@@ -1323,63 +1382,12 @@ private fun nickColor(nick: String, palette: Palette): Color {
     return if (palette.appearance.dark) lerp(base, Color.White, .25f) else accessibleBubbleFill(base)
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun IrcLine(display: DisplayMessage, palette: Palette, ownColor: Color, exactTimes: Boolean, quoted: QuotedReply?,
-                    reply: () -> Unit, react: (String) -> Unit, delete: () -> Unit) {
-    val line = display.line
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-    var menu by remember { mutableStateOf(false) }
-    if (line.event) {
-        Text("— " + line.text, Modifier.fillMaxWidth().padding(vertical = 3.dp, horizontal = 4.dp), color = palette.muted,
-            fontSize = 12.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
-        return
-    }
-    val nick = if (line.outgoing) "you" else line.author ?: "?"
-    val action = line.text.startsWith("/me ")
-    val body = when {
-        action -> line.text.removePrefix("/me ")
-        quoted != null -> quoted.body
-        else -> line.text
-    }
-    Box {
-        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
-            .combinedClickable(onClick = {}, onLongClickLabel = "Message actions", onLongClick = { menu = true })
-            .padding(vertical = 3.dp, horizontal = 4.dp)) {
-            if (quoted != null) Text("↳ " + messageExcerpt(quoted.quote, 120), color = palette.muted, fontSize = 12.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val color = if (line.outgoing) accessibleBubbleFill(ownColor) else nickColor(nick, palette)
-            val text = androidx.compose.ui.text.buildAnnotatedString {
-                if (exactTimes && line.time.isNotEmpty()) {
-                    pushStyle(androidx.compose.ui.text.SpanStyle(color = palette.muted, fontSize = 11.sp))
-                    append(line.time + "  ")
-                    pop()
-                }
-                pushStyle(androidx.compose.ui.text.SpanStyle(color = color, fontWeight = FontWeight.SemiBold))
-                append(if (action) "* $nick " else "$nick  ")
-                pop()
-                pushStyle(androidx.compose.ui.text.SpanStyle(color = palette.ink,
-                    fontStyle = if (action) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal))
-                append(body)
-                pop()
-            }
-            Text(text, fontSize = palette.appearance.size.sp, lineHeight = (palette.appearance.size + 5).sp)
-            if (display.reactions.isNotEmpty()) Text(display.reactions.joinToString(" "), fontSize = 13.sp)
-            if (line.outgoing && line.status.startsWith("Couldn’t send")) {
-                Text("Not delivered · " + line.status.removePrefix("Couldn’t send").trimStart(' ', '·'),
-                    color = Color(MessageStyle.Swatch.RED.color(palette.appearance.dark, palette.appearance.contrast)), fontSize = 12.sp)
-            } else if (line.status.isNotEmpty()) Text(line.status, color = palette.muted, fontSize = 11.sp)
-        }
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            Row(Modifier.padding(horizontal = 8.dp)) {
-                for (emoji in listOf("👍", "❤️", "😆", "‼️", "❓")) TextButton(onClick = { menu = false; react(emoji) }) { Text(emoji, fontSize = 18.sp) }
-            }
-            DropdownMenuItem(text = { Text("Reply") }, onClick = { menu = false; reply() })
-            DropdownMenuItem(text = { Text("Copy") }, onClick = {
-                menu = false
-                clipboard.setText(androidx.compose.ui.text.AnnotatedString(body))
-            })
-            DropdownMenuItem(text = { Text("Delete for me") }, onClick = { menu = false; delete() })
-        }
+private fun ChannelEvent(line: ChatLine, palette: Palette, tint: Color) {
+    val ink = if (palette.appearance.dark) tint else accessibleBubbleFill(tint)
+    Box(Modifier.fillMaxWidth().padding(vertical = 5.dp), contentAlignment = Alignment.Center) {
+        Text(line.text + if (line.time.isNotEmpty()) " · " + line.time else "",
+            Modifier.border(1.dp, ink.copy(alpha = .7f), RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 3.dp),
+            color = ink, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }

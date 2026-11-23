@@ -32,6 +32,14 @@ final class GatewayClient {
 
     static boolean hasRoutes(SharedPreferences prefs) { return routes(prefs).length() > 0; }
 
+    /** Every linked address, on the phone or the server, for the Phone tab's contact list. */
+    static List<JSONObject> allRoutes(SharedPreferences prefs) {
+        var items = routes(prefs);
+        var result = new ArrayList<JSONObject>();
+        for (int i = 0; i < items.length(); i++) if (items.optJSONObject(i) != null) result.add(items.optJSONObject(i));
+        return result;
+    }
+
     /** Internet protocols connect automatically once paired; turning every one of them off stops the checks. */
     static boolean wanted(SharedPreferences prefs) {
         for (MessageProtocol format : MessageProtocol.values()) if (!format.isText() && format.enabled(prefs)) return true;
@@ -88,21 +96,41 @@ final class GatewayClient {
 
     static String unavailable(SharedPreferences prefs, String number, MessageProtocol format) {
         if (!formats(prefs, number).contains(format) ||
-                !CloudBackup.paired(prefs.getString("server", ""), prefs.getString("token", ""))) {
-            return "Connect " + format.label + " for this contact on the web companion.";
+                !CloudBackup.paired(prefs.getString("server", ""), Privacy.token(prefs))) {
+            return "Connect " + format.label + " for this contact on FluidMessages Web.";
         }
         return "";
     }
 
+    /** Tells the companion these messages were read here. Off the main thread; failures retry on the next refresh. */
+    static void markRead(SharedPreferences prefs, List<String> ids) {
+        if (ids.isEmpty() || !CloudBackup.paired(prefs.getString("server", ""), Privacy.token(prefs))) return;
+        try { request(prefs, "protocols/read", new JSONObject().put("ids", new JSONArray(ids))); } catch (Exception ignored) {}
+    }
+
     static synchronized boolean refresh(Context context, SharedPreferences prefs) throws Exception {
-        if (!CloudBackup.paired(prefs.getString("server", ""), prefs.getString("token", ""))
+        if (!CloudBackup.paired(prefs.getString("server", ""), Privacy.token(prefs))
                 || !wanted(prefs) || SystemClock.elapsedRealtime() < nextCheck) return false;
         nextCheck = SystemClock.elapsedRealtime() + 60_000;
         var response = request(prefs, "protocols", new JSONObject().put("enabled", enabled(prefs)));
         JSONArray messages = response.optJSONArray("messages");
         if (messages != null) {
             var store = ProtocolStore.get(context);
+            // A message read on this phone stays read, even if the companion hasn't heard yet; tell it again.
+            var readHere = new JSONArray();
+            for (int i = 0; i < messages.length(); i++) {
+                var message = messages.optJSONObject(i);
+                if (message == null || message.optInt("read", 1) != 0) continue;
+                var local = store.find(message.optString("id"));
+                if (local != null && local.optInt("read", 0) == 1) {
+                    message.put("read", 1);
+                    readHere.put(message.getString("id"));
+                }
+            }
             store.putBatch(messages);
+            if (readHere.length() > 0) {
+                try { request(prefs, "protocols/read", new JSONObject().put("ids", readHere)); } catch (Exception ignored) {}
+            }
             // Follow the Battery and sync choice for fetching received attachments without a tap.
             if (SyncPolicy.autoDownload(context)) for (int i = 0; i < messages.length(); i++) {
                 var message = messages.optJSONObject(i);
@@ -112,6 +140,8 @@ final class GatewayClient {
                 try { download(context, message); } catch (Exception ignored) {}
             }
         }
+        var accounts = response.optJSONArray("accounts");
+        prefs.edit().putString("gatewayAccounts", accounts == null ? "[]" : accounts.toString()).apply();
         var channels = response.optJSONObject("channels");
         prefs.edit().putString("gatewayChannels", channels == null ? "{}" : channels.toString()).apply();
         var endpoints = response.optJSONArray("routes");
@@ -162,8 +192,8 @@ final class GatewayClient {
     /** Streams a prepared file to the companion and returns its upload id. */
     private static String upload(SharedPreferences prefs, MediaSanitizer.Prepared file) throws Exception {
         String origin = prefs.getString("server", "");
-        String token = prefs.getString("token", "");
-        if (!CloudBackup.paired(origin, token)) throw new IOException("Pair the HTTPS companion first.");
+        String token = Privacy.token(prefs);
+        if (!CloudBackup.paired(origin, token)) throw new IOException("Pair FluidMessages Web first.");
         var connection = (HttpsURLConnection) new URL(origin + "/api/protocols/upload").openConnection();
         try {
             connection.setConnectTimeout(8000);
@@ -180,7 +210,7 @@ final class GatewayClient {
             }
             int code = connection.getResponseCode();
             try (var input = code == 200 ? connection.getInputStream() : connection.getErrorStream()) {
-                if (input == null) throw new IOException("Update your web companion to send files.");
+                if (input == null) throw new IOException("Update FluidMessages Web to send files.");
                 var reply = new JSONObject(new String(input.readNBytes(16 * 1024), StandardCharsets.UTF_8));
                 if (code != 200) throw new IOException(reply.optString("error", "Could not upload the file."));
                 return reply.getString("upload");
@@ -201,9 +231,9 @@ final class GatewayClient {
         }
         var prefs = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
         String origin = prefs.getString("server", "");
-        String token = prefs.getString("token", "");
+        String token = Privacy.token(prefs);
         String id = message.getString("id");
-        if (!CloudBackup.paired(origin, token)) throw new IOException("Pair the HTTPS companion first.");
+        if (!CloudBackup.paired(origin, token)) throw new IOException("Pair FluidMessages Web first.");
         var connection = (HttpsURLConnection) new URL(origin + "/api/protocols/file?id="
             + java.net.URLEncoder.encode(id, StandardCharsets.UTF_8)).openConnection();
         try {
@@ -211,15 +241,19 @@ final class GatewayClient {
             connection.setReadTimeout(120_000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Authorization", "Bearer " + token);
-            if (connection.getResponseCode() != 200) throw new IOException("The attachment is no longer on the companion.");
+            if (connection.getResponseCode() != 200) throw new IOException("The attachment is no longer on FluidMessages Web.");
             try (var input = connection.getInputStream()) { ProtocolStore.get(context).putFile(id, input, MediaSanitizer.MAX_FILE); }
         } finally { connection.disconnect(); }
     }
 
+    /**
+     * Protocols the companion should handle. A protocol connected from this phone is left out, so the companion
+     * pauses that account and each message arrives once.
+     */
     static JSONArray enabled(SharedPreferences prefs) {
         var result = new JSONArray();
         for (MessageProtocol format : MessageProtocol.values()) {
-            if (format.enabled(prefs)) result.put(format.name().toLowerCase(Locale.ROOT));
+            if (format.enabled(prefs) && !DirectProtocols.on(prefs, format)) result.put(format.name().toLowerCase(Locale.ROOT));
         }
         return result;
     }
@@ -246,6 +280,41 @@ final class GatewayClient {
         nextCheck = 0;
     }
 
+    /** Every chat linked to Matrix, on the phone or the companion: [address, title] pairs, for the phone's call list. */
+    static List<String[]> matrixChats(SharedPreferences prefs) {
+        var result = new ArrayList<String[]>();
+        var seen = new java.util.HashSet<String>();
+        var items = routes(prefs);
+        for (int i = 0; i < items.length(); i++) {
+            var route = items.optJSONObject(i);
+            if (route == null || MessageProtocol.parse(route.optString("protocol")) != MessageProtocol.MATRIX) continue;
+            String address = route.optString("address");
+            if (seen.add(address)) result.add(new String[]{address, route.optString("title", address)});
+        }
+        return result;
+    }
+
+    /** Call signaling relayed by the companion for Matrix rooms it links. */
+    static void callSend(SharedPreferences prefs, String address, String type, JSONObject content) throws Exception {
+        request(prefs, "calls/send", new JSONObject().put("address", address).put("protocol", "matrix").put("type", type).put("content", content));
+    }
+
+    static JSONObject calls(SharedPreferences prefs, long since) throws Exception {
+        return send(prefs, "GET", "calls?since=" + since, null);
+    }
+
+    static JSONArray iceServers(SharedPreferences prefs) {
+        try { return send(prefs, "GET", "calls/ice", null).optJSONArray("iceServers"); }
+        catch (Exception error) { return new JSONArray(); }
+    }
+
+    /** Invites or removes someone in a companion-linked group: a Matrix room, XMPP room, or IRC channel. */
+    static void changeMember(SharedPreferences prefs, String address, MessageProtocol format, boolean add, String member) throws Exception {
+        request(prefs, "protocols/members", new JSONObject().put("address", address)
+            .put("protocol", format.name().toLowerCase(Locale.ROOT)).put("action", add ? "add" : "remove").put("member", member));
+        nextCheck = 0;
+    }
+
     static void unlink(SharedPreferences prefs, String address, MessageProtocol format) throws Exception {
         request(prefs, "protocols/routes/delete", new JSONObject().put("address", address)
             .put("protocol", format.name().toLowerCase(Locale.ROOT)));
@@ -258,6 +327,28 @@ final class GatewayClient {
             if (MessageProtocol.parse(link.optString("protocol")) == format && link.optBoolean("encrypted")) return true;
         }
         return false;
+    }
+
+    /** Whether the companion reported an account for this protocol on its last sync. */
+    static boolean hasAccount(SharedPreferences prefs, MessageProtocol format) {
+        try {
+            var accounts = new JSONArray(prefs.getString("gatewayAccounts", "[]"));
+            for (int i = 0; i < accounts.length(); i++) {
+                if (format.name().toLowerCase(Locale.ROOT).equals(accounts.optJSONObject(i).optString("protocol"))) return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    /** The conversation already linked to this address, if any. */
+    static String routeForTarget(SharedPreferences prefs, MessageProtocol format, String target) {
+        var items = routes(prefs);
+        for (int i = 0; i < items.length(); i++) {
+            var route = items.optJSONObject(i);
+            if (route != null && MessageProtocol.parse(route.optString("protocol")) == format
+                    && target.equalsIgnoreCase(route.optString("target"))) return route.optString("address");
+        }
+        return null;
     }
 
     /** The addresses linked to a conversation, for contact details. */
@@ -282,7 +373,7 @@ final class GatewayClient {
      * to the homeserver; the companion keeps just the token.
      */
     static String matrixLogin(String homeserver, String user, String password) throws Exception {
-        return matrixLogin(homeserver, user, password, "FluidMessages companion");
+        return matrixLogin(homeserver, user, password, "FluidMessages Web");
     }
 
     static String matrixLogin(String homeserver, String user, String password, String device) throws Exception {
@@ -317,8 +408,8 @@ final class GatewayClient {
 
     private static JSONObject send(SharedPreferences prefs, String method, String endpoint, JSONObject payload) throws Exception {
         String origin = prefs.getString("server", "");
-        String token = prefs.getString("token", "");
-        if (!CloudBackup.paired(origin, token)) throw new IOException("Pair the HTTPS companion first.");
+        String token = Privacy.token(prefs);
+        if (!CloudBackup.paired(origin, token)) throw new IOException("Pair FluidMessages Web first.");
         var connection = (HttpsURLConnection) new URL(origin + "/api/" + endpoint).openConnection();
         try {
             connection.setConnectTimeout(8000);
@@ -335,7 +426,7 @@ final class GatewayClient {
             }
             int code = connection.getResponseCode();
             try (var input = code == 200 ? connection.getInputStream() : connection.getErrorStream()) {
-                if (input == null) throw new IOException("Update and reconnect your web companion.");
+                if (input == null) throw new IOException("Update and reconnect FluidMessages Web.");
                 byte[] bytes = input.readNBytes(LIMIT + 1);
                 if (bytes.length > LIMIT) throw new IOException("The protocol snapshot is too large.");
                 var reply = new JSONObject(new String(bytes, StandardCharsets.UTF_8));

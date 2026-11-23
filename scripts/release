@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Publishes the current version of FluidMessages: builds and tests it, commits and tags it, pushes to GitHub,
+# and creates a GitHub release with the Android app (APK) and FluidMessages Web (the installable web app and its
+# server, with Docker Compose and the run-it-yourself scripts for Linux, macOS, and Windows).
+#
+#   ./scripts/release                 release the version in app/build.gradle
+#   ./scripts/release --bump          raise the patch version (0.24.0 → 0.24.1) and versionCode first
+#   ./scripts/release --notes "..."   release notes (default: GitHub's generated notes)
+#   ./scripts/release --dry-run       show what would happen without changing anything
+#
+# Needs: git with push access to origin, the GitHub CLI signed in (gh auth login), and the Android SDK.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+BUMP=0 DRY=0 NOTES=""
+while (($#)); do
+  case "$1" in
+    --bump) BUMP=1 ;;
+    --dry-run) DRY=1 ;;
+    --notes) NOTES="${2:?--notes needs text}"; shift ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+run() { if ((DRY)); then echo "would run: $*"; else "$@"; fi; }
+fail() { echo "release: $*" >&2; exit 1; }
+
+command -v gh >/dev/null || fail "Install the GitHub CLI (gh) and run: gh auth login"
+gh auth status >/dev/null 2>&1 || fail "Sign in to GitHub first: gh auth login"
+[[ -n "${ANDROID_HOME:-}" ]] || export ANDROID_HOME="$HOME/Android/Sdk"
+[[ -d "$ANDROID_HOME" ]] || fail "Set ANDROID_HOME to your Android SDK"
+
+GRADLE=app/build.gradle
+version() { sed -n "s/.*versionName '\([0-9.]*\)'.*/\1/p" "$GRADLE"; }
+code() { sed -n 's/.*versionCode \([0-9]*\).*/\1/p' "$GRADLE"; }
+
+if ((BUMP)); then
+  IFS=. read -r major minor patch <<<"$(version)"
+  next="$major.$minor.$((patch + 1))"
+  echo "Bumping $(version) (code $(code)) → $next (code $(($(code) + 1)))"
+  if ((! DRY)); then
+    sed -i "s/versionName '$(version)'/versionName '$next'/; s/versionCode $(code)/versionCode $(($(code) + 1))/" "$GRADLE"
+  fi
+fi
+
+VERSION=$(version)
+TAG="v$VERSION"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Couldn't read versionName from $GRADLE"
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || git ls-remote --exit-code --tags origin "$TAG" >/dev/null 2>&1; then
+  fail "$TAG already exists. Run with --bump, or raise versionName and versionCode in $GRADLE."
+fi
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+echo "Releasing FluidMessages $VERSION from branch $BRANCH"
+
+# Build a fresh APK and run the local checks; stop on any failure.
+run ./scripts/test-local --build
+APK=app/build/outputs/apk/debug/app-debug.apk
+ASSET="dist/FluidMessages-$VERSION.apk"
+run mkdir -p dist
+run cp "$APK" "$ASSET"
+
+# FluidMessages Web: the server and its installable web app (PWA), ready for Docker or scripts/web-app.
+WEB="dist/FluidMessages-Web-$VERSION.zip"
+if ((DRY)); then echo "would run: package $WEB"; else
+  python3 - "$WEB" <<'PY'
+import pathlib, sys, zipfile
+root = pathlib.Path(".")
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
+    for path in sorted(root.glob("server/**/*")):
+        if path.is_file() and "__pycache__" not in path.parts and not path.name.endswith(".pyc"):
+            archive.write(path, "FluidMessages-Web/" + str(path))
+    for name in ("compose.yaml", "LICENSE", "scripts/web-app", "scripts/web-app.ps1"):
+        info = zipfile.ZipInfo.from_file(name, "FluidMessages-Web/" + name)
+        if name == "scripts/web-app":
+            info.external_attr = 0o755 << 16
+        archive.writestr(info, pathlib.Path(name).read_bytes())
+print("Packaged", sys.argv[1])
+PY
+fi
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Committing current changes:"
+  git status --short
+  run git add -A
+  run git commit -m "Release $VERSION"
+fi
+run git tag -a "$TAG" -m "FluidMessages $VERSION"
+run git push origin "$BRANCH"
+run git push origin "$TAG"
+
+if [[ -n "$NOTES" ]]; then
+  run gh release create "$TAG" "$ASSET" "$WEB" --title "FluidMessages $VERSION" --notes "$NOTES"
+else
+  run gh release create "$TAG" "$ASSET" "$WEB" --title "FluidMessages $VERSION" --generate-notes
+fi
+((DRY)) && echo "Dry run only: nothing was built, committed, pushed, or published." || echo "Published $TAG with $ASSET and $WEB"

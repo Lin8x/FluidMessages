@@ -139,9 +139,14 @@ final class DirectEmail implements DirectProtocols.DirectClient {
         }
         text = text.replace("\r\n", "\n");
         if (text.endsWith(FOOTER + "\n")) text = text.substring(0, text.length() - FOOTER.length() - 1);
-        text = text.strip();
+        text = MessageInteractionsKt.stripQuotedEmail(text);
         JSONObject record;
         String replyTo = header(message, "In-Reply-To", "").strip();
+        // The quoted history is gone; a reply card stands in when they answer an older email than the latest.
+        var answered = reaction != null || replyTo.isEmpty() ? null : DirectProtocols.findBy(context, address, "mail_id", replyTo);
+        if (answered != null && !text.isEmpty() && !answered.getString("id").equals(latestId(address))) {
+            text = "Reply to “" + MessageInteractionsKt.messageExcerpt(answered.optString("body"), 240) + "”\n\n" + text;
+        } else answered = null;
         var target = reaction == null ? null : DirectProtocols.findBy(context, address, "mail_id", replyTo);
         if (target != null) {
             record = DirectProtocols.record(route, id, MessageInteractionsKt.emojiReactionSms(reaction, target.optString("body"), false),
@@ -157,9 +162,34 @@ final class DirectEmail implements DirectProtocols.DirectClient {
                 record.put("attachment", new Attachment(Attachment.kindFor(mime), null, name, mime, size).toJson());
             }
         }
+        if (answered != null) record.put("reply_target", answered.getString("id"));
         record.put("mail_id", message.getMessageID() == null ? "" : message.getMessageID())
             .put("mail_subject", message.getSubject() == null ? "" : message.getSubject());
         DirectProtocols.incoming(context, record);
+    }
+
+    /** The newest message in a conversation, on any protocol. */
+    private String latestId(String address) throws Exception {
+        for (JSONObject item : ProtocolStore.get(context).read()) {
+            if (address.equals(item.optString("address"))) return item.optString("id");
+        }
+        return "";
+    }
+
+    /** Once: removes quoted history from emails received before FluidMessages stripped it. */
+    static void stripStoredQuotes(Context context) {
+        var prefs = DirectProtocols.prefs(context);
+        if (prefs.getBoolean("emailQuotesStripped", false)) return;
+        try {
+            var store = ProtocolStore.get(context);
+            for (JSONObject item : store.read()) {
+                if (!"email".equals(item.optString("protocol")) || item.optInt("type") != 1 || item.has("reaction_target")) continue;
+                String body = item.optString("body");
+                String cleaned = MessageInteractionsKt.stripQuotedEmail(body);
+                if (!cleaned.isEmpty() && !cleaned.equals(body)) store.put(item.put("body", cleaned));
+            }
+            prefs.edit().putBoolean("emailQuotesStripped", true).apply();
+        } catch (Exception ignored) {}
     }
 
     private static String header(Message message, String name, String fallback) throws MessagingException {

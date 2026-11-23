@@ -157,7 +157,8 @@ internal fun resolveChatAppearance(base: Appearance, profile: ChatProfile): Appe
 object ConversationDetails {
     @JvmStatic
     fun mount(root: LinearLayout, prefs: SharedPreferences, name: String, initials: String, subtitle: String, photo: Int, photoUri: Uri?,
-              call: Runnable?, edit: Runnable?, actions: List<SettingsAction>, members: List<GroupMember>) {
+              person: String, reach: List<ReachOption>, edit: Runnable?, actions: List<SettingsAction>, members: List<GroupMember>,
+              security: List<SettingsAction>) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -173,17 +174,17 @@ object ConversationDetails {
                             Text(name, style = MaterialTheme.typography.headlineSmall, color = scheme.onSurface,
                                 fontWeight = FontWeight.SemiBold)
                             Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
+                            if (edit != null) TextButton(onClick = edit::run) { Text("Edit contact") }
                         }
                     }
-                    if (call != null && edit != null) item {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            FilledTonalButton(onClick = call::run, modifier = Modifier.weight(1f)) { Text("Call") }
-                            FilledTonalButton(onClick = edit::run, modifier = Modifier.weight(1f)) { Text("Edit contact") }
-                        }
+                    // The same Message, Call, and Video buttons as a contact's page in the Phone tab.
+                    if (reach.isNotEmpty()) item {
+                        ReachTiles(prefs, person, reach, Palette(appearance).inboxAction, scheme.surfaceContainer)
                     }
                     if (members.isNotEmpty()) item { GroupMembers(members) }
                     item { DetailGroup("Customize", actions.take(1)) }
                     if (actions.size > 1) item { DetailGroup("Conversation", actions.drop(1)) }
+                    if (security.isNotEmpty()) item { DetailGroup("Security", security) }
                 }
             }
         }
@@ -201,14 +202,18 @@ private fun DetailGroup(title: String, actions: List<SettingsAction>) {
             Column {
                 actions.forEachIndexed { index, action ->
                     if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 15.dp), color = scheme.outlineVariant)
-                    Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = action.action::run)
+                    Row(Modifier.fillMaxWidth()
+                        .then(if (action.info) Modifier else Modifier.clickable(role = Role.Button, onClick = action.action::run))
                         .heightIn(min = 62.dp).padding(horizontal = 15.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(action.label, color = scheme.onSurface, style = MaterialTheme.typography.bodyLarge)
-                            Text(action.detail, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                            if (action.detail.isNotEmpty()) Text(action.detail, color = scheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall)
                         }
-                        CanvasChevron(scheme.onSurfaceVariant)
+                        if (action.security != null) SecurityLock(action.security, scheme.surfaceContainer, size = 15)
+                        else if (action.info) InfoMark(scheme.onSurfaceVariant)
+                        else CanvasChevron(scheme.onSurfaceVariant)
                     }
                 }
             }

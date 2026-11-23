@@ -5,4 +5,5 @@
     <files-path name="protocol_photos" path="protocol-photos/"/>
     <files-path name="protocol_files" path="protocol-files/"/>
     <cache-path name="attachments" path="attachments/"/>
+    <files-path name="call-recordings" path="call-recordings/"/>
 </paths>

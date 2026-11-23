@@ -1,5 +1,7 @@
 package org.fluidmessages;
 
+import android.telephony.PhoneNumberUtils;
+
 import android.Manifest;
 import android.app.*;
 import android.app.role.RoleManager;
@@ -36,6 +38,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private RecipientPicker recipientPicker;
     private boolean observingContacts;
     private final java.util.concurrent.ExecutorService inboxWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.ExecutorService chatWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private java.util.concurrent.Future<?> chatLoad;
+    private int chatVersion;
+    // The inbox and every conversation read the same merged list; keep it until a text or protocol message changes.
+    private final Object rowsLock = new Object();
+    private List<JSONObject> rowsCache;
+    private long rowsAt;
+    private int rowsGeneration, rowsRevision = -1;
     private java.util.concurrent.Future<?> inboxLoad;
     private int inboxVersion;
     private final Runnable searchInbox = this::refreshVisibleInbox;
@@ -44,6 +54,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private final Map<String, List<String>> unsentGroups = new HashMap<>();
     private final BroadcastReceiver protocolChanges = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
+            invalidateRows();
             if ("inbox".equals(page)) refreshVisibleInbox();
             if ("chat".equals(page)) fillChat();
         }
@@ -55,6 +66,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private String sampleSearch = "";
     private String sampleFolder = "Inbox";
     private final Map<String, List<ChatLine>> sampleReplies = new HashMap<>();
+    private final Set<String> readSamples = new HashSet<>();
     private String contactToEdit;
     private final Map<String, Set<String>> hiddenSampleMessages = new HashMap<>();
     private static final String[][] SAMPLES = {
@@ -126,11 +138,29 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             int seconds = SyncPolicy.foregroundSeconds(prefs);
             if (seconds > 0 && SyncPolicy.allowed(MainActivity.this)) sync(false);
             if (resumed) checkUpdates(false);
-            handler.postDelayed(this, (seconds > 0 ? seconds : 60) * 1000L);
+            if (Disappearing.anyTimers(prefs)) {
+                // Expired messages leave the screen right away and are deleted in the background.
+                invalidateRows();
+                refreshVisibleInbox();
+                if (page.equals("chat")) fillChat();
+                new Thread(() -> Disappearing.sweep(getApplicationContext()), "fluid-disappear").start();
+            }
+            int next = seconds > 0 ? seconds : 60;
+            handler.postDelayed(this, (Disappearing.anyTimers(prefs) ? Math.min(next, 15) : next) * 1000L);
+        }
+    };
+    /** Companion-linked Matrix chats ring here while FluidMessages is open. */
+    private final Runnable callPoll = new Runnable() {
+        @Override public void run() {
+            if (CloudBackup.paired(MainActivity.this) && GatewayClient.hasAccount(prefs, MessageProtocol.MATRIX)) {
+                new Thread(() -> CallHub.pollCompanion(getApplicationContext()), "fluid-call-check").start();
+            }
+            handler.postDelayed(this, 3000);
         }
     };
     private final ContentObserver observer = new ContentObserver(handler) {
         @Override public void onChange(boolean selfChange) {
+            invalidateRows();
             if (page.equals("inbox")) fillInbox();
             if (page.equals("chat")) fillChat();
         }
@@ -167,7 +197,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("fluid", MODE_PRIVATE);
+        // A fresh install starts in the phone's light or dark mode; after that the choice is the user's.
+        if (!prefs.contains("dark") && !prefs.getBoolean("onboarded", false)) {
+            int night = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+            prefs.edit().putBoolean("dark", night == android.content.res.Configuration.UI_MODE_NIGHT_YES).apply();
+        }
         contacts = new ContactDirectory(this);
+        new Thread(() -> {
+            Privacy.migrate(prefs);
+            DirectEmail.stripStoredQuotes(getApplicationContext());
+        }, "fluid-email-cleanup").start();
         if (state != null && state.containsKey("setupStep")) onboarding(state.getInt("setupStep"));
         else if (prefs.getBoolean("onboarded", false)) open(getIntent());
         else onboarding(0);
@@ -187,12 +226,21 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         super.onStart();
         if (prefs.getBoolean("lock", false) && !unlocked) authenticate();
         handler.post(poll);
+        handler.post(callPoll);
+        SipAgent.setAppVisible(this, true);
         // Phone-direct connections run while FluidMessages is visible, unless set to stay connected.
         new Thread(() -> DirectProtocols.foreground(this, true), "fluid-direct-start").start();
+    }
+    private boolean userLeaving;
+    @Override protected void onUserLeaveHint() {
+        userLeaving = true;
+        super.onUserLeaveHint();
     }
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        invalidateRows();
+        if (page.equals("chat")) fillChat();
         if (contacts.allowed()) contacts.invalidate();
         watchContacts();
         refreshVisibleInbox();
@@ -206,8 +254,21 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
     @Override protected void onStop() {
         handler.removeCallbacks(poll);
+        handler.removeCallbacks(callPoll);
+        SipAgent.setAppVisible(this, false);
         new Thread(() -> DirectProtocols.foreground(this, false), "fluid-direct-stop").start();
         unlocked = false;
+        // Leaving the app or turning off the screen closes hidden chats and asks for chat codes again. Opening the
+        // photo picker, camera, or a call from inside the app doesn't.
+        if (userLeaving || !getSystemService(android.os.PowerManager.class).isInteractive()) {
+            boolean wasOpen = Privacy.vaultOpen() || emptyHidden;
+            emptyHidden = false;
+            Privacy.forget();
+            invalidateRows();
+            if (wasOpen && !isChangingConfigurations()) inbox();
+        }
+        userLeaving = false;
+        new Thread(() -> HiddenChats.sweep(getApplicationContext()), "fluid-hide-sweep").start();
         if (lockPrompt != null) {
             lockPrompt.cancel();
             lockPrompt = null;
@@ -217,6 +278,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     @Override protected void onDestroy() {
         handler.removeCallbacks(searchInbox);
         inboxWorker.shutdownNow();
+        chatWorker.shutdownNow();
         if (observingContacts) getContentResolver().unregisterContentObserver(contactObserver);
         getContentResolver().unregisterContentObserver(observer);
         unregisterReceiver(protocolChanges);
@@ -227,9 +289,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "inbox" -> super.onBackPressed();
             case "setup" -> { if (setupStep > 0) onboarding(setupStep - 1); else finish(); }
             case "sampleChat" -> sampleInbox();
-            case "contact", "chatAppearance" -> contactBack.run();
+            case "contact", "chatAppearance", "decoy" -> contactBack.run();
             case "sample" -> inbox();
-            case "theme", "backups", "messaging", "about", "protocols" -> settings();
+            case "theme", "backups", "messaging", "about", "protocols", "privacy", "reset", "calls" -> settings();
+            case "recording" -> callsSettings();
+            case "recordings" -> recordingSettings();
+            case "locks", "hiddenChats", "decoyMode", "encryption" -> privacySettings();
+            case "phone" -> inbox();
+            case "samplePhone" -> sampleInbox();
             case "cloud" -> backups();
             case "backupForm", "backupReview", "companion" -> backupBack.run();
             default -> inbox();
@@ -237,6 +304,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private void open(Intent intent) {
+        if (QUICK_HIDE.equals(intent.getAction())) {
+            // From the app icon's Quick hide shortcut: switch to decoy mode straight away.
+            if (Privacy.vaultExists(prefs)) { startDecoyMode(); return; }
+        }
         String number = intent.getStringExtra("address");
         if (intent.getData() != null && Intent.ACTION_SENDTO.equals(intent.getAction())) {
             number = intent.getData().getSchemeSpecificPart().split("\\?", 2)[0];
@@ -251,7 +322,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 chat(number, mms ? MessageProtocol.MMS : MessageProtocol.SMS);
                 if (body != null) conversationScreen.setDraft(body);
             }
-        } else inbox();
+        } else if ("phone".equals(prefs.getString("lastTab", "")) && hasRole()) phone();
+        else inbox();
     }
 
     private boolean hasRole() { return getSystemService(RoleManager.class).isRoleHeld(RoleManager.ROLE_SMS); }
@@ -310,7 +382,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         conversationScreen = null;
         recipientPicker = null;
         boolean fullWidth = switch (screen) {
-            case "inbox", "chat", "sample", "sampleChat" -> true;
+            case "inbox", "chat", "sample", "sampleChat", "phone", "samplePhone" -> true;
             default -> false;
         };
         int side = dp(fullWidth ? 0 : 18);
@@ -401,7 +473,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         render("setup");
         OnboardingScreen.mount(root, prefs, step, () -> onboarding(step + 1), () -> onboarding(step - 1),
             () -> finishSetup(false), () -> finishSetup(true), () -> finishSetup(false), this::recolorWindow,
-            () -> accounts(() -> onboarding(step)));
+            () -> accounts(() -> onboarding(step)), () -> companion(() -> onboarding(step), true),
+            () -> openWebsite(ReleaseUpdates.REPOSITORY + "#lan-web-companion"), () -> backupsFrom(() -> onboarding(step)));
     }
 
     private void finishSetup(boolean demo) {
@@ -412,9 +485,69 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         else open(getIntent());
     }
 
+    static final String HIDDEN_FOLDER = "Hidden chats";
+
+    static final String QUICK_HIDE_LABEL = "Quick hide (decoy mode)";
+
     private void chooseFolder(String folder) {
+        if (folder.equals(QUICK_HIDE_LABEL)) { startDecoyMode(); return; }
+        if (!folder.equals(HIDDEN_FOLDER)) emptyHidden = false;
+        if (folder.equals(HIDDEN_FOLDER) && !Privacy.vaultOpen()) {
+            openHiddenChats(() -> { this.folder = HIDDEN_FOLDER; inbox(); });
+            return;
+        }
         this.folder = folder;
         inbox();
+    }
+
+    /** The folders in the inbox filter menu. Hidden chats shows only when set up, shown in Settings, and not in decoy mode. */
+    private List<String> inboxFolders() {
+        // Every inbox has Hidden chats in this menu, set up or not, so its presence gives nothing away.
+        var folders = new ArrayList<>(List.of("Inbox", "Archived", "Blocked", HIDDEN_FOLDER));
+        if (Privacy.vaultExists(prefs) && !Privacy.decoyMode(prefs)) folders.add(QUICK_HIDE_LABEL);
+        return folders;
+    }
+
+    /** True while the Hidden chats folder is showing empty after a passcode that didn't open anything. */
+    private boolean emptyHidden;
+
+    /**
+     * Opens hidden chats with a fingerprint, face, or screen lock when that's on; otherwise with the passcode. A wrong
+     * passcode opens an empty folder rather than an error, so nobody can tell whether anything is hidden.
+     */
+    private void openHiddenChats(Runnable opened) {
+        if (!Privacy.vaultExists(prefs)) {
+            showDialog(dialogBuilder().setTitle("Hidden chats")
+                .setMessage("Move private chats here so they never show in your inbox. Only you can open this folder, with your "
+                    + "fingerprint or a passcode.")
+                .setNegativeButton("Not now", null).setPositiveButton("Set up", (dialog, which) -> hiddenChatsSettings()));
+            return;
+        }
+        Runnable withPasscode = () -> SecurityDialogs.passcodeEntry(this, prefs, "Hidden chats", code -> new Thread(() -> {
+            if (distress(code)) return;
+            boolean match = Privacy.openVault(prefs, code);
+            runOnUiThread(() -> {
+                invalidateRows();
+                if (match) { emptyHidden = false; opened.run(); }
+                else { emptyHidden = true; folder = HIDDEN_FOLDER; inbox(); }
+            });
+        }, "fluid-hidden").start());
+        if (!Privacy.deviceUnlockOn(prefs)) { withPasscode.run(); return; }
+        deviceAuth("Open hidden chats", () -> {
+            if (Privacy.openVaultWithDevice(prefs)) { invalidateRows(); opened.run(); }
+            else withPasscode.run();
+        }, withPasscode);
+    }
+
+    /** Asks for the fingerprint, face, or screen lock, then runs ok; failed runs when it's cancelled or unavailable. */
+    private void deviceAuth(String title, Runnable ok, Runnable failed) {
+        var prompt = new android.hardware.biometrics.BiometricPrompt.Builder(this).setTitle(title)
+            .setAllowedAuthenticators(android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG
+                | android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL).build();
+        prompt.authenticate(new CancellationSignal(), getMainExecutor(), new android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+            @Override public void onAuthenticationSucceeded(android.hardware.biometrics.BiometricPrompt.AuthenticationResult result) { ok.run(); }
+            @Override public void onAuthenticationError(int code, CharSequence message) { if (failed != null) failed.run(); }
+        });
     }
 
     private String initials(String value) {
@@ -428,7 +561,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         inboxScreen = new InboxScreen(root, prefs, true, false, sampleFolder, sampleSearch,
             query -> { sampleSearch = query; fillSampleInbox(); }, this::settings,
             selected -> { sampleFolder = selected; sampleInbox(); }, this::inbox, this::requestSmsRole, this::openSampleThread, ignored -> {},
-            name -> contactDetails("demo:" + name, name, this::sampleInbox));
+            name -> contactDetails("demo:" + name, name, this::sampleInbox), this::confirmSampleReset, this::sampleCalls, List.of("Inbox", "Archived", "Blocked"));
         fillSampleInbox();
     }
 
@@ -452,7 +585,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             threads.add(new ThreadRow(contact[0], contact[0], contact[1],
                 preview, sampleReplies.getOrDefault(contact[0], List.of()).isEmpty() || latest == null
                     ? withTime(contact[4], sampleTime(contact)) : latest.getTime(),
-                (contact == SAMPLES[0] || "Group".equals(contact[5])) && sampleReplies.getOrDefault(contact[0], List.of()).isEmpty(), false,
+                (contact == SAMPLES[0] || "Group".equals(contact[5])) && !readSamples.contains(contact[0])
+                    && sampleReplies.getOrDefault(contact[0], List.of()).isEmpty(), false,
                 samplePhoto(contact[0]), null, 0, sampleFormats(contact).stream().map(format -> format.label)
                     .collect(java.util.stream.Collectors.joining(" · ")),
                 sampleSender(contact[0]) == SenderStyle.AUTOMATED, sampleGroupMembers(contact[0])));
@@ -460,7 +594,23 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         inboxScreen.setThreads(threads);
     }
 
+    private void confirmSampleReset() {
+        showDialog(dialogBuilder().setTitle("Reset the sample inbox?")
+            .setMessage("Your practice replies, reactions, and deleted sample messages are cleared, and every sample "
+                + "conversation is unread again. Your real messages and settings aren't touched.")
+            .setPositiveButton("Reset", (dialog, which) -> {
+                sampleReplies.clear();
+                hiddenSampleMessages.clear();
+                readSamples.clear();
+                sampleSearch = "";
+                sampleFolder = "Inbox";
+                sampleInbox();
+            })
+            .setNegativeButton("Cancel", null));
+    }
+
     private void openSampleThread(String name) {
+        readSamples.add(name);
         for (String[] contact : SAMPLES) if (contact[0].equals(name)) {
             sampleChat(contact);
             return;
@@ -631,15 +781,450 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         startActivityForResult(getSystemService(RoleManager.class).createRequestRoleIntent(RoleManager.ROLE_SMS), ROLE);
     }
 
+    /**
+     * Android 15 and later block the default SMS role for apps installed from a downloaded APK
+     * ("App was denied access to default SMS app") until the user allows restricted settings.
+     */
+    private void smsRoleBlocked() {
+        showDialog(dialogBuilder().setTitle("Couldn't become the default SMS app")
+            .setMessage("If Android said FluidMessages was denied access, it's because the app was installed from a "
+                + "downloaded file. To allow it:\n\n1. Open App info.\n2. Tap ⋮ in the top corner, then "
+                + "Allow restricted settings, and confirm.\n3. Come back and tap Set as default again.\n\n"
+                + "If you don't see Allow restricted settings, try setting the default once first, then check again.")
+            .setPositiveButton("Open App info", (dialog, which) -> {
+                try {
+                    startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + getPackageName())));
+                } catch (RuntimeException error) { toast("Open Settings → Apps → FluidMessages"); }
+            })
+            .setNegativeButton("Not now", null));
+    }
+
+    /** The emergency erase passcode: typed anywhere a passcode is asked for, it erases everything at once. */
+    private boolean distress(String code) {
+        if (!Privacy.hasCode(prefs, DISTRESS) || !Privacy.checkCode(prefs, DISTRESS, code)) return false;
+        Resets.eraseEverything(this);
+        return true;
+    }
+
+    static final String DISTRESS = "distress";
+
     private void inbox() {
+        if (folder.equals(HIDDEN_FOLDER) && !Privacy.vaultOpen() && !emptyHidden) folder = "Inbox";
         render("inbox");
-        boolean connected = hasRole() || GatewayClient.hasRoutes(prefs);
+        prefs.edit().putString("lastTab", "messages").apply();
+        // An internet account alone is enough to start chats, even without the SMS role.
+        boolean connected = hasRole() || GatewayClient.hasRoutes(prefs) || !reachableProtocols(true).isEmpty();
         inboxScreen = new InboxScreen(root, prefs, false, connected, folder, filter,
             query -> { filter = query; scheduleInboxSearch(); }, this::settings, this::chooseFolder,
             connected ? this::compose : this::sampleInbox, this::requestSmsRole, this::openThread,
-            key -> conversationMenu(threadAddress(key)), key -> contactDetails(threadAddress(key), threadAddress(key), this::inbox));
+            key -> conversationMenu(threadAddress(key)), key -> contactDetails(threadAddress(key), threadAddress(key), this::inbox), null,
+            connected ? this::phone : null, inboxFolders());
         if (connected) fillInbox();
+        // Ask once, for people who made FluidMessages their SMS app before group MMS used it.
+        if (hasRole() && !prefs.getBoolean("askedPhoneNumbers", false)
+                && checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) != PackageManager.PERMISSION_GRANTED) {
+            prefs.edit().putBoolean("askedPhoneNumbers", true).apply();
+            requestPermissions(new String[]{Manifest.permission.READ_PHONE_NUMBERS}, 24);
+        }
     }
+
+    private String pendingCall;
+
+    /** The Phone tab: favorites, recent calls, contacts, and the keypad, in the same window as Messages. */
+    private void phone() {
+        render("phone");
+        prefs.edit().putString("lastTab", "phone").apply();
+        List<String> restrict = null;
+        List<String> decoyNames = new ArrayList<>();
+        if (Privacy.decoyMode(prefs)) {
+            restrict = new ArrayList<>(Privacy.decoyAllowed(prefs));
+            for (var row : Privacy.decoys(prefs)) {
+                String name = row.optString("address").substring(Privacy.DECOY.length());
+                if (!decoyNames.contains(name)) decoyNames.add(name);
+            }
+        }
+        PhoneTab.mount(root, prefs, new PhoneActions() {
+            @Override public void messages() { inbox(); }
+            @Override public void call(String number) { placeCall(number); }
+            @Override public void internetCall(String address, String title, boolean video, String protocol) {
+                startCall(address, title, video, protocol);
+            }
+            @Override public void openChat(String address, String protocol) { chat(address, MessageProtocol.parse(protocol)); }
+            @Override public void callUsername(String id, boolean video) { MainActivity.this.callUsername(id, video); }
+            @Override public void meeting(List<String> addresses, String title, boolean video) { startMeeting(addresses, title, video); }
+            @Override public void allowCallHistory() { requestPermissions(new String[]{Manifest.permission.READ_CALL_LOG}, CALL_LOG_PERMISSION); }
+            @Override public void allowContacts() { requestPermissions(new String[]{Manifest.permission.READ_CONTACTS}, CALL_LOG_PERMISSION); }
+            @Override public String preview(String address) {
+                try {
+                    for (JSONObject row : messageRows()) {
+                        String other = row.optString("address");
+                        boolean match = other.equals(address) || SmsStore.validRecipient(other) && SmsStore.validRecipient(address)
+                            && PhoneNumberUtils.compare(other, address);
+                        if (!match) continue;
+                        var format = MessageProtocol.parse(row.optString("protocol"));
+                        return Privacy.locked(prefs, address, format) ? "Locked" : row.optString("body");
+                    }
+                } catch (Exception ignored) {}
+                return "";
+            }
+        }, false, restrict, decoyNames);
+    }
+
+    /** The sample inbox's Phone tab: fictional people and calls on several protocols. Nothing is dialed. */
+    private void sampleCalls() {
+        render("samplePhone");
+        PhoneTab.mount(root, prefs, new PhoneActions() {
+            @Override public void messages() { sampleInbox(); }
+            // Sample calls open the real call screen as a pretend call: nothing is dialed, sent, or recorded.
+            @Override public void call(String number) {
+                String name = PhoneTab.sampleName(number);
+                startActivity(CallHub.demo(MainActivity.this, "demo:" + name, name, false, "Phone", Encryption.NONE));
+            }
+            @Override public void internetCall(String address, String title, boolean video, String protocol) {
+                startActivity(CallHub.demo(MainActivity.this, address.startsWith("demo:") ? address : "demo:" + title, title, video, protocol,
+                    "SIP".equals(protocol) ? Encryption.IN_TRANSIT : Encryption.END_TO_END));
+            }
+            @Override public void openChat(String address, String protocol) {
+                String name = address.startsWith("demo:") ? address.substring(5) : address;
+                for (String[] contact : SAMPLES) {
+                    if (contact[0].equals(name) || samplePhone(contact[0]).equals(address)) {
+                        var format = MessageProtocol.parse(protocol);
+                        var formats = sampleFormats(contact);
+                        readSamples.add(contact[0]);
+                        sampleChat(contact, formats.contains(format) ? format : formats.get(0));
+                        return;
+                    }
+                }
+                toast("Sample contact: there's no sample chat with them");
+            }
+            @Override public void callUsername(String id, boolean video) {
+                startActivity(CallHub.demo(MainActivity.this, "demo:" + id, id, video, "Matrix", Encryption.END_TO_END));
+            }
+            @Override public void meeting(List<String> addresses, String title, boolean video) {
+                startActivity(CallHub.demo(MainActivity.this, "demo:" + title, title, video, "Meeting link", Encryption.IN_TRANSIT));
+            }
+            @Override public void allowCallHistory() {}
+            @Override public void allowContacts() {}
+            @Override public String preview(String address) {
+                String name = address.startsWith("demo:") ? address.substring(5) : address;
+                for (String[] contact : SAMPLES) if (contact[0].equals(name) || samplePhone(contact[0]).equals(address)) return contact[3];
+                return "";
+            }
+        }, true);
+    }
+
+    private String meetingServer() { return prefs.getString("meetingServer", "meet.jit.si"); }
+
+    private void startMeeting(String key, boolean video) { startMeeting(List.of(key), threadTitle(key), video); }
+
+    /**
+     * Starts a Jitsi Meet call: you choose which chat gets the link (any way you can message them), or not to send
+     * it at all, and then the meeting opens.
+     */
+    private void startMeeting(List<String> addresses, String name, boolean video) {
+        String room = "FluidMessages-" + java.util.HexFormat.of().formatHex(Privacy.randomBytes(8));
+        String link = "https://" + meetingServer() + "/" + room;
+        record Route(String address, MessageProtocol format) {}
+        List<Route> routes = new ArrayList<>();
+        List<String[]> items = new ArrayList<>();
+        for (String address : addresses) for (var format : formats(address)) {
+            routes.add(new Route(address, format));
+            String target = address;
+            for (var item : GatewayClient.links(prefs, address)) {
+                if (MessageProtocol.parse(item.optString("protocol")) == format) target = item.optString("target", address);
+            }
+            items.add(new String[]{"Send with " + format.label, target});
+        }
+        items.add(new String[]{"Copy the link instead", "Paste it wherever you like"});
+        items.add(new String[]{"Don't send the link", "Just open the meeting"});
+        Runnable open = () -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(video ? link : link + "#config.startWithVideoMuted=true"))
+                    .addCategory(Intent.CATEGORY_BROWSABLE));
+            } catch (ActivityNotFoundException error) { toast("No browser is available to join the call"); }
+        };
+        SecurityDialogs.chooseOne(this, prefs, (video ? "Video meeting with " : "Meeting with ") + name,
+            "They join by tapping the link, in a browser or the Jitsi Meet app.", items, index -> {
+                if (index < routes.size()) {
+                    var route = routes.get(index);
+                    sendRouted(route.format(), new OutgoingMessage(route.address(), route.address().startsWith("mms:")
+                        ? groupNumbers(route.address()) : List.of(route.address()),
+                        (video ? "Join my video call: " : "Join my call: ") + link, null, prefs.getInt("sim", -1), null));
+                } else if (index == routes.size()) {
+                    getSystemService(android.content.ClipboardManager.class)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("Meeting link", link));
+                    toast("Meeting link copied");
+                }
+                open.run();
+            });
+    }
+
+    private boolean meetingLinks() { return Calling.allowed(prefs, Calling.Method.MEETING); }
+
+    /** Settings → Chats and calls → Calls, kept short: ways to call, SIP when it's on, recording, and recent calls. */
+    private void callsSettings() {
+        render("calls");
+        heading("Calls", "Back", this::settings);
+        List<SettingsAction> allowed = new ArrayList<>();
+        for (var method : Calling.Method.values()) {
+            boolean on = Calling.allowed(prefs, method);
+            allowed.add(toggleRow(method.label, method.detail, on, () -> {
+                Calling.set(prefs, method, !on);
+                DirectProtocols.restart(this);
+                SipAgent.sync(this);
+                callsSettings();
+            }));
+        }
+        List<SettingsSection> sections = new ArrayList<>();
+        sections.add(new SettingsSection("Ways to call · separate from messaging", allowed));
+        if (Calling.allowed(prefs, Calling.Method.SIP)) {
+            var sip = Calling.sipAccount(prefs);
+            List<SettingsAction> rows = new ArrayList<>();
+            rows.add(action("SIP account", sip == null ? "Not set up · your SIP provider gives you the details"
+                : sip.optString("uri").replaceFirst("^sip:", ""), this::editSipAccount));
+            if (sip != null) rows.add(action("Receive SIP calls", receiveLabel() + " · " + SipAgent.status(), this::chooseSipReceive));
+            sections.add(new SettingsSection("SIP", rows));
+        }
+        List<SettingsAction> more = new ArrayList<>();
+        if (meetingLinks()) more.add(action("Meeting server", meetingServer(), this::chooseMeetingServer));
+        more.add(action("Call recording", CallRecordings.allowed(prefs) ? "On · where recordings are saved" : "Off", this::recordingSettings));
+        boolean phoneCalls = prefs.getBoolean("showPhoneCalls", true);
+        more.add(toggleRow("Show regular phone calls in Recents", "Next to internet calls in the Phone tab", phoneCalls, () -> {
+            prefs.edit().putBoolean("showPhoneCalls", !phoneCalls).apply();
+            callsSettings();
+        }));
+        sections.add(new SettingsSection("More", more));
+        SettingsPages.mount(root, prefs, sections);
+    }
+
+    private String receiveLabel() {
+        return switch (SipAgent.mode(prefs)) {
+            case SipAgent.OFF -> "Off";
+            case SipAgent.ALWAYS -> "Always";
+            default -> "While FluidMessages is open";
+        };
+    }
+
+    private void chooseSipReceive() {
+        String[] modes = {SipAgent.OFF, SipAgent.OPEN, SipAgent.ALWAYS};
+        String[] labels = {"Off · you can still make SIP calls", "While FluidMessages is open",
+            "Always · uses a little more battery and shows an ongoing notification"};
+        showDialog(dialogBuilder().setTitle("Receive SIP calls").setItems(labels, (dialog, which) -> {
+            prefs.edit().putString("sip.receive", modes[which]).apply();
+            DirectProtocols.restart(this);
+            SipAgent.sync(this);
+            callsSettings();
+        }));
+    }
+
+    private void recordingSettings() {
+        render("recording");
+        heading("Call recording", "Back", this::callsSettings);
+        boolean recording = CallRecordings.allowed(prefs);
+        List<SettingsAction> record = new ArrayList<>();
+        record.add(toggleRow("Allow recording calls", "Adds a Record button on Matrix, XMPP, and SIP calls. Android doesn't let "
+            + "apps record regular phone calls.", recording, () -> {
+                prefs.edit().putBoolean("recordCalls", !recording).apply();
+                recordingSettings();
+            }));
+        List<SettingsSection> sections = new ArrayList<>();
+        sections.add(new SettingsSection("Recording", record));
+        if (recording) {
+            boolean announce = prefs.getBoolean("announceRecording", true);
+            List<SettingsAction> saving = new ArrayList<>();
+            saving.add(toggleRow("Tell them when you record", "Sends “I started recording this call” in the chat (Matrix and XMPP)",
+                announce, () -> { prefs.edit().putBoolean("announceRecording", !announce).apply(); recordingSettings(); }));
+            for (boolean video : new boolean[]{false, true}) {
+                boolean device = CallRecordings.DEVICE.equals(CallRecordings.destination(prefs, video));
+                String folder = video ? "Movies" : "Recordings";
+                saving.add(action(video ? "Save video calls to" : "Save voice calls to",
+                    device ? "Your phone's " + folder + " folder" : "Only inside FluidMessages",
+                    () -> showDialog(dialogBuilder().setTitle(video ? "Save video calls to" : "Save voice calls to")
+                        .setItems(new String[]{"Your phone's " + folder + " folder", "Only inside FluidMessages"}, (dialog, which) -> {
+                            prefs.edit().putString(video ? "recordings.video" : "recordings.audio",
+                                which == 0 ? CallRecordings.DEVICE : CallRecordings.APP).apply();
+                            recordingSettings();
+                        }))));
+            }
+            int kept = CallRecordings.inApp(this).size();
+            if (kept > 0) saving.add(action("Recordings kept in FluidMessages", kept + (kept == 1 ? " recording" : " recordings"),
+                this::recordingsPage));
+            sections.add(new SettingsSection("Saving", saving));
+            sections.add(new SettingsSection("Be fair", List.of(new SettingsAction("Ask first",
+                "Let everyone on the call know before you record. In some places it's against the law not to.", () -> {}, true, null))));
+        }
+        SettingsPages.mount(root, prefs, sections);
+    }
+
+    /** Recordings kept only inside FluidMessages: tap to play, share, or delete. */
+    private void recordingsPage() {
+        render("recordings");
+        heading("Call recordings", "Back", this::recordingSettings);
+        List<SettingsAction> rows = new ArrayList<>();
+        for (var file : CallRecordings.inApp(this)) {
+            String size = android.text.format.Formatter.formatShortFileSize(this, file.length());
+            rows.add(action(file.getName().replaceFirst("\\.webm$", ""), size + " · tap to play, share, or delete", () ->
+                showDialog(dialogBuilder().setTitle(file.getName()).setItems(new String[]{"Play", "Share", "Delete"}, (dialog, which) -> {
+                    var uri = androidx.core.content.FileProvider.getUriForFile(this, getPackageName() + ".backup-files", file);
+                    String type = file.getName().startsWith("Video") ? "video/webm" : "audio/webm";
+                    try {
+                        if (which == 0) startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(uri, type)
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));
+                        else if (which == 1) startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND).setType(type)
+                            .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Share recording"));
+                        else showDialog(dialogBuilder().setTitle("Delete this recording?").setMessage("It can't be recovered.")
+                            .setNegativeButton("Cancel", null).setPositiveButton("Delete", (inner, button) -> {
+                                if (!file.delete()) toast("Couldn't delete it");
+                                recordingsPage();
+                            }));
+                    } catch (ActivityNotFoundException error) { toast("No app on this phone can open it"); }
+                }))));
+        }
+        if (rows.isEmpty()) rows.add(new SettingsAction("No recordings", "", () -> {}, true, null));
+        SettingsPages.mount(root, prefs, List.of(new SettingsSection("Kept inside FluidMessages", rows)));
+    }
+
+    /** The SIP account: from your provider, including a secure WebSocket address for calling from the app. */
+    private void editSipAccount() {
+        var current = Calling.sipAccount(prefs);
+        String[][] fields = {{"uri", "SIP address", "name@sip.example.com"}, {"password", "Password", ""},
+            {"ws", "WebSocket address", "wss://sip.example.com:7443"}, {"user", "Username (if different)", ""},
+            {"domain", "Domain for calling numbers (optional)", "sip.example.com"}, {"display", "Your name (optional)", ""}};
+        var layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(20), dp(8), dp(20), 0);
+        Map<String, EditText> inputs = new HashMap<>();
+        for (String[] field : fields) {
+            EditText input = field(field[2].isEmpty() ? field[1] : field[1] + " · " + field[2]);
+            if (field[0].equals("password")) {
+                input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+                if (current != null) input.setHint("Password · leave blank to keep");
+            } else if (current != null) input.setText(current.optString(field[0]));
+            inputs.put(field[0], input);
+            layout.addView(input, new LinearLayout.LayoutParams(-1, -2));
+        }
+        var scroll = new android.widget.ScrollView(this);
+        scroll.addView(layout);
+        var builder = dialogBuilder().setTitle("SIP account").setMessage("Your SIP provider gives you these. Calls from the app need a "
+                + "provider that accepts secure WebSocket connections (wss://).")
+            .setView(scroll).setNegativeButton("Cancel", null).setPositiveButton("Save", (dialog, which) -> {
+                try {
+                    var account = new JSONObject();
+                    for (String[] field : fields) account.put(field[0], inputs.get(field[0]).getText().toString().trim());
+                    if (account.optString("password").isEmpty() && current != null) account.put("password", current.optString("password"));
+                    String uri = account.optString("uri");
+                    if (!uri.startsWith("sip:")) uri = "sip:" + uri;
+                    account.put("uri", uri);
+                    if (!uri.matches("sip:[^@\\s]+@[A-Za-z0-9.-]+(:[0-9]+)?") || !account.optString("ws").matches("wss://\\S+")) {
+                        toast("Enter a SIP address like name@sip.example.com and a wss:// address");
+                        return;
+                    }
+                    if (account.optString("domain").isEmpty()) account.put("domain", uri.substring(uri.indexOf('@') + 1));
+                    Calling.saveSipAccount(prefs, account);
+                    callsSettings();
+                } catch (Exception error) { toast("Couldn't save the SIP account"); }
+            });
+        if (current != null) builder.setNeutralButton("Remove", (dialog, which) -> { Calling.saveSipAccount(prefs, null); callsSettings(); });
+        showDialog(builder);
+    }
+
+    private void chooseMeetingServer() {
+        EditText input = field("meet.jit.si");
+        input.setText(meetingServer());
+        var layout = new LinearLayout(this);
+        layout.setPadding(dp(20), dp(8), dp(20), 0);
+        layout.addView(input, new LinearLayout.LayoutParams(-1, -2));
+        showDialog(dialogBuilder().setTitle("Meeting links").setMessage("Meeting-link calls use Jitsi Meet, which works in any browser "
+                + "and the free Jitsi app. Use meet.jit.si, or your own Jitsi server. The meeting server can see who joins.")
+            .setView(layout).setNegativeButton("Cancel", null).setPositiveButton("Save", (dialog, which) -> {
+                String value = input.getText().toString().trim().replaceFirst("^https?://", "").replaceAll("/+$", "");
+                if (!value.matches("[A-Za-z0-9.-]{3,253}(:[0-9]{1,5})?")) { toast("Enter a server name like meet.jit.si"); return; }
+                prefs.edit().putString("meetingServer", value).apply();
+                callsSettings();
+            }));
+    }
+
+    /** A username from the keypad: @name:server is Matrix, sip:name@host is SIP, and name@server is XMPP. */
+    private void callUsername(String id, boolean video) {
+        if (id.startsWith("sip:")) { startCall(id, id.substring(4), false, "SIP"); return; }
+        if (id.startsWith("@")) { callMatrixUser(id, video); return; }
+        if (!DirectProtocols.on(prefs, MessageProtocol.XMPP)) {
+            toast("XMPP calls need XMPP connected from this phone, in Settings → Chats and calls → Accounts");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                var route = DirectProtocols.routeForTarget(this, MessageProtocol.XMPP, id.toLowerCase(java.util.Locale.ROOT));
+                String address = route != null ? route.getString("address") : "xmpp-" + Integer.toHexString(id.toLowerCase(java.util.Locale.ROOT).hashCode());
+                if (route == null) DirectProtocols.link(this, address, MessageProtocol.XMPP, id, id, false);
+                runOnUiThread(() -> startCall(address, id, video, "XMPP"));
+            } catch (Exception error) { runOnUiThread(() -> toast(error.getMessage() == null ? "Couldn't reach " + id : error.getMessage())); }
+        }, "fluid-call-xmpp").start();
+    }
+
+    /** Calls a Matrix username from the keypad, linking a chat with them first when there isn't one yet. */
+    private void callMatrixUser(String id, boolean video) {
+        if (!DirectProtocols.on(prefs, MessageProtocol.MATRIX) && !GatewayClient.hasAccount(prefs, MessageProtocol.MATRIX)) {
+            toast("Add a Matrix account in Settings → Accounts first");
+            return;
+        }
+        toast("Connecting to " + id + "…");
+        new Thread(() -> {
+            String address = null;
+            for (var route : GatewayClient.allRoutes(prefs)) {
+                if (MessageProtocol.parse(route.optString("protocol")) == MessageProtocol.MATRIX
+                        && (id.equalsIgnoreCase(route.optString("target")) || id.equalsIgnoreCase(route.optString("title")))) {
+                    address = route.optString("address");
+                }
+            }
+            try {
+                if (address == null) {
+                    address = "mx-" + Integer.toHexString(id.toLowerCase(java.util.Locale.ROOT).hashCode());
+                    if (DirectProtocols.on(prefs, MessageProtocol.MATRIX)) DirectProtocols.link(this, address, MessageProtocol.MATRIX, id, id, false);
+                    else {
+                        GatewayClient.link(prefs, address, MessageProtocol.MATRIX, id, id, false);
+                        GatewayClient.refresh(this, prefs);
+                    }
+                }
+                String target = address;
+                runOnUiThread(() -> startActivity(CallHub.screen(this, target, id, video, null)));
+            } catch (Exception error) {
+                runOnUiThread(() -> toast(error.getMessage() == null ? "Couldn't reach " + id : error.getMessage()));
+            }
+        }, "fluid-call-user").start();
+    }
+
+    /** Starts an internet call. For SIP, target is a phone number or SIP address dialed through your provider. */
+    private void startCall(String target, String title, boolean video, String protocol) {
+        if ("SIP".equals(protocol)) {
+            if (!Calling.sipReady(prefs)) { toast("Add a SIP account in Settings → Chats and calls → Calls"); return; }
+            startActivity(CallHub.screen(this, target, title, false, null, "SIP").putExtra("sipTarget", Calling.sipTarget(prefs, target)));
+            return;
+        }
+        startActivity(CallHub.screen(this, target, title, video, null, protocol));
+    }
+
+    /** Places a phone-network call through Android's call screen, or opens the dialer if calling isn't allowed. */
+    private void placeCall(String number) {
+        if (number == null || number.isBlank()) return;
+        if (!Calling.allowed(prefs, Calling.Method.PHONE)) {
+            // Phone calls are turned off: use SIP for the number when it's set up.
+            if (Calling.sipReady(prefs)) startCall(number, threadTitle(number), false, "SIP");
+            else toast("Phone calls are turned off in Settings → Chats and calls → Calls");
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+            pendingCall = number;
+            requestPermissions(new String[]{Manifest.permission.CALL_PHONE}, CALL_PERMISSION);
+            return;
+        }
+        try { startActivity(new Intent(Intent.ACTION_CALL, Uri.fromParts("tel", number, null))); }
+        catch (RuntimeException error) { dialContact(number); }
+    }
+
+    private static final int CALL_PERMISSION = 25;
+    private static final int CALL_LOG_PERMISSION = 26;
 
     private Set<String> list(String key) { return addressList(prefs, key); }
 
@@ -661,24 +1246,86 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         if (!values.remove(number)) values.add(number);
         prefs.edit().putString(key, new JSONArray(values).toString()).apply();
     }
+    /** The ⋯ menu on an inbox row: the everyday actions first, then privacy, then the full details. */
     private void conversationMenu(String number) {
-        String[] keys = {"pinned", "archived", "blocked"};
-        String[] added = {"Pin", "Archive", "Hide as blocked"};
-        String[] removed = {"Unpin", "Unarchive", "Show again"};
-        String[] options = new String[3];
-        for (int i = 0; i < 3; i++) options[i] = list(keys[i]).contains(number) ? removed[i] : added[i];
-        showDialog(dialogBuilder().setTitle(number).setItems(options, (dialog, index) -> toggle(keys[index], number)));
+        List<String> labels = new ArrayList<>();
+        List<Runnable> runs = new ArrayList<>();
+        java.util.function.BiConsumer<String, Runnable> add = (label, run) -> { labels.add(label); runs.add(run); };
+        String name = threadTitle(number);
+        add.accept(list("pinned").contains(number) ? "Unpin" : "Pin", () -> toggle("pinned", number));
+        add.accept(list("muted").contains(number) ? "Unmute" : "Mute", () -> toggle("muted", number));
+        add.accept(list("archived").contains(number) ? "Unarchive" : "Archive", () -> toggle("archived", number));
+        add.accept(list("blocked").contains(number) ? "Unblock" : "Block", () -> toggle("blocked", number));
+        if (!number.startsWith(Privacy.DECOY) && !Privacy.decoyMode(prefs)) {
+            if (Privacy.vaultExists(prefs)) {
+                boolean hidden = HiddenChats.addressHidden(prefs, number);
+                add.accept(hidden ? "Move out of hidden chats" : "Move to hidden chats", () -> setHidden(number, name, !hidden, this::inbox));
+            }
+            String scope = Privacy.chatScope(number);
+            add.accept(Privacy.hasCode(prefs, scope) ? "Change chat lock" : "Lock this chat", () -> chooseCode(scope, name, this::inbox));
+            add.accept("Disappearing messages · " + Disappearing.label(Disappearing.seconds(prefs, number)),
+                () -> SecurityDialogs.disappearing(this, prefs, "Disappearing messages", prefs.contains("disappear." + number)
+                    ? Disappearing.seconds(prefs, number) : -1, Disappearing.label(Disappearing.globalSeconds(prefs)), seconds -> {
+                        Disappearing.set(prefs, number, seconds);
+                        SyncJob.reschedule(this);
+                        invalidateRows();
+                        inbox();
+                    }));
+        }
+        add.accept("Conversation details", () -> contactDetails(number, number, this::inbox));
+        showDialog(dialogBuilder().setTitle(name).setItems(labels.toArray(new String[0]), (dialog, index) -> runs.get(index).run()));
     }
+
+    /** Moves a chat into or out of hidden chats. Moving in takes its texts out of Android's shared message store. */
+    private void setHidden(String key, String name, boolean hide, Runnable done) {
+        if (!hide) {
+            new Thread(() -> {
+                try {
+                    if (Privacy.vaultOpen()) HiddenChats.restore(this, key);
+                    Privacy.setHidden(prefs, "hidden.addresses", key, false);
+                    invalidateRows();
+                    runOnUiThread(() -> { toast(name + " is back in the inbox"); done.run(); });
+                } catch (Exception error) { runOnUiThread(() -> toast(error.getMessage())); }
+            }, "fluid-unhide").start();
+            return;
+        }
+        showDialog(dialogBuilder().setTitle("Move " + name + " to hidden chats?")
+            .setMessage("It leaves your inbox and is only in the Hidden chats folder, which opens with your fingerprint or passcode. "
+                + "Its texts are moved into FluidMessages' encrypted storage, so other apps and FluidMessages Web won't show them. "
+                + "New messages from them alert without showing who they're from.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Move", (dialog, which) -> new Thread(() -> {
+                Privacy.setHidden(prefs, "hidden.addresses", key, true);
+                HiddenChats.sweep(this);
+                invalidateRows();
+                runOnUiThread(() -> { toast(name + " moved to hidden chats"); done.run(); });
+            }, "fluid-hide").start()));
+    }
+
     private void fillInbox() {
         var target = inboxScreen;
-        if (target == null || (!hasRole() && !GatewayClient.hasRoutes(prefs))) return;
+        if (target == null || (!hasRole() && !GatewayClient.hasRoutes(prefs) && reachableProtocols(true).isEmpty())) return;
         if (inboxLoad != null) inboxLoad.cancel(true);
         int version = ++inboxVersion;
         var query = new MessageSearch(filter);
         String selectedFolder = folder;
         int contactRevision = contacts.revision();
+        String typed = filter == null ? "" : filter.trim();
         inboxLoad = inboxWorker.submit(() -> {
             try {
+                // Typing the hidden-chats code into search opens them until the app leaves the screen.
+                if (typed.length() >= 6 && distress(typed)) return;
+                if (!Privacy.vaultOpen() && typed.length() >= 4 && Privacy.vaultExists(prefs) && Privacy.openVault(prefs, typed)) {
+                    invalidateRows();
+                    // The passcode also ends decoy mode.
+                    Privacy.setDecoyMode(prefs, false);
+                    runOnUiThread(() -> {
+                        filter = "";
+                        folder = HIDDEN_FOLDER;
+                        toast("Hidden chats are open until you leave the app");
+                        inbox();
+                    });
+                    return;
+                }
                 var data = messageRows();
                 Set<String> pinned = list("pinned"), archived = list("archived"), blocked = list("blocked");
                 Map<String, JSONObject> threads = new LinkedHashMap<>();
@@ -687,13 +1334,17 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     String number = rowAddress(message);
                     var format = MessageProtocol.parse(message.optString("protocol"));
                     String thread = prefs.getBoolean("combineProtocols", false) ? number : number + "\u001f" + format.family().name();
+                    // Hidden chats only ever show in their own folder, never mixed into the inbox.
+                    boolean hiddenChat = Privacy.vaultOpen() && HiddenChats.rowHidden(prefs, message);
                     boolean visible = switch (selectedFolder) {
-                        case "Archived" -> archived.contains(number) && !blocked.contains(number);
-                        case "Blocked" -> blocked.contains(number);
-                        default -> !archived.contains(number) && !blocked.contains(number);
+                        case HIDDEN_FOLDER -> hiddenChat;
+                        case "Archived" -> !hiddenChat && archived.contains(number) && !blocked.contains(number);
+                        case "Blocked" -> !hiddenChat && blocked.contains(number);
+                        default -> !hiddenChat && !archived.contains(number) && !blocked.contains(number);
                     };
                     if (!visible || threads.containsKey(thread)) continue;
-                    if (query.empty() || query.matches(number, threadTitle(number), message.getString("body"))) {
+                    boolean codeLocked = Privacy.locked(prefs, number, format);
+                    if (query.empty() || query.matches(number, threadTitle(number), codeLocked ? "" : message.getString("body"))) {
                         threads.put(thread, message);
                     }
                 }
@@ -710,7 +1361,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     String label = prefs.getBoolean("combineProtocols", false) ? formats(number).stream()
                         .map(item -> item.label).collect(java.util.stream.Collectors.joining(" · ")) : format.label;
                     String rowKey = prefs.getBoolean("combineProtocols", false) ? number + "\u001f" + format.family().name() : thread;
-                    entries.add(new ThreadRow(rowKey, name, initials(name), message.getString("body"),
+                    String preview = Privacy.locked(prefs, number, format) ? "Locked · enter the passcode to read" : message.getString("body");
+                    entries.add(new ThreadRow(rowKey, name, initials(name), preview,
                         inboxDate(displayedTimestamp(message)), message.optInt("read", 1) == 0,
                         pinned.contains(number), 0, contact == null ? null : contact.photo(), contactRevision, label,
                         (format == MessageProtocol.SMS || format == MessageProtocol.MMS) && !number.startsWith("mms:")
@@ -740,17 +1392,59 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         return GatewayClient.identity(prefs, row.optString("address"), contacts);
     }
 
+    private void invalidateRows() {
+        synchronized (rowsLock) {
+            rowsCache = null;
+            rowsGeneration++;
+        }
+    }
+
+    /** Every text and protocol message, newest first. Shared read-only between the inbox and conversations. */
     private List<JSONObject> messageRows() throws Exception {
-        var rows = new ArrayList<>(ProtocolStore.get(this).read());
+        int generation, revision = ProtocolStore.revision.get();
+        synchronized (rowsLock) {
+            if (rowsCache != null && rowsRevision == revision && android.os.SystemClock.elapsedRealtime() - rowsAt < 30_000) {
+                return rowsCache;
+            }
+            generation = rowsGeneration;
+        }
+        var store = ProtocolStore.get(this);
+        var rows = new ArrayList<>(store.read());
         if (hasRole()) {
             var texts = SmsStore.read(this, 0);
             for (int i = 0; i < texts.length(); i++) rows.add(texts.getJSONObject(i));
         }
+        if (Privacy.decoyMode(prefs)) {
+            // Decoy mode: only the chats you allowed, plus your decoy chats. Everything else stays out of sight.
+            var allowed = Privacy.decoyAllowed(prefs);
+            rows.removeIf(row -> allowed.stream().noneMatch(address -> sameAddress(address, row.optString("address"))));
+            rows.addAll(Privacy.decoys(prefs));
+        } else if (Privacy.vaultOpen()) rows.addAll(store.readHidden());
+        else if (Privacy.vaultExists(prefs)) rows.removeIf(row -> HiddenChats.rowHidden(prefs, row));
+        // Encrypted texts are stored scrambled; show what they say, and leave out anything whose time is up.
+        long now = System.currentTimeMillis();
+        rows.removeIf(row -> {
+            SmsCrypto.reveal(prefs, row);
+            return Disappearing.expired(prefs, row, row.optString("address"), now);
+        });
         rows.sort(Comparator.comparingLong((JSONObject row) -> row.optLong("date")).reversed());
-        return rows;
+        var result = java.util.Collections.unmodifiableList(rows);
+        synchronized (rowsLock) {
+            if (generation == rowsGeneration) {
+                rowsCache = result;
+                rowsRevision = revision;
+                rowsAt = android.os.SystemClock.elapsedRealtime();
+            }
+        }
+        return result;
+    }
+
+    static boolean sameAddress(String one, String two) {
+        return one.equals(two) || SmsStore.validRecipient(one) && SmsStore.validRecipient(two) && PhoneNumberUtils.compare(one, two);
     }
 
     private String threadTitle(String number) {
+        if (number.startsWith(Privacy.DECOY)) return number.substring(Privacy.DECOY.length());
         if (number.startsWith("mms:")) {
             var members = groupMembers(number);
             return members.isEmpty() ? "MMS group" : members.stream().map(GroupMember::getName)
@@ -850,8 +1544,51 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 getSystemService(android.view.inputmethod.InputMethodManager.class)
                     .hideSoftInputFromWindow(root.getWindowToken(), 0);
                 proceed.accept(recipients);
-            });
+            }, reachableProtocols(true), reachableProtocols(false), () -> accounts(() -> openRecipientPicker(body, proceed)));
         loadRecipients();
+    }
+
+    /**
+     * Internet protocols that can start a new chat (an account on the companion or this phone), or, with
+     * ready=false, ones that are turned on but still need an account. Turned-off protocols are never offered.
+     */
+    private Set<MessageProtocol> reachableProtocols(boolean ready) {
+        var result = new LinkedHashSet<MessageProtocol>();
+        for (var format : List.of(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)) {
+            if (!format.enabled(prefs)) continue;
+            boolean has = DirectProtocols.on(prefs, format) || GatewayClient.hasAccount(prefs, format);
+            if (has == ready) result.add(format);
+        }
+        return result;
+    }
+
+    /** Opens (or creates) the conversation for a typed internet address, then hands it a draft. */
+    private void openAddress(String encoded, String draft) {
+        int split = encoded.indexOf(':');
+        var format = MessageProtocol.parse(encoded.substring(0, split));
+        String target = encoded.substring(split + 1);
+        var existing = GatewayClient.routeForTarget(prefs, format, target);
+        if (existing != null) {
+            chat(existing, format);
+            conversationScreen.setDraft(draft);
+            return;
+        }
+        String address = "chat-" + Integer.toHexString((format.name() + target.toLowerCase(Locale.ROOT)).hashCode());
+        new Thread(() -> {
+            try {
+                if (DirectProtocols.on(prefs, format)) DirectProtocols.link(this, address, format, target, target, false);
+                else {
+                    GatewayClient.link(prefs, address, format, target, target, false);
+                    GatewayClient.refresh(this, prefs);
+                }
+                runOnUiThread(() -> {
+                    chat(address, format);
+                    conversationScreen.setDraft(draft);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> toast(error.getMessage()));
+            }
+        }, "fluid-new-address").start();
     }
 
     private void loadRecipients() {
@@ -875,6 +1612,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private void composeRecipients(List<String> recipients, String draft) {
+        var internet = recipients.stream().filter(recipient -> recipient.matches("(matrix|xmpp|email|irc):.+")).toList();
+        if (!internet.isEmpty()) {
+            // Groups live on one protocol; internet groups are linked from a room or channel instead.
+            if (recipients.size() > 1) { toast("Start internet chats one at a time. To message a group, link its room or channel."); return; }
+            openAddress(internet.get(0), draft);
+            return;
+        }
         if (recipients.size() == 1) {
             chat(recipients.get(0));
             conversationScreen.setDraft(draft);
@@ -924,6 +1668,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private void chat(String number, MessageProtocol format) {
+        var scopes = Privacy.lockedScopes(prefs, number, format);
+        if (!scopes.isEmpty()) {
+            askCode(scopes.get(0), () -> chat(number, format));
+            return;
+        }
         address = number;
         activeProtocol = format;
         render("chat");
@@ -943,23 +1692,23 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 chat(number, next.family() == format.family() ? format : next);
             }, format.transport().unavailable(this, prefs, number), format.transport().getCapabilities().getAttachments()
                 || (format == MessageProtocol.SMS && MessageProtocol.MMS.enabled(prefs)), savedRoute(number),
-            GatewayClient.encrypted(prefs, number, format) ? Encryption.COMPANION_E2EE : null);
+            protection(number, format));
         conversationScreen = new ConversationScreen(root, prefs, profile, name, initials(name), format.label, false,
             phone && !number.startsWith("mms:") ? SenderStyle.infer(number) : SenderStyle.SMS,
             phone ? simLabel() : null, this::inbox, () -> contactDetails(number, number, () -> chat(number, format)),
             () -> conversationMenu(number), phone ? this::chooseSim : null, this::forwardLive,
             line -> confirmDelete(() -> {
                 try {
-                    if (line.getFormat() == MessageProtocol.SMS) SmsStore.delete(this, Long.parseLong(line.getId()), number);
-                    else ProtocolStore.get(this).remove(line.getId());
+                    deleteLine(line.getId(), line.getFormat(), number);
+                    invalidateRows();
                     fillChat();
                 } catch (Exception error) { toast("Could not delete the message"); }
             }), null, List.of(), (text, author, relation, photo, via) -> sendRouted(via, new OutgoingMessage(number,
                 number.startsWith("mms:") ? groupNumbers(number) : List.of(number), text, photo, prefs.getInt("sim", -1), relation)),
             0, match == null ? null : match.photo(), routing, groupMembers(number), this::downloadAttachment, line -> {
                 try {
-                    if (line.getFormat() == MessageProtocol.SMS) SmsStore.delete(this, Long.parseLong(line.getId()), number);
-                    else ProtocolStore.get(this).remove(line.getId());
+                    deleteLine(line.getId(), line.getFormat(), number);
+                    invalidateRows();
                     fillChat();
                 } catch (Exception ignored) {}
             });
@@ -967,8 +1716,38 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         animateIn(root.getChildAt(0), 10);
     }
 
+    private void deleteLine(String id, MessageProtocol format, String number) throws Exception {
+        if (id.startsWith("hsms-")) ProtocolStore.get(this).removeHidden(id);
+        else if (id.startsWith("decoy-")) {
+            var rows = Privacy.decoys(prefs);
+            rows.removeIf(row -> row.optString("id").equals(id));
+            Privacy.saveDecoys(prefs, rows);
+        }
+        else if (format == MessageProtocol.SMS) SmsStore.delete(this, Long.parseLong(id), number);
+        else ProtocolStore.get(this).remove(id);
+    }
+
+    /** Asks for a chat's or protocol's code, then continues. A wrong code keeps the dialog open. */
+    private void askCode(String scope, Runnable opened) {
+        String title = scope.startsWith("protocol:") ? "Enter the " + MessageProtocol.parse(scope.substring(9)).label + " code"
+            : "Enter this chat's passcode";
+        SecurityDialogs.askCode(this, prefs, title, code -> !distress(code) && Privacy.checkCode(prefs, scope, code),
+            () -> { invalidateRows(); opened.run(); });
+    }
+
     /** Every live send goes through the protocol's shared transport, including replies and reactions. */
-    private boolean sendRouted(MessageProtocol format, OutgoingMessage message) {
+    private boolean sendRouted(MessageProtocol format, OutgoingMessage outgoing) {
+        if (outgoing.getConversation().startsWith(Privacy.DECOY)) {
+            // Made-up conversations never send; the reply is only added on this phone.
+            try {
+                Privacy.addDecoy(prefs, outgoing.getConversation().substring(Privacy.DECOY.length()), outgoing.getText(), true,
+                    System.currentTimeMillis());
+            } catch (Exception error) { toast("Could not add the message"); return false; }
+            invalidateRows();
+            sent();
+            return true;
+        }
+        var message = outgoing.forTransport(format);
         var transport = format.transport();
         String reason = transport.unavailable(this, prefs, message.getConversation());
         if (!reason.isEmpty()) { toast(reason); return false; }
@@ -1056,45 +1835,104 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
     private boolean animateNextMessage;
     private void fillChat() {
-        if (conversationScreen == null) return;
-        try {
-            var all = messageRows();
-            DateFormat day = DateFormat.getDateInstance(DateFormat.MEDIUM);
-            DateFormat time = DateFormat.getTimeInstance(DateFormat.SHORT);
-            List<ChatLine> entries = new ArrayList<>();
-            for (int i = all.size() - 1; i >= 0; i--) {
-                JSONObject entry = all.get(i);
-                if (!address.equals(rowAddress(entry))) continue;
-                var format = MessageProtocol.parse(entry.optString("protocol"));
-                if (!prefs.getBoolean("combineProtocols", false) && activeProtocol.family() != format.family()) continue;
-                int kind = entry.getInt("type");
-                long date = displayedTimestamp(entry);
-                String status = entry.optString("status", switch (kind) {
-                    case Telephony.Sms.MESSAGE_TYPE_FAILED -> "Couldn’t send";
-                    case Telephony.Sms.MESSAGE_TYPE_OUTBOX, Telephony.Sms.MESSAGE_TYPE_QUEUED -> "Sending…";
-                    default -> "";
-                });
-                String author = entry.optString("author");
-                if (SmsStore.validRecipient(author)) {
-                    var match = contacts.find(author);
-                    if (match != null) author = match.name();
+        var screen = conversationScreen;
+        if (screen == null) return;
+        // Reading and formatting runs off the main thread; only the newest request updates the screen.
+        if (chatLoad != null) chatLoad.cancel(true);
+        int version = ++chatVersion;
+        String chatAddress = address;
+        var chatProtocol = activeProtocol;
+        boolean combined = prefs.getBoolean("combineProtocols", false);
+        boolean looking = resumed;
+        chatLoad = chatWorker.submit(() -> {
+            try {
+                var all = messageRows();
+                DateFormat day = DateFormat.getDateInstance(DateFormat.MEDIUM);
+                DateFormat time = DateFormat.getTimeInstance(DateFormat.SHORT);
+                var store = ProtocolStore.get(this);
+                List<ChatLine> entries = new ArrayList<>();
+                List<JSONObject> unread = new ArrayList<>();
+                for (int i = all.size() - 1; i >= 0; i--) {
+                    if (Thread.currentThread().isInterrupted()) return;
+                    JSONObject entry = all.get(i);
+                    if (!chatAddress.equals(rowAddress(entry))) continue;
+                    var format = MessageProtocol.parse(entry.optString("protocol"));
+                    if (!combined && chatProtocol.family() != format.family()) continue;
+                    int kind = entry.getInt("type");
+                    if (kind == Telephony.Sms.MESSAGE_TYPE_INBOX && entry.optInt("read", 1) == 0) unread.add(entry);
+                    long date = displayedTimestamp(entry);
+                    String status = entry.optString("status", switch (kind) {
+                        case Telephony.Sms.MESSAGE_TYPE_FAILED -> "Couldn’t send";
+                        case Telephony.Sms.MESSAGE_TYPE_OUTBOX, Telephony.Sms.MESSAGE_TYPE_QUEUED -> "Sending…";
+                        default -> "";
+                    });
+                    String author = entry.optString("author");
+                    if (SmsStore.validRecipient(author)) {
+                        var match = contacts.find(author);
+                        if (match != null) author = match.name();
+                    }
+                    entries.add(new ChatLine(entry.getString("id"), entry.getString("body"),
+                        messageDay(day, date), kind != Telephony.Sms.MESSAGE_TYPE_INBOX, status, time.format(new Date(date)),
+                        author.isBlank() ? null : author, entry.optString("reaction_target").isEmpty() ? null
+                            : entry.optString("reaction_target"), store.photo(entry), format,
+                        Attachment.fromJson(entry.optJSONObject("attachment"), store.file(entry)),
+                        entry.optBoolean("event")));
                 }
-                entries.add(new ChatLine(entry.getString("id"), entry.getString("body"),
-                    messageDay(day, date), kind != Telephony.Sms.MESSAGE_TYPE_INBOX, status, time.format(new Date(date)),
-                    author.isBlank() ? null : author, entry.optString("reaction_target").isEmpty() ? null
-                        : entry.optString("reaction_target"), ProtocolStore.get(this).photo(entry), format,
-                    Attachment.fromJson(entry.optJSONObject("attachment"), ProtocolStore.get(this).file(entry)),
-                    entry.optBoolean("event")));
+                // Seeing the conversation reads it: clear the unread dot here, in Android's inbox, and on the companion.
+                if (looking && !unread.isEmpty()) markRead(chatAddress, unread);
+                if (!Thread.currentThread().isInterrupted()) runOnUiThread(() -> {
+                    if (conversationScreen != screen || version != chatVersion || isDestroyed()) return;
+                    if (animateNextMessage && !entries.isEmpty()) screen.setAnimatedId(entries.get(entries.size() - 1).getId());
+                    animateNextMessage = false;
+                    screen.setError(null);
+                    screen.setLines(entries);
+                });
+            } catch (Exception error) {
+                if (!Thread.currentThread().isInterrupted()) runOnUiThread(() -> {
+                    if (conversationScreen == screen && version == chatVersion && !isDestroyed()) {
+                        screen.setError("Unable to open conversation");
+                    }
+                });
             }
-            if (animateNextMessage && !entries.isEmpty()) {
-                conversationScreen.setAnimatedId(entries.get(entries.size() - 1).getId());
+        });
+    }
+
+    /** Off the main thread. Marks received texts and protocol messages read and clears their notification. */
+    private void markRead(String chatAddress, List<JSONObject> rows) {
+        var texts = new ArrayList<String>();
+        var companion = new ArrayList<String>();
+        var store = ProtocolStore.get(this);
+        var notifications = getSystemService(android.app.NotificationManager.class);
+        notifications.cancel(chatAddress.hashCode());
+        for (JSONObject row : rows) {
+            notifications.cancel(row.optString("address").hashCode());
+            if (row.optBoolean("hidden")) {
+                try { store.putHidden(new JSONObject(row.toString()).put("read", 1)); } catch (Exception ignored) {}
+                continue;
             }
-            animateNextMessage = false;
-            conversationScreen.setError(null);
-            conversationScreen.setLines(entries);
-        } catch (Exception error) {
-            conversationScreen.setError("Unable to open conversation");
+            if (row.has("protocol")) {
+                try {
+                    var stored = store.find(row.getString("id"));
+                    if (stored == null) continue;
+                    store.put(stored.put("read", 1));
+                    if (!stored.optBoolean("direct") && !stored.getString("id").startsWith("mms-")) companion.add(stored.getString("id"));
+                } catch (Exception ignored) {}
+            } else {
+                texts.add(String.valueOf(row.optLong("id")));
+            }
         }
+        if (!texts.isEmpty() && hasRole()) {
+            var values = new android.content.ContentValues();
+            values.put("read", 1);
+            values.put("seen", 1);
+            try {
+                getContentResolver().update(Telephony.Sms.CONTENT_URI, values,
+                    "_id IN (" + String.join(",", java.util.Collections.nCopies(texts.size(), "?")) + ")", texts.toArray(new String[0]));
+            } catch (RuntimeException ignored) {}
+        }
+        invalidateRows();
+        if (!companion.isEmpty()) GatewayClient.markRead(prefs, companion);
+        runOnUiThread(() -> { if (page.equals("inbox")) fillInbox(); });
     }
 
     private static String messageDay(DateFormat format, long date) {
@@ -1212,6 +2050,17 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 }));
             }
         }
+        // Every chat's Security section says how it's protected, with the same colored badge as its header.
+        List<SettingsAction> security = new ArrayList<>();
+        var protection = protection(key, activeProtocol);
+        security.add(new SettingsAction(SecurityUiKt.getShortLabel(protection), activeProtocol.label + " · " + switch (protection) {
+            case FLUIDMESSAGES -> "Only people with your shared encryption key can read these messages.";
+            case END_TO_END -> "Only you and the people in this chat can read it.";
+            case COMPANION_E2EE -> "End-to-end encrypted. Your FluidMessages server holds the keys to show it in the web app.";
+            case IN_TRANSIT -> "Protected on the way to the server, but the server can read it.";
+            case PREVIEW -> "RCS isn't available in FluidMessages yet, so nothing is sent this way.";
+            default -> "Your carrier and anyone along the way can read these messages.";
+        }, () -> {}, true, protection));
         if (!sample && (CloudBackup.paired(this) || DirectProtocols.anyOn(prefs))) {
             // Linked addresses let one contact be reached on several protocols, in one chat when combined.
             for (var link : GatewayClient.links(prefs, key)) {
@@ -1222,6 +2071,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             actions.add(action("Link an address", "Reach " + name + " on Matrix, XMPP, Email, or IRC",
                 () -> linkAddress(key, name, returnToDetails)));
         }
+        if (!sample && key.startsWith(Privacy.DECOY)) {
+            actions.add(action("Edit this decoy chat", "Only on this phone · never sent",
+                () -> editDecoy(name, returnToDetails)));
+        } else if (!sample) {
+            groupActions(key, members, actions, returnToDetails);
+            securityActions(key, name, security, returnToDetails);
+        }
         refreshContact = returnToDetails;
         var channel = GatewayClient.channel(prefs, key);
         boolean irc = channel != null || sample && original.startsWith("#");
@@ -1230,12 +2086,548 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             : members.isEmpty() ? (sample ? "Sample contact" : phone ? key : "Conversation")
             : (sample ? "Sample group · " : "") + (members.size() + 1) + " members including you";
         ConversationDetails.mount(root, prefs, name, initials(name), subtitle, sample ? samplePhoto(name) : 0,
-            contact == null ? null : contact.photo(), phone ? () -> dialContact(key) : null,
-            phone ? () -> editContact(key) : null, actions, members);
+            contact == null ? null : contact.photo(), key, reachOptions(key, original, name, sample),
+            phone ? () -> editContact(key) : null, actions, members, security);
     }
 
     private Runnable contactBack;
     private Runnable refreshContact;
+
+    /** Every way to message, call, or video call this chat, for the buttons under its name. */
+    private List<ReachOption> reachOptions(String key, String original, String name, boolean sample) {
+        List<ReachOption> options = new ArrayList<>();
+        if (sample) {
+            for (String[] contact : SAMPLES) {
+                if (!contact[0].equals(original)) continue;
+                for (var format : sampleFormats(contact)) options.add(new ReachOption(ReachOption.MESSAGE, format.label, name,
+                    () -> sampleChat(contact, format)));
+                // Pretend calls open the real call screen, with this chat's wallpaper; nothing is dialed or sent.
+                if (!SAMPLE_GROUPS.containsKey(original) && !original.equals("Trail Alerts")) {
+                    options.add(new ReachOption(ReachOption.CALL, "Phone", samplePhone(original),
+                        () -> startActivity(CallHub.demo(this, key, name, false, "Phone", Encryption.NONE))));
+                }
+                if (contact[5].equals("Matrix") || original.equals("Maya Chen")) {
+                    options.add(new ReachOption(ReachOption.CALL, "Matrix", sampleMatrix(original),
+                        () -> startActivity(CallHub.demo(this, key, name, false, "Matrix", Encryption.END_TO_END))));
+                    options.add(new ReachOption(ReachOption.VIDEO, "Matrix", sampleMatrix(original),
+                        () -> startActivity(CallHub.demo(this, key, name, true, "Matrix", Encryption.END_TO_END))));
+                }
+                if (original.equals("Maya Chen") || contact[5].equals("XMPP")) {
+                    options.add(new ReachOption(ReachOption.CALL, "XMPP", "maya@example.org",
+                        () -> startActivity(CallHub.demo(this, key, name, false, "XMPP", Encryption.END_TO_END))));
+                    options.add(new ReachOption(ReachOption.VIDEO, "XMPP", "maya@example.org",
+                        () -> startActivity(CallHub.demo(this, key, name, true, "XMPP", Encryption.END_TO_END))));
+                }
+                if (!SAMPLE_GROUPS.containsKey(original) && !original.equals("Trail Alerts")) {
+                    options.add(new ReachOption(ReachOption.CALL, "SIP", samplePhone(original),
+                        () -> startActivity(CallHub.demo(this, key, name, false, "SIP", Encryption.IN_TRANSIT))));
+                }
+                if (meetingLinks()) {
+                    options.add(new ReachOption(ReachOption.CALL, "Meeting link", meetingServer(),
+                        () -> startActivity(CallHub.demo(this, key, name, false, "Meeting link", Encryption.IN_TRANSIT))));
+                    options.add(new ReachOption(ReachOption.VIDEO, "Meeting link", meetingServer(),
+                        () -> startActivity(CallHub.demo(this, key, name, true, "Meeting link", Encryption.IN_TRANSIT))));
+                }
+            }
+            return options;
+        }
+        if (key.startsWith(Privacy.DECOY)) {
+            options.add(new ReachOption(ReachOption.MESSAGE, "SMS", name, () -> chat(key, MessageProtocol.SMS)));
+            return options;
+        }
+        for (var format : formats(key)) {
+            String target = key;
+            for (var link : GatewayClient.links(prefs, key)) {
+                if (MessageProtocol.parse(link.optString("protocol")) == format) target = link.optString("target", key);
+            }
+            if (key.startsWith("mms:")) target = name;
+            options.add(new ReachOption(ReachOption.MESSAGE, format.label, target, () -> chat(key, format)));
+        }
+        if (SmsStore.validRecipient(key) && Calling.allowed(prefs, Calling.Method.PHONE)) {
+            options.add(new ReachOption(ReachOption.CALL, "Phone", key, () -> placeCall(key)));
+        }
+        if (SmsStore.validRecipient(key) && Calling.sipReady(prefs)) {
+            options.add(new ReachOption(ReachOption.CALL, "SIP", key, () -> startCall(key, name, false, "SIP")));
+        }
+        if (CallHub.xmppCallable(prefs, key)) {
+            String target = CallHub.xmppTarget(prefs, key);
+            options.add(new ReachOption(ReachOption.CALL, "XMPP", target, () -> startCall(key, name, false, "XMPP")));
+            options.add(new ReachOption(ReachOption.VIDEO, "XMPP", target, () -> startCall(key, name, true, "XMPP")));
+        }
+        if (meetingLinks() && !formats(key).isEmpty()) {
+            // A meeting link works with anyone on any service: they tap it to join in their browser or the Jitsi app.
+            String server = meetingServer();
+            options.add(new ReachOption(ReachOption.CALL, "Meeting link", server, () -> startMeeting(key, false)));
+            options.add(new ReachOption(ReachOption.VIDEO, "Meeting link", server, () -> startMeeting(key, true)));
+        }
+        if (CallHub.callable(prefs, key)) {
+            String target = GatewayClient.links(prefs, key).stream()
+                .filter(link -> MessageProtocol.parse(link.optString("protocol")) == MessageProtocol.MATRIX)
+                .map(link -> link.optString("target")).findFirst().orElse(name);
+            options.add(new ReachOption(ReachOption.CALL, "Matrix", target, () -> startActivity(CallHub.screen(this, key, name, false, null))));
+            options.add(new ReachOption(ReachOption.VIDEO, "Matrix", target, () -> startActivity(CallHub.screen(this, key, name, true, null))));
+        }
+        return options;
+    }
+
+    /** Fictional numbers in the reserved 555-01xx range, and Matrix IDs on example.org, for the sample inbox. */
+    static String samplePhone(String name) {
+        // Real-looking US numbers in the 555-0100 to 555-0199 range, which is reserved for fiction and never rings anyone.
+        String[] areas = {"415", "212", "312", "206", "617", "503", "720", "404", "512", "305"};
+        int hash = Math.abs(name.hashCode());
+        return "(" + areas[hash % areas.length] + ") 555-01" + String.format(java.util.Locale.ROOT, "%02d", (hash / 7) % 100);
+    }
+    static String sampleMatrix(String name) { return "@" + name.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z]", "") + ":example.org"; }
+
+    /** A linked group's route: its protocol, target, and whether the phone or the companion connects it. */
+    private record GroupRoute(MessageProtocol format, String target, boolean direct) {}
+
+    private GroupRoute groupRoute(String key) {
+        if (key.startsWith("mms:")) return new GroupRoute(MessageProtocol.MMS, key, true);
+        for (var format : List.of(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.IRC)) {
+            var direct = DirectProtocols.route(prefs, key, format);
+            for (var route : direct == null ? GatewayClient.links(prefs, key) : List.of(direct)) {
+                if (MessageProtocol.parse(route.optString("protocol")) != format) continue;
+                String target = route.optString("target");
+                boolean group = route.optBoolean("group") || format == MessageProtocol.IRC && target.startsWith("#")
+                    || format == MessageProtocol.MATRIX && (target.startsWith("!") || target.startsWith("#"));
+                if (group) return new GroupRoute(format, target, direct != null);
+            }
+        }
+        return null;
+    }
+
+    private void groupActions(String key, List<GroupMember> members, List<SettingsAction> actions, Runnable refresh) {
+        var group = groupRoute(key);
+        if (group == null) return;
+        String hint = switch (group.format()) {
+            case MMS -> "Phone number";
+            case MATRIX -> "@maya:example.org";
+            case XMPP -> "maya@example.org";
+            default -> "Nickname";
+        };
+        actions.add(action("Add people", group.format() == MessageProtocol.MMS ? "Starts a new group text with everyone"
+            : "Invite someone to this " + group.format().label + " group", () -> {
+            EditText input = field(hint);
+            input.setInputType(group.format() == MessageProtocol.MMS ? android.text.InputType.TYPE_CLASS_PHONE
+                : android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+            var layout = new LinearLayout(this);
+            layout.setPadding(dp(20), dp(8), dp(20), 0);
+            layout.addView(input, new LinearLayout.LayoutParams(-1, -2));
+            showDialog(dialogBuilder().setTitle("Add someone").setView(layout).setNegativeButton("Cancel", null)
+                .setPositiveButton("Add", (dialog, which) -> changeMember(key, group, true, input.getText().toString().trim(), refresh)));
+        }));
+        if (members.isEmpty() && group.format() != MessageProtocol.XMPP && group.format() != MessageProtocol.IRC) return;
+        actions.add(action("Remove someone", switch (group.format()) {
+            case MMS -> "Starts a new group text without them";
+            case MATRIX -> "Needs permission to remove people in this room";
+            default -> "Needs moderator or operator rights";
+        }, () -> {
+            if (members.isEmpty()) {
+                EditText input = field(group.format() == MessageProtocol.XMPP ? "Their nickname in the room" : "Nickname");
+                var layout = new LinearLayout(this);
+                layout.setPadding(dp(20), dp(8), dp(20), 0);
+                layout.addView(input, new LinearLayout.LayoutParams(-1, -2));
+                showDialog(dialogBuilder().setTitle("Remove someone").setView(layout).setNegativeButton("Cancel", null)
+                    .setPositiveButton("Remove", (dialog, which) -> changeMember(key, group, false, input.getText().toString().trim(), refresh)));
+                return;
+            }
+            String[] names = members.stream().map(GroupMember::getName).toArray(String[]::new);
+            showDialog(dialogBuilder().setTitle("Remove someone").setItems(names, (dialog, which) -> {
+                var member = members.get(which);
+                String id = member.getAddress().isEmpty() ? member.getName() : member.getAddress();
+                showDialog(dialogBuilder().setTitle("Remove " + member.getName() + "?").setNegativeButton("Cancel", null)
+                    .setPositiveButton("Remove", (inner, button) -> changeMember(key, group, false, id, refresh)));
+            }));
+        }));
+    }
+
+    private void changeMember(String key, GroupRoute group, boolean add, String member, Runnable refresh) {
+        if (member.isEmpty()) return;
+        if (group.format() == MessageProtocol.MMS) {
+            // Carriers treat every set of people as its own group text, so a change opens a new conversation.
+            var people = new ArrayList<>(groupNumbers(key));
+            if (add) {
+                if (!SmsStore.validRecipient(member)) { toast("Enter a phone number"); return; }
+                people.add(member);
+            } else people.removeIf(number -> number.equals(member) || PhoneNumberUtils.compare(number, member));
+            if (people.size() < 2) { toast("A group text needs at least two other people"); return; }
+            String next = MmsTransport.thread(this, people);
+            unsentGroups.put(next, people);
+            toast("Group texts can't change members, so this is a new group");
+            chat(next, MessageProtocol.MMS);
+            return;
+        }
+        new Thread(() -> {
+            try {
+                if (group.direct()) DirectProtocols.changeMember(this, key, group.format(), add, member);
+                else GatewayClient.changeMember(prefs, key, group.format(), add, member);
+                runOnUiThread(() -> { toast(add ? "Invited " + member : "Removed " + member); refresh.run(); });
+            } catch (Exception error) {
+                runOnUiThread(() -> toast(error.getMessage() == null ? "Couldn't change the group" : error.getMessage()));
+            }
+        }, "fluid-members").start();
+    }
+
+    /** How protected this chat is: FluidMessages encryption, an encrypted room on the companion, or the protocol's own. */
+    private Encryption protection(String key, MessageProtocol format) {
+        if (format != MessageProtocol.RCS && SmsCrypto.active(prefs, key, format)) return Encryption.FLUIDMESSAGES;
+        if (GatewayClient.encrypted(prefs, key, format)) return Encryption.COMPANION_E2EE;
+        return format.transport().getCapabilities().getEncryption();
+    }
+
+    /** The Security section of a conversation's details: encryption, disappearing messages, hiding, and its code. */
+    private void securityActions(String key, String name, List<SettingsAction> security, Runnable refresh) {
+        var format = activeProtocol;
+        String choice = SmsCrypto.chatChoice(prefs, key);
+        boolean on = SmsCrypto.wanted(prefs, key, format);
+        String state = on ? (SmsCrypto.active(prefs, key, format) ? "On" : "On · needs a key") : "Off";
+        String source = choice.isEmpty() ? " · " + format.label + " default" : " · set for this chat";
+        security.add(action("FluidMessages encryption", state + source, () -> SecurityDialogs.chatEncryption(this, prefs, name,
+            format.label, choice, SmsCrypto.globalOn(prefs, format), SmsCrypto.chatKey(prefs, key), !SmsCrypto.defaultKey(prefs).isEmpty(),
+            value -> { SmsCrypto.setChatChoice(prefs, key, value); invalidateRows(); refresh.run(); },
+            value -> { try { SmsCrypto.setChatKey(prefs, key, value); } catch (Exception error) { toast("Could not save the key"); } refresh.run(); },
+            () -> { try { SmsCrypto.setChatKey(prefs, key, ""); } catch (Exception ignored) {} refresh.run(); })));
+        boolean ownTimer = prefs.contains("disappear." + key);
+        security.add(action("Disappearing messages", Disappearing.label(Disappearing.seconds(prefs, key)) + (ownTimer ? "" : " · default"),
+            () -> SecurityDialogs.disappearing(this, prefs, "Disappearing messages", ownTimer ? Disappearing.seconds(prefs, key) : -1,
+                Disappearing.label(Disappearing.globalSeconds(prefs)), seconds -> {
+                    Disappearing.set(prefs, key, seconds);
+                    SyncJob.reschedule(this);
+                    invalidateRows();
+                    refresh.run();
+                })));
+        boolean hidden = HiddenChats.addressHidden(prefs, key);
+        if (!Privacy.vaultExists(prefs)) {
+            security.add(action("Hide this conversation", "Set up hidden chats first", this::privacySettings));
+        } else if (hidden) {
+            security.add(action("Show in the inbox again", "Hidden chats only appear after you enter their passcode", () ->
+                new Thread(() -> {
+                    try {
+                        HiddenChats.restore(this, key);
+                        Privacy.setHidden(prefs, "hidden.addresses", key, false);
+                        invalidateRows();
+                        runOnUiThread(() -> { toast(name + " is back in the inbox"); refresh.run(); });
+                    } catch (Exception error) { runOnUiThread(() -> toast(error.getMessage())); }
+                }, "fluid-unhide").start()));
+        } else {
+            security.add(action("Hide this conversation", "Only shows after you type the hidden chats passcode in search", () ->
+                showDialog(dialogBuilder().setTitle("Hide " + name + "?")
+                    .setMessage("Its texts move out of Android's shared message store into FluidMessages' encrypted vault, so "
+                        + "other apps, Android search, and FluidMessages Web won't show them. New texts go straight to the "
+                        + "vault, with an alert that names no one.")
+                    .setNegativeButton("Cancel", null).setPositiveButton("Hide", (dialog, which) -> new Thread(() -> {
+                        Privacy.setHidden(prefs, "hidden.addresses", key, true);
+                        HiddenChats.sweep(this);
+                        invalidateRows();
+                        runOnUiThread(() -> { toast(name + " is hidden"); refresh.run(); });
+                    }, "fluid-hide").start()))));
+        }
+        String scope = Privacy.chatScope(key);
+        boolean coded = Privacy.hasCode(prefs, scope);
+        security.add(action(coded ? "Chat lock" : "Turn on chat lock", coded ? "On · change or remove it"
+            : "Hide previews and ask for a passcode to open", () -> chooseCode(scope, name, refresh)));
+    }
+
+    /** Sets, changes, or removes a chat or protocol code. Changing one first asks for the current code. */
+    private void chooseCode(String scope, String name, Runnable done) {
+        boolean has = Privacy.hasCode(prefs, scope);
+        Runnable edit = () -> SecurityDialogs.code(this, prefs, (has ? "New passcode for " : "Passcode for ") + name,
+            has ? "Leave it empty to turn off the lock." : "You'll be asked for it each time you open the app.", true, 4, has,
+            value -> new Thread(() -> {
+                try {
+                    Privacy.setCode(prefs, scope, value);
+                    invalidateRows();
+                    runOnUiThread(() -> { toast(value.isEmpty() ? "Lock turned off" : "Passcode saved"); done.run(); });
+                } catch (Exception error) { runOnUiThread(() -> toast("Could not save the passcode")); }
+            }, "fluid-set-code").start());
+        if (has) askCode(scope, edit); else edit.run();
+    }
+
+    /** Opens the made-up conversation editor, for a new chat (name null) or an existing one. */
+    private void editDecoy(String name, Runnable back) {
+        render("decoy");
+        contactBack = back;
+        heading(name == null ? "New decoy chat" : name, "Back", back);
+        root.setPadding(dp(18), root.getPaddingTop(), dp(18), root.getPaddingBottom());
+        DecoyEditor.mount(root, prefs, name, () -> { invalidateRows(); back.run(); });
+    }
+
+    /** Privacy and security, grouped into a few clear pages instead of one long list. */
+    private void privacySettings() {
+        render("privacy");
+        heading("Privacy and security", "Back", this::settings);
+        boolean locked = prefs.getBoolean("lock", false);
+        boolean decoy = Privacy.decoyMode(prefs);
+        List<SettingsSection> sections = new ArrayList<>();
+        sections.add(new SettingsSection("Protect the app", List.of(
+            toggleRow("App lock", "Ask for your fingerprint, face, or screen lock to open FluidMessages", locked, () -> toggleLock(locked)),
+            action("Chat locks", lockSummary(), this::locksSettings),
+            action("Emergency erase passcode", Privacy.hasCode(prefs, DISTRESS) ? "On · change or turn off"
+                : "A second passcode that erases everything if you're ever forced to unlock", this::chooseDistress))));
+        List<SettingsAction> tools = new ArrayList<>();
+        // In decoy mode these stay out of sight, so someone looking can't tell anything is hidden.
+        if (!decoy) {
+            tools.add(action("Hidden chats", Privacy.vaultExists(prefs) ? "Set up · open from the inbox filter menu or search"
+                : "Keep chats out of your inbox, behind your fingerprint or a passcode", this::hiddenChatsSettings));
+            tools.add(action("Decoy mode", "If someone else is using your phone, show only pretend chats and the ones you choose",
+                this::decoySettings));
+        }
+        if (!tools.isEmpty()) sections.add(new SettingsSection("Keep things private", tools));
+        sections.add(new SettingsSection("Messages", List.of(
+            action("Encryption", "Scramble messages so only you and the other person can read them", this::encryptionSettings),
+            action("Disappearing messages", "Default: " + Disappearing.label(Disappearing.globalSeconds(prefs)),
+                () -> SecurityDialogs.disappearing(this, prefs, "Default timer", Disappearing.globalSeconds(prefs), null, seconds -> {
+                    Disappearing.setGlobal(prefs, seconds);
+                    SyncJob.reschedule(this);
+                    invalidateRows();
+                    privacySettings();
+                })))));
+        SettingsPages.mount(root, prefs, sections);
+    }
+
+    private void chooseDistress() {
+        boolean on = Privacy.hasCode(prefs, DISTRESS);
+        Runnable edit = () -> SecurityDialogs.code(this, prefs, on ? "Change emergency erase passcode" : "Emergency erase passcode",
+            "If you're ever forced to open your hidden chats or a locked chat, type this passcode instead of your real one. "
+                + "FluidMessages immediately erases every account, message, key, and setting, as if it were just installed, "
+                + "and closes. It can't be undone. Use at least 6 characters, different from your other passcodes."
+                + (on ? " Leave it empty to turn it off." : ""), true, 6, on,
+            value -> new Thread(() -> {
+                try {
+                    boolean wasOpen = Privacy.vaultOpen();
+                    if (!value.isEmpty() && Privacy.vaultExists(prefs) && Privacy.openVault(prefs, value)) {
+                        if (!wasOpen) Privacy.closeVault();
+                        runOnUiThread(() -> toast("Use a passcode that's different from your hidden chats passcode"));
+                        return;
+                    }
+                    Privacy.setCode(prefs, DISTRESS, value);
+                    runOnUiThread(() -> { toast(value.isEmpty() ? "Emergency erase turned off" : "Emergency erase passcode saved"); privacySettings(); });
+                } catch (Exception error) { runOnUiThread(() -> toast("Could not save the passcode")); }
+            }, "fluid-distress").start());
+        if (on) deviceAuth("Change emergency erase", edit, null); else edit.run();
+    }
+
+    private String lockSummary() {
+        long services = SmsCrypto.PROTOCOLS.stream().filter(format -> format != MessageProtocol.MMS
+            && Privacy.hasCode(prefs, Privacy.protocolScope(format))).count();
+        return services == 0 ? "Lock a chat from its details, or every chat of one kind here"
+            : services + (services == 1 ? " kind of chat is locked" : " kinds of chats are locked");
+    }
+
+    private void subpage(String page, String title, List<SettingsSection> sections) {
+        render(page);
+        heading(title, "Back", this::privacySettings);
+        SettingsPages.mount(root, prefs, sections);
+    }
+
+    private void locksSettings() {
+        List<SettingsAction> codes = new ArrayList<>();
+        for (var format : List.of(MessageProtocol.SMS, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL,
+                MessageProtocol.IRC)) {
+            String scope = Privacy.protocolScope(format);
+            String label = format == MessageProtocol.SMS ? "All texts" : "All " + format.label + " chats";
+            codes.add(action(label, Privacy.hasCode(prefs, scope) ? "Locked · change or remove the passcode" : "Not locked",
+                () -> chooseCode(scope, label, this::locksSettings)));
+        }
+        subpage("locks", "Chat locks", List.of(
+            new SettingsSection("How it works", List.of(new SettingsAction("Locked chats ask for a passcode",
+                "Their previews are hidden in the inbox, and they ask again each time you come back to the app. To lock one chat, "
+                    + "open its details and choose Lock this chat.", () -> {}, true, null))),
+            new SettingsSection("Lock every chat of one kind", codes)));
+    }
+
+    private void hiddenChatsSettings() {
+        boolean vault = Privacy.vaultExists(prefs);
+        boolean open = Privacy.vaultOpen();
+        List<SettingsSection> sections = new ArrayList<>();
+        sections.add(new SettingsSection("How it works", List.of(new SettingsAction("Hidden chats stay out of your inbox",
+            "They're only in the Hidden chats folder. Open it from the filter button at the top of the inbox with your fingerprint, "
+                + "or type your passcode into search. It closes again when you leave the app.", () -> {}, true, null))));
+        if (!vault) {
+            sections.add(new SettingsSection("Get started", List.of(action("Set up hidden chats", "Choose a passcode", this::setUpVault))));
+            subpage("hiddenChats", "Hidden chats", sections);
+            return;
+        }
+        if (!open) {
+            sections.add(new SettingsSection("Hidden chats are closed", List.of(action("Open hidden chats", "To change these settings",
+                () -> openHiddenChats(this::hiddenChatsSettings)))));
+            subpage("hiddenChats", "Hidden chats", sections);
+            return;
+        }
+        boolean device = Privacy.deviceUnlockOn(prefs);
+        sections.add(new SettingsSection("Opening", List.of(
+            toggleRow("Open with fingerprint or screen lock",
+                "Open hidden chats from the inbox filter menu without typing the passcode", device, () -> {
+                    if (device) { Privacy.disableDeviceUnlock(prefs); hiddenChatsSettings(); return; }
+                    deviceAuth("Turn on quick unlock", () -> {
+                        try { Privacy.enableDeviceUnlock(prefs); } catch (Exception error) { toast("Couldn't turn on quick unlock"); }
+                        hiddenChatsSettings();
+                    }, null);
+                }),
+            action("Change passcode", "", this::setUpVault))));
+        sections.add(new SettingsSection("What's hidden", List.of(
+            action("Hide whole services", hiddenProtocolLabel(), this::chooseHiddenProtocols),
+            new SettingsAction("Hide one chat", "Open the chat's ⋯ menu or details and choose Move to hidden chats", () -> {}, true, null))));
+        sections.add(new SettingsSection("Done with hidden chats?", List.of(
+            action("Close hidden chats now", "", () -> { Privacy.closeVault(); invalidateRows(); privacySettings(); }),
+            action("Turn off hidden chats", "Moves everything back to your inbox and deletes the passcode", this::removeVault))));
+        subpage("hiddenChats", "Hidden chats", sections);
+    }
+
+    private void decoySettings() {
+        boolean vault = Privacy.vaultExists(prefs);
+        List<SettingsSection> sections = new ArrayList<>();
+        sections.add(new SettingsSection("How it works", List.of(new SettingsAction("For when someone else is using your phone",
+            "Decoy mode instantly swaps your inbox and contacts for pretend chats, plus only the real chats you allow. Nothing is deleted. "
+                + "Turn it on from the inbox filter menu, or long-press the FluidMessages icon and tap Quick hide. To end it, type your "
+                + "hidden chats passcode into search.", () -> {}, true, null))));
+        if (!vault) {
+            sections.add(new SettingsSection("Get started", List.of(action("Set up hidden chats first",
+                "Decoy mode ends with your hidden chats passcode, so set one up", this::hiddenChatsSettings))));
+            subpage("decoyMode", "Decoy mode", sections);
+            return;
+        }
+        sections.add(new SettingsSection("Turn on", List.of(action("Turn on decoy mode now", "Shows the decoy inbox right away",
+            this::startDecoyMode))));
+        int allowed = Privacy.decoyAllowed(prefs).size();
+        List<SettingsAction> decoys = new ArrayList<>();
+        decoys.add(action("Real chats that stay visible", allowed == 0 ? "None · only pretend chats show" : allowed + " chosen",
+            this::chooseDecoyAllowed));
+        decoys.add(action("New pretend chat", "Looks like a normal chat. Nothing is ever sent.", () -> editDecoy(null, this::decoySettings)));
+        var names = new LinkedHashSet<String>();
+        for (var row : Privacy.decoys(prefs)) names.add(row.optString("address").substring(Privacy.DECOY.length()));
+        for (String name : names) decoys.add(action(name, "Pretend chat · edit or delete", () -> editDecoy(name, this::decoySettings)));
+        sections.add(new SettingsSection("What decoy mode shows", decoys));
+        subpage("decoyMode", "Decoy mode", sections);
+    }
+
+    private void startDecoyMode() {
+        Privacy.setDecoyMode(prefs, true);
+        Privacy.forget();
+        invalidateRows();
+        folder = "Inbox";
+        updateQuickHide();
+        inbox();
+    }
+
+    /** "Quick hide" on the app icon's long-press menu turns on decoy mode in one tap. */
+    private void updateQuickHide() {
+        var shortcuts = getSystemService(android.content.pm.ShortcutManager.class);
+        if (shortcuts == null) return;
+        if (!Privacy.vaultExists(prefs)) { shortcuts.removeAllDynamicShortcuts(); return; }
+        var intent = new Intent(this, MainActivity.class).setAction(QUICK_HIDE).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        shortcuts.setDynamicShortcuts(List.of(new android.content.pm.ShortcutInfo.Builder(this, "quick-hide")
+            .setShortLabel("Quick hide").setLongLabel("Quick hide")
+            .setIcon(android.graphics.drawable.Icon.createWithResource(this, R.mipmap.ic_launcher)).setIntent(intent).build()));
+    }
+
+    static final String QUICK_HIDE = "org.fluidmessages.QUICK_HIDE";
+
+    private void chooseDecoyAllowed() {
+        new Thread(() -> {
+            try {
+                var allowed = Privacy.decoyAllowed(prefs);
+                Privacy.setDecoyMode(prefs, false);
+                List<String> addresses = new ArrayList<>();
+                List<String[]> items = new ArrayList<>();
+                List<Integer> selected = new ArrayList<>();
+                for (JSONObject row : messageRows()) {
+                    String address = row.optString("address");
+                    if (address.startsWith(Privacy.DECOY) || addresses.contains(address) || HiddenChats.rowHidden(prefs, row)) continue;
+                    if (addresses.size() >= 60) break;
+                    if (allowed.stream().anyMatch(item -> sameAddress(item, address))) selected.add(addresses.size());
+                    addresses.add(address);
+                    items.add(new String[]{threadTitle(address), MessageProtocol.parse(row.optString("protocol")).label});
+                }
+                runOnUiThread(() -> SecurityDialogs.chooseMany(this, prefs, "Real chats in decoy mode",
+                    "These stay visible in decoy mode. Choose chats that would look normal to someone else.", items, selected, "Save",
+                    chosen -> {
+                        Set<String> keep = new LinkedHashSet<>();
+                        for (int index : chosen) keep.add(addresses.get(index));
+                        Privacy.setDecoyAllowed(prefs, keep);
+                        decoySettings();
+                    }));
+            } catch (Exception error) { runOnUiThread(() -> toast("Couldn't load your chats")); }
+        }, "fluid-decoy-chats").start();
+    }
+
+    private void encryptionSettings() {
+        var encrypted = SmsCrypto.PROTOCOLS.stream().filter(format -> SmsCrypto.globalOn(prefs, format))
+            .map(format -> format == MessageProtocol.SMS ? "Texts" : format == MessageProtocol.MMS ? "Group texts" : format.label)
+            .collect(java.util.stream.Collectors.joining(", "));
+        subpage("encryption", "Encryption", List.of(
+            new SettingsSection("What the lock colors mean", List.of(
+                new SettingsAction("Green lock", "End-to-end encrypted, or encrypted with FluidMessages. Only you and the people in the chat can read it.",
+                    () -> {}, true, Encryption.END_TO_END),
+                new SettingsAction("Yellow lock", "Protected on its way to the server, but the service can read it.", () -> {}, true, Encryption.IN_TRANSIT),
+                new SettingsAction("Red open lock", "Not encrypted. Regular texts work this way; your carrier can read them.",
+                    () -> {}, true, Encryption.NONE))),
+            new SettingsSection("Encrypt with FluidMessages", List.of(
+                action("Turn on for", (encrypted.isEmpty() ? "Nothing yet" : encrypted)
+                    + (SmsCrypto.defaultKey(prefs).isEmpty() ? " · no default key" : " · default key set"),
+                    () -> SecurityDialogs.protocolEncryption(this, prefs, this::encryptionSettings)),
+                new SettingsAction("How it works", "You and the other person enter the same encryption key, and messages are scrambled "
+                    + "before they leave your phone. Both of you need FluidMessages. A chat's own setting, in its details, always wins.",
+                    () -> {}, true, null))),
+            new SettingsSection("On this phone", List.of(new SettingsAction("Your stored messages are encrypted",
+                "Saved messages, accounts, and passwords are locked with a key kept in your phone's secure hardware.", () -> {}, true, null)))));
+    }
+
+    private String hiddenProtocolLabel() {
+        var hidden = Privacy.hiddenProtocols(prefs);
+        if (hidden.isEmpty()) return "None";
+        return hidden.stream().map(name -> name.equals("SMS") ? "Texts" : MessageProtocol.parse(name).label)
+            .collect(java.util.stream.Collectors.joining(", "));
+    }
+
+    private void chooseHiddenProtocols() {
+        var formats = List.of(MessageProtocol.SMS, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC);
+        var hidden = Privacy.hiddenProtocols(prefs);
+        List<String[]> items = new ArrayList<>();
+        List<Integer> selected = new ArrayList<>();
+        for (int i = 0; i < formats.size(); i++) {
+            var format = formats.get(i);
+            items.add(format == MessageProtocol.SMS ? new String[]{"Texts", "SMS, picture messages, and group texts"}
+                : new String[]{format.label, "Every " + format.label + " chat"});
+            if (hidden.contains(format.family().name())) selected.add(i);
+        }
+        SecurityDialogs.chooseMany(this, prefs, "Hide whole services", "Every chat on the services you check moves to the Hidden chats "
+            + "folder, including new ones.", items, selected, "Save", chosen -> {
+                for (int i = 0; i < formats.size(); i++) Privacy.setHidden(prefs, "hidden.protocols", formats.get(i).family().name(), chosen.contains(i));
+                invalidateRows();
+                hiddenChatsSettings();
+            });
+    }
+
+    private void removeVault() {
+        showDialog(dialogBuilder().setTitle("Remove hidden chats?")
+            .setMessage("Hidden texts go back to Android's message store and the inbox. Hidden protocols show again.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Remove", (dialog, which) -> new Thread(() -> {
+                try {
+                    for (String hidden : HiddenChats.addresses(prefs)) HiddenChats.restore(this, hidden);
+                    Privacy.removeVault(prefs);
+                    Privacy.setDecoyMode(prefs, false);
+                    invalidateRows();
+                    runOnUiThread(() -> { updateQuickHide(); privacySettings(); });
+                } catch (Exception error) { runOnUiThread(() -> toast(error.getMessage())); }
+            }, "fluid-vault-remove").start()));
+    }
+
+    private void setUpVault() {
+        boolean exists = Privacy.vaultExists(prefs);
+        SecurityDialogs.code(this, prefs, exists ? "New hidden chats passcode" : "Hidden chats",
+            "To show hidden chats, type this passcode into the inbox search. Pick something you wouldn't search for. "
+                + "If you forget it, hidden texts can't be recovered.", true, 4, false,
+            value -> new Thread(() -> {
+                try {
+                    Privacy.setVaultCode(prefs, value);
+                    invalidateRows();
+                    runOnUiThread(this::updateQuickHide);
+                    runOnUiThread(() -> { toast("Hidden chats are ready"); hiddenChatsSettings(); });
+                } catch (Exception error) { runOnUiThread(() -> toast(error.getMessage())); }
+            }, "fluid-vault").start());
+    }
 
     private void editContact(String number) {
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED
@@ -1260,6 +2652,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         catch (ActivityNotFoundException error) { toast("No Android dialer is available"); }
     }
 
+    /** A row with an on/off switch. flip runs when it's tapped, and should save and redraw the page. */
+    private SettingsAction toggleRow(String label, String detail, boolean on, Runnable flip) {
+        return new SettingsAction(label, detail, flip, false, null, on);
+    }
+
     private SettingsAction action(String label, String detail, Runnable run) {
         return new SettingsAction(label, detail, run);
     }
@@ -1269,22 +2666,61 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         heading("Settings", "Inbox", this::inbox);
         boolean locked = prefs.getBoolean("lock", false);
         SettingsPages.mount(root, prefs, List.of(
-            new SettingsSection("Personalize", List.of(
-                action("Themes and appearance", "Global themes, wallpapers, colors, and motion", this::theme),
-                action("Messaging", "Timestamps, replies, and reactions", this::messagingSettings),
-                action("Message protocols", "Text and internet protocols, and how chats combine", this::protocolSettings),
-                action("Accounts", "Matrix, XMPP, Email, and IRC", this::accounts),
-                action("Sample inbox", "Try changes with fictional conversations", this::sampleInbox))),
-            new SettingsSection("Data and devices", List.of(
-                action("Backups", "Local files, cloud destinations, and restore", this::backups),
-                action("Web companion", CloudBackup.paired(this) ? "Set up" : "Not set up", this::companion),
+            new SettingsSection("Look and feel", List.of(
+                action("Themes and appearance", "Colors, wallpapers, bubbles, and motion", this::theme),
+                action("Messaging", "Timestamps, replies, reactions, sounds", this::messagingSettings))),
+            new SettingsSection("Chats and calls", List.of(
+                action("Accounts", "Sign in to Matrix, XMPP, Email, or IRC to chat there too", this::accounts),
+                action("Ways to message", "Turn services on or off, and combine one person's chats", this::protocolSettings),
+                action("Calls", "Recent calls and meeting links", this::callsSettings))),
+            new SettingsSection("Privacy", List.of(
+                action("Privacy and security", (locked ? "App lock on" : "App lock off") + " · encryption, hidden chats, locks",
+                    this::privacySettings))),
+            new SettingsSection("Storage and devices", List.of(
+                action("Backups", "Save and restore your messages and settings", this::backups),
+                action("FluidMessages Web", CloudBackup.paired(this) ? "On · your messages in a browser" : "Off · your messages in a browser",
+                    this::companion),
                 action("Battery and sync", SyncPolicy.backgroundLabel(SyncPolicy.backgroundMinutes(prefs)) + " in the background",
-                    this::batterySettings),
-                action(locked ? "Turn off app lock" : "Turn on app lock", "Protect FluidMessages with your device lock",
-                    () -> toggleLock(locked)))),
+                    this::batterySettings))),
             new SettingsSection("Help", List.of(
-                action("Replay setup guide", "Review SMS setup and privacy", () -> onboarding(0)),
-                action("About and updates", "Version and GitHub releases", this::about)))));
+                action("Sample inbox", "Practice with made-up chats and calls. Nothing is sent.", this::sampleInbox),
+                action("Setup guide", "A quick tour of what FluidMessages can do", () -> onboarding(0)),
+                action("About and updates", "Version and updates", this::about),
+                action("Reset or erase", "Start over with default settings, or remove everything", this::resetPage)))));
+    }
+
+    private void resetPage() {
+        render("reset");
+        heading("Reset or erase", "Back", this::settings);
+        SettingsPages.mount(root, prefs, List.of(
+            new SettingsSection("Settings", List.of(action("Reset settings to defaults",
+                "Keeps your messages, accounts, FluidMessages Web, hidden chats, and keys", this::confirmResetSettings))),
+            new SettingsSection("Everything", List.of(action("Erase everything",
+                "Removes all accounts, messages, keys, and settings from this app", this::confirmErase)))));
+    }
+
+    private void confirmResetSettings() {
+        showDialog(dialogBuilder().setTitle("Reset settings to defaults?")
+            .setMessage("Themes, wallpapers, sounds, notifications, messaging options, encryption and disappearing defaults, "
+                + "and per-chat themes go back to how they start. Your messages, accounts, FluidMessages Web pairing, hidden chats, "
+                + "passcodes, and keys stay.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Reset", (dialog, which) -> {
+                Resets.resetSettings(this, prefs);
+                invalidateRows();
+                toast("Settings are back to their defaults");
+                settings();
+            }));
+    }
+
+    private void confirmErase() {
+        showDialog(dialogBuilder().setTitle("Erase everything?")
+            .setMessage("This deletes every account, internet and picture message, hidden chat, decoy, key, passcode, and setting from "
+                + "FluidMessages on this phone, and closes the app. It can't be undone. Texts in Android's message store stay, and "
+                + "FluidMessages Web keeps its own copy until you reset it there. Make a backup first if you might want anything back.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Erase", (dialog, which) ->
+                showDialog(dialogBuilder().setTitle("Erase FluidMessages now?").setMessage("Last chance: this can't be undone.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Erase everything", (inner, button) -> Resets.eraseEverything(this)))));
     }
 
     private void about() {
@@ -1315,7 +2751,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     private void protocolSettings() {
         render("protocols");
-        heading("Message protocols", "Back", this::settings);
+        heading("Ways to message", "Back", this::settings);
         ProtocolSettingsScreen.mount(root, prefs);
     }
 
@@ -1446,7 +2882,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         prefs.edit().putBoolean("lock", !locked).apply();
         if (locked) {
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
-            settings();
+            privacySettings();
         } else authenticate();
     }
 
@@ -1460,9 +2896,19 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         return timestamp == 0 ? fallback : "Last backup " + DateFormat.getDateTimeInstance().format(new Date(timestamp));
     }
 
+    private Runnable backupsBack = this::settings;
+
+    /** Backups opened from the setup guide go back there. */
+    private void backupsFrom(Runnable back) {
+        backupsBack = back;
+        backups();
+        backupsBack = this::settings;
+    }
+
     private void backups() {
         render("backups");
-        heading("Backups", "Settings", this::settings);
+        Runnable back = backupsBack;
+        heading("Backups", back == null ? "Settings" : "Back", back);
         List<SettingsAction> local = new ArrayList<>();
         local.add(action("Export a file", lastRun(prefs.getLong("lastBackup", 0), "Save through Android’s file picker"),
             () -> backupDialog(true)));
@@ -1486,7 +2932,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             var phoneFolder = new BackupJob.FolderSchedule(target);
             boolean phone = backupFromPhone(target);
             boolean hasPhoneSchedule = !phoneFolder.tree(prefs).isEmpty();
-            String detail = phone ? "Phone" : "Companion";
+            String detail = phone ? "Phone" : "FluidMessages Web";
             if (phone && hasPhoneSchedule) detail += " · " + intervalLabel(phoneFolder.minutes(prefs));
             else if (!phone && minutes > 0) detail += " · " + intervalLabel(minutes);
             cloud.add(action(target.label, detail, () -> cloudDestination(target)));
@@ -1494,7 +2940,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             if (hasPhoneSchedule) scheduledCloud.add(() -> runPhoneBackup(phoneFolder));
         }
         if (scheduledCloud.size() > 1) {
-            cloud.add(action("Back up all cloud schedules", "Run each configured phone and companion schedule", () -> {
+            cloud.add(action("Back up all cloud schedules", "Run each configured phone and FluidMessages Web schedule", () -> {
                 toast("Starting " + scheduledCloud.size() + " cloud backups");
                 scheduledCloud.forEach(Runnable::run);
             }));
@@ -1509,7 +2955,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         entry.setSingleLine(true);
         entry.setText(BackupNames.fixed(prefs));
         var dialog = showDialog(dialogBuilder().setTitle("Backup file name")
-            .setMessage("A fixed name replaces that file in scheduled folders and on the companion. File pickers and sharing apps manage their own copies.")
+            .setMessage("A fixed name replaces that file in scheduled folders and on FluidMessages Web. File pickers and sharing apps manage their own copies.")
             .setView(entry).setNegativeButton("Cancel", null).setPositiveButton("Save", null));
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             try {
@@ -1537,7 +2983,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             boolean scheduled = !folder.tree(prefs).isEmpty();
             description = "Save through Android’s file picker, share to a storage app, or schedule backups to a writable folder.";
             if (CloudBackup.paired(this) && BackupJob.interval(prefs, target) > 0) {
-                description += " A companion schedule is also active.";
+                description += " A FluidMessages Web schedule is also active.";
             }
             List<SettingsAction> entries = new ArrayList<>();
             long last = Math.max(folder.last(prefs), prefs.getLong(folder.key("lastManual", ""), 0));
@@ -1558,11 +3004,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             sections = List.of(new SettingsSection("Phone backup", entries));
         } else if (CloudBackup.paired(this)) {
             if (!folder.tree(prefs).isEmpty()) description = "A phone schedule is also active.";
-            sections = List.of(new SettingsSection("Companion backup", companionBackupActions(target)));
+            sections = List.of(new SettingsSection("FluidMessages Web backup", companionBackupActions(target)));
         } else {
-            description = "Web companion · Not set up";
-            sections = List.of(new SettingsSection("Companion backup", List.of(
-                action("Set up companion", "", () -> companion(() -> cloudDestination(target), true)))));
+            description = "FluidMessages Web · Not set up";
+            sections = List.of(new SettingsSection("FluidMessages Web backup", List.of(
+                action("Set up FluidMessages Web", "", () -> companion(() -> cloudDestination(target), true)))));
         }
         SettingsPages.mountBackupProvider(root, prefs, phone, description, sections, selected -> {
             prefs.edit().putBoolean(phoneRouteKey(target), selected).apply();
@@ -1605,10 +3051,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 runOnUiThread(() -> {
                     if (root != currentPage || isFinishing()) return;
                     if (available) configured.run();
-                    else toast("Configure " + target.label + " on your companion server first");
+                    else toast("Configure " + target.label + " on your FluidMessages Web server first");
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> toast("Could not check the companion’s backup destinations"));
+                runOnUiThread(() -> toast("Could not check FluidMessages Web’s backup destinations"));
             }
         }, "fluid-check-cloud").start();
     }
@@ -1691,6 +3137,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 lockPrompt = null;
                 unlocked = true;
                 if (page.equals("settings")) settings();
+                if (page.equals("privacy")) privacySettings();
                 root.setVisibility(View.VISIBLE);
                 checkUpdates(false);
                 promptUpdate();
@@ -1943,8 +3390,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             if (page.equals("contact") && refreshContact != null) refreshContact.run();
         } else if (request == ROLE) {
             inbox();
-            if (hasRole() && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 14);
+            if (!hasRole()) smsRoleBlocked();
+            if (hasRole()) {
+                // Your own number lets group MMS replies join the group you're in instead of a new one.
+                var missing = new ArrayList<String>();
+                for (String permission : new String[]{Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.READ_PHONE_NUMBERS}) {
+                    if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) missing.add(permission);
+                }
+                if (!missing.isEmpty()) requestPermissions(missing.toArray(new String[0]), 14);
             }
         } else if (request == SCHEDULE_BACKUP) {
             if (result == RESULT_OK && data != null && data.getData() != null && backupOptions != null && pendingFolder != null) {
@@ -1965,6 +3418,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {
         super.onRequestPermissionsResult(request, permissions, grants);
+        if (request == CALL_PERMISSION && pendingCall != null) {
+            String number = pendingCall;
+            pendingCall = null;
+            if (checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) placeCall(number);
+            else dialContact(number);
+            return;
+        }
+        if (request == CALL_LOG_PERMISSION) { if (page.equals("phone")) phone(); return; }
         if (request == PICKER_CONTACT_PERMISSION) {
             contacts.invalidate();
             watchContacts();
@@ -1985,11 +3446,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void companion(Runnable back, boolean setup) {
         render("companion");
         backupBack = back;
-        heading("Web companion", "Done", back);
+        heading("FluidMessages Web", "Done", back);
         boolean connected = CloudBackup.paired(this);
         if (!connected && !setup) {
             SettingsPages.mount(root, prefs, List.of(new SettingsSection("Not set up", List.of(
-                action("Set up companion", "", () -> companion(back, true))))));
+                action("Set up FluidMessages Web", "", () -> companion(back, true))))));
             return;
         }
         item(root, text("Pair over HTTPS for cloud backups. You can also enable browser messaging to sync the newest 2,000 texts and send queued SMS.", 16, uiColors().muted()));
@@ -1997,9 +3458,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         url.setText(prefs.getString("server", ""));
         item(root, url);
-        EditText token = field("Server pairing token");
+        EditText token = field("Server access token");
         token.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        token.setText(prefs.getString("token", ""));
+        token.setText(Privacy.token(prefs));
         item(root, token);
         CheckBox syncMessages = option(root, "Enable browser messaging",
             prefs.getBoolean("syncSms", CloudBackup.paired(this)));
@@ -2018,13 +3479,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     throw new IllegalArgumentException();
                 }
                 prefs.edit().putString("server", "https://" + endpoint.getRawAuthority())
-                    .putString("token", pairingToken)
+                    .putString("token", Privacy.seal(prefs, pairingToken))
                     .putBoolean("syncSms", syncMessages.isChecked()).apply();
                 SyncJob.reschedule(this);
                 if (syncMessages.isChecked()) sync(true);
                 back.run();
-                toast("Companion connection saved");
-            } catch (Exception error) { toast("Enter an HTTPS server origin and its pairing token"); }
+                toast("FluidMessages Web connection saved");
+            } catch (Exception error) { toast("Enter an HTTPS server origin and its access token"); }
         }));
         if (connected) item(root, button("Disconnect phone", false, () -> {
             prefs.edit().remove("server").remove("token").apply();
@@ -2040,6 +3501,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             try {
                 boolean before = GatewayClient.hasRoutes(prefs);
                 boolean updated = GatewayClient.refresh(this, prefs);
+                if (updated) invalidateRows();
                 if (updated) runOnUiThread(() -> {
                     if (isDestroyed()) return;
                     if (page.equals("inbox") && !before && GatewayClient.hasRoutes(prefs)) inbox();
@@ -2047,7 +3509,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     else if (page.equals("chat")) fillChat();
                 });
                 SyncJob.sync(getApplicationContext());
-                if (report) runOnUiThread(() -> toast("Companion synced"));
+                if (report) runOnUiThread(() -> toast("FluidMessages Web synced"));
             } catch (Exception error) {
                 if (report) runOnUiThread(() -> toast("Could not sync. Check the HTTPS certificate, address, and token."));
             } finally {
