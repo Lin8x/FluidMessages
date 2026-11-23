@@ -7,3 +7,9 @@ __pycache__/
 .env
 data/
 .env.emulator.local
+# Release files are attached to GitHub releases, not kept in git.
+dist/*.zip
+dist/*.exe
+dist/*.dmg
+dist/*.AppImage
+dist/*.tar.gz

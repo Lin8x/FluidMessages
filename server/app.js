@@ -262,6 +262,7 @@ function showMessages(preserve = false) {
       bubble.classList.add('sealed');
     }
     if (typeof moneyCard === 'function') moneyCard(message, bubble);
+    if (typeof meetingCard === 'function') meetingCard(message, bubble);
     if (message.attachment) {
       if (message.body === message.attachment.name) bubble.textContent = '';
       const file = element('button', '📎 ' + message.attachment.name, 'file-card');
@@ -380,7 +381,8 @@ function showThreads() {
       for (const format of formats) tags.append(element('span', automatedThread(key) && family(format) === 'sms' ? 'Automated' : labels[format] || 'SMS', 'tag p-' + format));
       copy.append(tags);
     }
-    copy.append(element('small', /^FM1:/.test(message.body || '') ? '🔒 Encrypted with FluidMessages' : message.body));
+    const meetingLine = typeof meetingPreview === 'function' ? meetingPreview(message.body || '') : null;
+    copy.append(element('small', /^FM1:/.test(message.body || '') ? '🔒 Encrypted with FluidMessages' : meetingLine || message.body));
     const time = timeOf(message);
     button.append(element('span', '', 'indicator'), element('span', initials(threadTitle(key)), 'avatar'), copy,
       element('time', day(time) === 'Today' ? clock(time) : day(time) + (appearance.exactTimes ? ' ' + clock(time) : '')));
@@ -571,6 +573,13 @@ setInterval(() => {
     if (token) get('status').textContent = 'Sync unavailable';
   });
 }, 5000);
+
+// The desktop app opens with its token after "#token=", which never leaves the browser: sign in and forget it.
+if (location.hash.startsWith('#token=')) {
+  const fromDesktop = decodeURIComponent(location.hash.slice(7));
+  history.replaceState(null, '', location.pathname);
+  if (/^[0-9a-f]{32,128}$/.test(fromDesktop)) localStorage.setItem('fluidToken', fromDesktop);
+}
 
 // Signs back in automatically when this browser was told to keep you signed in.
 if (localStorage.getItem('fluidToken')) {

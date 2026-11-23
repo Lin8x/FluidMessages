@@ -667,7 +667,14 @@ def protocol_accounts_test():
                                    "channels": ["#radio-club"]},
                                   lambda *args: received.append(args), lambda name, state: states.__setitem__(name, state),
                                   connect=lambda: phone)
-    worker = threading.Thread(target=client.session, daemon=True)
+    def session():
+        # The test closes the fake server at the end, which ends the session; that's expected, not an error.
+        try:
+            client.session()
+        except (ConnectionError, OSError):
+            pass
+
+    worker = threading.Thread(target=session, daemon=True)
     worker.start()
     lines = b""
 

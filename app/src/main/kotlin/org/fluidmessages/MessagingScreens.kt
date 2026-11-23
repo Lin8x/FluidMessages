@@ -881,6 +881,8 @@ private fun MessageBubble(
                     location?.let { LocationCard(it, foreground) }
                     val money = remember(line.text) { if (line.attachment == null) parseMoney(line.text) else null }
                     money?.let { MoneyCard(it, line.outgoing, foreground) }
+                    val meeting = remember(line.text) { if (line.attachment == null) parseMeeting(line.text) else null }
+                    meeting?.let { MeetingCard(it, line.outgoing, foreground) }
                     if (quoted != null) {
                         val quoteModifier = Modifier
                             .padding(bottom = 7.dp).clip(RoundedCornerShape(9.dp))
@@ -910,6 +912,7 @@ private fun MessageBubble(
                         val shown = when {
                             location != null -> location.note
                             money != null -> ""
+                            meeting != null -> ""
                             quoted != null -> quoted.body
                             line.media != null && line.text == line.media?.caption -> ""
                             // IRC and Matrix actions read as "* name does something".

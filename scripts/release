@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Publishes the current version of FluidMessages: builds and tests it, commits and tags it, pushes to GitHub,
-# and creates a GitHub release with the Android app (APK) and FluidMessages Web (the installable web app and its
-# server, with Docker Compose and the run-it-yourself scripts for Linux, macOS, and Windows).
+# and creates a GitHub release with the Android app (.apk) and the FluidMessages Web server (.zip, for Docker or
+# self-hosting). GitHub Actions then adds the FluidMessages Web desktop apps to the same release: Windows (.exe),
+# macOS (.dmg), and Linux (.AppImage), built on each system (.github/workflows/desktop.yml).
 #
 #   ./scripts/release                 release the version in app/build.gradle
 #   ./scripts/release --bump          raise the patch version (0.24.0 → 0.24.1) and versionCode first
@@ -61,8 +62,8 @@ ASSET="dist/FluidMessages-$VERSION.apk"
 run mkdir -p dist
 run cp "$APK" "$ASSET"
 
-# FluidMessages Web: the server and its installable web app (PWA), ready for Docker or scripts/web-app.
-WEB="dist/FluidMessages-Web-$VERSION.zip"
+# FluidMessages Web server: the server and its installable web app (PWA), for Docker or scripts/web-app.
+WEB="dist/FluidMessages-Server-$VERSION.zip"
 if ((DRY)); then echo "would run: package $WEB"; else
   python3 - "$WEB" <<'PY'
 import pathlib, sys, zipfile
@@ -70,9 +71,9 @@ root = pathlib.Path(".")
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
     for path in sorted(root.glob("server/**/*")):
         if path.is_file() and "__pycache__" not in path.parts and not path.name.endswith(".pyc"):
-            archive.write(path, "FluidMessages-Web/" + str(path))
+            archive.write(path, "FluidMessages-Server/" + str(path))
     for name in ("compose.yaml", "LICENSE", "scripts/web-app", "scripts/web-app.ps1"):
-        info = zipfile.ZipInfo.from_file(name, "FluidMessages-Web/" + name)
+        info = zipfile.ZipInfo.from_file(name, "FluidMessages-Server/" + name)
         if name == "scripts/web-app":
             info.external_attr = 0o755 << 16
         archive.writestr(info, pathlib.Path(name).read_bytes())
@@ -95,4 +96,9 @@ if [[ -n "$NOTES" ]]; then
 else
   run gh release create "$TAG" "$ASSET" "$WEB" --title "FluidMessages $VERSION" --generate-notes
 fi
-((DRY)) && echo "Dry run only: nothing was built, committed, pushed, or published." || echo "Published $TAG with $ASSET and $WEB"
+if ((DRY)); then echo "Dry run only: nothing was built, committed, pushed, or published."; else
+  echo "Published $TAG with $ASSET and $WEB."
+  echo "GitHub Actions is now building the Windows, macOS, and Linux apps (added to the release) and the Docker image"
+  echo "(ghcr.io/lin8x/fluidmessages-web). They take a few minutes; watch the desktop apps with:"
+  echo "  gh run watch \$(gh run list --workflow desktop.yml --limit 1 --json databaseId -q '.[0].databaseId')"
+fi

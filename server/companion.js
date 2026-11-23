@@ -673,3 +673,50 @@ function showCalls() {
   // Installable as an app (a PWA). The worker only caches FluidMessages' own files, never messages.
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 })();
+
+// Meeting-link calls: sent as plain text so every app can open them, shown here as a call card with Join.
+const MEETING = /^(?:📹|📞)?\s*Join my (video )?call: (https:\/\/[A-Za-z0-9.-]+(?::\d+)?\/[A-Za-z0-9_-]+)\s*$/;
+
+function meetingPreview(body) {
+  const match = MEETING.exec(body.trim());
+  return match ? (match[1] ? '📹 Video call · tap to join' : '📞 Call · tap to join') : null;
+}
+
+function meetingCard(message, bubble) {
+  const match = MEETING.exec((message.body || '').trim());
+  if (!match) return false;
+  const [, video, link] = match;
+  const card = element('div', '', 'meeting-card');
+  const icon = element('span', video ? '📹' : '📞', 'meeting-icon');
+  const text = element('span', '', 'meeting-text');
+  text.append(element('strong', video ? 'Video call' : 'Voice call'),
+    element('small', (message.type === 1 ? 'Started a call' : 'You started a call') + ' · ' + new URL(link).host));
+  const join = element('a', 'Join', 'meeting-join');
+  join.href = video ? link : link + '#config.startWithVideoMuted=true';
+  join.target = '_blank';
+  join.rel = 'noopener noreferrer';
+  card.append(icon, text, join);
+  bubble.replaceChildren(card);
+  return true;
+}
+
+// Starts a meeting-link call from the browser: the link goes to this chat, then the meeting opens.
+async function startMeeting(video) {
+  if (!active) return;
+  const room = 'FluidMessages-' + fluidCallId().slice(0, 16);
+  const link = 'https://meet.jit.si/' + room;
+  const body = (video ? '📹 Join my video call: ' : '📞 Join my call: ') + link;
+  window.open(video ? link : link + '#config.startWithVideoMuted=true', '_blank', 'noopener');
+  if (internet(threadProtocol(active))) await send(body, body, null);
+  else await queueSms(body, threadAddress(active), Date.now());
+}
+
+(() => {
+  const button = element('button', 'Meeting', 'call-button');
+  button.type = 'button';
+  button.title = 'Send a meeting link in this chat and join it';
+  button.addEventListener('click', () => startMeeting(true).catch(showError));
+  document.getElementById('details').before(button);
+  const update = () => { button.hidden = !active || !threadAddress(active); };
+  new MutationObserver(update).observe(document.getElementById('recipient'), {childList: true, characterData: true, subtree: true});
+})();

@@ -950,7 +950,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     var route = routes.get(index);
                     sendRouted(route.format(), new OutgoingMessage(route.address(), route.address().startsWith("mms:")
                         ? groupNumbers(route.address()) : List.of(route.address()),
-                        (video ? "Join my video call: " : "Join my call: ") + link, null, prefs.getInt("sim", -1), null));
+                        MeetingKt.meetingText(video, link), null, prefs.getInt("sim", -1), null));
                 } else if (index == routes.size()) {
                     getSystemService(android.content.ClipboardManager.class)
                         .setPrimaryClip(android.content.ClipData.newPlainText("Meeting link", link));
@@ -1361,7 +1361,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     String label = prefs.getBoolean("combineProtocols", false) ? formats(number).stream()
                         .map(item -> item.label).collect(java.util.stream.Collectors.joining(" · ")) : format.label;
                     String rowKey = prefs.getBoolean("combineProtocols", false) ? number + "\u001f" + format.family().name() : thread;
-                    String preview = Privacy.locked(prefs, number, format) ? "Locked · enter the passcode to read" : message.getString("body");
+                    String meetingLine = MeetingKt.meetingPreview(message.getString("body"));
+                    String preview = Privacy.locked(prefs, number, format) ? "Locked · enter the passcode to read"
+                        : meetingLine != null ? meetingLine : message.getString("body");
                     entries.add(new ThreadRow(rowKey, name, initials(name), preview,
                         inboxDate(displayedTimestamp(message)), message.optInt("read", 1) == 0,
                         pinned.contains(number), 0, contact == null ? null : contact.photo(), contactRevision, label,

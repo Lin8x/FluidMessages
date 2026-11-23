@@ -1,8 +1,10 @@
+# FluidMessages Web. Uses the published image; `docker compose up -d --build` builds it from this checkout instead.
 services:
   fluidmessages:
+    image: ghcr.io/lin8x/fluidmessages-web:latest
     build: ./server
     environment:
-      FLUID_TOKEN: ${FLUID_TOKEN:?Set a random pairing token in .env or Portainer}
+      FLUID_TOKEN: ${FLUID_TOKEN:?Set a random access token in .env or Portainer}
       FLUID_BACKUP_ONEDRIVE: ${FLUID_BACKUP_ONEDRIVE:-}
       FLUID_BACKUP_DRIVE: ${FLUID_BACKUP_DRIVE:-}
       FLUID_BACKUP_S3: ${FLUID_BACKUP_S3:-}

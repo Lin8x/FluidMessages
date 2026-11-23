@@ -1,0 +1,40 @@
+name: FluidMessages Web desktop apps
+# For every published release, builds FluidMessages Web for Windows (.exe), macOS (.dmg), and Linux (.AppImage) on
+# each system and attaches them to the release. Run it by hand to rebuild a release's apps.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, like v0.33.0
+        required: true
+permissions:
+  contents: write
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pyinstaller pillow "slixmpp==1.17.0" "aiohttp>=3.10"
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y python3-tk
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool && echo "APPIMAGETOOL=$PWD/appimagetool" >> "$GITHUB_ENV"
+      - run: python desktop/build.py --version "${TAG#v}"
+        shell: bash
+      - run: gh release upload "$TAG" dist/FluidMessages-Web-* --clobber
+        shell: bash

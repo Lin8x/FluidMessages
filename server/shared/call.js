@@ -395,6 +395,7 @@ const FLUID_CALL_STYLE = `
   gap: 2vh; padding: max(28px, 5vh) 16px max(24px, 4vh); box-sizing: border-box; overflow-y: auto; background: #0d0f14; color: #fff;
   text-align: center; font: 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --call-button: clamp(50px, min(16vw, 9vh), 68px); }
+.fluid-call [hidden] { display: none !important; }
 .fluid-call-top { position: relative; display: grid; justify-items: center; gap: .4rem; max-width: 100%; }
 .fluid-call h2 { margin: .1rem 0 0; font-size: clamp(1.3rem, 6vw, 1.7rem); font-weight: 600; overflow-wrap: anywhere; }
 .fluid-call-state { margin: 0; color: #d4d7de; font-variant-numeric: tabular-nums; }
@@ -433,6 +434,13 @@ const FLUID_CALL_STYLE = `
 .fluid-call-keypad small { font-size: calc(var(--call-button) * .14); letter-spacing: .12em; font-weight: 600; margin-top: 2px; }
 .fluid-call-hide { position: relative; border: 0; background: none; color: #fff; font-size: 1rem; padding: .6rem; }
 .fluid-call-spacer { display: block; }
+@media (max-height: 520px) and (orientation: landscape) {
+  .fluid-call { --call-button: clamp(42px, 13vh, 54px); padding: 12px 16px; gap: 8px; }
+  .fluid-call-avatar { display: none; }
+  .fluid-call-security { margin-bottom: 0; }
+  .fluid-call-controls { grid-template-columns: repeat(4, var(--call-button)); gap: 8px 26px; }
+  .fluid-call-keypad { grid-template-columns: repeat(6, var(--call-button)); gap: 8px 16px; }
+}
 `;
 (() => {
   // The companion's stylesheet has these rules (its security policy blocks inline styles); the phone's page uses this.
