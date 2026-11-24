@@ -150,7 +150,86 @@ def smoke_test():
             raise RuntimeError("Companion served an unknown attachment")
         except HTTPError as error:
             check(error.code == 404, f"Expected HTTP 404 for a missing attachment, got {error.code}")
+        web_features_test(request)
     print("PASS  Companion assets, authentication, sync, scheduling, cancellation, claiming, click-to-call and attachment uploads")
+    print("PASS  web phone features: scripts served, delete for me, pinned/archived/muted chats and chat codes, appearance extras")
+    print("PASS  web details and effects: conversation details and members, call icons, floating message menu, capped effects")
+
+
+def web_features_test(request):
+    """FluidMessages Web's phone features: their scripts, Delete for me, chat folders and codes, and appearance extras."""
+    import sqlite3
+    for path, expected in (("/editor.js", b"findBackground"), ("/media.js", b"startVoiceNote"), ("/chats.js", b"chatLockGate"),
+                           ("/look.js", b"applyLookExtras"), ("/features.css", b".editor-stage"), ("/settings.js", b"erasePage")):
+        check(expected in request(path, authorized=False), f"Missing browser asset at {path}")
+    index = request("/", authorized=False)
+    check(all(name in index for name in (b"/editor.js", b"/media.js", b"/chats.js", b"/look.js", b"/features.css", b"/settings.js")),
+          "The page doesn't load the phone-feature scripts")
+    # Delete for me removes the web copy (and cancels it if it's still queued); other messages stay.
+    now = int(time.time() * 1000)
+    with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db, db:
+        for key, body in (("web-delete-me", "Fictional message to delete"), ("web-keep-me", "Fictional message to keep")):
+            db.execute("INSERT INTO protocol_messages VALUES (?, ?, ?)", (key, now, json.dumps(
+                {"id": key, "address": "web-fixture", "protocol": "matrix", "title": "Fixture", "body": body, "date": now, "type": 2, "read": 1})))
+        db.execute("INSERT INTO protocol_jobs VALUES ('web-delete-me', 'matrix', '!fixture:example.test', ?, 'queued')", (now + 3_600_000,))
+    check(request("/api/protocols/delete", {"id": "web-delete-me"}) == {"deleted": "web-delete-me"}, "Delete for me failed")
+    ids = {message.get("id") for message in request("/api/inbox")["messages"]}
+    check("web-delete-me" not in ids and "web-keep-me" in ids, "Delete for me removed the wrong message")
+    with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db:
+        check(db.execute("SELECT state FROM protocol_jobs WHERE id='web-delete-me'").fetchone()[0] == "cancelled",
+              "A deleted message stayed in the send queue")
+    for bad in ({"id": "web-delete-me"}, {"id": "../etc"}, {"id": 5}):
+        try:
+            request("/api/protocols/delete", bad)
+            raise RuntimeError("Delete for me accepted " + json.dumps(bad))
+        except HTTPError as error:
+            check(error.code == 400, f"Expected HTTP 400 for a bad delete, got {error.code}")
+    # Pinned, archived, blocked, and muted chats and chat codes are kept for every browser; only hashes of codes.
+    chats = {"pinned": ["web-fixture"], "archived": ["+12025550188"], "blocked": [], "muted": ["web-fixture"],
+             "locks": {"web-fixture": {"salt": "ab" * 16, "hash": "cd" * 32}}}
+    check(request("/api/settings", {"web_chats": chats})["web_chats"] == chats, "Chat folders and codes weren't saved")
+    check(request("/api/inbox")["web_chats"] == chats, "The inbox doesn't carry chat folders and codes")
+    for bad in ({"pinned": "web-fixture"}, {"locks": {"web-fixture": {"salt": "x", "hash": "plain code"}}}, {"muted": [1]}):
+        try:
+            request("/api/settings", {"web_chats": bad})
+            raise RuntimeError("Invalid chat settings were accepted: " + json.dumps(bad))
+        except HTTPError as error:
+            check(error.code == 400, f"Expected HTTP 400 for invalid chat settings, got {error.code}")
+    # Wallpaper, layout, motion, sounds, haptics, per-chat wallpapers, and saved palettes are cleaned like the phone's choices.
+    look = {"theme": "love", "mode": "dark", "wallpaper": "aurora", "searchPosition": "top", "toolbarFinish": "floating", "chromeOpacity": 60,
+            "density": "compact", "tails": True, "speed": 0, "sendSound": "silent", "receiveSound": "fluid", "haptics": "confirm",
+            "chatWallpapers": {"web-fixture": "orchard"}, "palettes": {"Sunny": {"theme": "ember", "colors": {"sms": "#ffd60a"}}},
+            "activePalette": "Sunny"}
+    noisy = {**look, "wallpaper": "url(x)", "chromeOpacity": 5, "speed": 9000, "haptics": "buzz", "tails": "yes",
+             "chatWallpapers": {"web-fixture": "orchard", "other": "javascript:"}, "activePalette": "Missing",
+             "palettes": {"Sunny": {"theme": "ember", "colors": {"sms": "#ffd60a", "ink": "url(x)"}}, "": {"theme": "fluid"}}}
+    saved = request("/api/settings", {"web_appearance": noisy})["web_appearance"]
+    dropped = ("wallpaper", "chromeOpacity", "speed", "haptics", "tails", "activePalette")
+    check(saved == {key: value for key, value in look.items() if key not in dropped}, "Appearance extras weren't cleaned: " + json.dumps(saved))
+    check(request("/api/settings", {"web_appearance": look})["web_appearance"] == look, "Appearance extras weren't saved")
+    web_details_effects_test(request)
+
+
+def web_details_effects_test(request):
+    """Conversation details and members, call icons, the floating ⋯ menu, capped effects, and the sample inbox's fixtures."""
+    import sqlite3
+    for path, expected in (("/chats.js", b"function threadMembers"), ("/chats.js", b"function detailsPage"), ("/companion.js", b"function reachTiles"),
+                           ("/app.js", b"function placeMessageMenu"), ("/cards.js", b"EFFECT_WAITING"), ("/cards.js", b"function stopEffects"),
+                           ("/welcome.js", b"root.guideFlow?.stop()"), ("/features.css", b".details-page"), ("/style.css", b".message-tools.floats")):
+        check(expected in request(path, authorized=False), f"Missing {expected.decode()} in {path}")
+    check(b'id="head-info"' in request("/", authorized=False), "The chat's name doesn't open its details")
+    companion_js, cards_js, chats_js = (request(path, authorized=False) for path in ("/companion.js", "/cards.js", "/chats.js"))
+    # Video calls use a camera, never the people icon; canvases never take the raw device pixel ratio.
+    check(b"headButton('meeting'" not in companion_js and b"meeting: 'M16 11a3" not in companion_js, "A video call button uses the people icon")
+    check(b"canvas.width = innerWidth * scale" not in cards_js, "Effects draw full-window canvases at the device pixel ratio")
+    # The sample like is Maya's on your message, so it must not say "(my message)", which would mean her own.
+    check("Liked “See you there!” (my message)".encode() not in chats_js, "The sample reaction can't fold onto its message")
+    # IRC channels' members reach the browser for a group's details.
+    with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db, db:
+        db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('channel:irc-fixture', ?)",
+                   (json.dumps({"name": "#fixture", "topic": "Fictional topic", "members": ["mosaic", "kestrel"]}),))
+    channels = request("/api/inbox").get("channels", {})
+    check(channels.get("irc-fixture", {}).get("members") == ["mosaic", "kestrel"], "Channel members aren't in the inbox snapshot")
 
 
 def cloud_smoke_test():
@@ -982,6 +1061,243 @@ def local_access_test():
     print("PASS  this computer opens without a password; proxies, other hosts, other sites, and other devices sign in; FLUID_LOCAL_ONLY; icons")
 
 
+def erase_test():
+    """Settings → Privacy and security → Erase everything on this server: a signed-in browser only, CSRF, the word ERASE,
+    the password again, a rate limit, and afterward nothing of the old data, sessions, tokens, or password is left."""
+    import sqlite3
+    password = "copper lantern meadow"
+    with companion(free_port(), "") as (origin, request, _):
+        opener = build_opener(ProxyHandler({}))
+
+        def call(path, body=None, cookie=None, headers=None):
+            sent = {"X-Fluid-Request": "1", "Content-Type": "application/json", "Origin": origin, **(headers or {})}
+            sent = {key: value for key, value in sent.items() if value is not None}
+            if cookie:
+                sent["Cookie"] = cookie
+            data = json.dumps(body).encode() if body is not None else None
+            try:
+                with opener.open(Request(origin + path, data=data, headers=sent), timeout=30) as response:
+                    return response.status, json.loads(response.read() or b"{}"), response.headers
+            except HTTPError as error:
+                return error.code, json.loads(error.read() or b"{}"), error.headers
+
+        def sign_in_here():
+            status, _, headers = call("/api/auth/local", {})
+            check(status == 200, "This computer couldn't open the app")
+            return headers.get("Set-Cookie").split(";")[0]
+
+        cookie = sign_in_here()
+        check(call("/api/auth/password", {"password": password}, cookie=cookie)[0] == 200, "Couldn't set the web password")
+        token = call("/api/auth/pairing", {}, cookie=cookie)[1]["token"]
+        bearer = {"Authorization": "Bearer " + token}
+        # Fictional data in every place the server keeps it.
+        now = int(time.time() * 1000)
+        request("/api/sync", {"messages": sample_messages()}, authorized=False, extra_headers=bearer)
+        request("/api/schedule", {"address": "+12025550123", "body": "Fictional queued text", "due": now + 3_600_000},
+                authorized=False, extra_headers=bearer)
+        request("/api/protocols/upload", b"fictional upload", authorized=False,
+                extra_headers={**bearer, "Content-Type": "text/plain", "X-Fluid-Name": "note.txt"})
+        check(call("/api/protocols/accounts", {"protocol": "email", "fields": {"address": "me@example.test", "imap_host": "imap.example.test",
+              "imap_password": "fixture-secret", "smtp_host": "smtp.example.test"}}, cookie=cookie)[0] == 200, "Couldn't save a fixture account")
+        check(call("/api/settings", {"prefs": {"games": False}, "welcomed": True, "web_appearance": {"theme": "love", "mode": "dark"}},
+                   cookie=cookie)[0] == 200, "Couldn't save fixture settings")
+        files = request.directory / "protocol-files"
+        with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db, db:
+            db.execute("INSERT INTO protocol_messages VALUES ('web-erase-me', ?, ?)", (now, json.dumps(
+                {"id": "web-erase-me", "address": "web-fixture", "protocol": "matrix", "title": "Fixture", "body": "Fictional",
+                 "date": now, "type": 1, "read": 0, "attachment": {"name": "a.txt", "mime": "text/plain", "size": 9}})))
+        (files / "web-erase-me").write_bytes(b"fictional")
+        (files / "matrix-store").mkdir(exist_ok=True)
+        (files / "matrix-store" / "pickle.key").write_text("fixture")
+        (request.directory / "rclone.conf").write_text("[fixture]\ntype = local\n")
+        accounts_file = request.directory / "protocol-accounts.json"
+        check(accounts_file.is_file() and any((files / "uploads").iterdir()), "The fixture account or upload wasn't stored")
+
+        confirm = {"confirm": "ERASE", "password": password}
+        check(call("/api/erase", confirm)[0] == 401, "Erase worked without signing in")
+        check(call("/api/erase", confirm, headers=bearer)[0] == 403, "Erase worked with the phone's pairing token")
+        for refused, why in (({"X-Fluid-Request": None}, "without the page's header"), ({"Sec-Fetch-Site": "cross-site"}, "cross-site"),
+                             ({"Origin": "https://evil.example"}, "from another site")):
+            check(call("/api/erase", confirm, cookie=cookie, headers=refused)[0] == 403, "Erase worked " + why)
+        check(call("/api/erase", {**confirm, "confirm": "erase"}, cookie=cookie)[0] == 400, "Erase worked without typing ERASE")
+        check(call("/api/erase", {**confirm, "password": "not the password"}, cookie=cookie)[0] == 403, "Erase worked with a wrong password")
+        check(call("/api/erase", {"confirm": "ERASE"}, cookie=cookie)[0] == 403, "Erase worked without the password")
+        check(len(call("/api/inbox", cookie=cookie)[1]["messages"]) == 4, "A refused erase deleted something")
+
+        status, result, headers = call("/api/erase", confirm, cookie=cookie)
+        check(status == 200 and result == {"erased": True}, "Erase failed: " + json.dumps(result))
+        check('"storage"' in (headers.get("Clear-Site-Data") or "") and any("Max-Age=0" in item for item in headers.get_all("Set-Cookie")),
+              "Erase didn't tell the browser to forget its cookie and stored data")
+        check(call("/api/inbox", cookie=cookie)[0] == 401, "The old browser session still works after erasing")
+        try:
+            request("/api/inbox", authorized=False, extra_headers=bearer)
+            raise RuntimeError("The phone's pairing token still works after erasing")
+        except HTTPError as error:
+            check(error.code == 401, f"Expected HTTP 401 for the old pairing token, got {error.code}")
+        with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db:
+            tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+            left = {table: db.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in tables}
+        check({"inbox", "jobs", "protocol_messages", "auth_state", "auth_sessions"} <= set(tables) and not any(left.values()),
+              "Rows were left after erasing: " + json.dumps(left))
+        raw = (request.directory / "demo.sqlite").read_bytes()
+        check(b"Fictional queued text" not in raw and b"fixture-secret" not in raw, "Erased text is still in the database file")
+        check(not accounts_file.exists() and not (files / "web-erase-me").exists() and not (files / "matrix-store").exists()
+              and (files / "uploads").is_dir() and not any((files / "uploads").iterdir()), "Account, attachment, upload, or key files were left")
+        check((request.directory / "rclone.conf").is_file(), "Erase removed the server admin's rclone configuration")
+        check((request.directory / "setup-code").is_file(), "Erase didn't make a new setup code for other devices")
+        # A fresh start: no password, this computer opens it, and the first-run welcome shows again.
+        check(call("/api/auth")[1] == {"owner": False, "signed_in": False, "local": True}, "The server isn't like a new install after erasing")
+        cookie = sign_in_here()
+        settings = call("/api/settings", cookie=cookie)[1]
+        check(settings["welcomed"] is False and settings["prefs"]["games"] is True and settings["web_appearance"] == {"theme": "fluid", "mode": "system"},
+              "Settings weren't erased: " + json.dumps({key: settings[key] for key in ("welcomed", "prefs", "web_appearance")}))
+        snapshot = call("/api/inbox", cookie=cookie)[1]
+        check(snapshot["messages"] == [] and snapshot["accounts"] == [] and snapshot["updated"] is None, "Messages or accounts are left")
+        check(call("/api/jobs", cookie=cookie)[1] == [], "The phone's queue wasn't emptied")
+        # Five tries in ten minutes from one address, then it waits.
+        check(call("/api/erase", {"confirm": "no"}, cookie=cookie)[0] == 400, "A wrong word wasn't refused")
+        check(call("/api/erase", {"confirm": "ERASE"}, cookie=cookie)[0] == 429, "Repeated erase tries weren't rate-limited")
+    print("PASS  erase everything: browser session, CSRF, ERASE and password, rate limit; data, accounts, files, tokens, sessions gone; fresh welcome")
+
+
+def merge_test():
+    """Phone and web merge: auth and CSRF, a conflict settled in the browser, the phone picking it up, stickers."""
+    token = secrets.token_hex(24)
+    with companion(free_port(), token) as (origin, request, _):
+        opener = build_opener(ProxyHandler({}))
+
+        def call(path, body=None, cookie=None, headers=None, bearer=False, raw=False):
+            sent = {"X-Fluid-Request": "1", "Content-Type": "application/json", "Origin": origin, **(headers or {})}
+            if bearer:
+                sent = {"Authorization": "Bearer " + token, "Content-Type": "application/json", **(headers or {})}
+            sent = {key: value for key, value in sent.items() if value is not None}
+            if cookie:
+                sent["Cookie"] = cookie
+            data = body if isinstance(body, bytes) else json.dumps(body).encode() if body is not None else None
+            try:
+                with opener.open(Request(origin + path, data=data, headers=sent), timeout=15) as response:
+                    content = response.read()
+                    return response.status, content if raw else json.loads(content or b"{}"), response.headers
+            except HTTPError as error:
+                return error.code, json.loads(error.read() or b"{}"), error.headers
+
+        status, _, headers = call("/api/auth/local", {})
+        check(status == 200, "This computer couldn't open FluidMessages Web for the merge test")
+        cookie = headers.get_all("Set-Cookie")[0].split(";")[0]
+        # Who may do what
+        check(call("/api/merge", headers={"Origin": None, "X-Fluid-Request": None})[0] == 401, "The merge answered without signing in")
+        check(call("/api/merge", {"revision": ""}, cookie=cookie)[0] == 403, "A browser posted a merge; only the phone does")
+        check(call("/api/merge/resolve", {"id": "x", "choices": {}}, cookie=cookie, headers={"X-Fluid-Request": None})[0] == 403,
+              "CSRF: settling without the page's header worked")
+        check(call("/api/merge/resolve", {"id": "x", "choices": {}}, cookie=cookie, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403,
+              "CSRF: settling from another site worked")
+        check(call("/api/merge", bearer=True, headers={"Authorization": "Bearer " + "0" * 64})[0] == 401, "A wrong token read the merge")
+
+        # The web's own settings before the phone ever connects (fictional chats)
+        web_chats = {"pinned": ["+15550101"], "archived": ["+15550102"], "blocked": [], "muted": ["+15550105"], "locks": {},
+                     "senders": {"+15550106": "automated"}}
+        status, _, _ = call("/api/settings", {"web_appearance": {"theme": "ember", "mode": "dark"}, "web_chats": web_chats,
+                                              "disappearing": {"default": 0, "chats": {"+15550103": 3600}},
+                                              "web_extras": {"gifs": {"own": [{"name": "Kittens", "search": "https://gifs.example.net/s/{query}"}], "off": ["imgur"]},
+                                                             "money": {"custom": [{"name": "Tips jar", "template": "https://pay.example.net/{address}/{amount}"},
+                                                                                  {"name": "Bad", "template": "javascript:{address}"}], "default": "Tips jar"}}},
+                            cookie=cookie)
+        check(status == 200, "The web's settings weren't saved")
+        check(call("/api/settings", {"web_chats": {**web_chats, "senders": {"+1": "robot"}}}, cookie=cookie)[0] == 400, "A bad sender type was kept")
+        status, state, _ = call("/api/merge", bearer=True)
+        web = state["web"]
+        check(status == 200 and state["supported"] == 1 and state["pair"] is None and state["baseline"] is None and state["pending"] is None,
+              "A new server should have nothing merged yet")
+        expected = {"look:theme": "ember", "look:mode": "dark", "folder:+15550101": "pinned", "folder:+15550102": "archived",
+                    "muted:+15550105": "on", "sender:+15550106": "automated", "timer:+15550103": "3600",
+                    "gif:Kittens": "https://gifs.example.net/s/{query}", "gifoff:imgur": "off",
+                    "pay:Tips jar": "https://pay.example.net/{address}/{amount}", "pay:*": "Tips jar"}
+        check(web == expected, "The web's items are wrong: " + json.dumps(web))
+        check("pay:Bad" not in web, "An unsafe payment link was kept")
+
+        # The phone (SyncMerge.kt) merged and found two true conflicts; everything else is unioned.
+        phone = {"look:theme": "midnight", "folder:+15550102": "pinned", "folder:+15550104": "pinned", "fun:games": "off",
+                 "timer:+15550103": "3600"}
+        union_web = {"folder:+15550104": "pinned", "fun:games": "off"}
+        baseline = {key: value for key, value in {**web, **phone}.items() if key not in ("look:theme", "folder:+15550102")}
+        post = {"revision": state["revision"], "apply_web": union_web, "baseline": baseline,
+                "conflicts": [{"key": "look:theme", "phone": "midnight", "phone_t": 1700000000000},
+                              {"key": "folder:+15550102", "phone": "pinned"},
+                              {"key": "timer:+15550103", "phone": "3600"}]}
+        check(call("/api/merge", {**post, "revision": "stale"}, bearer=True)[0] == 409, "A merge from a stale look was accepted")
+        check(call("/api/merge", {**post, "apply_web": {"nope": "1"}}, bearer=True)[0] == 400, "An unknown item was accepted")
+        status, after, _ = call("/api/merge", post, bearer=True)
+        check(status == 200 and after["pair"] and len(after["pending"]["conflicts"]) == 2, "The merge didn't keep two conflicts")
+        theme = next(item for item in after["pending"]["conflicts"] if item["key"] == "look:theme")
+        check(theme["web"] == "ember" and theme["phone"] == "midnight" and theme["phone_t"] == 1700000000000 and theme["web_t"] > 0,
+              "A conflict should carry both values and when each changed")
+        snapshot = call("/api/inbox", cookie=cookie)[1]
+        check(snapshot["merge"]["active"] and len(snapshot["merge"]["pending"]["conflicts"]) == 2, "The browser doesn't see the conflicts")
+        check(snapshot["prefs"]["games"] is False and "+15550104" in snapshot["web_chats"]["pinned"], "The union didn't reach the web")
+        # The phone's regular sync doesn't overwrite a timer that waits for a choice.
+        pending_id = after["pending"]["id"]
+
+        # Settled in the browser: the phone's theme, the web's folder.
+        choices = {"look:theme": "phone", "folder:+15550102": "web"}
+        check(call("/api/merge/resolve", {"id": "other", "choices": choices}, cookie=cookie)[0] == 409, "A stale choice was accepted")
+        check(call("/api/merge/resolve", {"id": pending_id, "choices": {"look:theme": "phone"}}, cookie=cookie)[0] == 400,
+              "A choice was accepted with a difference left open")
+        status, settled, _ = call("/api/merge/resolve", {"id": pending_id, "choices": choices}, cookie=cookie)
+        check(status == 200 and settled["pending"] is None and settled["resolved"]["picks"] == choices, "The choices weren't saved")
+        settings = call("/api/settings", cookie=cookie)[1]
+        check(settings["web_appearance"]["theme"] == "midnight" and "+15550102" in settings["web_chats"]["archived"]
+              and "+15550102" not in settings["web_chats"]["pinned"], "The browser's choices weren't applied on the web")
+        check(call("/api/merge/resolve", {"id": pending_id, "choices": choices}, cookie=cookie)[0] == 409, "The same choices were applied twice")
+
+        # The phone looks again: it writes the web's picks, and both sides hold the same items.
+        status, state, _ = call("/api/merge", bearer=True)
+        resolved = state["resolved"]
+        for key, pick in resolved["picks"].items():
+            if pick == "web":
+                phone[key] = resolved["values"][key]
+        phone.update(union_web)
+        phone.update({key: value for key, value in web.items() if key not in phone})
+        check(state["web"] == phone and state["baseline"] == phone, "The phone and the web don't end up the same")
+        status, state, _ = call("/api/merge", {"revision": state["revision"], "apply_web": {}, "baseline": phone, "conflicts": []}, bearer=True)
+        check(status == 200 and state["pending"] is None, "A clean merge left something to choose")
+
+        # Settled on the phone instead: the pairing token works, no CSRF header needed.
+        status, state, _ = call("/api/merge", {"revision": state["revision"], "apply_web": {}, "baseline": phone,
+                                               "conflicts": [{"key": "look:mode", "phone": "light"}]}, bearer=True)
+        check(status == 200 and state["pending"]["conflicts"][0]["web"] == "dark", "The second conflict wasn't kept")
+        status, state, _ = call("/api/merge/resolve", {"id": state["pending"]["id"], "choices": {"look:mode": "web"}}, bearer=True)
+        check(status == 200 and state["web"]["look:mode"] == "dark" and state["baseline"]["look:mode"] == "dark",
+              "Settling on the phone didn't work")
+
+        # While a timer waits for a choice, the phone's regular sync doesn't overwrite the web's side of it.
+        status, state, _ = call("/api/merge", {"revision": state["revision"], "apply_web": {}, "baseline": state["baseline"],
+                                               "conflicts": [{"key": "timer:+15550103", "phone": "60"}]}, bearer=True)
+        check(status == 200 and state["pending"]["conflicts"][0]["web"] == "3600", "The timer conflict wasn't kept")
+        call("/api/sync", {"messages": [], "privacy": {"disappearing": {"default": 0, "chats": {"+15550103": 60}}}}, bearer=True)
+        check(call("/api/settings", cookie=cookie)[1]["disappearing"]["chats"]["+15550103"] == 3600,
+              "The phone's sync overwrote a timer that waits for a choice")
+
+        # Stickers: a small fictional picture from the phone, listed for browsers, served as a download only.
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
+        status, sticker, _ = call("/api/stickers/upload", png, bearer=True, headers={"Content-Type": "image/png", "X-Fluid-Sticker": "sticker-1"})
+        check(status == 200 and sticker["mime"] == "image/png", "The phone couldn't add a sticker")
+        check(call("/api/stickers/upload", b"<svg/>", bearer=True, headers={"Content-Type": "image/png", "X-Fluid-Sticker": "sticker-2"})[0] == 400,
+              "Something other than a picture was kept as a sticker")
+        check(call("/api/stickers/upload", png, bearer=True, headers={"Content-Type": "image/svg+xml", "X-Fluid-Sticker": "sticker-3"})[0] == 400,
+              "An SVG sticker was kept")
+        check(call("/api/stickers/upload", png, cookie=cookie, headers={"Content-Type": "image/png", "X-Fluid-Sticker": "sticker-4",
+                                                                       "X-Fluid-Request": None})[0] == 403, "CSRF: a sticker upload worked")
+        status, content, headers = call("/api/stickers/file?id=sticker-1", headers={"Origin": None}, cookie=cookie, raw=True)
+        check(status == 200 and content == png and headers.get_content_type() == "application/octet-stream"
+              and headers["X-Fluid-Type"] == "image/png", "The sticker wasn't served as a download")
+        check(call("/api/merge", bearer=True)[1]["web"].get("sticker:sticker-1") == "1", "The sticker isn't an item")
+        call("/api/merge/stickers/delete", {"id": "sticker-1"}, cookie=cookie)
+        check(call("/api/stickers", cookie=cookie)[1]["stickers"] == [], "The sticker wasn't deleted")
+        stored = json.dumps([str(path) for path in request.directory.rglob("*")])
+        check(token not in stored, "The pairing token showed up in a file name")
+    print("PASS  phone and web merge: auth, CSRF, a settled conflict on both sides, and stickers")
+
+
 def find_apk(explicit):
     if explicit:
         return explicit.resolve()
@@ -1048,12 +1364,14 @@ def main():
         smoke_test()
         sign_in_test()
         local_access_test()
+        erase_test()
         cloud_smoke_test()
         gateway_relations_test()
         reaction_revisions_test()
         email_quotes_test()
         privacy_calls_test()
         protocol_accounts_test()
+        merge_test()
         android(args)
         if args.demo:
             demo(args.no_browser)

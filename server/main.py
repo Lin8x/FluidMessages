@@ -1,4 +1,5 @@
 """Single-phone LAN FluidMessages Web. Run behind a TLS reverse proxy."""
+import hashlib
 import json
 import os
 import re
@@ -6,6 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from contextlib import closing
 from http.cookies import CookieError, SimpleCookie
@@ -18,6 +20,7 @@ import auth
 import cloud_backup
 import link_fetch
 import protocol_gateway
+import sync_merge
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get("FLUID_DB", "data/fluid.sqlite"))
@@ -33,6 +36,10 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/companion.js": ("companion.js", "text/javascript"), "/call.js": ("shared/call.js", "text/javascript"),
          "/cards.js": ("cards.js", "text/javascript"), "/chess.js": ("shared/chess.js", "text/javascript"),
          "/welcome.js": ("welcome.js", "text/javascript"),
+         "/editor.js": ("editor.js", "text/javascript"), "/media.js": ("media.js", "text/javascript"),
+         "/chats.js": ("chats.js", "text/javascript"), "/look.js": ("look.js", "text/javascript"),
+         "/features.css": ("features.css", "text/css"), "/settings.js": ("settings.js", "text/javascript"),
+         "/sync-merge.js": ("sync-merge.js", "text/javascript"),
          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/sw.js": ("sw.js", "text/javascript"),
          "/favicon.ico": ("icons/favicon.ico", "image/x-icon"), "/icons/favicon-32.png": ("icons/favicon-32.png", "image/png"),
          "/icons/icon-192.png": ("icons/icon-192.png", "image/png"), "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
@@ -77,6 +84,11 @@ def appearance_snapshot(value):
             key: [entry for entry in folders[key][:2000] if isinstance(entry, str) and len(entry) <= 150]
             for key in ("pinned", "archived", "blocked") if isinstance(folders.get(key), list)
         }
+    senders = value.get("senderTypes")
+    if isinstance(senders, dict):
+        # Whether the phone treats a chat as an automated sender or a person.
+        clean["senderTypes"] = {key: kind for key, kind in list(senders.items())[:2000]
+                                if isinstance(key, str) and len(key) < 200 and kind in ("automated", "person")}
     return clean
 
 
@@ -101,8 +113,81 @@ def clean_web_appearance(value):
             clean[key] = value[key]
     colors = value.get("colors")
     if isinstance(colors, dict):
-        clean["colors"] = {key: colors[key] for key in OWN_COLORS
-                           if isinstance(colors.get(key), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", colors[key])}
+        clean["colors"] = clean_colors(colors)
+    clean.update(clean_look_extras(value))
+    return clean
+
+
+WALLPAPERS = ("none", "horizon", "aurora", "love", "orchard", "photo")
+LOOK_CHOICES = {"wallpaper": WALLPAPERS, "searchPosition": ("top", "bottom"), "toolbarFinish": ("plain", "tinted", "floating"),
+                "density": ("compact", "standard", "roomy"), "sendSound": ("silent", "fluid"), "receiveSound": ("silent", "fluid"),
+                "haptics": ("off", "soft", "tap", "confirm", "long")}
+
+
+def clean_colors(colors):
+    return {key: colors[key] for key in OWN_COLORS
+            if isinstance(colors.get(key), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", colors[key])}
+
+
+def clean_look_extras(value):
+    """Wallpaper, inbox layout, motion, sounds, and saved palettes, the same choices as the phone's appearance page."""
+    clean = {}
+    for key, allowed in LOOK_CHOICES.items():
+        if value.get(key) in allowed:
+            clean[key] = value[key]
+    if type(value.get("tails")) is bool:
+        clean["tails"] = value["tails"]
+    for key, lower, upper in (("chromeOpacity", 25, 100), ("speed", 0, 800)):
+        if type(value.get(key)) is int and lower <= value[key] <= upper:
+            clean[key] = value[key]
+    chats = value.get("chatWallpapers")
+    if isinstance(chats, dict):
+        clean["chatWallpapers"] = {key: item for key, item in list(chats.items())[:2000]
+                                   if isinstance(key, str) and len(key) <= 300 and item in WALLPAPERS}
+    palettes = value.get("palettes")
+    if isinstance(palettes, dict):
+        clean["palettes"] = {
+            name: {"theme": item.get("theme") if item.get("theme") in THEMES else "fluid",
+                   "colors": clean_colors(item["colors"]) if isinstance(item.get("colors"), dict) else {}}
+            for name, item in list(palettes.items())[:20]
+            if isinstance(name, str) and 0 < len(name.strip()) <= 40 and isinstance(item, dict)}
+    if isinstance(value.get("activePalette"), str) and value["activePalette"] in clean.get("palettes", {}):
+        clean["activePalette"] = value["activePalette"]
+    return clean
+
+
+def web_chats(db):
+    """Pinned, archived, blocked, and muted chats, and chat codes, kept by FluidMessages Web for every browser."""
+    row = db.execute("SELECT value FROM protocol_state WHERE key='web_chats'").fetchone()
+    return json.loads(row[0]) if row else {"pinned": [], "archived": [], "blocked": [], "muted": [], "locks": {}}
+
+
+def clean_web_chats(value):
+    if not isinstance(value, dict):
+        raise ValueError("Invalid chat settings")
+    clean = {}
+    for key in ("pinned", "archived", "blocked", "muted"):
+        items = value.get(key, [])
+        if not isinstance(items, list) or len(items) > 2000 or any(not isinstance(item, str) or len(item) > 300 for item in items):
+            raise ValueError("Invalid chat settings")
+        clean[key] = list(dict.fromkeys(items))
+    locks = value.get("locks", {})
+    if not isinstance(locks, dict) or len(locks) > 2000:
+        raise ValueError("Invalid chat codes")
+    clean["locks"] = {}
+    for key, lock in locks.items():
+        # Only a salted PBKDF2 hash of each chat code is kept, never the code.
+        if not isinstance(key, str) or len(key) > 300 or not isinstance(lock, dict) \
+                or not all(isinstance(lock.get(part), str) and re.fullmatch(r"[0-9a-f]{32,128}", lock[part]) for part in ("salt", "hash")):
+            raise ValueError("Invalid chat codes")
+        clean["locks"][key] = {"salt": lock["salt"], "hash": lock["hash"]}
+    senders = value.get("senders", {})
+    if not isinstance(senders, dict) or len(senders) > 2000 or any(
+            not isinstance(key, str) or len(key) >= 200 or kind not in ("automated", "person") for key, kind in senders.items()):
+        raise ValueError("Invalid chat settings")
+    if senders:
+        # Automated sender or person, per chat, as the phone sets it (combined by the merge).
+        clean["senders"] = dict(senders)
     return clean
 
 
@@ -123,6 +208,23 @@ def clean_prefs(value, current):
     return {**current, **value}
 
 
+def delete_for_me(db, data):
+    """Delete for me: removes FluidMessages Web's copy of an internet message and its file. Other people keep theirs.
+    A message still waiting to send is cancelled first, so the queue never sends something that was deleted."""
+    key = data.get("id")
+    if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", key):
+        raise ValueError("Invalid message")
+    if not db.execute("SELECT 1 FROM protocol_messages WHERE id=?", (key,)).fetchone():
+        raise ValueError("That message is already gone")
+    db.execute("UPDATE protocol_jobs SET state='cancelled' WHERE id=? AND state='queued'", (key,))
+    db.execute("DELETE FROM protocol_messages WHERE id=?", (key,))
+    try:
+        gateway.file_path(key).unlink(missing_ok=True)
+    except (ValueError, OSError):
+        pass
+    return {"deleted": key}
+
+
 def welcomed(db):
     """First-run welcome is done, or this install was in use before it existed."""
     if db.execute("SELECT 1 FROM protocol_state WHERE key='welcomed'").fetchone():
@@ -135,7 +237,114 @@ def settings_view(db):
     """FluidMessages Web's own settings, and whether a phone has synced, so the browser works with or without one."""
     row = db.execute("SELECT updated FROM inbox WHERE id=1").fetchone()
     return {**gateway.settings(db), "web_appearance": web_appearance(db), "prefs": web_prefs(db), "welcomed": welcomed(db),
-            "phone": {"paired": row is not None, "last_sync": row[0] if row else None}}
+            "web_chats": web_chats(db), "phone":{"paired": row is not None, "last_sync": row[0] if row else None},
+            **merge_snapshot(db)}
+
+
+def web_extras(db):
+    row = db.execute("SELECT value FROM protocol_state WHERE key='web_extras'").fetchone()
+    return sync_merge.clean_extras(json.loads(row[0])) if row else None
+
+
+def merge_snapshot(db):
+    """What sync-merge.js needs on every refresh: differences waiting for a choice, and the shared extras."""
+    stickers = merger.stickers(db)
+    return {"merge": merger.summary(db), "web_extras": web_extras(db),
+            "stickers_rev": hashlib.sha256(json.dumps(sorted(stickers)).encode()).hexdigest()[:16]}
+
+
+def merge_hooks():
+    def save_appearance(db, look):
+        db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_appearance', ?)", (json.dumps(clean_web_appearance(look)),))
+
+    def save_prefs(db, prefs):
+        db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('prefs', ?)", (json.dumps(clean_prefs(prefs, web_prefs(db))),))
+
+    def save_chats(db, chats):
+        db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_chats', ?)", (json.dumps(clean_web_chats(chats)),))
+
+    return {"appearance": lambda db: dict(web_appearance(db)), "prefs": web_prefs,
+            "chats": lambda db: {**{"pinned": [], "archived": [], "blocked": [], "muted": [], "locks": {}}, **web_chats(db)},
+            "save_appearance": save_appearance, "save_prefs": save_prefs, "save_chats": save_chats}
+
+
+class EraseLimiter:
+    """Erase everything on this server: at most 5 tries in 10 minutes from one address, and 20 from everywhere."""
+
+    def __init__(self, clock=time.time):
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.tries = {}
+        self.everyone = []
+
+    def allow(self, client):
+        now = self.clock()
+        with self.lock:
+            self.everyone = [moment for moment in self.everyone if now - moment < 600]
+            mine = [moment for moment in self.tries.get(client, []) if now - moment < 600]
+            if len(mine) >= 5 or len(self.everyone) >= 20:
+                self.tries[client] = mine
+                return False
+            self.tries[client] = mine + [now]
+            self.everyone.append(now)
+            if len(self.tries) > 10_000:
+                self.tries = {key: value for key, value in self.tries.items() if value and now - value[-1] < 600}
+            return True
+
+
+ERASE_LIMIT = EraseLimiter()
+MESSAGE_FILE = re.compile(r"[A-Za-z0-9_-]{1,120}")
+
+
+def erase_files(ids):
+    """Attachments (one file per message id), uploads waiting for a message, and the Matrix encryption store. In a
+    files folder of its own every message-named file goes; when FLUID_FILES shares the database's folder, only the
+    files of messages it knew about, so nothing else in that folder is touched. Links are removed, never followed."""
+    root = gateway.files
+    if not root.is_dir():
+        return
+    dedicated = root.resolve() != DB.parent.resolve()
+    known = {name for name in ids if isinstance(name, str) and MESSAGE_FILE.fullmatch(name)}
+    for entry in root.iterdir():
+        if entry.name == "uploads" and entry.is_dir() and not entry.is_symlink():
+            for item in entry.iterdir():
+                if item.is_symlink() or item.is_file():
+                    item.unlink(missing_ok=True)
+        elif entry.name in ("matrix-store", "stickers") and entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+        elif (entry.is_symlink() or entry.is_file()) and (entry.name in known or dedicated and MESSAGE_FILE.fullmatch(entry.name)):
+            entry.unlink(missing_ok=True)
+    (root / "uploads").mkdir(parents=True, exist_ok=True)
+
+
+def erase_everything():
+    """Settings → Privacy and security → Erase everything on this server. Deletes this server's messages, chats,
+    the phone's queued texts, chat accounts and their passwords, settings, pairing tokens, sessions, and the web
+    password, then starts over as a new install, so the first-run welcome appears. FLUID_TOKEN, Docker Compose
+    accounts, the server's protocol config file, and rclone's cloud destinations are the server admin's and stay."""
+    gateway.erase()
+    store = gateway.accounts
+    with store.lock:
+        for path in (store.path, store.path.with_suffix(".tmp")):
+            path.unlink(missing_ok=True)
+        store.generation += 1
+    with closing(connect()) as db:
+        db.execute("BEGIN IMMEDIATE")
+        ids = [row[0] for row in db.execute("SELECT id FROM protocol_messages UNION SELECT id FROM protocol_uploads")]
+        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+        for table in tables:
+            db.execute('DELETE FROM "%s"' % table.replace('"', '""'))
+        db.commit()
+        # Rewrites the file so deleted rows don't linger in free pages or the write-ahead log.
+        db.execute("VACUUM")
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    erase_files(ids)
+    gateway.erase()
+    authority.code_file.unlink(missing_ok=True)
+    with closing(connect()) as db, db:
+        code = authority.setup_code(db)
+    print("FluidMessages Web: everything on this server was erased. Open it on this computer to start again, or set it up "
+          "from another device with this one-time setup code: %s" % authority.pretty(code), flush=True)
 
 
 def connect():
@@ -163,6 +372,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "FluidMessages"
     sys_version = ""
     session_key = None
+    kind = None
 
     def log_message(self, format, *args):
         # Paths only: query strings can hold links from messages or a GIF key, and logs never show those.
@@ -261,6 +471,7 @@ class Handler(BaseHTTPRequestHandler):
         with closing(connect()) as db, db:
             if header.startswith("Bearer "):
                 if authority.check_token(db, header[7:]):
+                    self.kind = "token"
                     return "token"
                 self.reply(401, {"error": "That access token isn't right", "signed_out": True})
                 return None
@@ -273,6 +484,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(403, {"error": "This request didn't come from FluidMessages Web"})
             return None
         self.session_key = key
+        self.kind = "session"
         return "session"
 
     def read_json(self, limit=64_000):
@@ -399,6 +611,10 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             self.send_file(match[1])
             return
+        match = re.fullmatch(r"/api/stickers/file\?id=([A-Za-z0-9_-]{1,80})", self.path)
+        if match:
+            self.send_sticker(match[1])
+            return
         with closing(connect()) as db:
             if self.path == "/api/inbox":
                 row = db.execute("""
@@ -411,12 +627,15 @@ class Handler(BaseHTTPRequestHandler):
                 messages = phone + history["messages"]
                 messages.sort(key=lambda message: message["date"], reverse=True)
                 self.reply(200, {"messages": messages, "routes": history["routes"], "enabled": history["enabled"],
+                                 # IRC channels' topics and member lists, for a group's details.
+                                 "channels": history["channels"],
                                  "accounts": history["accounts"],
                                  "updated": row["updated"] if row else None,
                                  "appearance": json.loads(row["appearance"]) if row and row["appearance"] else {},
                                  # Which settings the browser uses: the phone's (the default) or its own.
                                  "follow_phone": settings["follow_phone"], "web_appearance": web_appearance(db),
-                                 "prefs": web_prefs(db), "welcomed": welcomed(db)})
+                                 "prefs": web_prefs(db), "welcomed": welcomed(db), "web_chats": web_chats(db),
+                                 **merge_snapshot(db)})
             elif self.path.startswith("/api/calls?since="):
                 since = self.path.removeprefix("/api/calls?since=")
                 self.reply(200, gateway.call_events(int(since) if since.isdigit() else 0))
@@ -424,6 +643,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, gateway.ice_servers())
             elif self.path == "/api/settings":
                 self.reply(200, settings_view(db))
+            elif self.path == "/api/merge":
+                with db:
+                    self.reply(200, merger.view(db))
+            elif self.path == "/api/stickers":
+                self.reply(200, {"stickers": [{"id": key, **entry} for key, entry in merger.stickers(db).items()]})
             elif self.path == "/api/protocols/accounts":
                 self.reply(200, {"accounts": gateway.accounts.redacted(), "xmpp": protocol_gateway.xmpp_client.available()})
             elif self.path == "/api/jobs":
@@ -472,20 +696,94 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in AUTH_OPEN:
             self.auth_request(self.path)
             return
-        if not self.authorize(changing=True):
+        kind = self.authorize(changing=True)
+        if not kind:
+            return
+        if self.path == "/api/erase":
+            self.erase(kind)
             return
         if self.path == "/api/protocols/upload":
             self.upload()
             return
+        if self.path == "/api/stickers/upload":
+            self.sticker_upload()
+            return
         try:
             data = self.read_json(8_000_000)
-            response = self.account_security(data) if self.path.startswith("/api/auth/") else self.mutate(data)
+            if self.path.startswith("/api/merge"):
+                response = self.merge(data)
+            else:
+                response = self.account_security(data) if self.path.startswith("/api/auth/") else self.mutate(data)
         except auth.Refused as error:
             self.reply(error.status, {"error": str(error)})
+        except sync_merge.Conflict as error:
+            self.reply(409, {"error": str(error)})
         except (KeyError, ValueError, TypeError) as error:
             self.reply(400, {"error": str(error)})
         else:
             self.reply(200, response)
+
+    def erase(self, kind):
+        """Erase everything on this server. Only from a signed-in browser (never a phone or access token), with the
+        page's own CSRF header, the word ERASE, and the password again when there is one. Rate-limited."""
+        if kind != "session":
+            self.reply(403, {"error": "Erase everything from FluidMessages Web in a browser."})
+            return
+        client = self.client()
+        if not ERASE_LIMIT.allow(client):
+            self.reply(429, {"error": "Too many tries. Wait 10 minutes and try again."})
+            return
+        try:
+            data = self.read_json()
+            if data.get("confirm") != "ERASE":
+                raise ValueError("Type ERASE to confirm.")
+            with closing(connect()) as db, db:
+                authority.confirm_password(db, client, data.get("password"))
+            erase_everything()
+        except auth.Refused as error:
+            self.reply(error.status, {"error": str(error)})
+        except (ValueError, TypeError) as error:
+            self.reply(400, {"error": str(error)})
+        else:
+            # Every browser is signed out (the sessions are gone); this one also forgets its cookie and stored data.
+            self.reply(200, {"erased": True}, headers=[*self.clear_cookies(), ("Clear-Site-Data", '"cache", "storage"')])
+
+    def merge(self, data):
+        """Combining the phone's and the web's settings (sync_merge.py). Only the phone posts a merge; either the phone
+        or a signed-in browser (with the page's CSRF header, checked in authorize) can settle the differences."""
+        with closing(connect()) as db, db:
+            if self.path == "/api/merge":
+                if self.kind != "token":
+                    raise auth.Refused(403, "Only your phone sends a merge.")
+                return merger.post(db, data)
+            if self.path == "/api/merge/resolve":
+                return merger.resolve(db, data)
+            if self.path == "/api/merge/stickers/delete":
+                merger.delete_sticker(db, data.get("id"))
+                return {"stickers": [{"id": key, **entry} for key, entry in merger.stickers(db).items()]}
+        raise ValueError("Unknown endpoint")
+
+    def sticker_upload(self):
+        self.connection.settimeout(60)
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            with closing(connect()) as db, db:
+                response = merger.add_sticker(db, self.headers.get("X-Fluid-Sticker", ""), self.headers.get("Content-Type", ""),
+                                              self.rfile, size)
+        except (ValueError, OSError) as error:
+            self.reply(400, {"error": str(error)})
+        else:
+            self.reply(200, response)
+
+    def send_sticker(self, key):
+        with closing(connect()) as db:
+            path, entry = merger.sticker_path(db, key)
+        if not path or not path.is_file():
+            self.reply(404, {"error": "Sticker not found"})
+            return
+        # Served as a download, like attachments, so it never renders inside this origin by itself.
+        self.reply(200, path.read_bytes(), "application/octet-stream",
+                   headers=[("Content-Disposition", "attachment; filename=" + key + ".sticker"), ("X-Fluid-Type", entry["mime"])])
 
     def upload(self):
         self.connection.settimeout(130)
@@ -526,6 +824,12 @@ class Handler(BaseHTTPRequestHandler):
         now = int(time.time() * 1000)
         with closing(connect()) as db, db:
             if self.path == "/api/protocols":
+                if self.kind == "session" and data.get("enabled") is not None:
+                    # The web's own choice, kept apart from what the phone reports, so a merge can compare them.
+                    chosen = data["enabled"]
+                    if isinstance(chosen, list):
+                        db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_enabled', ?)",
+                                   (json.dumps([key for key in sync_merge.INTERNET if key in chosen]),))
                 return gateway.snapshot(db, data.get("enabled"))
             if self.path == "/api/protocols/send":
                 return gateway.enqueue(db, data)
@@ -538,6 +842,8 @@ class Handler(BaseHTTPRequestHandler):
                 return {"accounts": gateway.accounts.redacted()}
             if self.path == "/api/protocols/read":
                 return gateway.mark_read(db, data)
+            if self.path == "/api/protocols/delete":
+                return delete_for_me(db, data)
             if self.path == "/api/protocols/routes":
                 return gateway.add_route(db, data)
             if self.path == "/api/calls/send":
@@ -551,6 +857,12 @@ class Handler(BaseHTTPRequestHandler):
                 if "prefs" in data:
                     db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('prefs', ?)",
                                (json.dumps(clean_prefs(data.pop("prefs"), web_prefs(db))),))
+                if "web_chats" in data:
+                    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_chats', ?)",
+                               (json.dumps(clean_web_chats(data.pop("web_chats"))),))
+                if "web_extras" in data:
+                    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_extras', ?)",
+                               (json.dumps(sync_merge.clean_extras(data.pop("web_extras"))),))
                 if data.pop("welcomed", None) is True:
                     db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('welcomed', 'true')")
                 if data.get("reset") is True:
@@ -576,6 +888,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("Invalid MMS thumbnail")
                 privacy = data.get("privacy")
                 if isinstance(privacy, dict):
+                    merger.hold_timers(db, privacy)
                     gateway.save_settings(db, privacy, from_phone=True)
                 db.execute("INSERT OR REPLACE INTO inbox VALUES (1, ?, ?)", (json.dumps(messages), now))
                 db.execute("INSERT OR REPLACE INTO phone_appearance VALUES (1, ?)",
@@ -685,5 +998,6 @@ if __name__ == "__main__":
     legacy = protocol_gateway.configured()
     account_store = accounts.AccountStore(DB.parent / "protocol-accounts.json", legacy=legacy)
     gateway = protocol_gateway.Gateway(connect, legacy, files, account_store)
+    merger = sync_merge.Merge(gateway, merge_hooks())
     gateway.start()
     ThreadingHTTPServer((os.environ.get("FLUID_BIND", "127.0.0.1"), int(os.environ.get("FLUID_PORT", 8080))), Handler).serve_forever()

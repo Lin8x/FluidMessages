@@ -8,7 +8,7 @@
 <meta property="og:title" content="FluidMessages">
 <meta property="og:description" content="Your texts, calls, and chats in one private, beautiful app. Open source.">
 <meta property="og:image" content="icon-512.png">
-<meta name="theme-color" content="#3bb85f">
+<meta name="theme-color" content="#1fc144">
 <link rel="icon" href="icon-192.png">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -17,6 +17,7 @@
   <a class="brand" href="#"><img src="icon-192.png" alt="" width="32" height="32">FluidMessages</a>
   <nav aria-label="Site">
     <a href="#features">Features</a>
+    <a href="#cards">In chats</a>
     <a href="#download">Download</a>
     <a href="#self-host">Self-host</a>
     <a class="pill" href="https://github.com/Lin8x/FluidMessages">GitHub</a>
@@ -25,76 +26,119 @@
 
 <main>
   <section class="hero">
+    <div class="glow" aria-hidden="true"><span class="g1"></span><span class="g2"></span><span class="g3"></span></div>
     <div class="hero-copy">
-      <p class="eyebrow">Open source · Android · Web · Desktop</p>
-      <h1>Your texts, calls, and chats.<br><span>One private app.</span></h1>
-      <p class="lead">FluidMessages brings regular texts together with Matrix, XMPP, Email, and IRC, in one inbox that's easy to use and private by design, with calling built in.</p>
-      <div class="actions">
-        <a class="button primary" href="https://github.com/Lin8x/FluidMessages/releases/latest">Download on GitHub</a>
-        <a class="button" href="https://github.com/Lin8x/FluidMessages">View the source</a>
+      <p class="eyebrow reveal">Open source · Android · Web · Desktop</p>
+      <h1 class="reveal">Your texts, calls, and chats.<br><span class="shine">One private app.</span></h1>
+      <p class="lead reveal">FluidMessages brings regular texts together with Matrix, XMPP, Email, and IRC, in one inbox that's easy to use and private by design, with calling built in.</p>
+      <div class="actions reveal">
+        <a class="button primary" data-download href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk">Download for Android</a>
+        <a class="button" href="#download">Other downloads</a>
       </div>
-      <p class="fine">Free forever. No ads, no tracking, no account needed.</p>
+      <p class="fine reveal">Free forever. No ads, no tracking, no account needed.</p>
+      <div class="chips reveal" aria-label="Works with">
+        <span>SMS</span><span>Matrix</span><span>XMPP</span><span>Email</span><span>IRC</span><span>Calls</span>
+      </div>
     </div>
-    <div class="phone" aria-hidden="true">
+
+    <div class="phone reveal" aria-hidden="true">
       <div class="screen">
-        <div class="screen-head"><span>Messages</span></div>
-        <div class="chat"><span class="avatar a1">MC</span><div><strong>Maya Chen <i class="tag">SMS</i></strong><small>See you at six!</small></div><svg class="lock green" viewBox="0 0 24 24"><path d="M17 9V7A5 5 0 0 0 7 7v2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1zM9 7a3 3 0 0 1 6 0v2H9V7z"/></svg></div>
-        <div class="chat"><span class="avatar a2">EV</span><div><strong>Elena Vasquez <i class="tag">Matrix</i></strong><small>📹 Video call · tap to join</small></div><svg class="lock green" viewBox="0 0 24 24"><path d="M17 9V7A5 5 0 0 0 7 7v2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1zM9 7a3 3 0 0 1 6 0v2H9V7z"/></svg></div>
-        <div class="chat"><span class="avatar a3">BC</span><div><strong>Book club <i class="tag">Email</i></strong><small>Next week's pick?</small></div><svg class="lock yellow" viewBox="0 0 24 24"><path d="M17 9V7A5 5 0 0 0 7 7v2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1zM9 7a3 3 0 0 1 6 0v2H9V7z"/></svg></div>
-        <div class="chat"><span class="avatar a4">#R</span><div><strong>#radio-club <i class="tag">IRC</i></strong><small>Antenna night at seven</small></div><svg class="lock yellow" viewBox="0 0 24 24"><path d="M17 9V7A5 5 0 0 0 7 7v2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1zM9 7a3 3 0 0 1 6 0v2H9V7z"/></svg></div>
-        <div class="bubbles">
-          <p class="in">Are we still on for Saturday?</p>
-          <p class="out">Yes! I'll bring dessert 🍰</p>
+        <div class="screen-head"><span class="avatar a3 small">BC</span><div><strong>Book club</strong><small>Matrix · 5 people</small></div></div>
+        <div class="thread">
+          <p class="msg in m1">Who's hosting this month? 📚</p>
+          <p class="msg out m2">My place! I'll bake 🍰</p>
+          <div class="msg in poll m3">
+            <b>POLL</b><strong>Next book?</strong>
+            <span class="opt"><i style="--w:78%"></i>Piranesi<em>3</em></span>
+            <span class="opt"><i style="--w:26%"></i>Klara and the Sun<em>1</em></span>
+          </div>
+          <p class="msg out m4">Piranesi it is! 🎉<span class="react">❤️</span></p>
+          <p class="typing m5"><i></i><i></i><i></i></p>
         </div>
-        <div class="tabs"><span>Phone</span><span class="on">Messages</span></div>
+        <div class="hearts"><i>❤️</i><i>❤️</i><i>💖</i><i>❤️</i><i>💕</i></div>
+        <div class="confetti"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
       </div>
+      <div class="float f1">🔒 End-to-end encrypted</div>
+      <div class="float f2">♟️ Your move</div>
+      <div class="float f3">📹 Video call</div>
     </div>
   </section>
 
   <section id="features" class="section">
-    <h2>Everything in one place</h2>
-    <p class="section-lead">The messaging app you'd design if you could start fresh.</p>
+    <h2 class="reveal">Everything in one place</h2>
+    <p class="section-lead reveal">The messaging app you'd design if you could start fresh.</p>
     <div class="grid">
-      <article><div class="icon">💬</div><h3>One inbox</h3><p>Texts, group texts, Matrix, XMPP, Email, and IRC side by side, each with a small tag so you always know how a message is sent.</p></article>
-      <article><div class="icon">📞</div><h3>Calls built in</h3><p>A Phone tab for phone calls, plus encrypted Matrix and XMPP calls, SIP, and meeting links anyone can join.</p></article>
-      <article><div class="icon">🔒</div><h3>Privacy you can see</h3><p>A small lock on every chat shows who can read it. Add app lock, chat locks, a private folder, decoy mode, and disappearing messages.</p></article>
-      <article><div class="icon">🎲</div><h3>More than text</h3><p>A photo editor, GIFs, stickers, polls, calendar events, games like chess, and link previews, all readable by people on other apps too.</p></article>
-      <article><div class="icon">✨</div><h3>Beautifully yours</h3><p>Themes, wallpapers, bubble styles, motion, and sounds, with a sample inbox to try everything first.</p></article>
-      <article><div class="icon">💻</div><h3>On every screen</h3><p>Use it on Android, in any web browser, or as an app on Windows, macOS, and Linux.</p></article>
-      <article><div class="icon">🏠</div><h3>Yours to run</h3><p>Host FluidMessages Web on your own server with Docker or Portainer. Your messages stay with you.</p></article>
+      <article class="reveal"><div class="icon">💬</div><h3>One inbox</h3><p>Texts, group texts, Matrix, XMPP, Email, and IRC side by side, each with a small tag so you always know how a message is sent.</p></article>
+      <article class="reveal"><div class="icon">📞</div><h3>Calls built in</h3><p>A Phone tab for phone calls, plus encrypted Matrix and XMPP calls, SIP, and meeting links anyone can join.</p></article>
+      <article class="reveal"><div class="icon">🔒</div><h3>Privacy you can see</h3><p>A small lock on every chat shows who can read it. Add app lock, chat codes, a private folder, and disappearing messages.</p></article>
+      <article class="reveal"><div class="icon">🎮</div><h3>Games and fun</h3><p>Chess, tic-tac-toe, four in a row, rock paper scissors, dice, and message effects like Confetti, Slam, and Invisible ink.</p></article>
+      <article class="reveal"><div class="icon">🖼️</div><h3>Photo editor</h3><p>Crop and zoom, filters, drawing, text, stickers, and background removal, right on your device.</p></article>
+      <article class="reveal"><div class="icon">✨</div><h3>Beautifully yours</h3><p>Eight themes, wallpapers, bubble styles, motion, and sounds, with a sample inbox to try everything first.</p></article>
+      <article class="reveal"><div class="icon">💻</div><h3>On every screen</h3><p>Use it on Android, in any web browser, or as an app on Windows, macOS, and Linux.</p></article>
+      <article class="reveal"><div class="icon">🔄</div><h3>Phone and computer, in sync</h3><p>Connect your phone to the web version and your texts, chats, and settings follow you.</p></article>
+      <article class="reveal"><div class="icon">🏠</div><h3>Yours to run</h3><p>Host FluidMessages Web on your own server with Docker or Portainer. Your messages stay with you.</p></article>
     </div>
   </section>
 
-  <section id="download" class="section alt">
-    <h2>Get FluidMessages</h2>
-    <p class="section-lead">Every download is on GitHub, free and open source.</p>
+  <section id="cards" class="section alt">
+    <h2 class="reveal">More than text</h2>
+    <p class="section-lead reveal">Polls, games, and effects show up as cards. Underneath they're plain text, so friends on any app can read and reply.</p>
+    <div class="showcase">
+      <figure class="demo reveal">
+        <div class="demo-card">
+          <b>POLL</b><strong>Movie night?</strong>
+          <span class="opt"><i class="fill" style="--w:70%"></i>Friday<em>4</em></span>
+          <span class="opt"><i class="fill" style="--w:35%"></i>Saturday<em>2</em></span>
+        </div>
+        <figcaption>Polls fill in as friends vote</figcaption>
+      </figure>
+      <figure class="demo reveal">
+        <div class="demo-card board" aria-hidden="true">
+          <span>✕</span><span></span><span class="o">◯</span>
+          <span></span><span>✕</span><span></span>
+          <span class="o">◯</span><span></span><span class="pop">✕</span>
+        </div>
+        <figcaption>Games, one move at a time</figcaption>
+      </figure>
+      <figure class="demo reveal">
+        <div class="demo-card slam-wrap"><p class="msg out slam">See you there!</p><div class="ring"></div></div>
+        <figcaption>Effects like Slam and Confetti</figcaption>
+      </figure>
+      <figure class="demo reveal">
+        <div class="demo-card ink-wrap"><p class="msg in ink"><span>The cake is a surprise 🤫</span></p></div>
+        <figcaption>Invisible ink, revealed with a tap</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="download" class="section">
+    <h2 class="reveal">Get FluidMessages</h2>
+    <p class="section-lead reveal">Every download is the latest release, free and open source.</p>
     <div class="platforms">
-      <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><strong>Android</strong><small>Android 13 or newer · .apk</small></a>
-      <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><strong>Windows</strong><small>Desktop app · .exe</small></a>
-      <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><strong>macOS</strong><small>Desktop app · .dmg</small></a>
-      <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><strong>Linux</strong><small>Desktop app · .AppImage</small></a>
+      <a class="reveal" data-os="android" href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><span class="os">🤖</span><strong>Android</strong><small>Android 13 or newer · .apk</small></a>
+      <a class="reveal" data-os="windows" href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Windows.exe"><span class="os">🪟</span><strong>Windows</strong><small>Desktop app · .exe</small></a>
+      <a class="reveal" data-os="mac" href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-macOS.dmg"><span class="os">🍎</span><strong>macOS</strong><small>Desktop app · .dmg</small></a>
+      <a class="reveal" data-os="linux" href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage"><span class="os">🐧</span><strong>Linux</strong><small>Desktop app · .AppImage</small></a>
     </div>
-    <div class="actions center">
-      <a class="button primary" href="https://github.com/Lin8x/FluidMessages/releases/latest">Download on GitHub</a>
-    </div>
+    <p class="fine reveal">Looking for the server zip or older versions? <a href="https://github.com/Lin8x/FluidMessages/releases/latest">See all files on GitHub</a>.</p>
   </section>
 
-  <section id="self-host" class="section">
-    <h2>Host the web version yourself</h2>
-    <p class="section-lead">FluidMessages Web runs on any Docker host, x86-64 or ARM, including a Raspberry Pi. Start it with Docker Compose, or paste the stack into Portainer.</p>
-    <pre><code>docker compose up -d</code></pre>
-    <p class="section-lead">Open http://localhost:8080 and it starts right away. No phone needed; connect one later for your texts.</p>
+  <section id="self-host" class="section alt">
+    <h2 class="reveal">Host the web version yourself</h2>
+    <p class="section-lead reveal">FluidMessages Web runs on any Docker host, x86-64 or ARM, including a Raspberry Pi. Start it with Docker Compose, or paste the stack into Portainer.</p>
+    <pre class="reveal"><code><span class="prompt">$</span> docker compose up -d<span class="caret"></span></code></pre>
+    <p class="section-lead reveal">Open http://localhost:8080 and it starts right away. No phone needed; connect one later for your texts.</p>
     <div class="actions center">
       <a class="button" href="https://github.com/Lin8x/FluidMessages/blob/main/docs/self-hosting.md">Read the self-hosting guide</a>
     </div>
   </section>
 
-  <section class="section alt">
-    <h2>Private by design</h2>
+  <section class="section">
+    <h2 class="reveal">Private by design</h2>
     <div class="grid three">
-      <article><h3>No tracking</h3><p>No ads, no analytics, and no account with us.</p></article>
-      <article><h3>Encrypted where it counts</h3><p>Messages and passwords on your phone are encrypted, and so are Matrix and XMPP calls. Texts can be too, with other FluidMessages users.</p></article>
-      <article><h3>Open source</h3><p>Every line is public under the Apache 2.0 license.</p></article>
+      <article class="reveal"><div class="icon">🙈</div><h3>No tracking</h3><p>No ads, no analytics, and no account with us.</p></article>
+      <article class="reveal"><div class="icon">🔐</div><h3>Encrypted where it counts</h3><p>Messages and passwords on your phone are encrypted, and so are Matrix and XMPP calls. Texts can be too, with other FluidMessages users.</p></article>
+      <article class="reveal"><div class="icon">📖</div><h3>Open source</h3><p>Every line is public under the Apache 2.0 license.</p></article>
     </div>
   </section>
 </main>
@@ -103,5 +147,6 @@
   <p><img src="icon-192.png" alt="" width="22" height="22"> FluidMessages · Apache License 2.0</p>
   <p><a href="https://github.com/Lin8x/FluidMessages">GitHub</a> · <a href="https://github.com/Lin8x/FluidMessages/releases/latest">Releases</a> · <a href="https://github.com/Lin8x/FluidMessages/issues">Report a problem</a></p>
 </footer>
+<script src="site.js" defer></script>
 </body>
 </html>

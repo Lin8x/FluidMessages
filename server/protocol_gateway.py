@@ -1197,6 +1197,17 @@ class Gateway:
             self.clients[protocol] = (wanted, client)
             threading.Thread(target=client.run, daemon=True, name="protocol-" + protocol).start()
 
+    def erase(self):
+        """Erase everything: stops every chat connection and forgets recent calls, before the data behind them goes."""
+        for protocol, entry in list(self.clients.items()):
+            try:
+                entry[1].stop()
+            except Exception:
+                pass
+            self.clients.pop(protocol, None)
+        with self.call_lock:
+            self.calls.clear()
+
     def guard(self, run):
         try:
             run()

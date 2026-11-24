@@ -2,7 +2,7 @@
 <!-- The artwork fills the 72dp visible area of the 108dp adaptive canvas; the background shows only under
      masks that reach past it. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/launcher_background"/>
+    <background android:drawable="@drawable/launcher_background"/>
     <foreground>
         <inset android:drawable="@drawable/fluid_icon_art" android:inset="16.67%"/>
     </foreground>

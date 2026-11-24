@@ -312,6 +312,17 @@ class Auth:
         self.limiter.success(client)
         return self._new_session(db, remember, label)
 
+    def confirm_password(self, db, client, password):
+        """Erase everything asks for the password again when there is one. Misses count like wrong sign-ins."""
+        owner = self._get(db, "owner")
+        if owner is None:
+            return
+        self._guard(client)
+        if not isinstance(password, str) or len(password) > MAX_PASSWORD or not check_password(owner["password"], password):
+            self.limiter.miss(client)
+            raise Refused(403, "That password isn't right.")
+        self.limiter.success(client)
+
     def change_password(self, db, client, current, password):
         owner = self._get(db, "owner")
         if owner is not None:

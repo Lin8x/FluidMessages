@@ -119,15 +119,14 @@ object OnboardingScreen {
                             }
                             "calls" -> {
                                 item { CallsIllustration(appearance.speed) }
+                                item { CallCards(prefs, appearance) }
                                 item {
-                                    Tips(listOf(
-                                        Tip(TipIcon.PHONE, "Phone calls", "Use your phone number, from the Phone tab"),
-                                        Tip(TipIcon.PEOPLE, "Internet calls", "Voice and video with Matrix contacts"),
-                                        Tip(TipIcon.OPTIONAL, "Meeting links", "Optional: Settings → Accounts and calls → Calls")), appearance.speed)
+                                    Text("Change these any time in Settings → Accounts and calls → Calls. Calls start from the Phone tab or a chat’s call button.",
+                                        color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                             "more" -> {
-                                item { ExtrasIllustration(listOf("📊", "📅", "🎮", "💸", "🖼️", "🎉"), appearance.speed) }
+                                item { MoreThanTextShowcase(appearance) }
                                 item {
                                     Tips(listOf(
                                         Tip(TipIcon.CHAT, "The + button", "Photos, polls, events, money, games, dice, GIFs, and effects"),
@@ -137,7 +136,7 @@ object OnboardingScreen {
                                 }
                             }
                             "gestures" -> {
-                                item { ExtrasIllustration(listOf("👉", "👆", "✏️", "🙈", "✨", "❤️"), appearance.speed) }
+                                item { QuickMovesShowcase(appearance) }
                                 item {
                                     Tips(listOf(
                                         Tip(TipIcon.CHAT, "Swipe a message right", "Reply to it"),
@@ -205,30 +204,7 @@ object OnboardingScreen {
                                 }
                             }
                             "services" -> {
-                                item {
-                                    val on = remember(appearance) {
-                                        listOf(MessageProtocol.SMS, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)
-                                            .filter { it.enabled(prefs) }.map { if (it == MessageProtocol.SMS) "SMS" else it.label }.toSet()
-                                    }
-                                    ServicesIllustration(appearance.speed, on)
-                                }
-                                item {
-                                    PreferencesCard("Text messages") {
-                                        PreferenceText("RCS, SMS, and MMS", "One conversation per person. RCS is a preview; SMS switches to MMS for files and groups.")
-                                    }
-                                }
-                                item {
-                                    PreferencesCard("Internet protocols") {
-                                        for (protocol in listOf(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)) {
-                                            ProtocolSwitch(prefs, protocol.key(), protocol.label, when (protocol) {
-                                                MessageProtocol.MATRIX -> "Rooms and people on any Matrix homeserver"
-                                                MessageProtocol.XMPP -> "Jabber and other XMPP chat services"
-                                                MessageProtocol.EMAIL -> "Only conversations you choose, never your whole mailbox"
-                                                else -> "Channels and direct messages, over TLS"
-                                            }, true)
-                                        }
-                                    }
-                                }
+                                item { ChatServiceCards(prefs, appearance) }
                                 item {
                                     val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(),
                                         Privacy.token(prefs))
@@ -270,14 +246,14 @@ object OnboardingScreen {
         Triple("locks", "Who can read it?", "Every chat shows a small lock."),
         Triple("protect", "Keep chats private", "Lock the app, a chat, or tuck chats away."),
         Triple("disappear", "Disappearing messages", "Messages can remove themselves after a while."),
-        Triple("calls", "Calls", "Call from the Phone tab, or from a chat."),
         Triple("more", "More than text", "Polls, events, games, money, and more, right in a chat."),
         Triple("gestures", "Quick moves", "A few gestures that make chatting faster."),
         Triple("colors", "Pick your colors", "Choose a look and preview your bubbles. You can change it any time."),
         Triple("motion", "Motion, sound and haptics", "Decide how a message should feel when it arrives or sends."),
         Triple("backup", "Keep a backup", "Save your messages and settings to a file, so you don’t lose them if you change phones. Backups are password-protected."),
         Triple("computer", "On a computer too", "Optional. Set it up later if you like."),
-        Triple("services", "Choose your services", "Texts work right away. Turn on any other chat services you use, and sign in when you’re ready."),
+        Triple("services", "Chat services", "Texts work right away. Turn on the other chat services you use, and sign in when you’re ready."),
+        Triple("calls", "Calls", "Call from the Phone tab or from a chat. Turn on the ways to call you want."),
         Triple("ready", "You’re ready", "Practice with pretend chats first, or open your real inbox. RCS (the newer texting standard) isn’t available in FluidMessages yet."),
     )
 }
@@ -292,21 +268,3 @@ private fun SetupOptions(entries: List<Pair<String, String>>) {
         }
     }
 }
-
-/** A row of bright tiles that pop in one after another. */
-@Composable
-private fun ExtrasIllustration(symbols: List<String>, speed: Int) {
-    val colors = listOf(0xFF34C759, 0xFF007AFF, 0xFFAF52DE, 0xFFFF9500, 0xFFFF2D55, 0xFF00C7BE)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
-        symbols.forEachIndexed { index, symbol ->
-            val shown = remember { androidx.compose.animation.core.Animatable(if (speed > 0) 0f else 1f) }
-            androidx.compose.runtime.LaunchedEffect(Unit) {
-                if (speed > 0) { kotlinx.coroutines.delay(index * 90L); shown.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = .55f)) }
-            }
-            Box(Modifier.size(48.dp).androidx_scale(shown.value).background(Color(colors[index % colors.size]), RoundedCornerShape(14.dp)),
-                contentAlignment = Alignment.Center) { Text(symbol, fontSize = 22.sp) }
-        }
-    }
-}
-
-private fun Modifier.androidx_scale(value: Float) = this.then(Modifier.graphicsLayer { scaleX = value; scaleY = value; alpha = value.coerceIn(0f, 1f) })

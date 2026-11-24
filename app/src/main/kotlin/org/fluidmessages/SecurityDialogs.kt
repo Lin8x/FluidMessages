@@ -274,6 +274,37 @@ object SecurityDialogs {
         }, dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } })
     }
 
+    /**
+     * Sender type for one text chat: Automatic (the detection), Automated sender, or Person (SMS). pick gets
+     * "", "automated", or "person". detectedLabel says what Automatic currently finds.
+     */
+    @JvmStatic
+    fun senderType(activity: ComponentActivity, prefs: SharedPreferences, name: String, current: String, detectedLabel: String,
+                   pick: Consumer<String>) = present(activity, prefs) { dismiss ->
+        var chosen by remember { mutableStateOf(SenderStyle.clean(current)) }
+        FormPage(onDismissRequest = dismiss, title = { Text("Sender type") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Choose how texts from $name appear. Automated senders, such as short codes and businesses, " +
+                    "get their own bubble color and an Automated label in the inbox and conversation.",
+                    style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 8.dp))
+                for ((value, label, detail) in listOf(
+                    Triple("", "Automatic", "Detected from the address · now $detectedLabel"),
+                    Triple(SenderStyle.AUTOMATED_CHOICE, "Automated sender", "Alerts, codes, and businesses"),
+                    Triple(SenderStyle.PERSON_CHOICE, "Person (SMS)", "A regular person texting, in your SMS color"),
+                )) {
+                    Choice(label, chosen == value) { chosen = value }
+                    Text(detail, Modifier.padding(start = 44.dp, bottom = 6.dp), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text("Only changes how this chat looks. Nothing is sent to $name.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp))
+            }
+        }, confirmButton = {
+            TextButton(onClick = { pick.accept(chosen); dismiss() }) { Text("Save") }
+        }, dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } })
+    }
+
     private fun customAmount(seconds: Int): Pair<Int, Int> = when {
         seconds % (7 * 86400) == 0 -> seconds / (7 * 86400) to 3
         seconds % 86400 == 0 -> seconds / 86400 to 2

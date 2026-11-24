@@ -38,6 +38,7 @@ final class Backup {
     static final String[] EFFECTS = {"speed", "sound", "receiveSound", "haptics", "sendTone", "receiveTone", "sendHaptics"};
     static final String[] SETTINGS = {"pinned", "archived", "blocked", "muted", "exactTimes", BackupNames.KEY, "automaticUpdateChecks"};
     private static final int MAX = 64 * 1024 * 1024;
+    static final String SENDER_TYPES = "senderTypes";
 
     record Options(int categories) {
         boolean has(BackupCategory category) { return (categories & category.getFlag()) != 0; }
@@ -62,7 +63,12 @@ final class Backup {
             else theme.put("wallpaper", wallpaper);
         }
         if (options.has(BackupCategory.EFFECTS)) copyPreferences(preferences, EFFECTS, theme);
-        if (options.has(BackupCategory.CHAT_SETTINGS)) copyPreferences(preferences, SETTINGS, settings);
+        if (options.has(BackupCategory.CHAT_SETTINGS)) {
+            copyPreferences(preferences, SETTINGS, settings);
+            // Each chat's own sender type, by address. Older versions ignore this key when they restore.
+            JSONObject senderTypes = SenderStyle.overrides(preferences);
+            if (senderTypes.length() > 0) settings.put(SENDER_TYPES, senderTypes);
+        }
         if (options.has(BackupCategory.CHAT_THEMES)) {
             for (var keys = profiles.keys(); keys.hasNext();) {
                 JSONObject profile = profiles.optJSONObject(keys.next());
@@ -159,7 +165,10 @@ final class Backup {
             if (theme.opt("haptics") instanceof Boolean && !theme.has("sendHaptics")) editor.remove("sendHaptics");
             apply(editor, theme, EFFECTS, archivedCategory(object, BackupCategory.EFFECTS));
         }
-        if (options.has(BackupCategory.CHAT_SETTINGS)) apply(editor, settings, SETTINGS, archivedCategory(object, BackupCategory.CHAT_SETTINGS));
+        if (options.has(BackupCategory.CHAT_SETTINGS)) {
+            apply(editor, settings, SETTINGS, archivedCategory(object, BackupCategory.CHAT_SETTINGS));
+            restoreSenderTypes(editor, settings);
+        }
         JSONObject protocols = options.has(BackupCategory.PROTOCOLS) ? object.optJSONObject("protocols") : null;
         if (protocols != null) restored += restoreProtocols(context, protocols, editor);
         if (restoredPhotos.has("global")) editor.putString("wallpaper", restoredPhotos.getString("global"));
@@ -250,6 +259,17 @@ final class Backup {
         return restored;
     }
 
+    /** Adds each chat's saved sender type; chats the backup doesn't mention keep theirs, and older backups change nothing. */
+    private static void restoreSenderTypes(SharedPreferences.Editor editor, JSONObject settings) {
+        JSONObject saved = settings == null ? null : settings.optJSONObject(SENDER_TYPES);
+        if (saved == null) return;
+        for (var keys = saved.keys(); keys.hasNext();) {
+            String address = keys.next();
+            String choice = SenderStyle.clean(saved.optString(address));
+            if (!address.isEmpty() && address.length() < 200 && !choice.isEmpty()) editor.putString(SenderStyle.OVERRIDE + address, choice);
+        }
+    }
+
     private static String key(JSONObject message) throws Exception {
         return new JSONArray().put(message.getString("address")).put(message.getString("body"))
             .put(message.getLong("date")).put(message.getInt("type")).toString();
@@ -277,7 +297,7 @@ final class Backup {
         if (options.has(BackupCategory.EFFECTS) && (archivedCategory(archive, BackupCategory.EFFECTS)
             || containsAny(theme, EFFECTS))) result.add(BackupCategory.EFFECTS.getLabel());
         if (options.has(BackupCategory.CHAT_SETTINGS) && (archivedCategory(archive, BackupCategory.CHAT_SETTINGS)
-            || containsAny(settings, SETTINGS))) result.add(BackupCategory.CHAT_SETTINGS.getLabel());
+            || containsAny(settings, SETTINGS) || settings != null && settings.has(SENDER_TYPES))) result.add(BackupCategory.CHAT_SETTINGS.getLabel());
         if (options.has(BackupCategory.CHAT_THEMES) && settings != null && settings.has("chatProfiles")) result.add(BackupCategory.CHAT_THEMES.getLabel());
         if (options.has(BackupCategory.WALLPAPER_PHOTOS) && photos != null) result.add(BackupCategory.WALLPAPER_PHOTOS.getLabel());
         var protocols = archive.optJSONObject("protocols");

@@ -362,25 +362,6 @@ internal fun BackupIllustration(speed: Int) {
     }
 }
 
-/** The services you can turn on, popping in, with the ones that are on highlighted. */
-@Composable
-internal fun ServicesIllustration(speed: Int, on: Set<String>) {
-    val scheme = MaterialTheme.colorScheme
-    val names = listOf("SMS", "Matrix", "XMPP", "Email", "IRC")
-    Row(Modifier.fillMaxWidth().background(scheme.surfaceContainer, RoundedCornerShape(24.dp)).padding(vertical = 20.dp, horizontal = 10.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly) {
-        names.forEachIndexed { index, name ->
-            var shown by remember { mutableStateOf(speed == 0) }
-            LaunchedEffect(Unit) { if (speed > 0) { delay(150L + index * 160L); shown = true } }
-            val scale by animateFloatAsState(if (shown) 1f else 0f, if (speed == 0) snap() else spring(dampingRatio = .5f), label = "Pop")
-            val active = name in on
-            Text(name, Modifier.scale(scale).background(if (active) scheme.primary else scheme.surface, RoundedCornerShape(12.dp))
-                .padding(horizontal = 10.dp, vertical = 8.dp), color = if (active) scheme.onPrimary else scheme.onSurfaceVariant,
-                fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-        }
-    }
-}
-
 /** A check mark drawing itself, with a little burst. */
 @Composable
 internal fun ReadyIllustration(speed: Int) {

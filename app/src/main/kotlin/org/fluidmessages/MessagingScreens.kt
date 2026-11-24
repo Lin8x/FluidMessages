@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
@@ -956,7 +957,12 @@ private fun MessageBubble(
     val context = androidx.compose.ui.platform.LocalContext.current
     // Message effects: bubble effects move this bubble, screen effects play over the whole chat. Each plays once.
     val effect = remember(line.text) { if (line.attachment == null) parseEffect(line.text) else null }
-    var inkHidden by remember(line.id, effect) { mutableStateOf(effect?.second == MessageEffect.INVISIBLE_INK) }
+    val inked = effect?.second == MessageEffect.INVISIBLE_INK
+    var inkHidden by remember(line.id, effect) { mutableStateOf(inked) }
+    // Tapped ink stays readable for a moment, then covers itself again.
+    LaunchedEffect(line.id, inked, inkHidden) {
+        if (inked && !inkHidden) { kotlinx.coroutines.delay(INK_REVEAL_MILLIS); inkHidden = true }
+    }
     val effectProgress = remember(line.id) { Animatable(1f) }
     val playScreen = LocalScreenEffect.current
     val effectScope = rememberCoroutineScope()
@@ -1011,7 +1017,6 @@ private fun MessageBubble(
             }) {
                 Column(Modifier.widthIn(max = bubbleWidth)
                     .bubbleTail(fill, palette.appearance.tails && !continues && !sticker, line.outgoing).clip(shape).background(fill)
-                    .invisibleInk(inkHidden, bubbleTextColor(chosenFill))
                     .pointerInput(line.id) {
                         detectHorizontalDragGestures(
                             onDragEnd = {
@@ -1052,7 +1057,7 @@ private fun MessageBubble(
                     val rps = rich?.rps?.get(line.id)
                     rps?.let { RpsCard(it, foreground, rich.respond) }
                     val random = remember(line.text) { if (line.attachment == null && rich?.random != false) parseRandom(line.text) else null }
-                    random?.let { RandomCard(it, line.outgoing, foreground) }
+                    random?.let { RandomCard(it, line.outgoing, foreground, motion > 0) }
                     val gameLink = remember(line.text) { if (line.attachment == null) parseGameLink(line.text) else null }
                     gameLink?.let { GameLinkCard(it, line.outgoing, foreground) }
                     val card = picture != null || poll != null || event != null || game != null || money != null || meeting != null ||
@@ -1089,7 +1094,7 @@ private fun MessageBubble(
                             meeting != null -> ""
                             card -> ""
                             parseVote(line.text) != null -> "🗳️ Voted “" + parseVote(line.text)!!.second + "”"
-                            quoted != null -> quoted.body
+                            quoted != null -> stripEffect(quoted.body)
                             line.media != null && line.text == line.media?.caption -> ""
                             // IRC and Matrix actions read as "* name does something".
                             action -> "* " + (if (line.outgoing) "you" else line.author ?: "") + " " + line.text.removePrefix("/me ")
@@ -1101,13 +1106,17 @@ private fun MessageBubble(
                             if (hasFormatting(shown)) formatMessage(shown, foreground, revealed) { revealed = revealed + it } else null
                         }
                         val style = if (action) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal
-                        if (formatted != null) Text(formatted, fontSize = palette.appearance.size.sp,
+                        // Invisible ink covers the words themselves (not quotes or cards). Reduced motion stills the sparkles only.
+                        val ink = Modifier.invisibleInk(inkHidden, foreground, motion > 0)
+                            .then(if (inkHidden) Modifier.clearAndSetSemantics { contentDescription = "Invisible ink message. Tap to reveal." } else Modifier)
+                        // While inked, spoiler links stay out of the way so a tap reveals the ink first.
+                        if (formatted != null && !inkHidden) Text(formatted, ink, fontSize = palette.appearance.size.sp,
                             lineHeight = (palette.appearance.size + 4).sp, color = foreground, fontStyle = style)
-                        else if (shown.isNotEmpty()) Text(shown, fontSize = palette.appearance.size.sp,
+                        else if (shown.isNotEmpty()) Text(shown, ink, fontSize = palette.appearance.size.sp,
                             lineHeight = (palette.appearance.size + 4).sp, color = foreground, fontStyle = style)
                         // A preview of the first link, like a card for a video, song, or article.
                         val link = remember(shown) { if (rich?.previews == true && !card && line.attachment == null) previewableLink(shown) else null }
-                        link?.let { LinkPreviewCard(it, foreground) }
+                        link?.takeIf { !inkHidden }?.let { LinkPreviewCard(it, foreground) }
                     }
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false },

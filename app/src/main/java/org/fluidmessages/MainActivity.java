@@ -117,6 +117,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         }
         return SenderStyle.SMS;
     }
+
+    /** A sample chat's style after its own sender type from Conversation details, the same rule as live chats. */
+    private SenderStyle sampleStyle(String name) {
+        SenderStyle detected = sampleSender(name);
+        return SAMPLE_GROUPS.containsKey(name) ? detected : SenderStyle.resolve(detected, SenderStyle.override(prefs, "demo:" + name));
+    }
     private String password = "";
     private Backup.Options backupOptions;
     private int backupMinutes;
@@ -322,6 +328,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "cloud", "fileServer" -> backups();
             case "fileServerEdit" -> fileServerBack.run();
             case "backupForm", "backupReview", "companion" -> backupBack.run();
+            case "syncGuide" -> { if (syncStep > 0) syncGuide(syncStep - 1, syncBack); else syncBack.run(); }
+            case "syncConflicts" -> conflictsBack.run();
             default -> inbox();
         }
     }
@@ -497,7 +505,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         render("setup");
         OnboardingScreen.mount(root, prefs, step, () -> onboarding(step + 1), () -> onboarding(step - 1),
             () -> finishSetup(false), () -> finishSetup(true), () -> finishSetup(false), this::recolorWindow,
-            () -> accounts(() -> onboarding(step)), () -> companion(() -> onboarding(step), true),
+            () -> accounts(() -> onboarding(step)), () -> syncGuide(0, () -> onboarding(step)),
             () -> openWebsite(ReleaseUpdates.REPOSITORY + "#lan-web-companion"), () -> backupsFrom(() -> onboarding(step)));
     }
 
@@ -651,7 +659,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     && sampleReplies.getOrDefault(contact[0], List.of()).isEmpty(), false,
                 samplePhoto(contact[0]), null, 0, sampleFormats(contact).stream().map(format -> format.label)
                     .collect(java.util.stream.Collectors.joining(" · ")),
-                sampleSender(contact[0]) == SenderStyle.AUTOMATED, sampleGroupMembers(contact[0])));
+                sampleStyle(contact[0]) == SenderStyle.AUTOMATED, sampleGroupMembers(contact[0])));
         }
         inboxScreen.setThreads(threads);
     }
@@ -704,7 +712,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         }, "", false, savedRoute(key));
         activeProtocol = format;
         conversationScreen = new ConversationScreen(root, prefs, profile, contact[0], contact[1], contact[5], true,
-            sampleSender(contact[0]),
+            sampleStyle(contact[0]),
             null, this::sampleInbox, () -> contactDetails(key, contact[0], () -> sampleChat(contact, format)), null, null,
             this::forwardSample, line -> confirmDelete(() -> {
                 hiddenSampleMessages.computeIfAbsent(key, ignored -> new HashSet<>()).add(line.getId());
@@ -1512,7 +1520,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                         inboxDate(displayedTimestamp(message)), message.optInt("read", 1) == 0,
                         pinned.contains(number), 0, contact == null ? null : contact.photo(), contactRevision, label,
                         (format == MessageProtocol.SMS || format == MessageProtocol.MMS) && !number.startsWith("mms:")
-                            && SenderStyle.infer(number) == SenderStyle.AUTOMATED,
+                            && SenderStyle.forAddress(prefs, number) == SenderStyle.AUTOMATED,
                         number.startsWith("mms:") ? groupMembers(number) : GatewayClient.members(prefs, number));
                     entries.add(row);
                     remembered.add(new InboxSnapshot.Entry(row, number, message.optString("protocol"), displayedTimestamp(message),
@@ -1860,7 +1868,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 || (format == MessageProtocol.SMS && MessageProtocol.MMS.enabled(prefs)), savedRoute(number),
             protection(number, format));
         conversationScreen = new ConversationScreen(root, prefs, profile, name, initials(name), format.label, false,
-            phone && !number.startsWith("mms:") ? SenderStyle.infer(number) : SenderStyle.SMS,
+            phone && !number.startsWith("mms:") ? SenderStyle.forAddress(prefs, number) : SenderStyle.SMS,
             phone ? simLabel() : null, this::inbox, () -> contactDetails(number, number, () -> chat(number, format)),
             () -> conversationMenu(number), phone ? this::chooseSim : null, this::forwardLive,
             line -> confirmDelete(() -> {
@@ -2196,6 +2204,19 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             heading("Chat appearance", "Back", returnToDetails);
             ProfileEditor.mount(root, prefs, key);
         }));
+        if (textSender(key, original, sample, members)) {
+            // Short codes and business names are detected as automated senders; this chat can say otherwise.
+            String choice = SenderStyle.override(prefs, key);
+            SenderStyle detected = sample ? sampleSender(original) : SenderStyle.infer(key);
+            String detectedLabel = detected == SenderStyle.AUTOMATED ? "Automated sender" : "Person (SMS)";
+            actions.add(action("Sender type", choice.isEmpty() ? "Automatic · " + detectedLabel : SenderStyle.label(choice),
+                () -> SecurityDialogs.senderType(this, prefs, name, choice, detectedLabel, value -> {
+                    SenderStyle.setOverride(prefs, key, value);
+                    invalidateRows();
+                    if (!sample) SyncJob.reschedule(this);
+                    returnToDetails.run();
+                })));
+        }
         if (!sample) {
             if (!contacts.allowed()) actions.add(action("Allow contacts", "Show saved names and photos",
                 () -> requestPermissions(new String[]{Manifest.permission.READ_CONTACTS}, PICKER_CONTACT_PERMISSION)));
@@ -2259,6 +2280,22 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         ConversationDetails.mount(root, prefs, name, initials(name), subtitle, sample ? samplePhoto(name) : 0,
             contact == null ? null : contact.photo(), key, reachOptions(key, original, name, sample),
             phone ? () -> editContact(key) : null, actions, members, security, info);
+    }
+
+    /** Whether this is a one-to-one text chat, where a sender can be shown as automated or as a person. */
+    private boolean textSender(String key, String original, boolean sample, List<?> members) {
+        if (!members.isEmpty() || key.startsWith("mms:") || key.startsWith(Privacy.DECOY)) return false;
+        if (sample) {
+            for (String[] contact : SAMPLES) if (contact[0].equals(original) && !SAMPLE_GROUPS.containsKey(original)) {
+                var formats = sampleFormats(contact);
+                return formats.contains(MessageProtocol.SMS) || formats.contains(MessageProtocol.MMS);
+            }
+            return false;
+        }
+        if (SmsStore.validRecipient(key)) return true;
+        if (key.equals(address)) return activeProtocol == MessageProtocol.SMS || activeProtocol == MessageProtocol.MMS;
+        // A business name or other sender ID that only texts, reached from the inbox menu.
+        return SenderStyle.infer(key) == SenderStyle.AUTOMATED && formats(key).isEmpty();
     }
 
     /** What tapping a saved contact detail does: message or call a number, write an email, open a site or map. */
@@ -3958,10 +3995,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         boolean connected = CloudBackup.paired(this);
         if (!connected && !setup) {
             SettingsPages.mount(root, prefs, List.of(new SettingsSection("Not set up", List.of(
-                action("Set up FluidMessages Web", "", () -> companion(back, true))))));
+                action("Set up step by step", "Start FluidMessages Web on a computer, then connect this phone",
+                    () -> syncGuide(0, () -> companion(back))),
+                action("Enter address and token", "If you already have a pairing token", () -> companion(back, true))))));
             return;
         }
-        item(root, text("In FluidMessages Web, open Settings → Your phone → Make a pairing token, then enter the web app's HTTPS address and that token here. "
+        item(root, text("In FluidMessages Web, open Settings → Phone and other devices → Connect your phone, then enter the web app's HTTPS address and that token here. "
             + "Pairing turns on cloud backups. Browser messaging also syncs the newest 2,000 texts and sends texts you write on the web.", 16, uiColors().muted()));
         EditText url = field("https://messages.example.net");
         url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
@@ -3975,27 +4014,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             prefs.getBoolean("syncSms", CloudBackup.paired(this)));
         syncMessages.setMinHeight(dp(48));
         item(root, button("Save connection", true, () -> {
-            if (syncMessages.isChecked() && !hasRole()) {
-                toast("Browser messaging needs the default SMS role. Turn it off to pair for backups.");
-                return;
-            }
-            try {
-                var endpoint = new java.net.URI(url.getText().toString().trim());
-                String pairingToken = token.getText().toString().trim();
-                if (!"https".equalsIgnoreCase(endpoint.getScheme()) || endpoint.getHost() == null
-                    || endpoint.getUserInfo() != null || endpoint.getQuery() != null || endpoint.getFragment() != null
-                    || endpoint.getPath() != null && !endpoint.getPath().matches("/?") || pairingToken.length() < 32) {
-                    throw new IllegalArgumentException();
-                }
-                prefs.edit().putString("server", "https://" + endpoint.getRawAuthority())
-                    .putString("token", Privacy.seal(prefs, pairingToken))
-                    .putBoolean("syncSms", syncMessages.isChecked()).apply();
-                SyncJob.reschedule(this);
-                if (syncMessages.isChecked()) sync(true);
-                back.run();
-                toast("FluidMessages Web connection saved");
-            } catch (Exception error) { toast("Enter the web app's https:// address and the pairing token from its Settings"); }
+            String problem = saveCompanion(url.getText().toString(), token.getText().toString(), syncMessages.isChecked());
+            if (problem != null) { toast(problem); return; }
+            if (syncMessages.isChecked()) sync(true);
+            back.run();
+            toast("FluidMessages Web connection saved");
         }));
+        item(root, button("Set up step by step", false, () -> syncGuide(0, () -> companion(back, true))));
+        int differences = SyncPending.count(prefs);
+        if (connected && differences > 0) item(root, button("Choose what to keep (" + differences + (differences == 1 ? " difference)" : " differences)"),
+            true, () -> syncConflicts(() -> companion(back), () -> companion(back))));
         if (connected) item(root, button("Disconnect phone", false, () -> {
             prefs.edit().remove("server").remove("token").apply();
             // Keeps the background job only if disappearing timers or phone-direct accounts still need it.
@@ -4003,6 +4031,80 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             back.run();
         }));
     }
+
+    /**
+     * Checks and saves the FluidMessages Web address and pairing token, for the settings form and the step-by-step
+     * guide. Returns what to fix, or null once it's saved.
+     */
+    private String saveCompanion(String address, String pairingToken, boolean messaging) {
+        if (messaging && !hasRole()) return "Browser messaging needs the default SMS role. Turn it off to pair for backups.";
+        try {
+            var endpoint = new java.net.URI(address.trim());
+            String token = pairingToken.trim();
+            if (!"https".equalsIgnoreCase(endpoint.getScheme()) || endpoint.getHost() == null
+                || endpoint.getUserInfo() != null || endpoint.getQuery() != null || endpoint.getFragment() != null
+                || endpoint.getPath() != null && !endpoint.getPath().matches("/?") || token.length() < 32) {
+                throw new IllegalArgumentException();
+            }
+            prefs.edit().putString("server", "https://" + endpoint.getRawAuthority())
+                .putString("token", Privacy.seal(prefs, token))
+                .putBoolean("syncSms", messaging).apply();
+            SyncJob.reschedule(this);
+            return null;
+        } catch (Exception error) { return "Enter the web app's https:// address and the pairing token from its Settings"; }
+    }
+
+    /** Asks the saved FluidMessages Web for its backup list, which needs the token, then sends the first sync. */
+    private void testCompanion(java.util.function.Consumer<String> done) {
+        new Thread(() -> {
+            String problem = null;
+            try { CloudBackup.targets(this); }
+            catch (Exception error) { problem = "Couldn't reach FluidMessages Web. Check the https:// address, its certificate, and the token."; }
+            // Combines this phone's settings with the web's now, so the guide can go straight to any differences.
+            if (problem == null) try { SyncMergeRun.run(getApplicationContext(), true); } catch (Exception ignored) {}
+            String result = problem;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                if (result == null) sync(false);
+                done.accept(result);
+            });
+        }, "fluid-test-web").start();
+    }
+
+    private int syncStep;
+    private Runnable syncBack;
+
+    /** Connecting this phone to FluidMessages Web, one full page per step, like the setup guide. */
+    private void syncGuide(int step, Runnable back) {
+        syncStep = step;
+        syncBack = back;
+        render("syncGuide");
+        SyncGuideScreen.mount(root, prefs, step, () -> syncGuide(step + 1, back),
+            () -> { if (step > 0) syncGuide(step - 1, back); else back.run(); }, back, this::recolorWindow,
+            () -> openWebsite(ReleaseUpdates.REPOSITORY + "#lan-web-companion"), hasRole(), this::saveCompanion, this::testCompanion,
+            () -> syncConflicts(() -> syncGuide(5, back), () -> syncGuide(step, back)));
+    }
+
+    private Runnable conflictsBack;
+
+    /** Differences between this phone and FluidMessages Web, to settle here or in the browser (SyncConflictScreen). */
+    private void syncConflicts(Runnable done, Runnable back) {
+        conflictsBack = back;
+        render("syncConflicts");
+        SyncConflictScreen.mount(root, prefs, this::recolorWindow, this::threadTitle,
+            (id, choices, finished) -> new Thread(() -> {
+                String problem = SyncMergeRun.resolve(getApplicationContext(), id, choices);
+                runOnUiThread(() -> {
+                    if (isDestroyed()) return;
+                    if (problem == null) {
+                        invalidateRows();
+                        toast("Saved on this phone and FluidMessages Web");
+                    }
+                    finished.accept(problem);
+                });
+            }, "fluid-merge-resolve").start(), done, back);
+    }
+
     /** Reloads everything from the start: texts, contacts, internet accounts, and FluidMessages Web. */
     private void resync() {
         toast("Resyncing…");

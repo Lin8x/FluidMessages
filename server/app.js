@@ -40,6 +40,8 @@ let chatAccounts = [];
 let localHere = false;
 let lastLocalSignIn = 0;
 let welcomed = true;
+// Which internet protocols this server sends and receives (Settings → Ways to message).
+let gatewayEnabled = ['matrix', 'xmpp', 'email', 'irc'];
 const phonePaired = () => updated !== null && updated !== undefined;
 
 // Every request says it comes from this page; the server refuses cookie requests that don't (CSRF protection).
@@ -140,7 +142,7 @@ function themeAppearance(look) {
 }
 
 // Facts about the phone that hold whichever settings you use: which protocols it has on, MMS, and its folders.
-const PHONE_FACTS = ['enabledProtocols', 'mmsReady', 'folders', 'protocolDefaults', 'protocolPrivacy'];
+const PHONE_FACTS = ['enabledProtocols', 'mmsReady', 'folders', 'protocolDefaults', 'protocolPrivacy', 'senderTypes'];
 
 /** The phone's settings when it's connected and you chose them (the default), otherwise the web app's own. */
 function usingPhoneLook() { return followPhone && !!phoneLook.colors && Object.keys(phoneLook.colors).length > 0; }
@@ -185,10 +187,14 @@ function applyAppearance(next) {
     if (Number.isInteger(appearance[key])) root.style.setProperty('--bubble-' + key, appearance[key] + 'px');
     else root.style.removeProperty('--bubble-' + key);
   }
+  // Wallpaper, inbox layout, and motion (look.js).
+  if (typeof applyLookExtras === 'function') applyLookExtras();
 }
 
+// The phone's rule (SenderStyle.infer): five- or six-digit short codes and short letter sender IDs.
 function automated(address) {
-  return /^\d{5,6}$/.test(address) || (/^[\w .-]{2,20}$/.test(address) && /[a-z]/i.test(address));
+  const value = String(address || '').trim();
+  return /^[0-9]{5,6}$/.test(value) || (/^[A-Za-z0-9 ._-]{2,20}$/.test(value) && /[A-Za-z]/.test(value));
 }
 
 function senderAddress(value) {
@@ -222,14 +228,18 @@ function excerpt(value, limit) {
 
 const nouns = {'a like': '👍', 'a heart': '❤️', 'a dislike': '👎', 'a laugh': '😆', 'an exclamation': '‼️',
   'a question mark': '❓'};
-const isEmoji = (value) => value && value.length <= 64 && /[\p{Emoji_Presentation}\p{Extended_Pictographic}\u20E3]/u.test(value);
+// One emoji, as the phone checks it (isReactionEmoji): a single character, with a pictograph or keycap in it.
+const graphemes = window.Intl?.Segmenter ? new Intl.Segmenter(undefined, {granularity: 'grapheme'}) : null;
+const isEmoji = (value) => !!value && value.length <= 64 && /[\p{Emoji_Presentation}\p{Extended_Pictographic}\u20E3]/u.test(value)
+  && (!graphemes || [...graphemes.segment(value)].length === 1);
 
 // Same wording as the phone: added, removed (as iPhones word it), or changed reactions.
 function parseReaction(body) {
+  if (typeof body !== 'string') return null;
   const own = body.endsWith(' (my message)');
   const wire = own ? body.slice(0, -13) : body;
   const unquote = (text) => (/^“([\s\S]+)”$/.exec(text) || /^"([\s\S]+)"$/.exec(text) || [])[1];
-  const known = verbs.find(([verb]) => wire.startsWith(verb + ' '));
+  const known = verbs.find(([verb]) => wire.startsWith(verb + ' “') || wire.startsWith(verb + ' "'));
   if (known) return {change: 'add', emoji: known[1], quote: unquote(wire.slice(known[0].length + 1)), own};
   let match = /^Reacted (\S{1,64}) to ([\s\S]+)$/.exec(wire);
   if (match && isEmoji(match[1])) return {change: 'add', emoji: match[1], quote: unquote(match[2]), own};
@@ -245,22 +255,27 @@ function parseReaction(body) {
 // One reaction per sender: yourself for sent messages, otherwise the group member who sent it.
 const senderKey = (message) => message.type === 1 ? 'from:' + (message.author || '') : 'me';
 
+// Still sending or failed: kept as its own bubble so its status shows, like the phone's unsettled lines.
+const unsettled = (message) => [4, 5, 6].includes(message.type) || /^(Sending|Couldn’t)/.test(message.status || '');
+
+/** Folds edits and reactions sent as text onto the messages they're about, the same way as the phone (foldSmsReactions). */
 function fold(history) {
   const shown = [];
   for (const message of history) {
     // "✏️ Edited “old” to: new" replaces the sender's own earlier message.
-    const edit = [4, 5, 6].includes(message.type) || message.attachment ? null : /^✏️ Edited “([\s\S]+?)” to: ([\s\S]+)$/.exec(message.body || '');
+    const edit = unsettled(message) || message.event || message.attachment ? null : /^✏️ Edited “([\s\S]+?)” to: ([\s\S]+)$/.exec(message.body || '');
     if (edit) {
       const target = [...shown].reverse().find((row) => senderKey(row) === senderKey(message) && !row.attachment
         && excerpt((row.body || '').replace(/”/g, '"'), 300) === edit[1]);
       if (target) { target.earlier = (target.earlier || []).concat(target.body); target.body = edit[2]; continue; }
     }
-    const parsed = [4, 5, 6].includes(message.type) ? null : parseReaction(message.body);
+    const parsed = unsettled(message) || message.event ? null : parseReaction(message.body);
     if (parsed?.quote) {
       const quoted = parsed.quote;
+      // Long messages are quoted as an excerpt; some phones shorten them further and end with "…".
       const prefix = quoted.endsWith('…') && quoted.length > 20 ? quoted.slice(0, -1) : null;
-      const matches = [...shown].reverse().filter((row) => row.body === quoted || excerpt(row.body, 700) === quoted
-        || (prefix && row.body.startsWith(prefix)));
+      const matches = [...shown].reverse().filter((row) => typeof row.body === 'string' && (row.body === quoted
+        || excerpt(row.body, 700) === quoted || (prefix && row.body.startsWith(prefix))));
       const target = (message.reaction_target && shown.find((row) => row.id === message.reaction_target))
         || matches.find((row) => (senderKey(row) === senderKey(message)) === parsed.own)
         || (!parsed.own && matches[0]);
@@ -287,8 +302,18 @@ function threadTitle(key) {
   const route = typeof routes === 'undefined' ? null : routes.find((item) => item.address === threadAddress(key));
   return message?.title || route?.title || threadAddress(key);
 }
-// Short codes and sender IDs are automated only for carrier texts; internet IDs often contain letters.
-function automatedThread(key) { return !!key && family(threadProtocol(key)) === 'sms' && automated(threadAddress(key)); }
+// Short codes and sender IDs are automated only for SMS and MMS from one sender, as on the phone: not RCS, not
+// group texts, and not internet IDs, which often contain letters.
+function automatedThread(key) {
+  if (!key) return false;
+  const address = threadAddress(key);
+  if (!['sms', 'mms', '', undefined].includes(threadProtocol(key)) || address.startsWith('mms:')) return false;
+  // Sender type set in the phone's conversation details: the merged web copy first, then what the phone sent.
+  const chosen = (typeof webChats !== 'undefined' && webChats.senders?.[address]) || appearance.senderTypes?.[address];
+  if (chosen === 'automated') return true;
+  if (chosen === 'person') return false;
+  return automated(address);
+}
 function internet(protocol) { return !['sms', 'mms', 'rcs', undefined, ''].includes(protocol); }
 
 function rebuildThreads() {
@@ -332,10 +357,12 @@ function messageActions(message, row) {
   menu.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && menu.open) { event.stopPropagation(); menu.open = false; summary.focus(); }
   });
-  // Only one menu open at a time.
+  // Only one menu open at a time. It floats over the page, placed to stay on screen (placeMessageMenu).
+  menu.classList.add('floats');
   menu.addEventListener('toggle', () => {
-    if (!menu.open) return;
+    if (!menu.open) { if (openMenu?.menu === menu) unplaceMessageMenu(); return; }
     for (const other of document.querySelectorAll('details.message-tools[open]')) if (other !== menu) other.open = false;
+    placeMessageMenu(menu);
   });
   const action = (label, callback, place = more, aria) => {
     const button = element('button', label);
@@ -344,7 +371,8 @@ function messageActions(message, row) {
     button.addEventListener('click', () => { menu.open = false; callback(); });
     place.append(button);
   };
-  const sendable = senderAddress(threadAddress(active)) || internet(threadProtocol(active));
+  // Every sample chat can reply and react, group texts included (chats.js).
+  const sendable = senderAddress(threadAddress(active)) || internet(threadProtocol(active)) || (typeof sampleOn !== 'undefined' && sampleOn);
   if (sendable) action('Reply', () => { setReply(message.body, message.id); get('body').focus(); });
   action('Forward', () => {
     const author = message.type === 1 ? excerpt(message.address.replace(/[“”\r\n]/g, ' '), 90) : 'Me';
@@ -356,27 +384,9 @@ function messageActions(message, row) {
     openNewChat(prefix + body + suffix);
   });
   if (sendable) {
-    for (const [emoji, verb, name] of [['👍', 'Liked', 'Like'], ['❤️', 'Loved', 'Love'], ['👎', 'Disliked', 'Dislike'],
-      ['😆', 'Laughed at', 'Laugh'], ['‼️', 'Emphasized', 'Emphasize'], ['❓', 'Questioned', 'Question'], ['🎉', 'Reacted 🎉 to', 'Celebrate']]) {
-      action(emoji, () => {
-        if (message.reactions.get('me') !== emoji) playReaction(row, emoji, reactionId(message, 'me', emoji));
-        const own = message.type !== 1;
-        const quote = '“' + excerpt(message.body, 700) + '”' + (own ? ' (my message)' : '');
-        const current = message.reactions.get('me');
-        // Your current reaction again takes it back; a different one replaces it. Matrix and XMPP do that natively;
-        // the readable text goes everywhere else.
-        const native = ['matrix', 'xmpp'].includes(message.protocol);
-        const relation = (extra) => native ? {kind: 'reaction', target: message.id || '', emoji, own, ...extra} : undefined;
-        if (current === emoji) {
-          const noun = Object.keys(nouns).find((key) => nouns[key] === emoji) || emoji;
-          send('Removed ' + noun + ' from ' + quote, '', relation({removed: true})).catch(showError);
-        } else if (current) {
-          send('Changed reaction from ' + current + ' to ' + emoji + ' on ' + quote, '', relation({previous: current}))
-            .catch(showError);
-        } else {
-          send(verb + ' ' + quote, '', {kind: 'reaction', target: message.id || '', emoji, own}).catch(showError);
-        }
-      }, quick, (message.reactions.get('me') === emoji ? 'Remove ' : '') + name);
+    // The phone's reaction strip, in the same order (SmsReaction); + adds any emoji (chats.js).
+    for (const [emoji, , name] of REACTIONS) {
+      action(emoji, () => reactWith(message, row, emoji), quick, (message.reactions.get('me') === emoji ? 'Remove ' : '') + name);
     }
   }
   if (sendable && message.type !== 1 && !message.attachment && ![4, 5, 6].includes(message.type) && typeof openEditMessage === 'function') {
@@ -384,8 +394,88 @@ function messageActions(message, row) {
   }
   if (message.attachment) action('Download', () => download(message).catch(showError));
   if (message.body && !message.attachment) action('Copy text', () => navigator.clipboard?.writeText(typeof plainPreview === 'function' ? plainPreview(message.body) : message.body));
+  // Custom emoji, message details, share, select text, and delete for me (chats.js).
+  if (typeof moreMessageActions === 'function') moreMessageActions(message, row, {action, quick, more, sendable});
   if (!quick.children.length) quick.remove();
   return menu;
+}
+
+// The open ⋯ menu floats with fixed coordinates, so the chat's scrolling box can't clip it: above the message when
+// there's room, otherwise below it, and moved sideways to stay inside the window, at any width.
+let openMenu = null;
+function placeMessageMenu(menu) {
+  unplaceMessageMenu();
+  const popover = menu.querySelector('.message-popover');
+  const summary = menu.querySelector('summary');
+  const line = menu.closest('.bubble-line') || menu;
+  if (!popover || !summary) return;
+  const place = () => {
+    if (!menu.open || !menu.isConnected) { unplaceMessageMenu(); return; }
+    const margin = 8;
+    const width = document.documentElement.clientWidth, height = window.innerHeight;
+    popover.style.maxWidth = Math.max(160, Math.min(300, width - margin * 2)) + 'px';
+    const box = popover.getBoundingClientRect();
+    const dots = summary.getBoundingClientRect();
+    const anchor = line.getBoundingClientRect();
+    // A message scrolled out of the chat closes its menu, as menus do.
+    const pane = get('conversation').getBoundingClientRect();
+    if (anchor.bottom < pane.top || anchor.top > pane.bottom) { menu.open = false; return; }
+    let top = anchor.top - box.height - 6;
+    if (top < margin) top = anchor.bottom + 6;
+    if (top + box.height > height - margin) top = Math.max(margin, height - margin - box.height);
+    // Over the bubble, from the ⋯ side: incoming messages open leftward from the ⋯, yours rightward (mirrored in RTL).
+    const out = !!menu.closest('.message.out');
+    const rtl = getComputedStyle(line).direction === 'rtl';
+    let left = out !== rtl ? dots.left : dots.right - box.width;
+    // Inside the chat's pane when it's wide enough, otherwise inside the window.
+    let low = Math.max(margin, pane.left + 4), high = Math.min(width - margin, pane.right - 4);
+    if (high - low < box.width) { low = margin; high = width - margin; }
+    left = Math.min(Math.max(low, left), Math.max(low, high - box.width));
+    popover.style.left = Math.round(left) + 'px';
+    popover.style.top = Math.round(top) + 'px';
+    popover.classList.add('placed');
+  };
+  let frame = 0;
+  const later = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; place(); }); };
+  const resize = new ResizeObserver(later);
+  resize.observe(popover);
+  const box = get('conversation');
+  box.addEventListener('scroll', later, {passive: true});
+  window.addEventListener('resize', later);
+  openMenu = {menu, stop() {
+    cancelAnimationFrame(frame);
+    resize.disconnect();
+    box.removeEventListener('scroll', later);
+    window.removeEventListener('resize', later);
+    popover.classList.remove('placed');
+  }};
+  place();
+}
+function unplaceMessageMenu() { openMenu?.stop(); openMenu = null; }
+
+const REACTIONS = [['👍', 'Liked', 'Thumbs up'], ['❤️', 'Loved', 'Heart'], ['👎', 'Disliked', 'Thumbs down'], ['😆', 'Laughed at', 'Laugh'],
+  ['‼️', 'Emphasized', 'Exclamation'], ['❓', 'Questioned', 'Question']];
+
+/** Sends a reaction the phone's way: your current one again takes it back, a different one replaces it. */
+function reactWith(message, row, emoji) {
+  // In the sample chats you can react as someone in the group; " (my message)" then means their own message.
+  const as = typeof sampleOn !== 'undefined' && sampleOn && sampleSender !== 'me' ? 'from:' + sampleSender : 'me';
+  if (message.reactions.get(as) !== emoji) playReaction(row, emoji, reactionId(message, as, emoji));
+  const own = as === 'me' ? message.type !== 1 : senderKey(message) === as;
+  const quote = '“' + excerpt(message.body, 700) + '”' + (own ? ' (my message)' : '');
+  const current = message.reactions.get(as);
+  // Matrix and XMPP take reactions back and change them natively; the readable text goes everywhere else.
+  const native = ['matrix', 'xmpp'].includes(message.protocol);
+  const relation = (extra) => native ? {kind: 'reaction', target: message.id || '', emoji, own, ...extra} : undefined;
+  const verb = (REACTIONS.find(([symbol]) => symbol === emoji) || [])[1];
+  if (current === emoji) {
+    const noun = Object.keys(nouns).find((key) => nouns[key] === emoji) || emoji;
+    send('Removed ' + noun + ' from ' + quote, '', relation({removed: true})).catch(showError);
+  } else if (current) {
+    send('Changed reaction from ' + current + ' to ' + emoji + ' on ' + quote, '', relation({previous: current})).catch(showError);
+  } else {
+    send((verb || 'Reacted ' + emoji + ' to') + ' ' + quote, '', {kind: 'reaction', target: message.id || '', emoji, own}).catch(showError);
+  }
 }
 
 // A click anywhere else closes an open message menu.
@@ -400,7 +490,9 @@ const reactionId = (message, sender, emoji) => [message.id || message.date + ':'
 
 function playReaction(row, emoji, id) {
   if (id) reactionsSeen.add(id);
-  if (!prefs.reactionEffects || matchMedia('(prefers-reduced-motion: reduce)').matches || !row?.isConnected) return;
+  if (!prefs.reactionEffects || matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.dataset.motion === 'off'
+    || document.hidden || !row?.isConnected) return;
+  document.querySelector('.reaction-burst')?.remove();
   const bubble = row.querySelector('.bubble-wrap');
   if (!bubble) return;
   // Built-in reactions play their own animation (cards.js); custom emoji get the pop below.
@@ -427,9 +519,12 @@ function showMessages(preserve = false) {
   const scrollTop = conversation.scrollTop;
   const atEnd = conversation.scrollHeight - scrollTop - conversation.clientHeight < 48;
   conversation.replaceChildren();
+  // A chat with a code asks for it before showing anything (chats.js).
+  if (typeof chatLockGate === 'function' && chatLockGate(conversation)) return;
   const history = threads.get(active) || [];
   let lastDay = '';
   let position = -1;
+  let newestReaction = null;
   for (const message of history) {
     position++;
     const messageDay = day(timeOf(message));
@@ -457,12 +552,16 @@ function showMessages(preserve = false) {
     const carded = (typeof moneyCard === 'function' && moneyCard(message, bubble))
       || (typeof meetingCard === 'function' && meetingCard(message, bubble));
     if (!carded && typeof richCard === 'function') richCard(message, bubble, history);
-    if (typeof messageEffect === 'function' && !/^FM1:/.test(message.body || '')) setTimeout(() => messageEffect(message, bubble, position >= history.length - 3));
+    // Only messages sent with an effect; each plays once, and screen effects take turns (cards.js).
+    if (typeof messageEffect === 'function' && /\(sent with /.test(message.body || '') && !/^FM1:/.test(message.body)) {
+      const recent = position >= history.length - 3;
+      setTimeout(() => messageEffect(message, bubble, recent));
+    }
     if (message.attachment) {
       if (message.body === message.attachment.name || /^(Photo|sticker\.\w+)$/.test(message.body || '')) bubble.textContent = '';
       // Pictures show inline and open full screen; other files download.
       if (!(typeof attachmentPicture === 'function' && (attachmentPicture(message, bubble) || attachmentVideo(message, bubble)
-        || attachmentContact(message, bubble)))) {
+        || attachmentContact(message, bubble) || (typeof attachmentAudio === 'function' && attachmentAudio(message, bubble))))) {
         const file = element('button', '📎 ' + message.attachment.name, 'file-card');
         file.type = 'button';
         file.addEventListener('click', () => download(message).catch(showError));
@@ -488,15 +587,16 @@ function showMessages(preserve = false) {
     if (appearance.exactTimes || status) meta.append(element('small', clock(timeOf(message)) + status, 'message-time'));
     if (meta.children.length) row.append(meta);
     conversation.append(row);
-    // New reactions since this chat was last drawn get a short animation.
+    // New reactions since this chat was last drawn get a short animation: the newest one, not one per reaction.
     for (const [sender, emoji] of message.reactions) {
       const id = reactionId(message, sender, emoji);
       if (!reactionsSeen.has(id)) {
         reactionsSeen.add(id);
-        if (threadsShown.has(active)) setTimeout(() => playReaction(row, emoji), 30);
+        if (threadsShown.has(active)) newestReaction = [row, emoji];
       }
     }
   }
+  if (newestReaction) { const [row, emoji] = newestReaction; setTimeout(() => playReaction(row, emoji), 30); }
   threadsShown.add(active);
   if (!history.length && get('schedule').hidden) conversation.append(emptyThreadPane());
   conversation.scrollTop = preserve && !atEnd ? scrollTop : conversation.scrollHeight;
@@ -523,12 +623,18 @@ function emptyThreadPane() {
     box.append(element('h2', 'Your chats will show up here'),
       element('p', 'Add a Matrix, XMPP, Email, or IRC account to start chatting.' + (phonePaired() ? '' : ' Texts appear once you connect your phone.'), 'muted'));
     box.append(emptyActions([['Add an account', () => openSettings('settings-accounts').catch(showError), true],
-      ...(phonePaired() ? [] : [['Connect your phone', () => openSettings('settings-devices').catch(showError)]])]));
+      ...(phonePaired() ? [] : [['Connect your phone', () => (typeof showSyncGuide === 'function' ? showSyncGuide() : openSettings('settings-devices').catch(showError))]]),
+      ...sampleAction()]));
   } else {
     box.append(element('h2', 'Pick a chat'), element('p', 'Or start a new one with anyone on your accounts.', 'muted'));
-    box.append(emptyActions([['New chat', () => openNewChat(), true]]));
+    box.append(emptyActions([['New chat', () => openNewChat(), true], ...(threads.size ? [] : sampleAction())]));
   }
   return box;
+}
+
+/** The sample inbox (chats.js), offered wherever the inbox is empty. */
+function sampleAction() {
+  return typeof startSample === 'function' ? [['Try the sample inbox', () => startSample()]] : [];
 }
 
 function emptyActions(list) {
@@ -543,6 +649,7 @@ function emptyActions(list) {
 }
 
 function select(key) {
+  if (typeof closeDetailsPage === 'function') closeDetailsPage(false);
   if (!get('schedule').hidden) drafts.set(active, get('body').value);
   active = key;
   const address = threadAddress(key);
@@ -550,7 +657,9 @@ function select(key) {
   get('workspace').dataset.thread = 'true';
   get('recipient').textContent = key ? threadTitle(key) : 'New text message';
   get('avatar').textContent = initials(key ? threadTitle(key) : '');
-  get('transport').textContent = automatedThread(key) ? 'SMS · Automated sender' : labels[protocol] || 'SMS';
+  // Groups say how many people are in them, like the phone's header (chats.js).
+  get('transport').textContent = key && typeof headerSubtitle === 'function' ? headerSubtitle(key)
+    : automatedThread(key) ? 'SMS · Automated sender' : labels[protocol] || 'SMS';
   get('address').value = address;
   get('address-field').hidden = !!address;
   // A protocol turned off on the phone stays readable here too.
@@ -613,12 +722,14 @@ function showThreads() {
   const filter = get('search').value.trim();
   const matches = messageMatcher(filter);
   const folder = get('folder').value;
-  const selected = appearance.folders || {};
+  const selected = typeof chatFolders === 'function' ? chatFolders() : appearance.folders || {};
   const rows = [...threads].filter(([address, messages]) => messages.length).filter(([address, messages]) => {
     const blocked = selected.blocked?.includes(threadAddress(address));
     const archived = selected.archived?.includes(threadAddress(address));
     const inFolder = folder === 'Blocked' ? blocked : !blocked && (folder === 'Archived' ? archived : !archived);
-    return inFolder && (matches(threadTitle(address), '') || messages.some((message) => matches(threadTitle(address), message.body)));
+    // A chat with a code is found by its name only, never by what it says.
+    const sealed = typeof chatLocked === 'function' && chatLocked(address);
+    return inFolder && (matches(threadTitle(address), '') || !sealed && messages.some((message) => matches(threadTitle(address), message.body)));
   });
   const pinned = new Set(selected.pinned || []);
   rows.sort(([a], [b]) => Number(pinned.has(threadAddress(b))) - Number(pinned.has(threadAddress(a))));
@@ -638,7 +749,11 @@ function showThreads() {
     if (showTags) {
       const tags = element('span', '', 'tags');
       const formats = appearance.combineProtocols ? [...new Set(messages.map((row) => row.protocol || 'sms'))] : [message.protocol || 'sms'];
-      for (const format of formats) tags.append(element('span', automatedThread(key) && family(format) === 'sms' ? 'Automated' : labels[format] || 'SMS', 'tag p-' + format));
+      for (const format of formats) {
+        // Automated senders' tag takes the automated color, as on the phone (ProtocolTags).
+        const auto = automatedThread(key) && ['sms', 'mms'].includes(format);
+        tags.append(element('span', auto ? 'Automated' : labels[format] || 'SMS', 'tag p-' + format + (auto ? ' automated' : '')));
+      }
       copy.append(tags);
     }
     const meetingLine = (typeof meetingPreview === 'function' ? meetingPreview(message.body || '') : null)
@@ -648,6 +763,8 @@ function showThreads() {
     button.append(element('span', '', 'indicator'), element('span', initials(threadTitle(key)), 'avatar'), copy,
       element('time', day(time) === 'Today' ? clock(time) : day(time) + (appearance.exactTimes ? ' ' + clock(time) : '')));
     button.addEventListener('click', () => select(address));
+    // Pinned, muted, and locked marks, and the pin/archive/mute menu (chats.js).
+    if (typeof decorateThread === 'function') decorateThread(key, button, copy);
     list.append(button);
   }
   if (!rows.length) {
@@ -657,7 +774,7 @@ function showThreads() {
       const empty = element('div', '', 'empty-list');
       empty.append(element('strong', 'No chats yet'), element('p', chatAccounts.length
         ? 'Start one with New chat below.' : 'Add a chat account to get started.', 'muted'));
-      if (!chatAccounts.length) empty.append(emptyActions([['Add an account', () => openSettings('settings-accounts').catch(showError), true]]));
+      empty.append(emptyActions([...(chatAccounts.length ? [] : [['Add an account', () => openSettings('settings-accounts').catch(showError), true]]), ...sampleAction()]));
       list.append(empty);
     }
   }
@@ -693,13 +810,15 @@ function showJobs(jobs) {
 }
 
 async function refresh() {
+  // The sample chats are drawn from this page only (chats.js).
+  if (typeof sampleRefresh === 'function' && sampleRefresh()) return;
   const currentSession = session;
   const request = ++refreshNumber;
   const [snapshot, jobs] = await Promise.all([api('inbox'), api('jobs')]);
   if (currentSession !== session || request !== refreshNumber) return;
   // Redraws when anything changed: a phone sync, new or updated internet messages, or the settings.
   const look = JSON.stringify([snapshot.appearance, snapshot.follow_phone, snapshot.web_appearance, snapshot.routes, snapshot.messages,
-    snapshot.prefs, snapshot.accounts]);
+    snapshot.prefs, snapshot.accounts, snapshot.web_chats]);
   welcomed = snapshot.welcomed !== false;
   if (!refreshed || updated !== snapshot.updated || look !== lastLook) {
     lastLook = look;
@@ -711,6 +830,7 @@ async function refresh() {
       if (prefs[key]) { prefs[key] = false; api('settings', {prefs: {[key]: false}}).catch(() => {}); }
     }
     chatAccounts = snapshot.accounts || [];
+    if (Array.isArray(snapshot.enabled)) gatewayEnabled = snapshot.enabled;
     phoneLook = snapshot.appearance || {};
     followPhone = snapshot.follow_phone !== false;
     webLook = snapshot.web_appearance || webLook;
@@ -719,14 +839,15 @@ async function refresh() {
     if (Array.isArray(snapshot.appearance?.enabledProtocols)) enabled = new Set(snapshot.appearance.enabledProtocols);
     updated = snapshot.updated;
     inbox = snapshot.messages;
+    if (typeof noticeSnapshot === 'function') noticeSnapshot(snapshot);
     rebuildThreads();
     showThreads();
     showMessages(true);
     refreshed = true;
   }
   // The phone is an add-on: its sync time shows once it's connected, and nothing is said about it before.
+  if (typeof noticeMerge === 'function') noticeMerge(snapshot);
   get('status').textContent = phonePaired() ? 'Phone synced ' + new Date(updated).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'}) : '';
-  get('folder').hidden = !phonePaired();
   showJobs(jobs);
 }
 
@@ -741,6 +862,7 @@ function say(text, sticky = false) {
 }
 
 async function send(body, text, relation, due = Date.now(), attachment) {
+  if (typeof sampleSend === 'function' && sampleSend(body, attachment)) return;
   const protocol = threadProtocol(active);
   if (!internet(protocol)) return queueSms(body, threadAddress(active), due);
   const currentSession = session;
@@ -772,6 +894,7 @@ function saveBlob(blob, name) {
 }
 
 async function queueSms(body, address, due) {
+  if (typeof sampleSend === 'function' && sampleSend(body)) return;
   const currentSession = session;
   await api('schedule', {address, body, due});
   if (currentSession !== session) return;
@@ -820,6 +943,8 @@ async function enterWorkspace() {
   // First run: a short welcome (look, accounts, and the optional phone) before the inbox.
   if (!welcomed && typeof showWelcome === 'function') { showWelcome(); return; }
   get('workspace').hidden = false;
+  // A Settings address (#settings, #settings/privacy) opens that page, so links and Back land where they point.
+  if (typeof settingsRoute === 'function') settingsRoute();
 }
 
 function signInForm(id, run) {
@@ -873,6 +998,7 @@ function signOutHere(message = '') {
   setReply('');
   applyAppearance(themeAppearance({theme: 'fluid', mode: 'system'}));
   for (const open of document.querySelectorAll('dialog[open]')) open.close();
+  if (typeof closeDetailsPage === 'function') closeDetailsPage(false);
   get('jobs').replaceChildren();
   delete get('jobs').dataset.snapshot;
   get('threads').replaceChildren();
@@ -939,6 +1065,8 @@ get('schedule').addEventListener('submit', async (event) => {
   const effect = typeof composerEffect === 'function' ? composerEffect() : null;
   const withEffect = (text) => effect ? effectText(text, effect) : text;
   const body = withEffect(reply ? 'Reply to “' + excerpt(reply, 240) + '”\n\n' + draft : draft);
+  // A photo waiting above the message box goes with the words as its caption (media.js).
+  if (typeof sendStaged === 'function' && await sendStaged()) return;
   if (!draft.trim()) { showError(new Error(effect ? 'Type a message to send with ' + effect + '.' : 'Type a message first.')); get('body').focus(); return; }
   get('send').disabled = true;
   say('');
@@ -947,6 +1075,7 @@ get('schedule').addEventListener('submit', async (event) => {
     const when = due && get('later').open ? new Date(due).getTime() : Date.now();
     if (active && internet(threadProtocol(active))) await send(body, withEffect(draft), reply ? {kind: 'reply', target: replyId} : null, when);
     else await queueSms(body, address, when);
+    if (typeof sendFeedback === 'function') sendFeedback();
     if (currentSession === session && current === active) {
       get('body').value = '';
       drafts.delete(current);
@@ -977,6 +1106,11 @@ async function start(message = '') {
   if (location.hash.startsWith('#token=')) {
     handed = decodeURIComponent(location.hash.slice(7));
     history.replaceState(null, '', location.pathname);
+  }
+  // After Settings → Erase everything on this server, the page reloads at #erased.
+  if (location.hash === '#erased') {
+    history.replaceState(null, '', location.pathname);
+    message ||= 'Everything on this server was erased. Set FluidMessages Web up again to keep using it.';
   }
   const kept = localStorage.getItem('fluidToken') || '';
   localStorage.removeItem('fluidToken');

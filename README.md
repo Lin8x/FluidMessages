@@ -12,7 +12,7 @@
 
 <br>
 
-<a href="https://github.com/Lin8x/FluidMessages/releases/latest"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><img src="docs/images/button-desktop.svg" height="56" alt="Desktop apps for Windows, macOS, and Linux"></a> <a href="#-host-it-yourself"><img src="docs/images/button-docker.svg" height="56" alt="Host it yourself with Docker"></a>
+<a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><img src="docs/images/button-desktop.svg" height="56" alt="Desktop apps for Windows, macOS, and Linux"></a> <a href="#-host-it-yourself"><img src="docs/images/button-docker.svg" height="56" alt="Host it yourself with Docker"></a>
 
 <br><br>
 
@@ -48,6 +48,12 @@
 </tr>
 </table>
 
+<br>
+
+---
+
+<br>
+
 ## 🔒 Privacy
 
 Your messages stay on your phone and on the server you run. Nobody else gets a copy.
@@ -64,6 +70,12 @@ Your messages stay on your phone and on the server you run. Nobody else gets a c
 | 📱 **Locked down on your phone** | App lock, chat locks, a private folder, decoy mode, disappearing messages, and an emergency erase code. |
 
 [Read more about privacy →](docs/features.md#privacy-and-security)
+
+<br>
+
+---
+
+<br>
 
 ## ✨ Features
 
@@ -85,6 +97,8 @@ Your messages stay on your phone and on the server you run. Nobody else gets a c
 </tr>
 </table>
 
+<br>
+
 ### 💬 Rich cards that work everywhere
 
 Polls, events, games, and payments show up as cards. Underneath they're plain text, so people on other apps can read and reply too.
@@ -93,9 +107,15 @@ Polls, events, games, and payments show up as cards. Underneath they're plain te
   <img src="docs/images/chat-cards.png" width="860" alt="FluidMessages Web cards (real capture with fictional data): a poll, a video call, a chess game, a calendar event, and a PayPal request">
 </p>
 
+<p align="center">
+  <img src="docs/images/more-than-text.svg" width="860" alt="Animated: a poll filling in, a tic-tac-toe move, a message slamming in with confetti, and invisible ink revealing">
+</p>
+
 - **Games:** tap the board to play. Friends without the app just reply with a move, like `e5`.
 - **Fun extras:** spoilers, `*bold*` text, edits, dice, coin flips, and message effects.
 - **Voice notes:** get a transcript made on your phone, never in the cloud.
+
+<br>
 
 ### 🎨 Make it yours
 
@@ -105,9 +125,15 @@ Eight color themes, each in light and dark. Try them all in a sample inbox befor
   <img src="docs/images/themes.png" width="860" alt="The eight color themes (illustration), each in light and dark">
 </p>
 
+<br>
+
 ### 💻 On every screen
 
-Use it on your phone, in any browser, or as a desktop app.
+Use it on your phone, in any browser, or as a desktop app. Connect your phone and everything stays in sync.
+
+<p align="center">
+  <img src="docs/images/sync.svg" width="860" alt="Animated: messages travel between a phone and a computer running FluidMessages Web">
+</p>
 
 <p align="center">
   <img src="docs/images/web-app.png" width="860" alt="FluidMessages Web (real capture with fictional data): the inbox and a chat">
@@ -126,22 +152,34 @@ Use it on your phone, in any browser, or as a desktop app.
 
 [See every feature →](docs/features.md)
 
+<br>
+
+---
+
+<br>
+
 ## 📥 Download
 
 <p align="center">
-  <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><img src="docs/images/button-desktop.svg" height="56" alt="Desktop apps for Windows, macOS, and Linux"></a> <a href="#-host-it-yourself"><img src="docs/images/button-docker.svg" height="56" alt="Host it yourself with Docker"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><img src="docs/images/button-desktop.svg" height="56" alt="Desktop apps for Windows, macOS, and Linux"></a> <a href="#-host-it-yourself"><img src="docs/images/button-docker.svg" height="56" alt="Host it yourself with Docker"></a>
 </p>
 
 | | Get | Good to know |
 |---|---|---|
-| 🤖 **Android 13+** | [`.apk`](https://github.com/Lin8x/FluidMessages/releases/latest) | The app offers updates for you. |
-| 🪟 **Windows** | [`.exe`](https://github.com/Lin8x/FluidMessages/releases/latest) | The web version as a desktop app. |
-| 🍎 **macOS** | [`.dmg`](https://github.com/Lin8x/FluidMessages/releases/latest) | The web version as a desktop app. |
-| 🐧 **Linux** | [`.AppImage`](https://github.com/Lin8x/FluidMessages/releases/latest) | Make it executable, then open it. |
-| 🐳 **Server** | `ghcr.io/lin8x/fluidmessages-web` | For Docker or Portainer. |
+| 🤖 **Android 13+** | [`.apk`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk) | The app offers updates for you. |
+| 🪟 **Windows** | [`.exe`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Windows.exe) | The web version as a desktop app. |
+| 🍎 **macOS** | [`.dmg`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-macOS.dmg) | The web version as a desktop app. |
+| 🐧 **Linux** | [`.AppImage`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage) | Make it executable, then open it. |
+| 🐳 **Server** | [`.zip`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Server.zip) or `ghcr.io/lin8x/fluidmessages-web` | For Docker or Portainer. |
 
 > [!NOTE]
 > The desktop apps aren't code-signed yet, so your computer may warn you. [Here's what to do.](docs/self-hosting.md#desktop-apps)
+
+<br>
+
+---
+
+<br>
 
 ## 🚀 Get started on Android
 
@@ -153,6 +191,12 @@ Use it on your phone, in any browser, or as a desktop app.
 > On Android 15, if that's blocked, go to **App info → ⋮ → Allow restricted settings** and try again.
 
 Want Matrix, XMPP, Email, or IRC? Add them in **Settings → Accounts and calls → Accounts**.
+
+<br>
+
+---
+
+<br>
 
 ## 🏠 Host it yourself
 
@@ -169,6 +213,12 @@ Open <http://localhost:8080>. On that computer it opens straight into a short we
 
 [Full self-hosting guide →](docs/self-hosting.md) (HTTPS, Portainer, connecting your phone, and installing it as an app)
 
+<br>
+
+---
+
+<br>
+
 ## 📚 Docs
 
 | | |
@@ -177,6 +227,12 @@ Open <http://localhost:8080>. On that computer it opens straight into a short we
 | 🏠 [Self-hosting](docs/self-hosting.md) | Docker, Portainer, HTTPS, and desktop apps. |
 | 🛠️ [Development](docs/development.md) | Building, testing, and releasing. |
 | 🤝 [Contributing](CONTRIBUTING.md) | How to help. |
+
+<br>
+
+---
+
+<br>
 
 ## 🤝 Contributing
 
@@ -197,6 +253,12 @@ Everyone is welcome, and you don't have to write code to help.
 4. Open a pull request. For screen changes, add a screenshot.
 
 Please use made-up names and messages in screenshots and tests. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+
+<br>
+
+---
+
+<br>
 
 ## 📄 License
 

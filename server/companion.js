@@ -170,12 +170,14 @@ function themeSwatch(key) {
   return swatch;
 }
 
+/** True while the look follows the phone, so the web app's own look settings are shown but can't change. */
+function lookLocked(settings) { return !!(settings.follow_phone && settings.phone.paired && usingPhoneLook()); }
+
+/** Settings → Themes and appearance (settings.js). Color theme first, with every named theme. */
 function appearanceSection(settings) {
   const section = element('section', '', 'settings-section');
   section.id = 'settings-appearance';
-  section.append(element('h3', 'Themes and appearance'));
-  section.dataset.short = 'Appearance';
-  const locked = settings.follow_phone && settings.phone.paired && usingPhoneLook();
+  const locked = lookLocked(settings);
   if (locked) {
     section.append(element('p', 'Following your phone’s theme, colors, and bubbles. To set them here instead, choose '
       + '“This web app’s own” under Phone and other devices.', 'notice'));
@@ -193,8 +195,8 @@ function appearanceSection(settings) {
     tile.append(input, themeSwatch(key), element('span', THEMES[key].label));
     input.addEventListener('change', () => {
       if (!input.checked) return;
-      const {colors, radius, size, padding, ...rest} = webLook;
-      saveWebLook({...rest, theme: key}, true);
+      // The theme's colors, wallpaper, and layout; light or dark, motion, sounds, and haptics stay (look.js).
+      saveWebLook(themeLook(webLook, key), true);
       refreshAppearanceControls();
     });
     themes.append(tile);
@@ -226,8 +228,7 @@ function appearanceSection(settings) {
   const resetTheme = element('button', 'Reset to theme');
   resetTheme.type = 'button';
   resetTheme.addEventListener('click', () => {
-    const {colors, radius, size, padding, ...rest} = webLook;
-    saveWebLook(rest, true);
+    saveWebLook(themeLook(webLook, webLook.theme || 'fluid', webLook.activePalette), true);
     refreshAppearanceControls();
   });
   colorsBox.append(element('p', 'Colored bubbles always use white text; bright colors are shaded so it stays readable.', 'muted'), colorGrid, resetTheme);
@@ -246,17 +247,6 @@ function appearanceSection(settings) {
     bubbles.append(wrap);
   }
 
-  const inbox = element('details', '', 'more');
-  inbox.append(element('summary', 'Inbox and times'));
-  const exact = checkbox('Show the exact time on every message', !!webLook.exactTimes, (value) => saveWebLook({...webLook, exactTimes: value}, true));
-  const combine = checkbox('Combine linked conversations', !!webLook.combineProtocols, (value) => saveWebLook({...webLook, combineProtocols: value}, true),
-    'Every way you talk to someone in one chat, with each message labeled.');
-  const tags = element('select', '');
-  for (const [value, label] of [['auto', 'Automatic'], ['always', 'Always'], ['off', 'Off']]) tags.append(Object.assign(element('option', label), {value}));
-  tags.value = webLook.tagMode || 'auto';
-  tags.addEventListener('change', () => saveWebLook({...webLook, tagMode: tags.value}, true));
-  inbox.append(exact, combine, field('Protocol tags in the inbox', tags, 'Automatic shows them once you have more than one kind of conversation.'));
-
   function refreshAppearanceControls() {
     const look = themeAppearance(webLook);
     for (const [key, input] of Object.entries(colorInputs)) input.value = (webLook.colors || {})[key] || look.colors[key];
@@ -267,85 +257,12 @@ function appearanceSection(settings) {
     }
   }
   refreshAppearanceControls();
-  controls.append(themes, mode, preview, colorsBox, bubbles, inbox);
+  // Saved palettes, wallpaper, inbox and toolbar, bubble tails, and motion and sound, as on the phone (look.js).
+  const extras = typeof lookExtras === 'function' ? lookExtras({themes, colorsBox, bubbles, refresh: refreshAppearanceControls}) : {groups: [], feedback: null};
+  controls.append(themes, mode, preview, colorsBox, ...extras.groups, bubbles);
   section.append(controls);
+  if (extras.feedback) section.append(extras.feedback);
   return section;
-}
-
-/**
- * Settings, in the order people reach for them: the chat accounts this app runs on, how it looks, chats, fun and
- * effects, payments, then the phone and other devices, which are optional add-ons. [target] scrolls to a section.
- */
-async function openSettings(target) {
-  const settings = await loadSettings();
-  document.querySelector('dialog.settings-sheet')?.close();
-  const sheet = dialog('Settings');
-  sheet.classList.add('settings-sheet');
-  const sections = [];
-  const add = (id, title, intro) => {
-    const node = element('section', '', 'settings-section');
-    node.id = id;
-    node.append(element('h3', title));
-    if (intro) node.append(element('p', intro, 'muted'));
-    sections.push(node);
-    return node;
-  };
-  const rebuild = async (where) => { const open = sheet.scrollTop; sheet.close(); await openSettings(where); if (!where) document.querySelector('dialog.settings-sheet')?.scrollTo(0, open); };
-
-  // Chat accounts: what FluidMessages Web runs on by itself.
-  const accounts = add('settings-accounts', 'Chat accounts', 'FluidMessages stays connected to these, even when this page is closed.');
-  const list = element('div', '', 'account-list');
-  accounts.append(list);
-  const showAccounts = () => accountRows(list, showAccounts).then(() => refresh().catch(() => {}));
-
-  sections.push(appearanceSection(settings));
-
-  const chats = add('settings-chats', 'Chats');
-  const local = (key, fallback = 'on') => (localStorage.getItem(key) || fallback) !== 'off';
-  const timer = timerSelect(settings.disappearing.default, false);
-  timer.addEventListener('change', () => api('settings', {disappearing: {...settings.disappearing, default: Number(timer.value)}})
-    .then(loadSettings).catch(showError));
-  chats.append(checkbox('Enter sends', local('enterSends'), (value) => localStorage.setItem('enterSends', value ? 'on' : 'off'),
-    'Shift+Enter starts a new line. Saved in this browser.'),
-  field('Disappearing messages', timer, 'The default for every chat. Your own Matrix and XMPP messages are taken back for everyone; '
-    + 'texts, email, and IRC stay on the other person’s device.'
-    + (settings.follow_phone && settings.phone.paired ? ' Your phone’s timers replace this when it syncs.' : '')));
-
-  sections.push(funSection(settings));
-
-  const payments = add('settings-payments', 'Payments');
-  const usual = element('select', '');
-  for (const [name] of Object.entries(allAssets())) usual.append(Object.assign(element('option', moneyLook(name).title + ' · ' + moneyLook(name).detail), {value: name}));
-  usual.value = defaultAsset();
-  usual.addEventListener('change', () => localStorage.setItem('money.default', usual.value));
-  payments.append(field('Your usual way to pay', usual, 'It sits on top in Money. FluidMessages never holds money, keys, or card numbers.'));
-
-  sections.push(devicesSection(settings, rebuild));
-
-  const reset = add('settings-reset', 'Reset');
-  reset.append(confirmButton('Reset settings', 'Tap again to reset', async () => {
-    await api('settings', {reset: true}).catch(showError);
-    sheet.close();
-    loadSettings().catch(() => {});
-    refresh().catch(() => {});
-  }), element('p', 'Puts settings back to their defaults. Accounts, chats, and passwords stay.', 'muted'));
-
-  // A short table of contents, so the page is quick to move around in.
-  const nav = element('nav', '', 'settings-nav');
-  nav.setAttribute('aria-label', 'Settings sections');
-  const jump = (node) => { node.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'}); node.querySelector('h3').focus?.({preventScroll: true}); };
-  for (const node of sections) {
-    const link = element('a', node.dataset.short || node.querySelector('h3').textContent);
-    link.href = '#' + node.id;
-    link.addEventListener('click', (event) => { event.preventDefault(); jump(node); });
-    nav.append(link);
-  }
-  for (const node of sections) node.querySelector('h3').tabIndex = -1;
-  sheet.append(nav, ...sections);
-  sheet.showModal();
-  showAccounts().catch((error) => list.append(element('p', error.message, 'muted')));
-  const goal = target && sections.find((node) => node.id === target);
-  if (goal) requestAnimationFrame(() => { goal.scrollIntoView(); goal.querySelector('h3').focus?.({preventScroll: true}); });
 }
 
 /** One row per protocol: who you're signed in as, with Add, Edit, and Remove. Shared by Settings and the welcome. */
@@ -380,35 +297,37 @@ async function accountRows(list, again) {
   return result;
 }
 
-/** Fun and effects: switch off anything you'd rather not see, for every browser on this server. */
-function funSection(settings) {
-  const section = element('section', '', 'settings-section');
-  section.id = 'settings-fun';
-  section.dataset.short = 'Fun';
-  section.append(element('h3', 'Fun and effects'), element('p', 'Turn off anything you’d rather not see. Applies to every browser on this server.', 'muted'));
+/**
+ * Settings → Media, GIFs, and fun: the Links and Fun and effects cards, like the phone's. Switch off anything you'd
+ * rather not see; these apply to every browser on this server.
+ */
+function funSections(settings) {
   const current = {...prefs, ...(settings.prefs || {})};
   const save = (key) => async (value) => {
     prefs = {...prefs, [key]: value};
     showMessages(true);
     try { companionSettings = await api('settings', {prefs: {[key]: value}}); } catch (error) { showError(error); }
   };
+  const links = element('section', '', 'settings-section');
+  links.id = 'settings-links';
+  links.append(element('h3', 'Links'),
+    checkbox('Show pictures and GIFs from links', current.gifs, save('gifs'), 'GIFs, stickers, and pictures from links. Off shows the link instead.'),
+    checkbox('Link previews', current.linkPreviews, save('linkPreviews'), 'A card with the page’s title and picture. Your server fetches it, so the site never sees your browser.'));
+  const fun = element('section', '', 'settings-section');
+  fun.id = 'settings-fun';
   const motion = matchMedia('(prefers-reduced-motion: reduce)').matches ? ' Your device asks for reduced motion, so animations stay off.' : '';
-  section.append(
+  fun.append(element('h3', 'Fun and effects'), element('p', 'Turn off anything you’d rather not see. Applies to every browser on this server.', 'muted'),
     checkbox('Message effects', current.effects, save('effects'), 'Confetti, balloons, slams, and invisible ink. Off shows the words only.' + motion),
     checkbox('Reaction animations', current.reactionEffects, save('reactionEffects'), 'Each built-in reaction plays its own short animation; other emoji pop.'),
     checkbox('Games', current.games, save('games'), 'Chess, tic-tac-toe, four in a row, and rock paper scissors. Off shows moves as plain text.'),
-    checkbox('Dice and random picks', current.random, save('random'), 'Dice, coin flips, and random choices.'),
-    checkbox('GIFs and stickers', current.gifs, save('gifs'), 'Shows GIFs, stickers, and pictures from links. Off shows the link instead.'),
-    checkbox('Link previews', current.linkPreviews, save('linkPreviews'), 'A card with the page’s title and picture. Your server fetches it, so the site never sees your browser.'));
-  return section;
+    checkbox('Dice and random picks', current.random, save('random'), 'Dice, coin flips, and random choices.'));
+  return [links, fun];
 }
 
 /** Your phone, this computer, and other devices. The password appears here, when you first let another device in. */
 function devicesSection(settings, rebuild) {
   const section = element('section', '', 'settings-section');
   section.id = 'settings-devices';
-  section.dataset.short = 'Devices';
-  section.append(element('h3', 'Phone and other devices'));
   const phone = element('div', '', 'subsection');
   const computer = element('div', '', 'subsection');
   const others = element('div', '', 'subsection');
@@ -466,7 +385,7 @@ function devicesSection(settings, rebuild) {
       if (!(state.here && state.local)) {
         const out = element('button', 'Sign out', 'quiet');
         out.type = 'button';
-        out.addEventListener('click', () => { document.querySelector('dialog.settings-sheet')?.close(); signOut(); });
+        out.addEventListener('click', () => signOut());
         row.append(out);
       }
       others.append(change, row);
@@ -531,18 +450,27 @@ function phoneConnect(state, changed) {
     }
     const steps = element('ol', '', 'steps');
     steps.append(element('li', 'Make FluidMessages reachable from your phone over HTTPS (a reverse proxy such as Caddy). See the self-hosting guide.'),
-      element('li', 'On Android, open Settings → Web companion, enter this server’s HTTPS address and the pairing token, and save.'));
+      element('li', 'On Android, open Settings → FluidMessages Web, enter this server’s HTTPS address and the pairing token, and save.'));
     if (current.pairing.web || current.pairing.compose || value) box.append(steps);
     box.append(token, actions);
     if (current.pairing.web && !value) box.append(element('p', 'A pairing token is active (made ' + new Date(current.pairing.created).toLocaleDateString() + ').', 'hint'));
     const make = () => api('auth/pairing', {}).then((result) => draw(result, result.token)).catch(showError);
+    // The step-by-step guide: a full page with the password, the app, the token, and a live wait for the phone.
+    const guided = (label, className) => {
+      const button = element('button', label, className);
+      button.type = 'button';
+      button.addEventListener('click', () => showSyncGuide({fromSettings: true}));
+      return button;
+    };
     if (current.pairing.web) {
+      if (typeof showSyncGuide === 'function') actions.append(guided('Set up step by step', 'quiet'));
       actions.append(confirmButton('Make a new pairing token', 'Tap again: the old one stops working', make),
         confirmButton('Disconnect phone', 'Tap again to disconnect', () => api('auth/pairing/delete', {}).then((result) => { token.hidden = true; draw(result); }).catch(showError)));
     } else {
       const connect = element('button', 'Connect your phone', 'primary');
       connect.type = 'button';
       connect.addEventListener('click', () => {
+        if (typeof showSyncGuide === 'function') { showSyncGuide({fromSettings: true}); return; }
         if (current.owner) { make(); return; }
         // Step 1 of 2, right here: a password, since the phone (and any other device) reaches this server over the network.
         const intro = element('p', 'Step 1 of 2: set a password. Your phone connects over your network, so FluidMessages needs one before other devices can reach it.', 'notice');
@@ -664,55 +592,131 @@ function routeFor(key) {
     || routes.find((route) => route.address === address && internet(route.protocol));
 }
 
-// Conversation details
+// Conversation details: a full page like the phone's (chats.js draws the page, its members, and its folders).
 
-async function openDetails() {
-  if (!active) return;
-  const settings = companionSettings || await loadSettings();
-  const address = threadAddress(active);
-  const sheet = dialog(threadTitle(active));
-  const timers = element('section', '', 'settings-section');
-  const own = settings.disappearing.chats[address];
-  const timer = timerSelect(own === undefined ? -1 : own, true);
-  timer.addEventListener('change', () => {
-    const chats = {...settings.disappearing.chats};
-    if (Number(timer.value) < 0) delete chats[address]; else chats[address] = Number(timer.value);
-    api('settings', {disappearing: {...settings.disappearing, chats}}).then(loadSettings).catch(showError);
-  });
-  timers.append(element('h3', 'Disappearing messages'), field('Remove messages in this chat after', timer));
-  if (settings.follow_phone && settings.phone.paired) {
-    timers.append(element('p', 'Your phone’s timers replace this when it syncs. Change it on the phone, or choose '
-      + '“This web app’s own” in Settings → Phone and other devices.', 'muted'));
+/** The Message, Call, and Video tiles under a chat's name, with the same icons as the chat's header. */
+function reachTiles(key) {
+  const row = element('div', '', 'reach-tiles');
+  const tile = (icon, label, detail, run) => {
+    const button = headButton(icon, label + (detail ? ' · ' + detail : ''));
+    button.className = 'reach-tile';
+    const words = element('span', '', 'reach-words');
+    words.append(element('strong', label));
+    if (detail) words.append(element('small', detail));
+    button.append(words);
+    button.addEventListener('click', run);
+    row.append(button);
+  };
+  const back = () => { closeDetailsPage(false); };
+  if (!get('schedule').hidden || sampleOn) tile('message', 'Message', '', () => { back(); get('body').focus(); });
+  if (!get('call').hidden) tile('voice', 'Call', 'From your phone', () => { back(); get('call').click(); });
+  if (callable(key)) {
+    tile('voice', 'Call', 'Matrix', () => { back(); startCall(false).catch(showError); });
+    tile('video', 'Video', 'Matrix', () => { back(); startCall(true).catch(showError); });
+  } else if (threadAddress(key) && (!get('schedule').hidden || sampleOn)) {
+    tile('voice', 'Call', 'Meeting link', () => { back(); startMeeting(false).catch(showError); });
+    tile('video', 'Video', 'Meeting link', () => { back(); startMeeting(true).catch(showError); });
   }
-  sheet.append(timers);
-  const route = routeFor(active);
-  if (route && route.group) {
-    const members = element('section', '', 'settings-section');
-    members.append(element('h3', 'People'));
-    if (route.members?.length) members.append(element('p', route.members.join(', '), 'muted'));
-    const who = Object.assign(element('input', ''), {placeholder: route.protocol === 'matrix' ? '@maya:example.org'
-      : route.protocol === 'xmpp' ? 'Address to invite, or nickname to remove' : 'Nickname', autocomplete: 'off'});
-    const status = element('p', '', 'muted');
-    const change = (action) => async () => {
-      try {
-        await api('protocols/members', {address: route.address, protocol: route.protocol, action, member: who.value.trim()});
-        status.textContent = action === 'add' ? 'Invited.' : 'Removed.';
-        who.value = '';
-      } catch (error) { status.textContent = error.message; }
-    };
-    const add = element('button', 'Invite');
-    const remove = element('button', 'Remove');
-    add.type = remove.type = 'button';
-    add.addEventListener('click', change('add'));
-    remove.addEventListener('click', change('remove'));
-    const row = element('div', '', 'button-row');
-    row.append(add, remove);
-    members.append(field('Person', who), row, element('p', 'Removing someone needs moderator or operator rights in the group.', 'muted'), status);
-    sheet.append(members);
-  } else if (family(threadProtocol(active)) === 'sms' && address.startsWith('mms:')) {
-    sheet.append(element('p', 'Group texts can’t change members. Start a new group from your phone to add or remove someone.', 'muted settings-section'));
+  return row.children.length ? row : null;
+}
+
+/** The chat's padlock and what it means, like the Security section on the phone. */
+function securityRow(key) {
+  const [tone, label] = protection(key);
+  const protocol = threadProtocol(key);
+  const detail = {
+    green: fluidEncrypted(key) ? 'Only people with your shared encryption key can read these messages.' : 'Only you and the people in this chat can read it.',
+    yellow: 'Protected on the way to the server, but the server can read it.',
+    red: protocol === 'rcs' ? 'RCS isn’t available in FluidMessages yet. Texts in this chat are SMS, which your carrier can read.'
+      : 'Your carrier and anyone along the way can read these messages.',
+  }[tone];
+  const row = element('div', '', 'detail-row');
+  const words = element('span', '', 'detail-words');
+  words.append(element('strong', label), element('small', protocolName(protocol) + ' · ' + detail));
+  const badge = get('security-badge')?.cloneNode(true);
+  if (badge) { badge.removeAttribute('id'); badge.hidden = false; badge.classList.add('large'); }
+  row.append(words);
+  if (badge) row.append(badge);
+  return row;
+}
+
+async function openDetails({back} = {}) {
+  if (!active || !threadAddress(active)) return;
+  const key = active;
+  // The sample chats never save to the server, so they skip its timers.
+  const settings = sampleOn ? null : companionSettings || await loadSettings().catch(() => null);
+  if (key !== active) return;
+  const address = threadAddress(key);
+  const route = routeFor(key);
+  const group = threadIsGroup(key);
+  const members = group ? threadMembers(key) : [];
+  const title = threadTitle(key);
+  const channel = ircChannels[address];
+  const subtitle = channel ? (channel.topic ? 'Topic: ' + channel.topic : 'IRC channel') + ' · ' + (members.length + 1) + ' people'
+    : group ? (sampleOn ? 'Sample group · ' : '') + (members.length + 1) + ' members including you'
+      : sampleOn ? 'Sample contact · ' + protocolName(threadProtocol(key))
+        : automatedThread(key) ? 'Automated sender · ' + address : route?.target || address;
+  const extras = detailsExtras(key);
+  const nodes = [detailsHero(title, subtitle), reachTiles(key)];
+  if (!group) {
+    const info = element('section', '', 'settings-section');
+    info.append(element('h3', 'Contact info'));
+    const addresses = contactAddresses(key);
+    for (const [label, value] of addresses) info.append(detailRow(label, value));
+    if (!addresses.length) info.append(element('p', 'No address is known for this chat.', 'muted'));
+    nodes.push(info);
   }
-  sheet.showModal();
+  if (group) {
+    const list = memberList(key, members);
+    if (route?.group) {
+      // Inviting and removing people, where the protocol allows it.
+      const who = Object.assign(element('input', ''), {placeholder: route.protocol === 'matrix' ? '@maya:example.org'
+        : route.protocol === 'xmpp' ? 'Address to invite, or nickname to remove' : 'Nickname', autocomplete: 'off'});
+      const status = element('p', '', 'muted');
+      status.setAttribute('role', 'status');
+      const change = (action) => async () => {
+        try {
+          await api('protocols/members', {address: route.address, protocol: route.protocol, action, member: who.value.trim()});
+          status.textContent = action === 'add' ? 'Invited.' : 'Removed.';
+          who.value = '';
+        } catch (error) { status.textContent = error.message; }
+      };
+      const add = element('button', 'Invite');
+      const remove = element('button', 'Remove');
+      add.type = remove.type = 'button';
+      add.addEventListener('click', change('add'));
+      remove.addEventListener('click', change('remove'));
+      const row = element('div', '', 'button-row');
+      row.append(add, remove);
+      list.append(field('Invite or remove someone', who), row, element('p', 'Removing someone needs moderator or operator rights in the group.', 'muted'), status);
+    } else if (address.startsWith('mms:')) {
+      list.append(element('p', 'Group texts can’t change members. Start a new group from your phone to add or remove someone.', 'muted'));
+    }
+    nodes.push(list);
+  }
+  nodes.push(sharedMedia(key));
+  if (extras.wallpaper) nodes.push(extras.wallpaper);
+  nodes.push(extras.conversation);
+  const security = element('section', '', 'settings-section');
+  security.append(element('h3', 'Security'), securityRow(key));
+  if (settings) {
+    const own = settings.disappearing.chats[address];
+    const timer = timerSelect(own === undefined ? -1 : own, true);
+    timer.addEventListener('change', () => {
+      const chats = {...settings.disappearing.chats};
+      if (Number(timer.value) < 0) delete chats[address]; else chats[address] = Number(timer.value);
+      api('settings', {disappearing: {...settings.disappearing, chats}}).then(loadSettings).catch(showError);
+    });
+    security.append(field('Disappearing messages: remove messages in this chat after', timer));
+    if (settings.follow_phone && settings.phone.paired) {
+      security.append(element('p', 'Your phone’s timers replace this when it syncs. Change it on the phone, or choose '
+        + '“This web app’s own” in Settings → Phone and other devices.', 'muted'));
+    }
+  } else if (sampleOn) {
+    security.append(element('p', 'Disappearing messages are set per chat in your real chats’ details. Nothing in the sample inbox is saved.', 'muted'));
+  }
+  nodes.push(security, extras.code);
+  detailsPage('Conversation details', nodes, back);
 }
 
 // Calls
@@ -744,6 +748,8 @@ function protection(key) {
 function updateCallButtons() {
   const matrix = callable(active);
   callButtons.voice.hidden = callButtons.video.hidden = !matrix;
+  // Matrix chats call natively; everywhere else the camera button sends a meeting link.
+  if (callButtons.meeting) callButtons.meeting.hidden = !active || !threadAddress(active) || matrix;
   get('details').hidden = !active || !threadAddress(active);
   let badge = document.getElementById('security-badge');
   if (!badge) {
@@ -1199,7 +1205,7 @@ function openMoney() {
 const HEAD_ICONS = {
   voice: 'M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z',
   video: 'M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z',
-  meeting: 'M16 11a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm-8 0a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05A4.22 4.22 0 0 1 17 16.5V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z',
+  message: 'M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z',
   details: 'M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 15h-2v-6h2zm0-8h-2V7h2z',
 };
 
@@ -1222,6 +1228,7 @@ function headButton(icon, label) {
 
 (() => {
   const head = document.querySelector('.thread-head');
+  // A handset for voice and a camera for video, here, in Calls, and in a chat's details.
   for (const [key, label, video] of [['voice', 'Voice call (Matrix)', false], ['video', 'Video call (Matrix)', true]]) {
     const button = headButton(key, label);
     button.hidden = true;
@@ -1229,7 +1236,7 @@ function headButton(icon, label) {
     callButtons[key] = button;
     head.append(button);
   }
-  const details = headButton('details', 'Chat details');
+  const details = headButton('details', 'Conversation details');
   details.id = 'details';
   details.hidden = true;
   details.addEventListener('click', () => openDetails().catch(showError));
@@ -1265,6 +1272,8 @@ function railIcon(name) {
 let section = 'messages';
 
 function showSection(next) {
+  // Leaving Settings leaves its address too, so Back returns to the Settings page you were on.
+  if (next !== 'settings' && section === 'settings' && /^#settings/.test(location.hash)) history.pushState(null, '', location.pathname + location.search);
   section = next;
   document.body.dataset.section = next;
   for (const button of document.querySelectorAll('.rail button[data-section]')) {
@@ -1298,8 +1307,8 @@ function showCalls() {
     const row = element('div', '', 'call-row');
     row.append(element('span', initials(route.title), 'avatar'), element('strong', route.title), element('small', 'Matrix · end-to-end encrypted'));
     for (const [label, video] of [['Voice', false], ['Video', true]]) {
-      const button = element('button', label);
-      button.type = 'button';
+      const button = headButton(video ? 'video' : 'voice', label + ' call with ' + route.title + ' (Matrix)');
+      button.classList.add('call-action');
       button.addEventListener('click', () => {
         showSection('messages');
         select(route.address + '\u001f' + route.protocol);
@@ -1320,6 +1329,7 @@ function showCalls() {
     button.dataset.section = key;
     button.append(railIcon(key), element('span', label));
     button.addEventListener('click', () => key === 'settings' ? openSettings().catch(showError) : showSection(key));
+    if (key === 'settings') button.setAttribute('aria-label', 'Settings');
     if (key === 'messages') button.querySelector('span').textContent = 'Chats';
     rail.append(button);
   }
@@ -1332,6 +1342,9 @@ function showCalls() {
   // Installable as an app (a PWA). The worker only caches FluidMessages' own files, never messages.
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 })();
+
+const MEETING_VIDEO_LABEL = 'Video call (sends a meeting link)';
+const MEETING_VOICE_LABEL = 'Voice call (sends a meeting link)';
 
 // Meeting-link calls: sent as plain text so every app can open them, shown here as a call card with Join.
 const MEETING = /^(?:📹|📞)?\s*Join my (video )?call: (https:\/\/[A-Za-z0-9.-]+(?::\d+)?\/[A-Za-z0-9_-]+)\s*$/;
@@ -1371,10 +1384,10 @@ async function startMeeting(video) {
 }
 
 (() => {
-  const button = headButton('meeting', 'Start a video meeting and send its link here');
+  const button = headButton('video', MEETING_VIDEO_LABEL);
+  button.hidden = true;
   button.addEventListener('click', () => startMeeting(true).catch(showError));
   document.getElementById('details').before(button);
-  const update = () => { button.hidden = !active || !threadAddress(active); };
-  update();
-  new MutationObserver(update).observe(document.getElementById('recipient'), {childList: true, characterData: true, subtree: true});
+  callButtons.meeting = button;
+  updateCallButtons();
 })();

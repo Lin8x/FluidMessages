@@ -99,6 +99,8 @@ function openViewer(src, alt, name) {
   close.type = 'button';
   close.setAttribute('aria-label', 'Close');
   bar.append(save, close);
+  // Edit opens the photo editor on this picture (editor.js).
+  if (typeof viewerEditButton === 'function') { const edit = viewerEditButton(src, () => done()); if (edit) bar.prepend(edit); }
   let zoomed = false;
   picture.addEventListener('click', (event) => { event.stopPropagation(); zoomed = !zoomed; picture.classList.toggle('zoomed', zoomed); });
   const opener = document.activeElement;
@@ -106,7 +108,11 @@ function openViewer(src, alt, name) {
   const key = (event) => {
     if (event.key === 'Escape') done();
     // Keep Tab inside the viewer.
-    if (event.key === 'Tab') { event.preventDefault(); (document.activeElement === save ? close : save).focus(); }
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      const stops = [...bar.querySelectorAll('button')];
+      stops[(stops.indexOf(document.activeElement) + (event.shiftKey ? stops.length - 1 : 1)) % stops.length].focus();
+    }
   };
   overlay.addEventListener('click', done);
   close.addEventListener('click', (event) => { event.stopPropagation(); done(); });
@@ -951,8 +957,10 @@ function openGifs() {
   query.addEventListener('input', later);
   // GIF sites to browse, no key needed: open one, copy a GIF's link, and paste it here.
   const sites = element('div', '', 'card-actions');
-  for (const [name, url] of [['Tenor', 'https://tenor.com/search/{query}-gifs'], ['GIPHY', 'https://giphy.com/search/{query}'],
-    ['Imgur', 'https://imgur.com/search?q={query}'], ['Reddit r/gifs', 'https://www.reddit.com/r/gifs/search/?q={query}&restrict_sr=1']]) {
+  // The sites you kept on, and your own, under Settings → Media and GIFs (media.js).
+  const browse = typeof gifSites === 'function' ? gifSites().map((site) => [site.name, site.search]) : [['Tenor', 'https://tenor.com/search/{query}-gifs'],
+    ['GIPHY', 'https://giphy.com/search/{query}'], ['Imgur', 'https://imgur.com/search?q={query}'], ['Reddit r/gifs', 'https://www.reddit.com/r/gifs/search/?q={query}&restrict_sr=1']];
+  for (const [name, url] of browse) {
     const open = element('a', name);
     open.target = '_blank';
     open.rel = 'noopener noreferrer';
@@ -973,6 +981,8 @@ function openGifs() {
   const pasteRow = element('div', '', 'card-actions');
   pasteRow.append(paste, sendPaste);
   box.append(element('small', 'Browse a GIF site', 'muted'), sites, pasteRow, field('Search here with', source), field('API key', key), field('Show', kind), query, grid, status);
+  // Your own stickers, made with Make a sticker (media.js).
+  if (typeof stickerShelf === 'function') box.prepend(stickerShelf(() => sheet.close()));
   sheet.append(box);
   sheet.showModal();
   later();
@@ -1011,6 +1021,8 @@ function attachFile() {
   const input = Object.assign(element('input', ''), {type: 'file'});
   input.addEventListener('change', () => {
     const file = input.files[0];
+    // Photos wait above the message box, with Edit, until you send (media.js).
+    if (file && typeof stageAttachment === 'function' && stageAttachment(file)) return;
     if (file) sendFile(file, file.name).catch(showError);
   });
   input.click();
@@ -1118,11 +1130,14 @@ function openContact() {
     if (open) [...menu.querySelectorAll('button')].find((button) => !button.hidden && !button.closest('[hidden]'))?.focus();
   };
   const internetOnly = () => !!active && internet(threadProtocol(active));
-  const groups = [['Share', [['📎', 'Photo or file', attachFile, internetOnly], ['📍', 'Location', openLocation], ['👤', 'Contact', openContact, internetOnly],
-    ['💸', 'Money', openMoney]]],
-  ['Create', [['📊', 'Poll', openPoll], ['📅', 'Event', openEvent]]],
+  // Voice messages, the photo editor, and stickers live in media.js and editor.js.
+  const voiceReady = () => internetOnly() && typeof voiceSupported === 'function' && voiceSupported();
+  const groups = [['Share', [['📎', 'Photo or file', attachFile, internetOnly], ['🎙️', 'Voice message', () => startVoiceNote(), voiceReady],
+    ['📍', 'Location', openLocation], ['👤', 'Contact', openContact, internetOnly], ['💸', 'Money', openMoney]]],
+  ['Create', [['📊', 'Poll', openPoll], ['📅', 'Event', openEvent], ['🖌️', 'Edit a photo', () => pickPhotoToEdit(), internetOnly]]],
   ['Fun', [['✨', 'Effect', openEffects, () => prefs.effects], ['🖼️', 'GIF or sticker', openGifs, () => prefs.gifs],
-    ['🎮', 'Games', openGames, () => prefs.games], ['🎲', 'Dice and random', openRandom, () => prefs.random]]]];
+    ['✂️', 'Make a sticker', () => makeSticker(), () => prefs.gifs], ['🎮', 'Games', openGames, () => prefs.games],
+    ['🎲', 'Dice and random', openRandom, () => prefs.random]]]];
   const items = [];
   for (const [title, entries] of groups) {
     const heading = element('small', title, 'menu-group');
@@ -1238,23 +1253,67 @@ function effectPlayed(id) {
   return false;
 }
 
-function playScreenEffect(effect) {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  document.querySelector('canvas.screen-effect')?.remove();
-  const canvas = Object.assign(document.createElement('canvas'), {className: 'screen-effect'});
+// Screen effects and reaction animations share one rule: one plays at a time on one canvas, its loop stops when it
+// ends, when the tab is hidden, or when motion is off, and canvases are drawn at most 1.5x and about 2.5 megapixels,
+// whatever the screen's pixel ratio. Screen effects wait their turn (two at most wait; the rest are skipped).
+const EFFECT_WAITING = 2;
+const effectWaiting = [];
+let effectRunning = null;
+let reactionRunning = null;
+
+function motionOff() {
+  return matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.dataset.motion === 'off';
+}
+
+/** A canvas over the page at [left, top] sized [width] x [height] CSS pixels, at a capped resolution. */
+function effectCanvas(className, left, top, width, height) {
+  const canvas = Object.assign(document.createElement('canvas'), {className});
   canvas.setAttribute('aria-hidden', 'true');
+  const scale = Math.min(devicePixelRatio || 1, 1.5, Math.sqrt(2.5e6 / Math.max(1, width * height)));
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  Object.assign(canvas.style, {left: left + 'px', top: top + 'px', width: width + 'px', height: height + 'px'});
   document.body.append(canvas);
   const context = canvas.getContext('2d');
-  const scale = devicePixelRatio || 1;
-  canvas.width = innerWidth * scale; canvas.height = innerHeight * scale;
   context.scale(scale, scale);
-  const colors = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#007aff', '#af52de', '#ff2d55'];
-  const pieces = Array.from({length: effect === 'Fireworks' ? 6 : 70}, () => Array.from({length: 6}, Math.random));
-  const length = effect === 'Balloons' ? 4200 : 3000;
+  return {canvas, context};
+}
+
+/** Runs draw(t, now) each frame for [length] ms, then calls done. Returns a stop function. */
+function effectLoop(length, draw, done) {
   const began = performance.now();
-  const W = innerWidth, H = innerHeight;
-  const frame = (now) => {
+  let frame = 0;
+  const step = (now) => {
+    if (document.hidden) { done(); return; }
     const t = Math.min(1, (now - began) / length);
+    draw(t);
+    if (t < 1) frame = requestAnimationFrame(step); else done();
+  };
+  frame = requestAnimationFrame(step);
+  return () => cancelAnimationFrame(frame);
+}
+
+function stopEffects() {
+  effectWaiting.length = 0;
+  effectRunning?.stop();
+  reactionRunning?.stop();
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopEffects(); });
+
+function playScreenEffect(effect) {
+  // Motion off in Themes and appearance stops effects too, like reduced motion.
+  if (motionOff() || document.hidden) return;
+  if (effectRunning) {
+    if (effectRunning.effect !== effect && !effectWaiting.includes(effect) && effectWaiting.length < EFFECT_WAITING) effectWaiting.push(effect);
+    return;
+  }
+  const W = innerWidth, H = innerHeight;
+  const {canvas, context} = effectCanvas('screen-effect', 0, 0, W, H);
+  const colors = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#007aff', '#af52de', '#ff2d55'];
+  const count = {Confetti: 70, Balloons: 18, Hearts: 30, Fireworks: 6}[effect] || 40;
+  const pieces = Array.from({length: count}, () => Array.from({length: 6}, Math.random));
+  const length = effect === 'Balloons' ? 4200 : 3000;
+  const draw = (t) => {
     const fade = t > .85 ? (1 - t) / .15 : 1;
     context.clearRect(0, 0, W, H);
     context.globalAlpha = fade;
@@ -1262,13 +1321,16 @@ function playScreenEffect(effect) {
       context.fillStyle = colors[index % colors.length];
       if (effect === 'Confetti') {
         const y = (-.1 + t * (1.1 + p[1]) - p[2] * .3) * H, x = (p[0] + Math.sin(t * 6 + p[3] * 6) * .04) * W;
+        if (y < -20 || y > H + 20) return;
         context.save(); context.translate(x, y); context.rotate(t * 12 * (p[4] - .5)); context.fillRect(-6, -3, 12 + p[5] * 8, 7); context.restore();
-      } else if (effect === 'Balloons' && index < 18) {
+      } else if (effect === 'Balloons') {
         const x = (.05 + p[0] * .9 + Math.sin(t * 5 + p[3] * 6) * .02) * W, y = H * (1.15 + p[1] * .6) - t * H * (1.9 + p[2] * .4), r = 26 + p[5] * 14;
+        if (y < -r * 3.5 || y > H + r * 1.2) return;
         context.beginPath(); context.ellipse(x, y, r * .85, r * 1.07, 0, 0, Math.PI * 2); context.fill();
         context.strokeStyle = 'rgba(0,0,0,.25)'; context.beginPath(); context.moveTo(x, y + r * 1.1); context.lineTo(x + Math.sin(t * 9) * 6, y + r * 3.2); context.stroke();
-      } else if (effect === 'Hearts' && index < 30) {
+      } else if (effect === 'Hearts') {
         const x = p[0] * W + Math.sin(t * 7 + p[4] * 6) * 18, y = H * (1.05 + p[1] * .4) - t * H * (1.2 + p[2] * .5), s = 16 + p[5] * 22;
+        if (y < -s || y > H + s) return;
         context.fillStyle = '#ff2d55';
         context.beginPath(); context.moveTo(x, y + s * .3);
         context.bezierCurveTo(x - s, y - s * .4, x - s * .35, y - s, x, y - s * .35);
@@ -1285,9 +1347,18 @@ function playScreenEffect(effect) {
         context.globalAlpha = fade;
       }
     });
-    if (t < 1) requestAnimationFrame(frame); else canvas.remove();
   };
-  requestAnimationFrame(frame);
+  let stopLoop = () => {};
+  const finish = () => {
+    stopLoop();
+    canvas.remove();
+    if (effectRunning?.canvas !== canvas) return;
+    effectRunning = null;
+    const next = effectWaiting.shift();
+    if (next && !document.hidden) setTimeout(() => playScreenEffect(next), 250);
+  };
+  effectRunning = {effect, canvas, stop: () => { effectWaiting.length = 0; finish(); }};
+  stopLoop = effectLoop(length, draw, finish);
 }
 
 // Reactions: each built-in reaction plays its own short animation around the bubble, like the phone's
@@ -1299,7 +1370,7 @@ const reactionAnimation = (emoji) => REACTION_ANIMATIONS[String(emoji || '').tri
 function playReactionEffect(emoji, bubble, outgoing) {
   const found = reactionAnimation(emoji);
   if (!found) return false;
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return true;
+  if (motionOff() || document.hidden) return true;
   const [kind, length] = found;
   // The bubble moves too: a heartbeat, a bounce, a sink, a giggle, a shake, or a puzzled tilt.
   bubble.classList.remove(...Object.values(REACTION_ANIMATIONS).map(([name]) => 'rx-' + name));
@@ -1307,17 +1378,14 @@ function playReactionEffect(emoji, bubble, outgoing) {
   bubble.style.setProperty('--rx-length', length + 'ms');
   bubble.classList.add('rx-' + kind);
   setTimeout(() => bubble.classList.remove('rx-' + kind), length + 50);
-  // Drawn over the page and ignoring the pointer, so a refresh redrawing the chat doesn't cut it short.
-  const canvas = Object.assign(document.createElement('canvas'), {className: 'screen-effect reaction-effect'});
-  canvas.setAttribute('aria-hidden', 'true');
-  document.body.append(canvas);
-  const context = canvas.getContext('2d');
-  const scale = devicePixelRatio || 1;
-  canvas.width = innerWidth * scale; canvas.height = innerHeight * scale;
-  Object.assign(canvas.style, {width: innerWidth + 'px', height: innerHeight + 'px'});
-  context.scale(scale, scale);
+  // Drawn over the page and ignoring the pointer, so a refresh redrawing the chat doesn't cut it short. Only the area
+  // the animation reaches gets a canvas, not the whole window, and a newer reaction replaces one still playing.
+  reactionRunning?.stop();
   const box = bubble.getBoundingClientRect();
   const ax = outgoing ? box.left + 6 : box.right - 6, ay = box.top + 6;
+  const area = {left: Math.round(ax - 230), top: Math.round(ay - 420), width: 460, height: 560};
+  const {canvas, context} = effectCanvas('screen-effect reaction-effect', area.left, area.top, area.width, area.height);
+  context.translate(-area.left, -area.top);
   const pieces = Array.from({length: 14}, () => Array.from({length: 6}, Math.random));
   const clamp = (t) => Math.max(0, Math.min(1, t));
   const easeOut = (t) => 1 - (1 - t) ** 3;
@@ -1338,10 +1406,8 @@ function playReactionEffect(emoji, bubble, outgoing) {
     context.bezierCurveTo(x + s * .35, y - s, x + s, y - s * .4, x, y + s * .3); context.fill(); context.restore();
   };
   const hearts = ['#ff2d55', '#ff375f', '#e0245e'];
-  const began = performance.now();
-  const frame = (now) => {
-    const t = Math.min(1, (now - began) / length);
-    context.clearRect(0, 0, innerWidth, innerHeight);
+  const draw = (t) => {
+    context.clearRect(area.left, area.top, area.width, area.height);
     if (kind === 'hearts') pieces.forEach((p, index) => {
       const delay = p[0] * .25, local = clamp((t - delay) / (1 - delay));
       if (local <= 0) return;
@@ -1394,9 +1460,16 @@ function playReactionEffect(emoji, bubble, outgoing) {
       const x = ax + (p[0] - .5) * 220 * local, y = ay - (220 + p[1] * 120) * local + .5 * 420 * local * local;
       glyph('❓', x, y, 20 + p[3] * 12, local * (360 + p[2] * 360) * (p[4] < .5 ? -1 : 1), fadeOut(local, .7));
     }
-    if (t < 1) requestAnimationFrame(frame); else canvas.remove();
   };
-  requestAnimationFrame(frame);
+  let stopLoop = () => {};
+  const finish = () => {
+    stopLoop();
+    canvas.remove();
+    bubble.classList.remove('rx-' + kind);
+    if (reactionRunning?.canvas === canvas) reactionRunning = null;
+  };
+  reactionRunning = {canvas, stop: finish};
+  stopLoop = effectLoop(length, draw, finish);
   return true;
 }
 

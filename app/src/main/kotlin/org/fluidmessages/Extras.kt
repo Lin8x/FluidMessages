@@ -130,7 +130,15 @@ internal fun formatMessage(text: String, foreground: Color, revealed: Set<Int>, 
 }
 
 /** For the inbox and notifications: spoilers stay hidden and formatting marks are dropped. */
-internal fun plainPreview(text: String): String = spoilerPattern.replace(stripEffect(text)) { "▒▒▒" }
+internal fun plainPreview(text: String): String {
+    val effect = parseEffect(text)
+    // Invisible ink stays hidden in the inbox and notifications too.
+    if (effect?.second == MessageEffect.INVISIBLE_INK) return "🫥 Invisible ink message"
+    return spoilerPattern.replace(effect?.first ?: text) { "▒▒▒" }
+}
+
+/** How long tapped invisible ink stays readable before it covers itself again. */
+internal const val INK_REVEAL_MILLIS = 6_000L
 
 // Edits: "✏️ Edited “old” to: new". FluidMessages replaces the old bubble; other apps read it as a correction.
 
@@ -169,10 +177,14 @@ internal enum class MessageEffect(val label: String, val emoji: String, val scre
     companion object { fun of(label: String) = entries.firstOrNull { it.label.equals(label, ignoreCase = true) } }
 }
 
-private val effectPattern = Regex("""\n?\(sent with (Slam|Loud|Gentle|Invisible ink|Confetti|Balloons|Hearts|Fireworks)\b[^)\n]{0,40}\)\s*$""")
+// The tail after the name holds the emoji and, for invisible ink, a note for other apps. It must fit the longest
+// tail effectText writes (the ink note is 41 characters), with room for phones that add a variation selector.
+private val effectPattern = Regex("""\r?\n?\(sent with (Slam|Loud|Gentle|Invisible ink|Confetti|Balloons|Hearts|Fireworks)\b[^)\n]{0,80}\)\s*$""")
+
+internal const val INK_NOTE = " · hidden until tapped in FluidMessages"
 
 internal fun effectText(text: String, effect: MessageEffect): String {
-    val note = if (effect == MessageEffect.INVISIBLE_INK) " · hidden until tapped in FluidMessages" else ""
+    val note = if (effect == MessageEffect.INVISIBLE_INK) INK_NOTE else ""
     return text.trimEnd() + "\n(sent with ${effect.label} ${effect.emoji}$note)"
 }
 
@@ -215,13 +227,20 @@ internal fun bubbleEffectScale(effect: MessageEffect?, progress: Float): Pair<Fl
     }
 }
 
-/** The shimmer that covers an invisible-ink message. */
+/**
+ * Invisible ink: while [hidden], the words are not drawn and a field of sparkles covers them instead. With [moving]
+ * off (reduced motion) the sparkles hold still, but the words stay hidden all the same.
+ */
 @Composable
-internal fun Modifier.invisibleInk(hidden: Boolean, color: Color): Modifier {
+internal fun Modifier.invisibleInk(hidden: Boolean, color: Color, moving: Boolean = true): Modifier {
     if (!hidden) return this
-    val time by rememberInfiniteTransition(label = "ink").animateFloat(0f, 1f, infiniteRepeatable(tween(1600, easing = LinearEasing), RepeatMode.Restart), label = "ink")
+    val time = if (moving) {
+        val animated by rememberInfiniteTransition(label = "ink").animateFloat(0f, 1f,
+            infiniteRepeatable(tween(1600, easing = LinearEasing), RepeatMode.Restart), label = "ink")
+        animated
+    } else .35f
     return this.then(Modifier.drawWithContent {
-        // The words stay hidden; only a field of drifting sparkles shows.
+        // drawContent() is skipped on purpose: the words stay hidden and only the sparkles show.
         val random = java.util.Random(7)
         val count = (size.width * size.height / 90f).toInt().coerceIn(40, 900)
         repeat(count) {
@@ -360,14 +379,14 @@ internal fun pickText(options: List<String>): String {
 private val diceFaces = listOf("⚀", "⚁", "⚂", "⚃", "⚄", "⚅")
 
 @Composable
-internal fun RandomCard(result: RandomResult, outgoing: Boolean, foreground: Color) {
-    // A short spin when the card first appears.
-    val spin = remember { Animatable(0f) }
-    LaunchedEffect(Unit) { spin.animateTo(1f, tween(650)) }
+internal fun RandomCard(result: RandomResult, outgoing: Boolean, foreground: Color, spin: Boolean = true) {
+    // A short spin when the card first appears, unless motion is off.
+    val turning = remember { Animatable(if (spin) 0f else 1f) }
+    LaunchedEffect(Unit) { if (spin) turning.animateTo(1f, tween(650)) }
     Column(Modifier.widthIn(min = 180.dp).padding(bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(when (result) { is RandomResult.Dice -> "DICE"; is RandomResult.Coin -> "COIN FLIP"; is RandomResult.Pick -> "RANDOM PICK" },
             color = foreground.copy(alpha = .75f), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-        val turn = (1 - spin.value) * 360f
+        val turn = (1 - turning.value) * 360f
         when (result) {
             is RandomResult.Dice -> {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

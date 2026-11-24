@@ -83,7 +83,10 @@ public final class SyncJob extends JobService {
         var preferences = context.getSharedPreferences("fluid", MODE_PRIVATE);
         String url = preferences.getString("server", "");
         String token = Privacy.token(preferences);
-        if (!CloudBackup.paired(url, token) || !preferences.getBoolean("syncSms", true)
+        if (!CloudBackup.paired(url, token)) return;
+        // Settings first: combined with FluidMessages Web's (SyncMergeRun) before this sync sends the phone's copy.
+        try { SyncMergeRun.run(context, false); } catch (Exception ignored) {}
+        if (!preferences.getBoolean("syncSms", true)
             || !context.getSystemService(RoleManager.class).isRoleHeld(RoleManager.ROLE_SMS)) return;
         publishInbox(context, preferences, url, token);
         boolean submitted = false;

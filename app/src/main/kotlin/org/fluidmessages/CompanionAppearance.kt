@@ -17,6 +17,10 @@ internal object CompanionAppearance {
         for (key in listOf("pinned", "archived", "blocked")) {
             folders.put(key, JSONArray(MainActivity.addressList(prefs, key).filter { it in addresses }))
         }
+        // Each chat's own sender type, so the browser shows automated senders the same way. No entry means Automatic.
+        val senderTypes = JSONObject()
+        val overrides = SenderStyle.overrides(prefs)
+        for (address in overrides.keys()) if (address in addresses) senderTypes.put(address, overrides.getString(address))
         val colors = JSONObject()
         // The browser uses the same theme colors and contrast rule for every protocol.
         for (protocol in listOf(MessageProtocol.RCS, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)) {
@@ -35,6 +39,7 @@ internal object CompanionAppearance {
             .put("size", appearance.size)
             .put("padding", appearance.padding)
             .put("folders", folders)
+            .put("senderTypes", senderTypes)
             .put("colors", colors
                 .put("canvas", hex(appearance.canvas))
                 .put("ink", hex(palette.ink()))

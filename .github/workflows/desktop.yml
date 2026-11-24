@@ -36,5 +36,8 @@ jobs:
           chmod +x appimagetool && echo "APPIMAGETOOL=$PWD/appimagetool" >> "$GITHUB_ENV"
       - run: python desktop/build.py --version "${TAG#v}"
         shell: bash
-      - run: gh release upload "$TAG" dist/FluidMessages-Web-* --clobber
+      # Also upload each app without the version in its name, so releases/latest/download/<name> links always work.
+      - run: |
+          for file in dist/FluidMessages-Web-"${TAG#v}"-*; do cp "$file" "dist/FluidMessages-Web-${file##*-"${TAG#v}"-}"; done
+          gh release upload "$TAG" dist/FluidMessages-Web-* --clobber
         shell: bash

@@ -31,6 +31,25 @@ class ExtrasTest {
         assertNull(parseEffect("I was sent with love"))
     }
 
+    @Test fun everyEffectRoundTrips() {
+        for (effect in MessageEffect.entries) {
+            val sent = effectText("See you at the lake ", effect)
+            assertEquals(effect.name, "See you at the lake" to effect, parseEffect(sent))
+            assertEquals(effect.name, "See you at the lake", stripEffect(sent))
+            // Some phones hand back CRLF line endings or trailing spaces.
+            assertEquals(effect.name, effect, parseEffect(sent.replace("\n", "\r\n") + "  ")?.second)
+        }
+    }
+
+    @Test fun invisibleInkParsesAndStaysHiddenInPreviews() {
+        val sent = effectText("The surprise is a puppy", MessageEffect.INVISIBLE_INK)
+        assertTrue(sent.endsWith("(sent with Invisible ink 🫥$INK_NOTE)"))
+        assertEquals("The surprise is a puppy" to MessageEffect.INVISIBLE_INK, parseEffect(sent))
+        assertEquals("🫥 Invisible ink message", plainPreview(sent))
+        assertFalse(plainPreview(sent).contains("puppy"))
+        assertEquals("Happy birthday!", plainPreview(effectText("Happy birthday!", MessageEffect.CONFETTI)))
+    }
+
     @Test fun randomResultsParse() {
         repeat(50) {
             val dice = parseRandom(rollText(3, 6)) as RandomResult.Dice
