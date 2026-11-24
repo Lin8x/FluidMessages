@@ -124,7 +124,14 @@ final class CallHub {
             boolean video = content.optJSONObject("offer") != null && content.optJSONObject("offer").optString("sdp").contains("m=video");
             ring(context, event.optString("address"), event.optString("title"), content, video, "Matrix");
         } else if ("m.call.hangup".equals(event.optString("type")) || "m.call.select_answer".equals(event.optString("type"))) {
-            context.getSystemService(NotificationManager.class).cancel(RING);
+            var manager = context.getSystemService(NotificationManager.class);
+            // Hung up while it was still ringing here: nobody answered, so leave a missed-call notification.
+            boolean ringing = false;
+            for (var shown : manager.getActiveNotifications()) if (shown.getId() == RING) ringing = true;
+            manager.cancel(RING);
+            if (ringing && "m.call.hangup".equals(event.optString("type"))) {
+                SmsDelivery.notifyMissedCall(context, ringingTitle, ringingProtocol);
+            }
         }
     }
 
@@ -168,9 +175,13 @@ final class CallHub {
             .putExtra("encryption", encryption.name());
     }
 
+    private static volatile String ringingTitle = "", ringingProtocol = "";
+
     private static void ring(Context context, String address, String title, JSONObject invite, boolean video, String protocol) {
         var prefs = prefs(context);
         if (HiddenChats.addressHidden(prefs, address) && !Privacy.vaultOpen()) title = "Someone";
+        ringingTitle = title;
+        ringingProtocol = protocol;
         String callId = invite.optString("call_id", invite.optString("sid"));
         // Shows as missed in Recents until it's answered.
         CallHistory.record(context, callId, address, title, video, android.provider.CallLog.Calls.MISSED_TYPE,

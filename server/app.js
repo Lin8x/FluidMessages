@@ -791,6 +791,11 @@ function select(key) {
 
 // Opening an internet conversation reads it everywhere. Texts are marked read when you open them on the phone.
 function markRead(key) {
+  // The sample inbox's fictional unread chats are read on this page only.
+  if (typeof sampleOn !== 'undefined' && sampleOn) {
+    for (const row of [...(threads.get(key) || []), ...inbox.filter((item) => threadKey(item) === key)]) if (row.type === 1) row.read = 1;
+    return;
+  }
   const unread = (threads.get(key) || []).filter((row) => row.type === 1 && row.read === 0 && internet(row.protocol));
   if (!unread.length) return;
   for (const row of unread) row.read = 1;
@@ -833,12 +838,15 @@ function showThreads() {
   // The private folder's passcode prompt, or its open bar (privacy.js).
   if (typeof privateFolderGate === 'function' && privateFolderGate(list, folder)) return;
   const selected = typeof chatFolders === 'function' ? chatFolders() : appearance.folders || {};
+  // Unread: the chats the Chats tab counts (people.js), plus the one open now, so it doesn't vanish as it's read.
+  const unread = folder === 'Unread' && typeof unreadChats === 'function' ? unreadChats() : null;
   const rows = [...threads].filter(([address, messages]) => messages.length).filter(([address, messages]) => {
     const blocked = selected.blocked?.includes(threadAddress(address));
     const archived = selected.archived?.includes(threadAddress(address));
     // Private chats show only in the Private folder, and only once this session has opened it.
     const hidden = typeof privateFolderHas === 'function' && privateFolderHas(threadAddress(address));
     const inFolder = folder === 'Private folder' ? hidden
+      : unread ? !hidden && (unread.has(address) || address === active && !blocked && !archived)
       : !hidden && (folder === 'Blocked' ? blocked : !blocked && (folder === 'Archived' ? archived : !archived));
     // A chat with a code is found by its name only, never by what it says.
     const sealed = typeof chatLocked === 'function' && chatLocked(address);

@@ -1,9 +1,9 @@
 'use strict';
 // Lets FluidMessages Web install as an app and open instantly. Only the app's own files are cached: messages,
 // accounts, and anything under /api always come from your server and are never stored by the browser.
-const VERSION = 'fluid-web-12';
+const VERSION = 'fluid-web-13';
 const SHELL = ['/', '/style.css', '/app.js', '/companion.js', '/call.js', '/chess.js', '/cards.js', '/welcome.js', '/icon.webp',
-  '/look.js', '/chats.js', '/media.js', '/editor.js', '/settings.js', '/sync-merge.js', '/people.js', '/privacy.js', '/servers.js', '/features.css', '/samples/maya.webp', '/samples/jordan.webp',
+  '/look.js', '/chats.js', '/media.js', '/editor.js', '/settings.js', '/sync-merge.js', '/people.js', '/privacy.js', '/servers.js', '/notify.js', '/features.css', '/samples/maya.webp', '/samples/jordan.webp',
   '/manifest.webmanifest', '/favicon.ico', '/icons/favicon-32.png', '/icons/icon-192.png', '/icons/icon-512.png',
   '/icons/maskable-192.png', '/icons/maskable-512.png', '/icons/apple-touch-icon.png'];
 
@@ -27,4 +27,21 @@ self.addEventListener('fetch', (event) => {
     }
     return response;
   }).catch(() => caches.match(event.request).then((cached) => cached || caches.match('/'))));
+});
+
+// Notifications for new messages are shown through this worker (notify.js), the only way on Android Chrome and in the
+// installed app. Tapping one brings FluidMessages forward, or opens it, and opens that chat. The chat to open travels
+// in a message to the page, never in the address.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const chat = typeof event.notification.data?.chat === 'string' ? event.notification.data.chat : '';
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({type: 'window', includeUncontrolled: true});
+    let client = windows.find((item) => new URL(item.url).origin === self.location.origin && item.focused)
+      || windows.find((item) => new URL(item.url).origin === self.location.origin);
+    if (client) {
+      try { client = await client.focus(); } catch (error) { /* already in front, or the browser said no */ }
+    } else client = await self.clients.openWindow('/');
+    client?.postMessage({type: 'fluid-open-chat', chat});
+  })());
 });

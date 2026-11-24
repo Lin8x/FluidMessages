@@ -361,3 +361,24 @@ button.member-row:hover { background: color-mix(in srgb, var(--action, var(--acc
 .account-group + .account-group { margin-top: .5rem; }
 .account-item { padding-inline-start: 2.9rem; }
 .account-item .account-words strong { font-weight: 550; }
+
+/* New chat: People or Channels, and each server's channels under its name (servers.js newChatChannels). */
+.new-chat-switch { display: flex; justify-self: stretch; margin: 0 0 .75rem; }
+.new-chat-switch button { flex: 1; min-height: 40px; }
+.new-chat-channels { display: grid; gap: .9rem; }
+.channel-group { display: grid; gap: .35rem; }
+.channel-group + .channel-group { padding-top: .8rem; border-top: 1px solid var(--line); }
+.channel-group-head { display: flex; align-items: center; gap: .65rem; }
+.channel-group-head h3 { margin: 0; font-size: 1rem; }
+.channel-group-head .account-words { display: grid; min-width: 0; }
+.channel-list { display: grid; gap: 2px; }
+.channel-row { min-height: 52px; }
+.channel-row .account-words { display: grid; min-width: 0; text-align: start; }
+.channel-group > button { justify-self: start; }
+/* Settings → Sounds and notifications (notify.js). */
+.sound-row { display: grid; grid-template-columns: 1fr auto; gap: .5rem; align-items: end; }
+.notify-head { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; justify-content: space-between; }
+.notify-state { margin: 0; }
+.notify-state[data-state="granted"] strong { color: var(--action, var(--accent)); }
+.notify-state[data-state="denied"] strong, .notify-state[data-state="insecure"] strong { color: #c62828; }
+.new-chat-switch { border: 1px solid var(--line); }

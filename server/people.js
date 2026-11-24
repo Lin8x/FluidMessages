@@ -916,22 +916,45 @@ function markCallsSeen() {
   updateTabBadges();
 }
 
-function countTabs() {
-  const own = webChats || {};
-  const phone = typeof mergeActive === 'function' && mergeActive() ? {} : appearance.folders || {};
+/** Chats that never count: muted, archived, blocked, and private, this web app's and the phone's. In the sample inbox, its own. */
+function quietChats() {
+  const own = (sampleOn && typeof sampleChats !== 'undefined' ? sampleChats : webChats) || {};
+  const phone = sampleOn || (typeof mergeActive === 'function' && mergeActive()) ? {} : appearance.folders || {};
   const quiet = new Set(['muted', 'archived', 'blocked', 'private', 'hidden'].flatMap((key) => [...(own[key] || []), ...(phone[key] || [])])
     .filter((item) => typeof item === 'string'));
+  if (typeof privateFolderHas === 'function') for (const message of inbox) if (privateFolderHas(message.address)) quiet.add(message.address);
+  return quiet;
+}
+
+const callEvent = (message) => !!message.event && /^(Voice|Video) call/.test(message.body || '');
+
+/** The rule for an unread chat, shared by the Chats tab count and the inbox filter's Unread: an incoming message,
+ * not a call, not expired, not read yet, in a chat that isn't muted, archived, blocked, or private. */
+function unreadIncoming(message, quiet = quietChats(), now = Date.now()) {
+  return message.type === 1 && !(message.expires && message.expires <= now) && !quiet.has(message.address)
+    && !callEvent(message) && message.read === 0;
+}
+
+/** The chats with unread messages, by thread key (app.js showThreads for Unread). */
+function unreadChats() {
+  const quiet = quietChats();
+  const now = Date.now();
+  return new Set(inbox.filter((message) => unreadIncoming(message, quiet, now)).map(threadKey));
+}
+
+function countTabs() {
+  const quiet = quietChats();
   const now = Date.now();
   const seen = callsSeen();
   const unread = new Set();
   let missed = 0;
   for (const message of inbox) {
     if (message.type !== 1 || (message.expires && message.expires <= now) || quiet.has(message.address)) continue;
-    if (message.event && /^(Voice|Video) call/.test(message.body || '')) {
+    if (callEvent(message)) {
       if (/missed/.test(message.body) && timeOf(message) > seen) missed++;
       continue;
     }
-    if (message.read === 0) unread.add(threadKey(message));
+    if (unreadIncoming(message, quiet, now)) unread.add(threadKey(message));
   }
   tabCount.calls = section === 'calls' ? 0 : missed;
   tabCount.messages = unread.size;

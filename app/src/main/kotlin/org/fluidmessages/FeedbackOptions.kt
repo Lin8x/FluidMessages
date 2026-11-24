@@ -18,29 +18,31 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 
+/**
+ * Haptics, in Themes and appearance → Motion and sound. The sounds themselves moved to Settings → Sounds and
+ * notifications; [openSounds] goes there. Theme changes never touch either.
+ */
 @Composable
-internal fun FeedbackOptions(prefs: SharedPreferences, motion: Int) {
-    val context = LocalContext.current
+internal fun FeedbackOptions(prefs: SharedPreferences, motion: Int, openSounds: (() -> Unit)? = null) {
     val view = LocalView.current
     var haptics by remember { mutableStateOf(MessageFeedback.haptics(prefs)) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        ToneDropdown(prefs, receive = false, motion)
-        ToneDropdown(prefs, receive = true, motion)
         ThemeDropdown("Send haptics", haptics, listOf(Choice("off", "Off"), Choice("soft", "Soft tick"),
             Choice("tap", "Tap"), Choice("confirm", "Confirmation"), Choice("long", "Long press")), motion) {
             haptics = it
             prefs.edit().putString("sendHaptics", it).apply()
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            TextButton(onClick = { MessageFeedback.play(context, prefs, false) }, modifier = Modifier.weight(1f)) { Text("Hear send") }
-            TextButton(onClick = { MessageFeedback.play(context, prefs, true) }, modifier = Modifier.weight(1f)) { Text("Hear receive") }
-            TextButton(onClick = { MessageFeedback.vibrate(view, prefs) }, modifier = Modifier.weight(1f)) { Text("Test haptics") }
+        TextButton(onClick = { MessageFeedback.vibrate(view, prefs) }) { Text("Test haptics") }
+        if (openSounds != null) {
+            PreferenceText("Message sounds", "Send and receive sounds, their volume, and notifications are in Settings → Sounds and notifications.",
+                Modifier.padding(vertical = 4.dp))
+            TextButton(onClick = openSounds) { Text("Open Sounds and notifications") }
         }
     }
 }
 
 @Composable
-private fun ToneDropdown(prefs: SharedPreferences, receive: Boolean, motion: Int) {
+internal fun ToneDropdown(prefs: SharedPreferences, receive: Boolean, motion: Int) {
     val context = LocalContext.current
     var tone by remember(receive) { mutableStateOf(MessageFeedback.selection(prefs, receive)) }
     var error by remember { mutableStateOf(false) }
@@ -48,6 +50,8 @@ private fun ToneDropdown(prefs: SharedPreferences, receive: Boolean, motion: Int
         tone = choice
         error = false
         prefs.edit().putString(MessageFeedback.toneKey(receive), choice).apply()
+        // A preview of the new choice, at the in-app volume.
+        MessageFeedback.play(context, prefs, choice, receive)
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {

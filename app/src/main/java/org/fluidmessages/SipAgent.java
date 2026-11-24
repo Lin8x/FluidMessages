@@ -183,6 +183,10 @@ final class SipAgent {
         @JavascriptInterface public void missed() {
             main.post(() -> {
                 app.getSystemService(NotificationManager.class).cancel(RING);
+                var info = caller;
+                boolean hidden = info != null && HiddenChats.addressHidden(app.getSharedPreferences("fluid", Context.MODE_PRIVATE),
+                    info.optString("address")) && !Privacy.vaultOpen();
+                SmsDelivery.notifyMissedCall(app, info == null || hidden ? "" : info.optString("title"), "SIP");
                 if (screen != null) screen.finish();
             });
         }

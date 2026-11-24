@@ -42,6 +42,7 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/features.css": ("features.css", "text/css"), "/settings.js": ("settings.js", "text/javascript"),
          "/sync-merge.js": ("sync-merge.js", "text/javascript"), "/people.js": ("people.js", "text/javascript"),
          "/privacy.js": ("privacy.js", "text/javascript"), "/servers.js": ("servers.js", "text/javascript"),
+         "/notify.js": ("notify.js", "text/javascript"),
          # The sample inbox's fictional portraits, the phone's own (res/drawable-nodpi/sample_*.webp).
          "/samples/maya.webp": ("samples/maya.webp", "image/webp"), "/samples/jordan.webp": ("samples/jordan.webp", "image/webp"),
          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/sw.js": ("sw.js", "text/javascript"),
@@ -124,7 +125,8 @@ def clean_web_appearance(value):
 
 WALLPAPERS = ("none", "horizon", "aurora", "love", "orchard", "photo")
 LOOK_CHOICES = {"wallpaper": WALLPAPERS, "searchPosition": ("top", "bottom"), "toolbarFinish": ("plain", "tinted", "floating"),
-                "density": ("compact", "standard", "roomy"), "sendSound": ("silent", "fluid"), "receiveSound": ("silent", "fluid"),
+                "density": ("compact", "standard", "roomy"), "sendSound": ("silent", "fluid", "pop", "tick"),
+                "receiveSound": ("silent", "fluid", "ding", "bubble"),
                 "haptics": ("off", "soft", "tap", "confirm", "long")}
 
 
@@ -134,14 +136,15 @@ def clean_colors(colors):
 
 
 def clean_look_extras(value):
-    """Wallpaper, inbox layout, motion, sounds, and saved palettes, the same choices as the phone's appearance page."""
+    """Wallpaper, inbox layout, motion, sounds and their volume, and saved palettes, the same choices as the phone's appearance page."""
     clean = {}
     for key, allowed in LOOK_CHOICES.items():
         if value.get(key) in allowed:
             clean[key] = value[key]
-    if type(value.get("tails")) is bool:
-        clean["tails"] = value["tails"]
-    for key, lower, upper in (("chromeOpacity", 25, 100), ("speed", 0, 800)):
+    for key in ("tails", "mutedSounds"):
+        if type(value.get(key)) is bool:
+            clean[key] = value[key]
+    for key, lower, upper in (("chromeOpacity", 25, 100), ("speed", 0, 800), ("soundVolume", 0, 100)):
         if type(value.get(key)) is int and lower <= value[key] <= upper:
             clean[key] = value[key]
     chats = value.get("chatWallpapers")

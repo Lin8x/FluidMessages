@@ -30,6 +30,17 @@ internal object TabBadges {
     /** When the Phone tab was last open; missed calls after it count. */
     const val PHONE_SEEN = "phoneTabSeen"
     const val CAP = 99
+    /** The inbox filter menu's Unread folder: the inbox chats this badge counts. */
+    const val UNREAD_FOLDER = "Unread"
+
+    /**
+     * Whether an inbox conversation counts as unread, from its newest message: the same rule as the Messages badge and
+     * the Unread folder. Muted chats never do; archived, blocked and private chats aren't in the inbox. (The badge also
+     * leaves out decoy chats; the decoy inbox's own Unread folder still lists them, so it looks like a real inbox.)
+     */
+    @JvmStatic
+    fun unreadThread(newestUnread: Boolean, address: String, muted: Set<String>): Boolean =
+        newestUnread && address !in muted
 
     /**
      * Unread conversations, with the inbox's own rule: a conversation is unread when its newest message is. Muted,
@@ -44,7 +55,7 @@ internal object TabBadges {
             if (message.hidden || message.address.startsWith(Privacy.DECOY)) continue
             if (message.address in archived || message.address in blocked) continue
             if (!seen.add(message.thread)) continue
-            if (message.unread && message.address !in muted) count++
+            if (unreadThread(message.unread, message.address, muted)) count++
         }
         return count
     }

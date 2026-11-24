@@ -610,8 +610,8 @@ function sampleMessages() {
   const now = Date.now();
   const minute = 60000;
   const rows = [];
-  const add = (address, protocol, title, body, type, ago, author = '') => rows.push({id: sampleId(), address, protocol, title, body,
-    type, date: now - ago * minute, read: 1, author});
+  const add = (address, protocol, title, body, type, ago, author = '', read = 1) => rows.push({id: sampleId(), address, protocol, title, body,
+    type, date: now - ago * minute, read, author});
   const maya = '+12025550123';
   add(maya, 'sms', 'Maya Chen', 'Coffee at ten?', 1, 95);
   // A chat setting notice, shown locally as the outlined note a real one gets (cards.js).
@@ -635,7 +635,8 @@ function sampleMessages() {
   const walk = 'sample-photo-walk';
   add(walk, 'rcs', 'Photo Walk', 'Golden hour starts at six!\n(sent with Confetti 🎉)', 1, 40, 'Ana Ortiz');
   add(walk, 'rcs', 'Photo Walk', '🎲 Rolled 2d6: 3 + 5 = 8', 2, 35);
-  add(walk, 'rcs', 'Photo Walk', 'I’ll bring the tripod', 1, 30, 'Leo Park');
+  // Two unread chats, for the inbox filter's Unread.
+  add(walk, 'rcs', 'Photo Walk', 'I’ll bring the tripod', 1, 30, 'Leo Park', 0);
   // An automated sender (a short code), like the phone's Trail Alerts; your reply shows in the automated color.
   add('55123', 'sms', 'Trail Alerts', 'Trail update: the south entrance is open. Reply STOP to stop receiving these messages.', 1, 600);
   add('55123', 'sms', 'Trail Alerts', 'STOP', 2, 598);
@@ -643,7 +644,7 @@ function sampleMessages() {
   add(radio, 'matrix', 'Radio Club', 'Antenna night is Thursday', 2, 70);
   add(radio, 'matrix', 'Radio Club', '✏️ Edited “Antenna night is Thursday” to: Antenna night is Friday at 7', 2, 69);
   add(radio, 'matrix', 'Radio Club', 'Loved “Antenna night is Friday at 7”', 1, 60, 'Kestrel');
-  add(radio, 'matrix', 'Radio Club', 'I can bring the analyzer', 1, 58, 'Kestrel');
+  add(radio, 'matrix', 'Radio Club', 'I can bring the analyzer', 1, 58, 'Kestrel', 0);
   add('+12025550188', 'sms', 'Old Neighbor', 'Thanks again for the ladder!', 1, 4000);
   add('+12025550199', 'sms', '', 'You won a prize! Reply YES to claim', 1, 2000);
   return rows.sort((a, b) => b.date - a.date);

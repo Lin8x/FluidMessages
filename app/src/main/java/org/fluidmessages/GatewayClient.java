@@ -135,7 +135,21 @@ final class GatewayClient {
                 if (message != null && !Disappearing.expired(prefs, message, message.optString("address"), now)) fresh.put(message);
             }
             messages = fresh;
+            // New incoming messages relayed by the companion (Matrix, XMPP, Email, IRC) notify like a text does.
+            // A long backlog, such as the first sync after pairing, only notifies for the last day.
+            var arrived = new ArrayList<JSONObject>();
+            for (int i = 0; i < messages.length(); i++) {
+                var message = messages.optJSONObject(i);
+                if (message != null && IncomingAlerts.shouldNotify(message.optInt("type"), message.optInt("read", 1) == 0,
+                        message.optBoolean("event"), message.optLong("date"), now)
+                        && store.find(message.optString("id")) == null) arrived.add(message);
+            }
             store.putBatch(messages);
+            for (var message : IncomingAlerts.newestPerChat(arrived)) {
+                if (HiddenChats.rowHidden(prefs, message)) SmsDelivery.notifyHidden(context);
+                else SmsDelivery.notify(context, "New " + MessageProtocol.parse(message.optString("protocol")).label + " message",
+                    message.optString("address"));
+            }
             if (readHere.length() > 0) {
                 try { request(prefs, "protocols/read", new JSONObject().put("ids", readHere)); } catch (Exception ignored) {}
             }

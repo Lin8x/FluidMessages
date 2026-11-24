@@ -36,6 +36,7 @@ public final class SmsDelivery extends BroadcastReceiver {
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         manager.notify(7, new Notification.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.stat_notify_chat).setContentTitle("New message")
+            .setCategory(Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_SECRET).setContentIntent(link).setAutoCancel(true).build());
     }
 
@@ -50,6 +51,66 @@ public final class SmsDelivery extends BroadcastReceiver {
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         manager.notify(address.hashCode(), new Notification.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.stat_notify_chat).setContentTitle(label)
+            .setCategory(Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_PRIVATE).setContentIntent(link).setAutoCancel(true).build());
+    }
+
+    static final int TEST = 0x7e57;
+
+    /**
+     * Settings → Sounds and notifications → Send a test notification: a real notification on the same channel, sound,
+     * and visibility as a new message, with made-up text. Returns false when Android would drop it.
+     */
+    static boolean notifyTest(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        var preferences = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
+        String channelId = MessageFeedback.notificationChannel(context, manager, preferences);
+        PendingIntent link = PendingIntent.getActivity(context, TEST, new Intent(context, MainActivity.class),
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        manager.notify(TEST, new Notification.Builder(context, channelId)
+            .setSmallIcon(android.R.drawable.stat_notify_chat).setContentTitle("Test notification")
+            .setContentText("Sam Rivera (sample): Notifications from FluidMessages are working.")
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setVisibility(Notification.VISIBILITY_PRIVATE).setContentIntent(link).setAutoCancel(true).build());
+        return status(context).getAllowed();
+    }
+
+    /** A call that rang here and stopped before anyone answered. Opens the app; the Phone tab shows it in Recents. */
+    static void notifyMissedCall(Context context, String title, String protocol) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        var channel = new NotificationChannel("missed-calls", "Missed calls", NotificationManager.IMPORTANCE_DEFAULT);
+        channel.setDescription("Matrix, XMPP, and SIP calls you didn't answer");
+        manager.createNotificationChannel(channel);
+        PendingIntent link = PendingIntent.getActivity(context, MISSED, new Intent(context, MainActivity.class),
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        manager.notify(MISSED, new Notification.Builder(context, "missed-calls")
+            .setSmallIcon(android.R.drawable.stat_notify_missed_call)
+            .setContentTitle("Missed call" + (title == null || title.isEmpty() ? "" : " from " + title))
+            .setContentText(protocol).setCategory(Notification.CATEGORY_MISSED_CALL)
+            .setVisibility(Notification.VISIBILITY_PRIVATE).setContentIntent(link).setAutoCancel(true).build());
+    }
+
+    private static final int MISSED = 0x6d15;
+
+    /** Whether a notification posted now would show: the permission, the app switch, and the message channel. */
+    static NotificationStatus status(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        boolean permission = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        boolean channel = true;
+        String id = currentChannel(context);
+        if (id != null) {
+            var existing = manager.getNotificationChannel(id);
+            channel = existing == null || existing.getImportance() != NotificationManager.IMPORTANCE_NONE;
+        }
+        return new NotificationStatus(permission, manager.areNotificationsEnabled(), channel);
+    }
+
+    /** The message channel's id, making the channel first so Android's channel settings page can open it. */
+    static String currentChannel(Context context) {
+        try {
+            return MessageFeedback.notificationChannel(context, context.getSystemService(NotificationManager.class),
+                context.getSharedPreferences("fluid", Context.MODE_PRIVATE));
+        } catch (RuntimeException error) { return null; }
     }
 }

@@ -617,7 +617,28 @@ function openNewChat(prefill = '') {
       fill();
     } catch (error) { status.textContent = error.message; }
   });
-  sheet.append(form);
+  // People (this form) or Channels: every server's joined channels and rooms, to open one or join another (servers.js).
+  if (typeof newChatChannels === 'function') {
+    const channels = newChatChannels(sheet);
+    channels.hidden = true;
+    const tabs = element('div', '', 'segmented-buttons new-chat-switch');
+    tabs.setAttribute('role', 'radiogroup');
+    tabs.setAttribute('aria-label', 'Start a chat with');
+    for (const [panel, label] of [[form, 'People'], [channels, 'Channels']]) {
+      const button = element('button', label);
+      button.type = 'button';
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', String(panel === form));
+      button.addEventListener('click', () => {
+        for (const other of tabs.children) other.setAttribute('aria-checked', String(other === button));
+        form.hidden = panel !== form;
+        channels.hidden = panel !== channels;
+        (panel === form ? target : channels.querySelector('button'))?.focus();
+      });
+      tabs.append(button);
+    }
+    sheet.append(tabs, form, channels);
+  } else sheet.append(form);
   sheet.showModal();
   target.focus();
 }

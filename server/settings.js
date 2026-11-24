@@ -8,6 +8,7 @@
 
 const SETTINGS_ICONS = {
   palette: 'M12 3a9 9 0 0 0 0 18c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z',
+  sounds: 'M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z',
   messaging: 'M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z',
   account: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z',
   ways: 'M6.99 11 3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z',
@@ -41,7 +42,7 @@ function settingsIcon(name) {
 const SETTINGS_ALIASES = {'settings-accounts': 'accounts', 'settings-devices': 'devices', 'settings-appearance': 'appearance',
   'settings-chats': 'messaging', 'settings-fun': 'media', 'settings-media': 'media', 'settings-privacy': 'privacy',
   'settings-sample': 'sample', 'settings-backups': 'backups', 'settings-payments': 'payments', 'settings-help': 'about',
-  'settings-reset': 'reset'};
+  'settings-reset': 'reset', 'settings-sounds': 'sounds', 'notifications': 'sounds'};
 
 const leaveSettingsThen = (run) => () => { showSection('messages'); run(); };
 
@@ -50,7 +51,10 @@ const leaveSettingsThen = (run) => () => { showSection('messages'); run(); };
 const SETTINGS_GROUPS = [
   ['Look and feel', [
     {id: 'appearance', icon: 'palette', title: 'Themes and appearance', summary: 'Colors, wallpapers, bubbles, and motion', page: (settings) => [appearanceSection(settings)]},
-    {id: 'messaging', icon: 'messaging', title: 'Messaging', summary: 'Timestamps, sending, scheduled messages, and gestures', page: messagingPage}]],
+    {id: 'messaging', icon: 'messaging', title: 'Messaging', summary: 'Timestamps, sending, scheduled messages, and gestures', page: messagingPage},
+    // The phone's page of the same name. Sounds, their volume, and this browser's notifications (notify.js).
+    {id: 'sounds', icon: 'sounds', title: 'Sounds and notifications', page: (settings) => soundsPage(settings),
+      summary: () => typeof notifySummary === 'function' ? notifySummary() : 'Send and receive sounds, volume, and notifications'}]],
   ['Accounts and calls', [
     {id: 'accounts', icon: 'account', title: 'Accounts', summary: 'Sign in to Matrix, XMPP, Email, or IRC to chat there too', page: accountsPage},
     {id: 'ways', icon: 'ways', title: 'Chat services', page: waysPage,

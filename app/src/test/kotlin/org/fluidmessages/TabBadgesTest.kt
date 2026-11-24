@@ -75,3 +75,13 @@ class TabBadgesTest {
         assertEquals("Phone, 120 missed calls", TabBadges.description(true, 120))
     }
 }
+
+class UnreadFolderTest {
+    @Test
+    fun unreadFolderUsesTheBadgeRule() {
+        assertEquals(true, TabBadges.unreadThread(true, "demo:Maya Chen", emptySet()))
+        assertEquals(false, TabBadges.unreadThread(false, "demo:Maya Chen", emptySet()))
+        // Muted chats aren't counted on the badge, so they aren't in Unread either.
+        assertEquals(false, TabBadges.unreadThread(true, "demo:Maya Chen", setOf("demo:Maya Chen")))
+    }
+}

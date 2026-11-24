@@ -1,6 +1,6 @@
 'use strict';
 // Themes and appearance, the rest of the phone's page (ThemeEditor.kt): saved palettes, wallpaper, inbox and
-// toolbar, bubble tails, and motion and sound. Loaded after companion.js and uses its helpers (field, checkbox,
+// toolbar, bubble tails, and motion and haptics. Loaded after companion.js and uses its helpers (field, checkbox,
 // saveWebLook, THEMES, webLook, mixColor, usingPhoneLook).
 
 // What a theme brings: picking or resetting one restores these. Light or dark, motion, sounds, and haptics stay.
@@ -76,35 +76,67 @@ function applyLookExtras() {
 
 // Sounds and haptics: a soft swish when you send and a short three-note chime when a message arrives, made
 // on the spot with Web Audio, so nothing is downloaded. Browsers stay quiet until you've clicked the page once.
+// Picked, previewed, and set to a volume in Settings → Sounds and notifications (notify.js).
 
 let audioContext = null;
+// [key, label] for each direction. "fluid" is FluidMessages' own: the swish going out, the chime coming in.
+const SEND_SOUNDS = [['fluid', 'Fluid swish'], ['pop', 'Pop'], ['tick', 'Soft tick'], ['silent', 'Silent']];
+const RECEIVE_SOUNDS = [['fluid', 'Fluid chime'], ['ding', 'Ding'], ['bubble', 'Bubble'], ['silent', 'Silent']];
 
-function playTone(receive) {
-  const choice = webLook[receive ? 'receiveSound' : 'sendSound'] || 'fluid';
-  if (choice === 'silent' || !(window.AudioContext || window.webkitAudioContext)) return;
+/** The sound volume, 0 to 100 percent (webLook.soundVolume). */
+const soundVolume = () => Number.isInteger(webLook.soundVolume) ? Math.max(0, Math.min(100, webLook.soundVolume)) : 100;
+
+function bell(out, start, frequency, length, peak = .9) {
+  const tone = audioContext.createOscillator();
+  const level = audioContext.createGain();
+  tone.type = 'sine';
+  tone.frequency.value = frequency;
+  level.gain.setValueAtTime(0, start);
+  level.gain.linearRampToValueAtTime(peak, start + .008);
+  level.gain.exponentialRampToValueAtTime(.001, start + length);
+  tone.connect(level).connect(out);
+  tone.start(start);
+  tone.stop(start + length + .02);
+}
+
+function glide(out, start, from, to, length, type = 'sine', peak = .9) {
+  const tone = audioContext.createOscillator();
+  const level = audioContext.createGain();
+  tone.type = type;
+  tone.frequency.setValueAtTime(from, start);
+  tone.frequency.exponentialRampToValueAtTime(to, start + length * .8);
+  level.gain.setValueAtTime(0, start);
+  level.gain.linearRampToValueAtTime(peak, start + .006);
+  level.gain.exponentialRampToValueAtTime(.001, start + length);
+  tone.connect(level).connect(out);
+  tone.start(start);
+  tone.stop(start + length + .02);
+}
+
+/**
+ * Plays the send ([receive] false) or receive sound. [choice] previews one that isn't saved yet. Returns true when a
+ * sound actually started, so a notification can stay silent instead of sounding twice.
+ */
+function playTone(receive, choice) {
+  choice ||= webLook[receive ? 'receiveSound' : 'sendSound'] || 'fluid';
+  const volume = soundVolume();
+  if (choice === 'silent' || !volume || !(window.AudioContext || window.webkitAudioContext)) return false;
   try {
     audioContext ||= new (window.AudioContext || window.webkitAudioContext)();
     if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
     const now = audioContext.currentTime + .02;
     const out = audioContext.createGain();
-    out.gain.value = .16;
+    // The volume slider scales the whole sound; 100% is the level FluidMessages always used.
+    out.gain.value = .16 * volume / 100;
     out.connect(audioContext.destination);
     if (receive) {
       // E6, G6, C7: short bell-like notes.
-      [1318.5, 1568, 2093].forEach((frequency, index) => {
-        const start = now + index * .09;
-        const tone = audioContext.createOscillator();
-        const level = audioContext.createGain();
-        tone.type = 'sine';
-        tone.frequency.value = frequency;
-        level.gain.setValueAtTime(0, start);
-        level.gain.linearRampToValueAtTime(.9, start + .008);
-        level.gain.exponentialRampToValueAtTime(.001, start + .32);
-        tone.connect(level).connect(out);
-        tone.start(start);
-        tone.stop(start + .34);
-      });
-    } else {
+      if (choice === 'ding') bell(out, now, 1760, .6);
+      else if (choice === 'bubble') { glide(out, now, 520, 1250, .12); glide(out, now + .13, 700, 1600, .12); }
+      else [1318.5, 1568, 2093].forEach((frequency, index) => bell(out, now + index * .09, frequency, .32));
+    } else if (choice === 'pop') glide(out, now, 900, 260, .09, 'triangle');
+    else if (choice === 'tick') bell(out, now, 3200, .05, .6);
+    else {
       // A swish: a burst of noise swept through a band-pass filter.
       const length = Math.round(audioContext.sampleRate * .22);
       const buffer = audioContext.createBuffer(1, length, audioContext.sampleRate);
@@ -120,7 +152,8 @@ function playTone(receive) {
       noise.connect(band).connect(out);
       noise.start(now);
     }
-  } catch (error) { /* no sound on this browser */ }
+    return audioContext.state === 'running';
+  } catch (error) { return false; /* no sound on this browser */ }
 }
 
 const HAPTICS = {soft: [6], tap: [14], confirm: [12, 60, 18], long: [45]};
@@ -139,7 +172,11 @@ function sendFeedback() {
 const heard = new Set();
 let heardFirst = false;
 
-/** New messages from other people chime, except in muted or blocked chats and while the page is in the sample chats. */
+/**
+ * New messages from other people chime and show a notification (notify.js), except in muted or blocked chats. Muted
+ * chats chime only with "Sounds for muted chats" on; blocked ones never do. Private chats arrive here as type 2
+ * (privacy.js), so they never chime or notify. The sample inbox never reaches this: its messages aren't synced.
+ */
 function lookNoticeIncoming(messages) {
   const fresh = [];
   for (const message of messages || []) {
@@ -149,8 +186,13 @@ function lookNoticeIncoming(messages) {
     if (heardFirst && message.type === 1 && !message.event && Date.now() - message.date < 10 * 60000) fresh.push(message);
   }
   heardFirst = true;
-  const quiet = (message) => typeof chatMuted === 'function' && chatMuted(message.address);
-  if (fresh.some((message) => !quiet(message))) playTone(true);
+  if (!fresh.length || (typeof sampleOn !== 'undefined' && sampleOn)) return;
+  const muted = (message) => typeof chatMuted === 'function' && chatMuted(message.address);
+  const blocked = (message) => typeof inFolder === 'function' && inFolder(message.address, 'blocked');
+  const loud = fresh.filter((message) => !muted(message));
+  const chime = loud.length || (webLook.mutedSounds && fresh.some((message) => !blocked(message)));
+  const played = chime ? playTone(true) : false;
+  if (loud.length && typeof notifyIncoming === 'function') notifyIncoming(loud, played);
 }
 
 // Settings → Themes and appearance
@@ -227,7 +269,7 @@ function wallpaperPicker(group, current, change, inherit = false) {
 
 /**
  * The appearance page's extra groups (companion.js appearanceSection): saved palettes in Color theme and
- * Customize colors, Wallpaper, Inbox and toolbar, bubble tails, and Motion and sound (outside the part that
+ * Customize colors, Wallpaper, Inbox and toolbar, bubble tails, and Motion and haptics (outside the part that
  * follows the phone, since sounds and haptics belong to this device).
  */
 function lookExtras({themes, colorsBox, bubbles, refresh}) {
@@ -304,31 +346,33 @@ function lookExtras({themes, colorsBox, bubbles, refresh}) {
   bubbles.querySelector('summary').after(checkbox('Bubble tails', !!webLook.tails, (value) => saveWebLook({...webLook, tails: value}, true),
     'A small tail on the last bubble in each run.'));
 
-  // Sounds, haptics, and motion belong to this browser, so they apply even while colors follow the phone.
+  // Haptics and motion belong to this browser's choices, so they apply even while colors follow the phone. Sounds
+  // have their own page, Sounds and notifications (notify.js); none of these change when you switch themes.
   const saveFeedback = (next, now) => { saveWebLook(next, now); applyLookExtras(); };
   const feedback = element('details', '', 'more feedback-group');
-  feedback.append(element('summary', 'Motion and sound'));
+  feedback.append(element('summary', 'Motion and haptics'));
   const speed = webLook.speed ?? 220;
   const preset = MOTION.some(([value]) => value === speed) ? speed : 'custom';
   const motionOptions = MOTION.concat(preset === 'custom' ? [['custom', 'Custom · ' + speed + ' ms']] : []);
   const duration = lookSlider('Animation duration', speed, 0, 800, ' ms', (value) => saveFeedback({...webLook, speed: value}));
-  const tones = [['fluid', 'Fluid'], ['silent', 'Silent']];
   const test = element('div', '', 'button-row');
-  for (const [label, run] of [['Hear send', () => playTone(false)], ['Hear receive', () => playTone(true)], ['Test haptics', vibrateOnce]]) {
-    const button = element('button', label, 'quiet');
-    button.type = 'button';
-    button.addEventListener('click', run);
-    test.append(button);
-  }
+  const haptic = element('button', 'Test haptics', 'quiet');
+  haptic.type = 'button';
+  haptic.addEventListener('click', vibrateOnce);
+  test.append(haptic);
+  const sounds = element('a', 'Sounds and notifications');
+  sounds.href = '#settings/sounds';
+  sounds.addEventListener('click', (event) => { event.preventDefault(); openSettings('sounds').catch(showError); });
+  const where = element('p', 'Send and receive sounds and their volume are in ', 'muted');
+  where.append(sounds, document.createTextNode('.'));
   feedback.append(
     lookChoice('Motion preset', preset, motionOptions, (value) => { if (value !== 'custom') { saveFeedback({...webLook, speed: Number(value)}, true); duration.querySelector('input').value = value; duration.querySelector('output').textContent = value + ' ms'; } }),
     duration,
-    lookChoice('Outgoing sound', webLook.sendSound || 'fluid', tones, (value) => saveFeedback({...webLook, sendSound: value}, true)),
-    lookChoice('Receive chime', webLook.receiveSound || 'fluid', tones, (value) => saveFeedback({...webLook, receiveSound: value}, true)),
     lookChoice('Send haptics', webLook.haptics || 'tap', [['off', 'Off'], ['soft', 'Soft tick'], ['tap', 'Tap'], ['confirm', 'Confirmation'], ['long', 'Long press']],
       (value) => saveFeedback({...webLook, haptics: value}, true)),
     test,
-    element('p', 'Motion Off stops message effects and animations here. Sounds, haptics, and motion stay when you switch themes. '
-      + (navigator.vibrate ? '' : 'This device can’t vibrate, so haptics do nothing here.'), 'muted'));
+    element('p', 'Motion Off stops message effects and animations here. Haptics and motion stay when you switch themes. '
+      + (navigator.vibrate ? '' : 'This device can’t vibrate, so haptics do nothing here.'), 'muted'),
+    where);
   return {groups: [wallpaper, inbox], feedback};
 }

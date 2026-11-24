@@ -289,6 +289,7 @@ internal class InboxScreen(
                         if (threads.isEmpty()) {
                             Text(
                                 error ?: if (search.isNotEmpty()) "No matches for “$search”"
+                                    else if (folder == TabBadges.UNREAD_FOLDER) "No unread conversations"
                                     else if (activeServer.isNotEmpty()) "No chats on this server yet. Join a channel or room above."
                                     else "No conversations yet",
                                 Modifier.padding(horizontal = 22.dp, vertical = 28.dp),

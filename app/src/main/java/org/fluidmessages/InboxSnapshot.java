@@ -86,6 +86,7 @@ final class InboxSnapshot {
             case "Archived" -> archived && !blocked;
             case "Blocked" -> blocked;
             case "Inbox" -> !archived && !blocked;
+            // Unread changes with every message read, so a remembered list could be stale; it always loads fresh.
             default -> false;
         };
     }

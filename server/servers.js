@@ -300,3 +300,65 @@ function showServerForm(protocol, preset = {}) {
   nodes.push(accountForm(protocol, null, done, {add: true, preset}));
   detailsPage({irc: 'IRC network', matrix: 'Matrix homeserver', xmpp: 'XMPP account', email: 'Email account'}[protocol], nodes, () => openAddServer());
 }
+
+/**
+ * New chat → Channels: each server's joined channels and rooms under its name, with Join or browse… for that server,
+ * and Add server. Picking a channel opens it. [sheet] is the New chat page, closed before anything else opens.
+ */
+function newChatChannels(sheet) {
+  const panel = element('div', '', 'settings-section new-chat-channels');
+  const leave = (run) => () => { sheet.close(); run(); };
+  const addServer = element('button', 'Add server', 'primary');
+  addServer.type = 'button';
+  addServer.addEventListener('click', leave(() => openAddServer()));
+  if (typeof sampleOn !== 'undefined' && sampleOn) {
+    panel.append(element('p', 'Servers aren’t part of the sample inbox. Exit it to join channels and rooms on your own servers.', 'muted'));
+    return panel;
+  }
+  const accounts = serverAccounts();
+  if (!accounts.length) {
+    panel.append(element('h3', 'No servers yet'),
+      element('p', 'Servers are IRC networks, Matrix homeservers, and XMPP accounts. Add one to join its channels and rooms, then start a '
+        + 'message in any of them from here.', 'muted'), addServer);
+    return panel;
+  }
+  for (const account of accounts) {
+    const group = element('section', '', 'channel-group');
+    const head = element('div', '', 'channel-group-head');
+    const badge = element('span', labels[account.protocol][0], 'account-badge p-' + account.protocol);
+    badge.setAttribute('aria-hidden', 'true');
+    const words = element('span', '', 'account-words');
+    const name = element('h3', serverName(account));
+    words.append(name, element('span', labels[account.protocol] + ' · ' + account.name, 'muted'));
+    head.append(badge, words);
+    group.append(head);
+    const noun = account.protocol === 'irc' ? 'channels' : account.protocol === 'matrix' ? 'rooms' : 'group chats';
+    const joined = routes.filter((route) => route.account === account.id && route.group)
+      .sort((a, b) => String(a.title || a.target).localeCompare(String(b.title || b.target)));
+    const list = element('div', '', 'channel-list');
+    list.setAttribute('aria-label', serverName(account) + ' ' + noun);
+    for (const route of joined) {
+      const open = element('button', '', 'settings-row channel-row');
+      open.type = 'button';
+      const label = element('span', '', 'account-words');
+      label.append(element('strong', route.title || route.target), element('span', route.title && route.title !== route.target ? route.target : labels[route.protocol], 'muted'));
+      open.append(label);
+      open.addEventListener('click', () => {
+        sheet.close();
+        select(threadKey({address: route.address, protocol: route.protocol}));
+        get('body').focus();
+      });
+      list.append(open);
+    }
+    if (!joined.length) list.append(element('p', 'No ' + noun + ' joined on ' + serverName(account) + ' yet.', 'muted'));
+    const join = element('button', 'Join or browse…');
+    join.type = 'button';
+    join.setAttribute('aria-label', 'Join or browse ' + noun + ' on ' + serverName(account));
+    join.addEventListener('click', leave(() => openJoin(account)));
+    group.append(list, join);
+    panel.append(group);
+  }
+  addServer.className = '';
+  panel.append(addServer);
+  return panel;
+}

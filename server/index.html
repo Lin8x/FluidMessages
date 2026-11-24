@@ -28,6 +28,7 @@
 <script src="/people.js" defer></script>
 <script src="/privacy.js" defer></script>
 <script src="/servers.js" defer></script>
+<script src="/notify.js" defer></script>
 </head>
 <body>
 <header class="topbar">
@@ -82,10 +83,10 @@
       <div class="sidebar-head">
         <h1 id="inbox-title">Messages</h1>
         <button id="open-queue" class="chip-button" type="button" hidden>Scheduled</button>
-        <span class="folder-filter" title="Inbox, Archived, or Blocked">
+        <span class="folder-filter" title="Inbox, Unread, Archived, or Blocked">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <select id="folder" aria-label="Inbox filter">
-            <option>Inbox</option><option>Archived</option><option>Blocked</option>
+            <option>Inbox</option><option>Unread</option><option>Archived</option><option>Blocked</option>
           </select>
         </span>
         <p id="inbox-status" class="inbox-status" role="status" hidden></p>

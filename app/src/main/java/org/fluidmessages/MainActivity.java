@@ -375,6 +375,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         // and contacts clear themselves when they change, so coming back reuses what's loaded instead of reading
         // every message and contact again.
         if (page.equals("chat")) fillChat();
+        // Back from Android's notification settings: show whether notifications are allowed now.
+        if (page.equals("sounds")) soundsSettings();
         if (contacts.allowed() && !contacts.watching()) contacts.invalidate();
         watchContacts();
         watchCalls();
@@ -428,7 +430,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "sampleChat" -> sampleInbox();
             case "contact", "chatAppearance", "decoy" -> contactBack.run();
             case "sample" -> inbox();
-            case "theme", "backups", "messaging", "about", "protocols", "privacy", "reset", "calls", "gifs", "payments" -> settings();
+            case "theme", "backups", "messaging", "about", "protocols", "privacy", "reset", "calls", "gifs", "payments", "sounds" -> settings();
             case "recording" -> callsSettings();
             case "recordings" -> recordingSettings();
             case "locks", "hiddenChats", "decoyMode", "encryption" -> privacySettings();
@@ -657,7 +659,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     /** The folders in the inbox filter menu. Hidden chats shows only when set up, shown in Settings, and not in decoy mode. */
     private List<String> inboxFolders() {
         // Every inbox has Hidden chats in this menu, set up or not, so its presence gives nothing away.
-        var folders = new ArrayList<>(List.of("Inbox", "Archived", "Blocked", HIDDEN_FOLDER));
+        var folders = new ArrayList<>(List.of("Inbox", TabBadges.UNREAD_FOLDER, "Archived", "Blocked", HIDDEN_FOLDER));
         if (Privacy.vaultExists(prefs) && !Privacy.decoyMode(prefs)) folders.add(QUICK_HIDE_LABEL);
         return folders;
     }
@@ -742,7 +744,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         inboxScreen = new InboxScreen(root, prefs, true, false, sampleFolder, sampleSearch,
             query -> { sampleSearch = query; fillSampleInbox(); }, this::settings,
             selected -> { sampleFolder = selected; sampleInbox(); }, this::inbox, this::requestSmsRole, this::openSampleThread, ignored -> {},
-            name -> contactDetails("demo:" + name, name, this::sampleInbox), this::confirmSampleReset, this::sampleCalls, List.of("Inbox", "Archived", "Blocked"),
+            name -> contactDetails("demo:" + name, name, this::sampleInbox), this::confirmSampleReset, this::sampleCalls, List.of("Inbox", TabBadges.UNREAD_FOLDER, "Archived", "Blocked"),
             tabCounts);
         fillSampleInbox();
     }
@@ -753,7 +755,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         for (int index = 0; index < SAMPLES.length; index++) {
             String[] contact = SAMPLES[index];
             String folder = sampleFolderOf(index);
-            if (!sampleFolder.equals(folder)) continue;
+            // Unread: the inbox's sample chats that the Messages badge counts.
+            boolean shown = sampleFolder.equals(TabBadges.UNREAD_FOLDER)
+                ? folder.equals("Inbox") && TabBadges.unreadThread(sampleUnread(contact), "demo:" + contact[0], Set.of())
+                : sampleFolder.equals(folder);
+            if (!shown) continue;
             List<ChatLine> lines = sampleLines(contact, sampleReplies.getOrDefault(contact[0], List.of()));
             if (!search.matches(contact[0]) && lines.stream().noneMatch(line ->
                     search.matches(contact[0], line.getText(), Objects.toString(line.getAuthor(), "")))) continue;
@@ -1024,6 +1030,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             inboxScreen.setServerAction(this::serverAction);
         }
         if (connected) {
+            // Android 13 and later drop every notification until this permission is granted, and it was only ever
+            // asked right after choosing FluidMessages as the SMS app. Ask once here too.
+            if (!prefs.getBoolean("lock", false) || unlocked) askNotificationsOnce();
             inboxScreen.setResync(this::resync);
             seedInbox(inboxScreen);
             fillInbox();
@@ -1621,7 +1630,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     return;
                 }
                 var data = messageRows();
-                Set<String> pinned = list("pinned"), archived = list("archived"), blocked = list("blocked");
+                Set<String> pinned = list("pinned"), archived = list("archived"), blocked = list("blocked"), muted = list("muted");
+                boolean unreadOnly = selectedFolder.equals(TabBadges.UNREAD_FOLDER);
+                // Unread: threads whose newest message (the first one seen, newest first) isn't unread are left out.
+                Set<String> seenThreads = new HashSet<>(), readThreads = new HashSet<>();
                 Map<String, JSONObject> threads = new LinkedHashMap<>();
                 Map<String, String> identities = new HashMap<>();
                 for (JSONObject message : data) {
@@ -1637,7 +1649,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                         case "Blocked" -> !hiddenChat && blocked.contains(number);
                         default -> !hiddenChat && !archived.contains(number) && !blocked.contains(number);
                     };
-                    if (!visible || threads.containsKey(thread)) continue;
+                    if (!visible) continue;
+                    if (unreadOnly && seenThreads.add(thread)
+                            && !TabBadges.unreadThread(message.optInt("read", 1) == 0, number, muted)) readThreads.add(thread);
+                    if (threads.containsKey(thread) || readThreads.contains(thread)) continue;
                     boolean codeLocked = Privacy.locked(prefs, number, format);
                     if (query.empty() || query.matches(number, threadTitle(number), codeLocked ? "" : message.getString("body"))) {
                         threads.put(thread, message);
@@ -1871,8 +1886,30 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 getSystemService(android.view.inputmethod.InputMethodManager.class)
                     .hideSoftInputFromWindow(root.getWindowToken(), 0);
                 proceed.accept(recipients);
-            }, reachableProtocols(true), reachableProtocols(false), () -> accounts(() -> openRecipientPicker(body, proceed)));
+            }, reachableProtocols(true), reachableProtocols(false), () -> accounts(() -> openRecipientPicker(body, proceed)),
+            Privacy.decoyMode(prefs) ? null : joinedChannels(),
+            (address, protocol) -> {
+                chat(address, MessageProtocol.parse(protocol));
+                if (!body.isEmpty() && conversationScreen != null) conversationScreen.setDraft(body);
+            },
+            (action, id) -> { if (action.equals("add")) addServer(); else serverAction(action, id); });
         loadRecipients();
+    }
+
+    /** New message → Channels: each server on FluidMessages Web with the channels and rooms joined there. */
+    private List<ServerChannels> joinedChannels() {
+        var servers = new ArrayList<kotlin.Pair<String, String>>();
+        for (var account : GatewayClient.servers(prefs)) {
+            if (MessageProtocol.parse(account.optString("protocol")).enabled(prefs)) {
+                servers.add(new kotlin.Pair<>(account.optString("id"), account.optString("protocol")));
+            }
+        }
+        var links = new ArrayList<ChannelLink>();
+        for (var route : GatewayClient.allRoutes(prefs)) {
+            links.add(new ChannelLink(route.optString("address"), route.optString("title"), route.optString("protocol"),
+                route.optString("account"), route.optBoolean("group")));
+        }
+        return ChannelDirectory.group(servers, links);
     }
 
     /**
@@ -3290,7 +3327,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         SettingsPages.mount(root, prefs, List.of(
             new SettingsSection("Look and feel", List.of(
                 action("Themes and appearance", "Colors, wallpapers, bubbles, and motion", this::theme),
-                action("Messaging", "Timestamps, tab counts, replies, reactions, sounds", this::messagingSettings))),
+                action("Messaging", "Timestamps, tab counts, replies, and reactions", this::messagingSettings))),
+            new SettingsSection("Sounds and notifications", List.of(
+                action("Sounds and notifications", soundsDetail(), this::soundsSettings))),
             new SettingsSection("Accounts and calls", List.of(
                 action("Accounts", "Sign in to Matrix, XMPP, Email, or IRC to chat there too", this::accounts),
                 action("Chat services", MessageProtocol.anyEnabled(prefs) ? "Turn services on or off, and combine one person's chats"
@@ -3551,6 +3590,67 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         render("messaging");
         heading("Messaging", "Settings", this::settings);
         SettingsPages.mountMessaging(root, prefs, this::sampleInbox);
+    }
+
+    private static final int NOTIFICATION_PERMISSION = 44;
+    /** Set once Android's notification prompt was shown automatically, so it's never shown again uninvited. */
+    private static final String NOTIFICATIONS_ASKED = "notificationsAsked";
+
+    private String soundsDetail() {
+        var status = SmsDelivery.status(this);
+        return (status.getAllowed() ? "Notifications on" : "Notifications blocked") + " · message sounds and volume";
+    }
+
+    /** Settings → Sounds and notifications. Shown again on return, so the status line follows Android's settings. */
+    private void soundsSettings() {
+        render("sounds");
+        heading("Sounds and notifications", "Settings", this::settings);
+        SoundSettings.mount(root, prefs, SmsDelivery.status(this), this::allowNotifications, () -> {
+            boolean shown = SmsDelivery.notifyTest(this);
+            if (!shown) toast("Notifications are blocked, so Android won't show it. Tap Allow first.");
+            return shown;
+        }, this::openNotificationSettings, this::openMessageChannelSettings);
+    }
+
+    /**
+     * Asks Android for the notification permission (Android 13 and later). Android only shows its prompt a couple of
+     * times; after that, or when notifications are turned off in settings, this opens FluidMessages' notification settings.
+     */
+    private void allowNotifications() {
+        var status = SmsDelivery.status(this);
+        prefs.edit().putBoolean(NOTIFICATIONS_ASKED, true).apply();
+        if (status.getCanAsk() && (!prefs.getBoolean("notificationsPrompted", false)
+                || shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS))) {
+            prefs.edit().putBoolean("notificationsPrompted", true).apply();
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION);
+        } else if (!status.getAppEnabled() || status.getCanAsk()) openNotificationSettings();
+        else openMessageChannelSettings();
+    }
+
+    /** The first time the inbox shows (after setup, or after updating to this version), ask once for notifications. */
+    private void askNotificationsOnce() {
+        if (prefs.getBoolean(NOTIFICATIONS_ASKED, false)
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return;
+        prefs.edit().putBoolean(NOTIFICATIONS_ASKED, true).putBoolean("notificationsPrompted", true).apply();
+        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION);
+    }
+
+    private void openNotificationSettings() {
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName()));
+        } catch (ActivityNotFoundException error) { toast("Open Settings → Apps → FluidMessages → Notifications"); }
+    }
+
+    /** Android's page for the message channel: its sound, vibration, pop-up, and lock screen choices. */
+    private void openMessageChannelSettings() {
+        String channel = SmsDelivery.currentChannel(this);
+        if (channel == null) { openNotificationSettings(); return; }
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName())
+                .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, channel));
+        } catch (ActivityNotFoundException error) { openNotificationSettings(); }
     }
 
     private String lastRun(long timestamp, String fallback) {
@@ -3967,7 +4067,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         ThemeEditor.mount(root, prefs, background -> {
             recolorWindow(background);
             recolorHeading.accept(background);
-        });
+        }, this::soundsSettings);
     }
 
     private String intervalLabel(int minutes) {
@@ -4211,6 +4311,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             contacts.invalidate();
             if (page.equals("contact") && refreshContact != null) refreshContact.run();
         } else if (request == ROLE) {
+            // The prompt below asks for notifications together with the phone number, so the inbox doesn't ask too.
+            if (hasRole() && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                prefs.edit().putBoolean(NOTIFICATIONS_ASKED, true).putBoolean("notificationsPrompted", true).apply();
+            }
             inbox();
             if (!hasRole()) smsRoleBlocked();
             if (hasRole()) {
@@ -4248,6 +4352,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             return;
         }
         if (request == CALL_LOG_PERMISSION) { if (page.equals("phone")) phone(); return; }
+        if (request == NOTIFICATION_PERMISSION) { if (page.equals("sounds")) soundsSettings(); return; }
         if (request == PICKER_CONTACT_PERMISSION) {
             contacts.invalidate();
             watchContacts();

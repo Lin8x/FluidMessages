@@ -35,7 +35,8 @@ final class Backup {
         SyncPolicy.FOREGROUND, SyncPolicy.BACKGROUND, SyncPolicy.WIFI_ONLY, SyncPolicy.BATTERY_SAVER, SyncPolicy.DOWNLOADS
     };
     private static final long FILE_BUDGET = 24L * 1024 * 1024, FILE_LIMIT = 2L * 1024 * 1024;
-    static final String[] EFFECTS = {"speed", "sound", "receiveSound", "haptics", "sendTone", "receiveTone", "sendHaptics"};
+    static final String[] EFFECTS = {"speed", "sound", "receiveSound", "haptics", "sendTone", "receiveTone", "sendHaptics",
+        "soundVolume", "soundStream"};
     static final String[] SETTINGS = {"pinned", "archived", "blocked", "muted", "exactTimes", BackupNames.KEY, "automaticUpdateChecks"};
     private static final int MAX = 64 * 1024 * 1024;
     static final String SENDER_TYPES = "senderTypes";

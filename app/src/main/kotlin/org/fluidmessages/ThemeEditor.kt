@@ -68,10 +68,14 @@ import org.json.JSONObject
 
 object ThemeEditor {
     @JvmStatic
-    fun mount(root: LinearLayout, preferences: SharedPreferences, recolor: IntConsumer) {
+    fun mount(root: LinearLayout, preferences: SharedPreferences, recolor: IntConsumer) = mount(root, preferences, recolor, null)
+
+    /** [openSounds] opens Settings → Sounds and notifications, where the message sounds live now. */
+    @JvmStatic
+    fun mount(root: LinearLayout, preferences: SharedPreferences, recolor: IntConsumer, openSounds: Runnable?) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-        view.setContent { Editor(preferences, recolor::accept) }
+        view.setContent { Editor(preferences, recolor::accept, openSounds) }
         root.addView(view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
     }
 
@@ -176,7 +180,7 @@ internal data class Appearance(
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit) {
+private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit, openSounds: Runnable? = null) {
     var appearance by remember { mutableStateOf(Appearance.read(prefs)) }
     var openGroup by remember { mutableStateOf("") }
     var reset by remember { mutableStateOf(false) }
@@ -305,14 +309,14 @@ private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit) {
                 }
             }
             item {
-                AppearanceGroup("Motion and sound", "Animation, message chimes and haptics", openGroup == "feedback",
+                AppearanceGroup("Motion and sound", "Animation and haptics · sounds are in Sounds and notifications", openGroup == "feedback",
                     { openGroup = if (openGroup == "feedback") "" else "feedback" }) {
                     val speeds = listOf(Choice("0", "Off"), Choice("130", "Quick"), Choice("220", "Standard"),
                         Choice("360", "Relaxed"))
                     ThemeDropdown("Motion preset", appearance.speed.toString(), speeds, appearance.speed,
                         fallback = "Custom · ${appearance.speed} ms") { change { putInt("speed", it.toInt()) } }
                     ThemeSlider("Animation duration (ms)", appearance.speed, 0..800) { change { putInt("speed", it) } }
-                    FeedbackOptions(prefs, appearance.speed)
+                    FeedbackOptions(prefs, appearance.speed, openSounds?.let { open -> { open.run() } })
                 }
             }
             item { TextButton(onClick = { reset = true }) { Text("Reset to theme") } }
