@@ -448,7 +448,7 @@ object DecoyEditor {
                 Column(Modifier.fillMaxSize()) {
                     OutlinedTextField(name, { name = it.take(60); problem = null }, label = { Text("Name shown in the inbox") }, singleLine = true,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-                    Text("Tap a bubble to type. It looks like a normal chat in your inbox while hidden chats are closed, and nothing is ever sent.",
+                    Text("Tap a bubble to type. It looks like a normal chat in your inbox while the private folder are closed, and nothing is ever sent.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 10.dp))
                     LazyColumn(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(palette.bg).padding(10.dp),

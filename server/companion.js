@@ -422,24 +422,66 @@ async function pollCalls() {
 
 // Money cards: requests and payments that open the person's own wallet. The companion never holds funds or keys.
 
-const ASSETS = {
-  'USDC on Solana': {pattern: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/, uri: (to, amount, note) => 'solana:' + to + '?amount=' + amount
-    + '&spl-token=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' + (note ? '&message=' + encodeURIComponent(note) : ''),
-    explorer: 'https://solscan.io/tx/'},
-  'SOL on Solana': {pattern: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/, uri: (to, amount, note) => 'solana:' + to + '?amount=' + amount
-    + (note ? '&message=' + encodeURIComponent(note) : ''), explorer: 'https://solscan.io/tx/'},
-  'USDC on Ethereum': {pattern: /^0x[0-9a-fA-F]{40}$/, uri: (to, amount) =>
-    'ethereum:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48@1/transfer?address=' + to + '&uint256=' + units(amount, 6),
-    explorer: 'https://etherscan.io/tx/'},
-  'USDC on Base': {pattern: /^0x[0-9a-fA-F]{40}$/, uri: (to, amount) =>
-    'ethereum:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913@8453/transfer?address=' + to + '&uint256=' + units(amount, 6),
-    explorer: 'https://basescan.org/tx/'},
-  'ETH on Ethereum': {pattern: /^0x[0-9a-fA-F]{40}$/, uri: (to, amount) => 'ethereum:' + to + '@1?value=' + units(amount, 18),
-    explorer: 'https://etherscan.io/tx/'},
+const memo = (note, key = 'message') => (note ? '&' + key + '=' + encodeURIComponent(note) : '');
+const HANDLE = /^[A-Za-z0-9._-]{1,64}$/;
+// The same ways to pay as the Android app (Money.kt). Monero is first and the default.
+const BUILT_IN_ASSETS = {
+  'XMR on Monero': {pattern: /^([48][0-9AB][1-9A-HJ-NP-Za-km-z]{93}|4[0-9AB][1-9A-HJ-NP-Za-km-z]{104})$/, uri: (to, amount, note) =>
+    'monero:' + to + '?tx_amount=' + amount + memo(note, 'tx_description'), explorer: 'https://xmrchain.net/tx/'},
   'BTC on Bitcoin': {pattern: /^(bc1[02-9ac-hj-np-z]{11,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$/, uri: (to, amount, note) =>
-    'bitcoin:' + to + '?amount=' + amount + (note ? '&message=' + encodeURIComponent(note) : ''),
-    explorer: 'https://mempool.space/tx/'},
+    'bitcoin:' + to + '?amount=' + amount + memo(note), explorer: 'https://mempool.space/tx/'},
+  'BTC on Lightning': {pattern: /^([A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|lnurl1[02-9ac-hj-np-z]{20,})$/i, uri: (to) => 'lightning:' + to,
+    label: 'Lightning address'},
+  'USDC on Solana': {pattern: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/, uri: (to, amount, note) => 'solana:' + to + '?amount=' + amount
+    + '&spl-token=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' + memo(note), explorer: 'https://solscan.io/tx/'},
+  'SOL on Solana': {pattern: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/, uri: (to, amount, note) => 'solana:' + to + '?amount=' + amount + memo(note),
+    explorer: 'https://solscan.io/tx/'},
+  'USDC on Ethereum': {pattern: /^0x[0-9a-fA-F]{40}$/, uri: (to, amount) =>
+    'ethereum:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48@1/transfer?address=' + to + '&uint256=' + units(amount, 6), explorer: 'https://etherscan.io/tx/'},
+  'USDC on Base': {pattern: /^0x[0-9a-fA-F]{40}$/, uri: (to, amount) =>
+    'ethereum:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913@8453/transfer?address=' + to + '&uint256=' + units(amount, 6), explorer: 'https://basescan.org/tx/'},
+  'ETH on Ethereum': {pattern: /^0x[0-9a-fA-F]{40}$/, uri: (to, amount) => 'ethereum:' + to + '@1?value=' + units(amount, 18), explorer: 'https://etherscan.io/tx/'},
+  'via PayPal': {pattern: HANDLE, uri: (to, amount, note, currency) => 'https://paypal.me/' + to + '/' + amount + currency,
+    currencies: ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF', 'MXN', 'BRL'], label: 'PayPal.me username'},
+  'via Venmo': {pattern: HANDLE, uri: (to, amount, note) => 'https://venmo.com/?txn=pay&recipients=' + to + '&amount=' + amount + memo(note, 'note'),
+    currencies: ['USD'], label: 'Venmo username'},
+  'via Cash App': {pattern: /^\$?[A-Za-z][A-Za-z0-9_-]{0,19}$/, uri: (to, amount) => 'https://cash.app/$' + to.replace(/^\$/, '') + '/' + amount,
+    currencies: ['USD', 'GBP'], label: '$cashtag'},
+  'via Revolut': {pattern: HANDLE, uri: (to, amount, note, currency) => 'https://revolut.me/' + to + '?amount=' + amount + '&currency=' + currency,
+    currencies: ['EUR', 'GBP', 'USD', 'CHF', 'PLN', 'SEK', 'NOK', 'DKK'], label: 'Revolut username'},
+  'via UPI': {pattern: /^[A-Za-z0-9._-]{2,256}@[A-Za-z]{2,64}$/, uri: (to, amount, note) => 'upi://pay?pa=' + to + '&am=' + amount + '&cu=INR' + memo(note, 'tn'),
+    currencies: ['INR'], label: 'UPI ID'},
+  'via bank transfer': {pattern: /^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/, uri: (to, amount, note, currency) =>
+    'payto://iban/' + to.toUpperCase() + '?amount=' + currency + ':' + amount + memo(note),
+    currencies: ['EUR', 'GBP', 'CHF', 'PLN', 'SEK', 'DKK', 'NOK', 'CZK', 'HUF', 'RON'], label: 'IBAN'},
 };
+
+// Ways to pay you added in this browser: a name and a payment link with {address}, {amount}, and {note}.
+function customAssets() {
+  try { return JSON.parse(localStorage.getItem('money.custom') || '[]').filter((item) => item && item.name && item.template); }
+  catch (error) { return []; }
+}
+
+function allAssets() {
+  const assets = {...BUILT_IN_ASSETS};
+  for (const item of customAssets()) {
+    assets[item.name] = {custom: true, pattern: /^.{3,256}$/, label: 'address', uri: (to, amount, note) =>
+      item.template.replace('{address}', to).replace('{amount}', amount).replace('{note}', encodeURIComponent(note || ''))};
+  }
+  return assets;
+}
+
+const ASSETS = BUILT_IN_ASSETS;
+
+function knownAsset(asset) {
+  return Object.keys(BUILT_IN_ASSETS).some((name) => name === asset || (BUILT_IN_ASSETS[name].currencies && asset.endsWith(' ' + name)));
+}
+
+function moneyWarning(outgoing) {
+  return element('div', outgoing ? '⚠︎ Custom payment method. FluidMessages can’t check its link, so they’ll see a warning too.'
+    : '⚠︎ Custom payment method. FluidMessages can’t check where this link sends money. Pay only if you trust the sender and the app it opens.',
+  'money-warning');
+}
 
 // "20.5" with 6 decimals → "20500000", exactly, without floating point.
 function units(amount, decimals) {
@@ -453,83 +495,129 @@ function moneyCard(message, bubble) {
   const match = MONEY.exec(message.body || '');
   if (!match) return false;
   const [, kind, amount, asset, note, link] = match;
+  const incoming = message.type === 1;
+  const via = asset.includes(' via ');
+  const unit = via ? asset.split(' via ')[0] : asset.split(' on ')[0];
+  const network = via ? 'via ' + asset.split(' via ')[1] : asset.includes(' on ') ? 'on ' + asset.split(' on ')[1] : '';
+  const unverified = !knownAsset(asset);
   const card = element('div', '', 'money-card');
-  card.append(element('small', kind === 'Sent' ? (message.type === 1 ? 'Sent to you' : 'You sent') : (message.type === 1 ? 'Requested from you' : 'You requested')),
-    element('strong', amount + ' ' + asset.split(' on ')[0]), element('span', asset.includes(' on ') ? 'on ' + asset.split(' on ')[1] : '', 'muted'));
+  card.append(element('small', kind === 'Sent' ? (incoming ? 'Sent to you' : 'You sent') : (incoming ? 'Requested from you' : 'You requested')),
+    element('strong', amount + ' ' + unit), element('span', network, 'muted'));
   if (note) card.append(element('p', note));
-  if (link && kind !== 'Sent' && message.type === 1 && /^(solana|ethereum|bitcoin):/.test(link)) {
-    const pay = element('a', 'Pay with your wallet', 'primary');
+  const known = /^((solana|ethereum|bitcoin|monero|lightning|upi):\S+|payto:\/\/iban\/\S+|https:\/\/(paypal\.me|venmo\.com|cash\.app|revolut\.me)\/\S+)$/;
+  const payable = unverified ? /^[a-z][a-z0-9+.-]{1,30}:\S+$/.test(link || '') && !/^(javascript|data|file|vbscript):/i.test(link) : known.test(link || '');
+  if (link && kind !== 'Sent' && incoming && payable) {
+    const pay = element('a', via ? 'Pay with ' + asset.split(' via ')[1] : 'Pay with your wallet', 'primary');
     pay.href = link;
+    pay.rel = 'noopener noreferrer';
+    if (/^https:/.test(link)) pay.target = '_blank';
     const copy = element('button', 'Copy payment link');
     copy.type = 'button';
     copy.addEventListener('click', () => navigator.clipboard?.writeText(link));
     card.append(pay, copy);
-  } else if (link && kind === 'Sent' && /^https:\/\/(solscan\.io|etherscan\.io|basescan\.org|mempool\.space)\/tx\//.test(link)) {
+  } else if (link && kind === 'Sent' && /^https:\/\/(solscan\.io|etherscan\.io|basescan\.org|mempool\.space|xmrchain\.net)\/tx\//.test(link)) {
     const view = element('a', 'View transaction');
     view.href = link;
     view.target = '_blank';
     view.rel = 'noopener noreferrer';
     card.append(view);
   }
+  if (unverified) card.append(moneyWarning(!incoming));
   bubble.replaceChildren(card);
   return true;
 }
 
 function openMoney() {
   if (!active && !get('address').value.trim()) { showError(new Error('Choose a conversation first')); return; }
+  const assets = allAssets();
   const sheet = dialog('Send or request money');
   const form = element('form', '', 'settings-section');
   const kind = element('select', '');
   for (const label of ['Request', 'Send']) kind.append(Object.assign(element('option', label), {value: label}));
   const asset = element('select', '');
-  for (const name of Object.keys(ASSETS)) asset.append(Object.assign(element('option', name), {value: name}));
+  const groups = [['Crypto', (name) => !assets[name].currencies && !assets[name].custom], ['Payment apps and banks', (name) => !!assets[name].currencies],
+    ['Added by you', (name) => assets[name].custom]];
+  for (const [title, test] of groups) {
+    const names = Object.keys(assets).filter(test);
+    if (!names.length) continue;
+    const group = Object.assign(document.createElement('optgroup'), {label: title});
+    for (const name of names) group.append(Object.assign(element('option', name.replace(/^via /, '')), {value: name}));
+    asset.append(group);
+  }
+  asset.value = assets[localStorage.getItem('money.default')] ? localStorage.getItem('money.default') : 'XMR on Monero';
+  const currency = element('select', '');
   const amount = Object.assign(element('input', ''), {required: true, inputMode: 'decimal', placeholder: '20', pattern: '[0-9]+(\\.[0-9]{1,18})?'});
   const wallet = Object.assign(element('input', ''), {required: true, autocomplete: 'off'});
   const note = Object.assign(element('input', ''), {maxLength: 120, placeholder: 'What it’s for (optional)'});
   const tx = Object.assign(element('input', ''), {autocomplete: 'off', placeholder: 'Transaction ID (optional)'});
   const walletLabel = field('Your wallet address', wallet);
-  const txLabel = field('After paying in your wallet, paste the transaction ID', tx);
+  const currencyLabel = field('Currency', currency);
+  const txLabel = field('After paying, paste the transaction ID', tx);
+  const warning = moneyWarning(true);
+  const status = element('p', '', 'muted');
+  const add = element('button', 'Add your own way to pay…');
+  add.type = 'button';
+  add.addEventListener('click', () => {
+    const name = prompt('Name, like DOGE on Dogecoin');
+    if (!name) return;
+    const template = prompt('Payment link, with {address}, {amount}, and {note} where they go. For example: dogecoin:{address}?amount={amount}');
+    if (!template || !/^[a-z][a-z0-9+.-]{1,30}:\S*\{address\}\S*$/.test(template.trim()) || /^(javascript|data|file|intent|content):/i.test(template.trim())) {
+      status.textContent = 'Enter a link like coin:{address}?amount={amount}'; return;
+    }
+    localStorage.setItem('money.custom', JSON.stringify(customAssets().concat({name: name.trim().slice(0, 40), template: template.trim()})));
+    localStorage.setItem('money.default', name.trim().slice(0, 40));
+    sheet.close();
+    openMoney();
+  });
   const update = () => {
-    walletLabel.firstChild.textContent = kind.value === 'Request' ? 'Your wallet address' : 'Their wallet address';
-    txLabel.hidden = kind.value === 'Request';
+    const spec = assets[asset.value];
+    currency.replaceChildren(...(spec.currencies || []).map((value) => Object.assign(element('option', value), {value})));
+    currencyLabel.hidden = !spec.currencies || spec.currencies.length < 2;
+    const label = spec.label || 'wallet address';
+    walletLabel.firstChild.textContent = (kind.value === 'Request' ? 'Your ' : 'Their ') + label;
+    txLabel.hidden = kind.value === 'Request' || !spec.explorer;
+    warning.hidden = !spec.custom;
+    status.textContent = spec.currencies ? 'FluidMessages never holds money. The payment happens in ' + asset.value.replace(/^via /, '') + '.'
+      : 'FluidMessages never holds money or keys. Crypto payments can’t be reversed, so check the address.';
     wallet.value = kind.value === 'Request' ? localStorage.getItem('wallet:' + asset.value) || '' : wallet.value;
   };
   kind.addEventListener('change', update);
   asset.addEventListener('change', update);
-  const status = element('p', 'FluidMessages never holds money or keys. Payments happen in your own wallet app, '
-    + 'and crypto payments can’t be reversed, so check the address.', 'muted');
   const payLink = element('a', '', 'primary');
   payLink.hidden = true;
-  form.append(field('Request or send', kind), field('Currency', asset), field('Amount', amount), walletLabel, field('Note', note),
-    txLabel, payLink, element('button', 'Post to the chat', 'primary'), status);
+  form.append(field('Request or send', kind), field('Way to pay', asset), currencyLabel, field('Amount', amount), walletLabel, field('Note', note),
+    txLabel, payLink, warning, element('button', 'Post to the chat', 'primary'), add, status);
   update();
   const build = () => {
-    const spec = ASSETS[asset.value];
+    const spec = assets[asset.value];
     const address = wallet.value.trim();
-    if (!spec.pattern.test(address)) throw new Error('That doesn’t look like a ' + asset.value.split(' on ')[1] + ' address');
+    if (!spec.pattern.test(address)) throw new Error('That doesn’t look like a ' + (spec.label || 'wallet address'));
     if (!/^[0-9]+(\.[0-9]{1,18})?$/.test(amount.value) || Number(amount.value) <= 0) throw new Error('Enter an amount');
-    return spec.uri(address, amount.value, note.value.trim());
+    if (spec.currencies && /\.[0-9]{3,}$/.test(amount.value)) throw new Error('Use at most two decimal places');
+    return spec.uri(address, amount.value, note.value.trim(), currency.value || (spec.currencies || [''])[0]);
   };
   wallet.addEventListener('change', () => {
     if (kind.value !== 'Send') return;
-    try { payLink.href = build(); payLink.textContent = 'Open your wallet to pay'; payLink.hidden = false; }
+    try { payLink.href = build(); payLink.textContent = 'Open your payment app'; payLink.hidden = false; }
     catch (error) { payLink.hidden = true; }
   });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     try {
       const uri = build();
-      const spec = ASSETS[asset.value];
-      const memo = note.value.trim() ? 'For: ' + note.value.trim().replace(/\n/g, ' ') + '\n' : '';
+      const spec = assets[asset.value];
+      const label = spec.currencies ? (currency.value || spec.currencies[0]) + ' ' + asset.value : asset.value;
+      const memoLine = note.value.trim() ? 'For: ' + note.value.trim().replace(/\n/g, ' ') + '\n' : '';
       let body;
+      localStorage.setItem('money.default', asset.value);
       if (kind.value === 'Request') {
         localStorage.setItem('wallet:' + asset.value, wallet.value.trim());
-        body = '💸 Payment request: ' + amount.value + ' ' + asset.value + '\n' + memo + 'Pay: ' + uri
-          + '\nSent with FluidMessages · the link opens your own wallet app';
+        body = '💸 Payment request: ' + amount.value + ' ' + label + '\n' + memoLine + 'Pay: ' + uri
+          + '\nSent with FluidMessages · the link opens your own payment app';
       } else {
         const id = tx.value.trim();
         if (id && !/^[A-Za-z0-9]{32,128}$/.test(id)) throw new Error('Enter the transaction ID only');
-        body = '💸 Sent: ' + amount.value + ' ' + asset.value + '\n' + memo + (id ? 'Transaction: ' + spec.explorer + id : '');
+        body = '💸 Sent: ' + amount.value + ' ' + label + '\n' + memoLine + (id && spec.explorer ? 'Transaction: ' + spec.explorer + id : '');
       }
       sheet.close();
       if (active && internet(threadProtocol(active))) await send(body.trim(), body.trim(), null);

@@ -293,3 +293,65 @@ dialog.sheet { border: 0; border-radius: 24px; box-shadow: 0 20px 60px rgb(0 0 0
 .meeting-text { display: grid; flex: 1; }
 .meeting-text small { opacity: .8; }
 .meeting-join { background: #34c759; color: #fff; text-decoration: none; font-weight: 650; border-radius: 999px; padding: .35rem .9rem; }
+
+/* Cards: pictures, stickers, polls, events, chess, link previews, and the full-screen viewer (cards.js). */
+.picture { display: block; padding: 0; border: 0; background: none; border-radius: 14px; overflow: hidden; cursor: zoom-in; max-width: 260px; }
+.picture img { display: block; width: 100%; max-height: 320px; object-fit: cover; min-height: 60px; background: color-mix(in srgb, currentColor 10%, transparent); }
+.picture.sticker { max-width: 150px; border-radius: 0; }
+.picture.sticker img { background: none; object-fit: contain; }
+.message .bubble.sticker-bubble { background: none !important; padding: 0; box-shadow: none; }
+.viewer { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgb(0 0 0 / 0%);
+  transition: background .2s ease; cursor: zoom-out; }
+.viewer.open { background: rgb(0 0 0 / 88%); }
+.viewer img { max-width: 94vw; max-height: 92vh; object-fit: contain; transform: scale(.94); opacity: 0; transition: transform .2s ease, opacity .2s ease; cursor: zoom-in; }
+.viewer.open img { transform: scale(1); opacity: 1; }
+.viewer img.zoomed { max-width: none; max-height: none; width: min(200vw, 2600px); cursor: zoom-out; }
+.viewer:has(img.zoomed) { overflow: auto; place-items: start; }
+.viewer-close { position: fixed; top: 14px; inset-inline-end: 14px; border-radius: 999px; background: rgb(255 255 255 / 18%); color: #fff; border: 0; }
+.card-kind { font-size: .7rem; font-weight: 700; letter-spacing: .08em; opacity: .75; }
+.poll-card, .event-card, .chess-card { display: grid; gap: .45rem; min-width: 220px; }
+.poll-option { position: relative; display: flex; justify-content: space-between; gap: .6rem; overflow: hidden; text-align: start;
+  color: inherit; background: color-mix(in srgb, currentColor 12%, transparent); border: 1.5px solid transparent; border-radius: 10px; }
+.poll-option::before { content: ''; position: absolute; inset: 0 auto 0 0; width: var(--share); background: color-mix(in srgb, currentColor 16%, transparent);
+  transition: width .3s ease; }
+.poll-option > * { position: relative; }
+.poll-option.chosen { border-color: color-mix(in srgb, currentColor 80%, transparent); }
+.event-head { display: flex; gap: .7rem; align-items: center; }
+.event-head > div:last-child { display: grid; gap: .15rem; }
+.event-date { display: grid; place-items: center; width: 52px; padding: .3rem 0; border-radius: 10px; background: color-mix(in srgb, currentColor 14%, transparent); }
+.event-date small { color: #ff453a; font-weight: 700; font-size: .7rem; }
+.event-date strong { font-size: 1.35rem; }
+.card-actions { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.card-actions a, .card-actions button { font-size: .85rem; }
+.chess-board { display: grid; grid-template-columns: repeat(8, 1fr); width: min(264px, 70vw); aspect-ratio: 1; border-radius: 8px; overflow: hidden; }
+.chess-square { display: grid; place-items: center; padding: 0; border: 0; border-radius: 0; aspect-ratio: 1; position: relative; }
+.chess-square.dark { background: #8da37a; }
+.chess-square.light { background: #ede6d6; }
+.chess-square.last { box-shadow: inset 0 0 0 100px rgb(255 200 60 / 30%); }
+.chess-square.selected { background: #f6d365; }
+.chess-square.target::after { content: ''; width: 30%; height: 30%; border-radius: 50%; background: rgb(0 0 0 / 25%); position: absolute; }
+button.chess-square { cursor: pointer; }
+.piece { font-size: clamp(16px, 4.6vw, 26px); line-height: 1; }
+.piece.white { color: #fff; text-shadow: 0 0 2px #000, 0 0 1px #000; }
+.piece.black { color: #1e1e1e; text-shadow: 0 0 2px rgb(255 255 255 / 40%); }
+.link-preview { display: grid; margin-top: .5rem; max-width: 300px; border-radius: 12px; overflow: hidden; color: inherit; text-decoration: none;
+  background: color-mix(in srgb, currentColor 10%, transparent); }
+.link-preview img { width: 100%; max-height: 170px; object-fit: cover; display: block; }
+.link-preview.video { position: relative; }
+.link-preview.video::before { content: '▶'; position: absolute; top: 50px; left: 50%; transform: translateX(-50%); width: 44px; height: 44px; display: grid;
+  place-items: center; border-radius: 50%; background: rgb(0 0 0 / 60%); color: #fff; }
+.link-words { display: grid; gap: .15rem; padding: .55rem .7rem; }
+.link-words small { font-weight: 600; opacity: .75; }
+.link-words .muted { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-size: .82rem; }
+.compose-menu { position: absolute; bottom: calc(100% + 6px); inset-inline-start: 0; display: grid; min-width: 190px; padding: .35rem;
+  border-radius: 14px; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 10px 30px rgb(0 0 0 / 18%); z-index: 5; }
+.compose-menu button { border: 0; text-align: start; border-radius: 9px; }
+.gif-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem; max-height: 50vh; overflow: auto; }
+.gif-cell { padding: 0; border: 0; border-radius: 10px; overflow: hidden; aspect-ratio: 1; background: color-mix(in srgb, var(--muted) 15%, transparent); }
+.gif-cell img { width: 100%; height: 100%; object-fit: cover; }
+.money-warning { display: flex; gap: .45rem; padding: .5rem .6rem; border-radius: 10px; background: rgb(255 176 32 / 22%); font-size: .82rem; line-height: 1.35; }
+.check { display: flex; align-items: center; gap: .4rem; color: inherit; }
+.check input { width: auto; }
+@media (prefers-reduced-motion: reduce) { .viewer, .viewer img, .poll-option::before { transition: none; } }
+.card-actions a.primary { text-decoration: none; padding: .45rem .9rem; border-radius: 999px; }
+.vote-line { font-style: italic; opacity: .9; }

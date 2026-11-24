@@ -132,7 +132,7 @@ private object SmsTransport : MessageTransport {
     override fun send(context: Context, message: OutgoingMessage) {
         // A file makes this an MMS, the same way carriers upgrade a text with an attachment. Locations stay SMS.
         if (message.hasFile) return MmsCarrierTransport.send(context, message)
-        for (member in message.members) SmsStore.send(context, member, message.fallbackBody(), message.sim)
+        for (member in message.members) SmsStore.send(context, member, message.fallbackBody(), message.sim, message.conversation)
     }
 }
 

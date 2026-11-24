@@ -263,12 +263,16 @@ function showMessages(preserve = false) {
     }
     if (typeof moneyCard === 'function') moneyCard(message, bubble);
     if (typeof meetingCard === 'function') meetingCard(message, bubble);
+    if (typeof richCard === 'function') richCard(message, bubble, history);
     if (message.attachment) {
-      if (message.body === message.attachment.name) bubble.textContent = '';
-      const file = element('button', '📎 ' + message.attachment.name, 'file-card');
-      file.type = 'button';
-      file.addEventListener('click', () => download(message).catch(showError));
-      bubble.prepend(file);
+      if (message.body === message.attachment.name || /^(Photo|sticker\.\w+)$/.test(message.body || '')) bubble.textContent = '';
+      // Pictures show inline and open full screen; other files download.
+      if (!(typeof attachmentPicture === 'function' && attachmentPicture(message, bubble))) {
+        const file = element('button', '📎 ' + message.attachment.name, 'file-card');
+        file.type = 'button';
+        file.addEventListener('click', () => download(message).catch(showError));
+        bubble.prepend(file);
+      }
     }
     row.append(bubble);
     if (message.reactions.size) row.append(element('span', [...message.reactions.values()].join(' '), 'reaction'));
@@ -381,7 +385,8 @@ function showThreads() {
       for (const format of formats) tags.append(element('span', automatedThread(key) && family(format) === 'sms' ? 'Automated' : labels[format] || 'SMS', 'tag p-' + format));
       copy.append(tags);
     }
-    const meetingLine = typeof meetingPreview === 'function' ? meetingPreview(message.body || '') : null;
+    const meetingLine = (typeof meetingPreview === 'function' ? meetingPreview(message.body || '') : null)
+      || (typeof cardPreview === 'function' ? cardPreview(message.body || '') : null);
     copy.append(element('small', /^FM1:/.test(message.body || '') ? '🔒 Encrypted with FluidMessages' : meetingLine || message.body));
     const time = timeOf(message);
     button.append(element('span', '', 'indicator'), element('span', initials(threadTitle(key)), 'avatar'), copy,

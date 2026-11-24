@@ -23,16 +23,18 @@ FluidMessages is a texting and calling app for Android. It puts regular texts (S
 ## Highlights
 
 - **One inbox for every service:** texts, group texts, Matrix, XMPP, Email, and IRC, each with a clear tag. Replies, reactions, photos, files, voice messages, locations, and money requests work on every service.
-- **Calls:** phone calls, end-to-end encrypted Matrix and XMPP calls, SIP, and meeting links, from a Phone tab laid out like the iPhone's. Calls can be recorded, with a choice of where recordings are saved.
+- **Calls:** phone calls, end-to-end encrypted Matrix and XMPP calls, SIP, and meeting links, from a Phone tab laid out like the iPhone's. Calls can be recorded and saved to any folder you choose.
 - **Privacy you can see:** a small lock on every chat shows who can read it. You also get:
   - app lock
   - chat locks
-  - hidden chats
+  - a private folder
   - decoy mode
   - disappearing messages
   - an emergency erase passcode
   - encrypted storage on your phone
 - **Encrypted texting:** encrypt regular texts with someone who also uses FluidMessages.
+- **More than text:** GIFs and stickers, polls, shareable calendar events, chess games, link previews for videos and songs, and money requests by Monero, Bitcoin, Lightning, PayPal, bank transfer, and more. Each one is plain text or a picture underneath, so it still works with people on other apps.
+- **Backups you control:** encrypted backups to your phone, your own server (SFTP, WebDAV such as Nextcloud, FTPS, or FTP, on any port), or OneDrive, Google Drive, and S3, on a schedule or whenever you like.
 - **Make it yours:** themes, wallpapers, bubble shapes, motion, and sounds, with a sample inbox to practice in.
 - **Works everywhere:** the Android app, a web version you can install as an app (a PWA), and desktop apps for Windows, macOS, and Linux.
 - **Yours to run:** no ads, no tracking, no account with us. Host FluidMessages Web with Docker, Docker Compose, or Portainer.

@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,25 +35,27 @@ import java.util.Locale
 internal fun AttachmentSheet(sources: List<AttachmentSource>, accent: Color, note: String, dismiss: () -> Unit,
                              pick: (AttachmentSource) -> Unit) {
     ModalBottomSheet(onDismissRequest = dismiss) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Column(Modifier.fillMaxWidth().verticalScroll(androidx.compose.foundation.rememberScrollState())
+            .padding(horizontal = 16.dp).padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("Attach", style = MaterialTheme.typography.titleMedium)
             val fill = accessibleBubbleFill(accent)
             val ink = bubbleTextColor(accent)
-            for (row in sources.chunked(3)) {
+            for (row in sources.chunked(4)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     for (source in row) {
-                        Column(Modifier.width(96.dp).clip(RoundedCornerShape(14.dp)).clickable(onClickLabel = source.label) {
+                        Column(Modifier.width(82.dp).clip(RoundedCornerShape(14.dp)).clickable(onClickLabel = source.label) {
                             pick(source)
                         }.padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Box(Modifier.size(54.dp).background(fill, CircleShape), contentAlignment = Alignment.Center) {
                                 DrawGlyph(source.glyph, ink, Modifier.size(26.dp))
                             }
-                            Text(source.label, fontSize = 13.sp, maxLines = 2, color = MaterialTheme.colorScheme.onSurface)
+                            Text(source.label, fontSize = 13.sp, maxLines = 2, color = MaterialTheme.colorScheme.onSurface,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                         }
                     }
-                    repeat(3 - row.size) { Spacer(Modifier.width(96.dp)) }
+                    repeat(4 - row.size) { Spacer(Modifier.width(82.dp)) }
                 }
             }
             if (note.isNotEmpty()) Text(note, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
@@ -118,15 +121,30 @@ internal fun AttachmentContent(attachment: Attachment, foreground: Color, downlo
     when (attachment.kind) {
         AttachmentKind.VOICE, AttachmentKind.AUDIO -> if (attachment.uri != null) AudioRow(attachment, foreground)
             else FileRow(attachment, foreground, download)
-        AttachmentKind.VIDEO -> if (attachment.uri != null) Box(Modifier.width(220.dp).height(132.dp).padding(bottom = 5.dp)
-            .clip(RoundedCornerShape(10.dp)).clickable(onClickLabel = "Play video") { openAttachment(context, attachment) },
-            contentAlignment = Alignment.Center) {
-            AttachmentThumb(attachment, Modifier.matchParentSize(), foreground)
-            Box(Modifier.size(42.dp).background(Color.Black.copy(alpha = .55f), CircleShape), contentAlignment = Alignment.Center) {
-                DrawGlyph(Glyph.Play, Color.White, Modifier.size(20.dp))
+        AttachmentKind.PHOTO -> attachment.uri?.let { MessagePicture(it, null, attachment.name, attachment.mime, sticker = attachment.isSticker()) }
+            ?: FileRow(attachment, foreground, download)
+        AttachmentKind.VIDEO -> if (attachment.uri != null) {
+            var playing by remember { mutableStateOf(false) }
+            Box(Modifier.width(230.dp).aspectRatio(16f / 10f).padding(bottom = 5.dp)
+                .clip(RoundedCornerShape(12.dp)).clickable(onClickLabel = "Play video") { playing = true },
+                contentAlignment = Alignment.Center) {
+                AttachmentThumb(attachment, Modifier.matchParentSize(), foreground)
+                Box(Modifier.size(46.dp).background(Color.Black.copy(alpha = .55f), CircleShape), contentAlignment = Alignment.Center) {
+                    DrawGlyph(Glyph.Play, Color.White, Modifier.size(22.dp))
+                }
             }
+            if (playing) MediaViewer(attachment.uri, attachment.mime, attachment.name) { playing = false }
         } else FileRow(attachment, foreground, download)
-        else -> FileRow(attachment, foreground, download)
+        else -> {
+            // A calendar invite (.ics) shows as an event card with Add to calendar.
+            val calendar = attachment.uri != null && (attachment.mime.contains("calendar") || attachment.name.endsWith(".ics", true))
+            val event by produceState<CalendarEvent?>(null, attachment.uri) {
+                if (calendar) value = withContext(Dispatchers.IO) {
+                    runCatching { context.contentResolver.openInputStream(attachment.uri!!)?.use { String(it.readNBytes(200_000)) }?.let(::parseIcs) }.getOrNull()
+                }
+            }
+            event?.let { EventCard(it, foreground) } ?: FileRow(attachment, foreground, download)
+        }
     }
 }
 

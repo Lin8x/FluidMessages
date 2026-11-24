@@ -6,4 +6,5 @@
     <files-path name="protocol_files" path="protocol-files/"/>
     <cache-path name="attachments" path="attachments/"/>
     <files-path name="call-recordings" path="call-recordings/"/>
+    <cache-path name="remote_media" path="remote-media/"/>
 </paths>

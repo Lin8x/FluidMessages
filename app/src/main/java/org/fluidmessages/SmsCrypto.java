@@ -87,7 +87,19 @@ final class SmsCrypto {
     }
 
     /** "on", "off", or "" to follow the global setting. */
-    static String chatChoice(SharedPreferences prefs, String address) { return prefs.getString("smsEncrypt." + address, ""); }
+    static String chatChoice(SharedPreferences prefs, String address) {
+        String exact = prefs.getString("smsEncrypt." + address, null);
+        if (exact != null) return exact;
+        // The same number written another way (+1 415…, (415) …) is the same chat.
+        if (SmsStore.validRecipient(address)) {
+            for (var entry : prefs.getAll().entrySet()) {
+                if (!entry.getKey().startsWith("smsEncrypt.") || !(entry.getValue() instanceof String value)) continue;
+                String other = entry.getKey().substring("smsEncrypt.".length());
+                if (SmsStore.validRecipient(other) && PhoneNumberUtils.compare(other, address)) return value;
+            }
+        }
+        return "";
+    }
 
     static void setChatChoice(SharedPreferences prefs, String address, String choice) {
         if (choice.isEmpty()) prefs.edit().remove("smsEncrypt." + address).apply();

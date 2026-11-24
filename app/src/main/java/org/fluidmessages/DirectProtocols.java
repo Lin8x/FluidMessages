@@ -228,6 +228,7 @@ final class DirectProtocols {
             }
         }
         ProtocolService.update(app, service || SipAgent.alwaysOn(prefs));
+        if (!clients.isEmpty()) Outbox.schedule(app);
     }
 
     /** One background check for protocols that don't keep a connection open (from the periodic job). */
@@ -292,7 +293,6 @@ final class DirectProtocols {
         if (route == null) throw new IllegalStateException("Link a " + format.label + " address to this conversation first.");
         DirectClient client;
         synchronized (DirectProtocols.class) { client = clients.get(format); }
-        if (client == null) throw new IllegalStateException(format.label + " isn’t connected. Open FluidMessages and try again.");
         String id = "direct-" + UUID.randomUUID();
         var message = record(route, id, body, true, System.currentTimeMillis(), "").put("status", "Sending…").put("text", text);
         int disappear = Disappearing.seconds(prefs, address);
@@ -324,13 +324,11 @@ final class DirectProtocols {
                 try (var input = java.nio.file.Files.newInputStream(file.file().toPath())) { store.putFile(id, input, MediaSanitizer.MAX_FILE); }
             }
             store.put(message);
-            var updates = client.send(context, route, message, file);
-            for (var keys = updates.keys(); keys.hasNext(); ) {
-                String field = keys.next();
-                message.put(field, updates.get(field));
-            }
-            message.put("status", "Sent");
-            store.put(message);
+            if (client == null) { queue(context, message); return; }
+            deliver(context, client, route, message, file);
+        } catch (java.io.IOException error) {
+            // A weak or missing connection: keep it and send it when the network is back, instead of failing.
+            queue(context, message);
         } catch (Exception error) {
             message.put("status", "Couldn’t send · " + (error.getMessage() == null ? "Try again" : error.getMessage()));
             store.put(message);
@@ -339,6 +337,71 @@ final class DirectProtocols {
             if (file != null) file.delete();
             MmsTransport.changed(context);
         }
+    }
+
+    private static void deliver(Context context, DirectClient client, JSONObject route, JSONObject message,
+                                MediaSanitizer.Prepared file) throws Exception {
+        var updates = client.send(context, route, message, file);
+        for (var keys = updates.keys(); keys.hasNext(); ) {
+            String field = keys.next();
+            message.put(field, updates.get(field));
+        }
+        message.remove("queued");
+        message.put("status", "Sent");
+        ProtocolStore.get(context).put(message);
+    }
+
+    static final String QUEUED = "Queued · sends when you’re back online";
+
+    private static void queue(Context context, JSONObject message) throws Exception {
+        message.put("queued", true).put("status", QUEUED);
+        ProtocolStore.get(context).put(message);
+        Outbox.schedule(context);
+    }
+
+    /** Sends messages that were queued while offline, oldest first. True when nothing is left waiting. */
+    static boolean flush(Context context) {
+        var app = context.getApplicationContext();
+        var prefs = prefs(app);
+        var store = ProtocolStore.get(app);
+        boolean done = true;
+        try {
+            var waiting = new java.util.ArrayList<JSONObject>();
+            for (var row : store.read()) if (row.optBoolean("queued")) waiting.add(new JSONObject(row.toString()));
+            waiting.sort(java.util.Comparator.comparingLong(row -> row.optLong("date")));
+            for (var message : waiting) {
+                var format = MessageProtocol.parse(message.optString("protocol"));
+                var route = route(prefs, message.optString("address"), format);
+                DirectClient client;
+                synchronized (DirectProtocols.class) { client = clients.get(format); }
+                if (route == null || !format.enabled(prefs)) {
+                    message.remove("queued");
+                    store.put(message.put("status", "Couldn’t send · " + format.label + " is no longer set up"));
+                    continue;
+                }
+                if (client == null) { done = false; continue; }
+                MediaSanitizer.Prepared file = null;
+                try {
+                    var attachment = Attachment.fromJson(message.optJSONObject("attachment"), store.file(message));
+                    if (attachment != null && attachment.isFile()) file = MediaSanitizer.prepare(app, attachment, MediaSanitizer.MAX_FILE);
+                    deliver(app, client, route, message, file);
+                } catch (java.io.IOException offline) {
+                    done = false;
+                    int tries = message.optInt("tries") + 1;
+                    if (tries >= 30) {
+                        message.remove("queued");
+                        message.put("status", "Couldn’t send · " + (offline.getMessage() == null ? "no connection" : offline.getMessage()));
+                    }
+                    store.put(message.put("tries", tries));
+                    break;  // Still offline; try again later rather than hammering the server.
+                } catch (Exception error) {
+                    message.remove("queued");
+                    store.put(message.put("status", "Couldn’t send · " + (error.getMessage() == null ? "Try again" : error.getMessage())));
+                } finally { if (file != null) file.delete(); }
+            }
+        } catch (Exception ignored) { done = false; }
+        finally { MmsTransport.changed(app); }
+        return done;
     }
 
     /** The phone's own XMPP connection, for XMPP calls; null when XMPP isn't connected from this phone. */

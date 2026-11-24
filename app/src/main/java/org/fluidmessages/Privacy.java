@@ -21,6 +21,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import javax.crypto.Cipher;
 import javax.crypto.KeyAgreement;
@@ -124,7 +125,7 @@ final class Privacy {
         PrivateKey privateKey;
         String publicKey;
         if (vaultExists(prefs)) {
-            if (vaultKey == null) throw new IllegalStateException("Open hidden chats first");
+            if (vaultKey == null) throw new IllegalStateException("Open the private folder first");
             privateKey = vaultKey;
             publicKey = prefs.getString("vault.public", "");
         } else {
@@ -151,6 +152,15 @@ final class Privacy {
         } catch (Exception wrongCode) { return false; }
     }
 
+    /** Whether this is the private folder passcode, without opening or closing anything. */
+    static boolean checkVaultCode(SharedPreferences prefs, String code) {
+        if (!vaultExists(prefs) || code == null || code.length() < 4) return false;
+        try {
+            aesOpen(stretch(code, unb64(prefs.getString("vault.salt", ""))), unb64(prefs.getString("vault.private", "")));
+            return true;
+        } catch (Exception wrongCode) { return false; }
+    }
+
     // Unlocking hidden chats with a fingerprint, face, or the phone's screen lock
 
     private static final String DEVICE_KEY = "fluid-vault-device";
@@ -160,7 +170,7 @@ final class Privacy {
         KeyStore store = KeyStore.getInstance("AndroidKeyStore");
         store.load(null);
         if (store.getKey(DEVICE_KEY, null) instanceof SecretKey existing) return existing;
-        if (!create) throw new IllegalStateException("Turn on quick unlock again in Hidden chats");
+        if (!create) throw new IllegalStateException("Turn on quick unlock again in Private folder");
         var generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
         generator.init(new KeyGenParameterSpec.Builder(DEVICE_KEY, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).setKeySize(256)
@@ -174,7 +184,7 @@ final class Privacy {
 
     /** Call right after the person unlocks with their fingerprint, face, or screen lock, with hidden chats open. */
     static synchronized void enableDeviceUnlock(SharedPreferences prefs) throws Exception {
-        if (vaultKey == null) throw new IllegalStateException("Open hidden chats first");
+        if (vaultKey == null) throw new IllegalStateException("Open the private folder first");
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, deviceKey(true));
         prefs.edit().putString("vault.device", b64(concat(cipher.getIV(), cipher.doFinal(vaultKey.getEncoded())))).commit();
@@ -236,7 +246,7 @@ final class Privacy {
 
     static String vaultOpen(String sealed) throws Exception {
         PrivateKey key = vaultKey;
-        if (key == null) throw new IllegalStateException("Hidden chats are closed");
+        if (key == null) throw new IllegalStateException("The private folder is closed");
         var buffer = ByteBuffer.wrap(unb64(sealed));
         byte[] ephemeralKey = new byte[buffer.getShort()];
         buffer.get(ephemeralKey);
@@ -262,13 +272,21 @@ final class Privacy {
         prefs.edit().putString(key, seal(prefs, new JSONArray(values).toString())).apply();
     }
 
+    /** Opened sets by key, reused while the stored value is unchanged: the inbox asks once per message. */
+    private static final Map<String, Object[]> openedSets = new java.util.concurrent.ConcurrentHashMap<>();
+
     private static Set<String> sealedSet(SharedPreferences prefs, String key) {
-        var values = new LinkedHashSet<String>();
         String stored = prefs.getString(key, "");
-        if (stored == null || stored.isEmpty()) return values;
+        if (stored == null || stored.isEmpty()) return new LinkedHashSet<>();
+        Object[] cached = openedSets.get(key);
+        @SuppressWarnings("unchecked")
+        Set<String> known = cached != null && stored.equals(cached[0]) ? (Set<String>) cached[1] : null;
+        if (known != null) return new LinkedHashSet<>(known);
+        var values = new LinkedHashSet<String>();
         try {
             var array = new JSONArray(open(prefs, stored));
             for (int i = 0; i < array.length(); i++) values.add(array.getString(i));
+            openedSets.put(key, new Object[]{stored, java.util.Collections.unmodifiableSet(new LinkedHashSet<>(values))});
         } catch (Exception ignored) {}
         return values;
     }

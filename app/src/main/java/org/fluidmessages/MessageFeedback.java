@@ -24,8 +24,10 @@ final class MessageFeedback {
     static String selection(SharedPreferences prefs, boolean receive) {
         String saved = prefs.getString(toneKey(receive), "");
         if (saved.equals(FLUID) || saved.equals(DEFAULT) || saved.equals(SILENT) || deviceTone(saved) != null) return saved;
-        if (prefs.getBoolean(receive ? "receiveSound" : "sound", false)) return FLUID;
-        return receive ? DEFAULT : SILENT;
+        // Fluid sounds are the default. Someone who switched the old on/off sound setting off keeps their choice.
+        String legacy = receive ? "receiveSound" : "sound";
+        if (prefs.contains(legacy)) return prefs.getBoolean(legacy, false) ? FLUID : (receive ? DEFAULT : SILENT);
+        return FLUID;
     }
 
     static String fromPicker(Uri uri) {

@@ -77,7 +77,7 @@ final class HiddenChats {
 
     /** Puts a conversation's hidden texts back in Android's SMS store. The vault must be open. */
     static int restore(Context context, String address) throws Exception {
-        if (!Privacy.vaultOpen()) throw new IllegalStateException("Open hidden chats first");
+        if (!Privacy.vaultOpen()) throw new IllegalStateException("Open the private folder first");
         var store = ProtocolStore.get(context);
         int restored = 0;
         for (JSONObject row : store.readHidden()) {

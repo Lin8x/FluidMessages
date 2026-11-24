@@ -14,6 +14,7 @@ from urllib.parse import quote, unquote
 
 import accounts
 import cloud_backup
+import link_fetch
 import protocol_gateway
 
 ROOT = Path(__file__).resolve().parent
@@ -22,6 +23,7 @@ TOKEN = os.environ.get("FLUID_TOKEN", "")
 FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
          "/style.css": ("style.css", "text/css"), "/icon.webp": ("icon.webp", "image/webp"),
          "/companion.js": ("companion.js", "text/javascript"), "/call.js": ("shared/call.js", "text/javascript"),
+         "/cards.js": ("cards.js", "text/javascript"), "/chess.js": ("shared/chess.js", "text/javascript"),
          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/sw.js": ("sw.js", "text/javascript"),
          "/icons/icon-192.png": ("icons/icon-192.png", "image/png"), "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
          "/icons/apple-touch-icon.png": ("icons/apple-touch-icon.png", "image/png")}
@@ -90,7 +92,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         self.end_headers()
         self.wfile.write(data)
 
@@ -114,6 +116,23 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/backups/(onedrive|drive|s3)/latest", self.path)
         if match:
             self.backup_transfer(match[1], fetching=True)
+            return
+        if self.path.startswith("/api/gifs?"):
+            from urllib.parse import parse_qs, urlsplit
+            query = parse_qs(urlsplit(self.path).query)
+            pick = lambda name: (query.get(name) or [""])[0][:200]
+            self.reply(200, {"results": link_fetch.gif_search(pick("provider"), pick("q"), pick("key"), pick("stickers") == "1")})
+            return
+        if self.path.startswith(("/api/preview?url=", "/api/picture?url=")):
+            target = unquote(self.path.split("?url=", 1)[1])
+            if self.path.startswith("/api/preview"):
+                self.reply(200, {"preview": link_fetch.preview(target)})
+            else:
+                found = link_fetch.picture(target)
+                if found:
+                    self.reply(200, found[1], found[0])
+                else:
+                    self.reply(404, {"error": "That picture isn't available"})
             return
         match = re.fullmatch(r"/api/protocols/file\?id=([A-Za-z0-9_-]{1,120})", self.path)
         if match:

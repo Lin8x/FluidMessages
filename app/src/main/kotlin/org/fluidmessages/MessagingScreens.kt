@@ -12,12 +12,14 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -110,6 +112,8 @@ internal data class ChatLine @JvmOverloads constructor(
     val attachment: Attachment? = null,
     /** A channel event such as a join, part, or topic change, shown as a line instead of a message. */
     val event: Boolean = false,
+    /** Sent or received encrypted by FluidMessages: shows a small lock by the time. */
+    val encrypted: Boolean = false,
 ) {
     /** Photo or other attachment, as one value for forwarding and previews. */
     val media: Attachment? get() = attachment ?: photo?.let(Attachment::photo)
@@ -185,11 +189,17 @@ internal class InboxScreen(
     /** Clears the search field, e.g. after it was used to open hidden chats. */
     fun clearSearch() { search = "" }
     var threads by mutableStateOf(emptyList<ThreadRow>())
+    /** The live inbox only: reloads messages, contacts, and accounts from scratch. Shown in the filter menu. */
+    var resync: Runnable? = null
+    /** Decoy mode only: holding the title asks for the passcode to show the real inbox. Nothing on screen hints at it. */
+    var titleHold: Runnable? = null
     var error by mutableStateOf<String?>(null)
 
     init {
         mount(root, prefs) { palette ->
             val dock = palette.appearance.searchPosition == "bottom"
+            // Read-only when every way to message is off: no compose button, and a note saying why.
+            val canSend = sample || MessageProtocol.anyEnabled(prefs)
             val editSearch: (String) -> Unit = {
                 search = it
                 searchChanged.accept(it)
@@ -203,7 +213,7 @@ internal class InboxScreen(
                     Spacer(Modifier.weight(1f))
                     if (sample) {
                         TextButton(onClick = { compose.run() }) { Text("My inbox", color = palette.inboxAction) }
-                    } else if (connected && !dock) {
+                    } else if (connected && canSend && !dock) {
                         ActionIcon("Compose", Glyph.Compose, palette.inboxAction) { compose.run() }
                     }
                     if (connected || sample) {
@@ -218,6 +228,10 @@ internal class InboxScreen(
                                         onClick = { expanded = false; filters.accept(option) },
                                     )
                                 }
+                                resync?.let { action ->
+                                    HorizontalDivider()
+                                    DropdownMenuItem(text = { Text("Resync") }, onClick = { expanded = false; action.run() })
+                                }
                             }
                         }
                     }
@@ -225,6 +239,7 @@ internal class InboxScreen(
                 Column(Modifier.padding(horizontal = 22.dp)) {
                     Text(
                         if (folder == "Inbox") "Messages" else folder,
+                        Modifier.then(titleHold?.let { hold -> Modifier.pointerInput(Unit) { detectTapGestures(onLongPress = { hold.run() }) } } ?: Modifier),
                         color = palette.ink,
                         fontSize = 37.sp,
                         lineHeight = 43.sp,
@@ -242,6 +257,8 @@ internal class InboxScreen(
                             }
                         }
                     }
+                    if (connected && !canSend) Text("Read-only · sending is off in Settings → Ways to message",
+                        Modifier.padding(top = 3.dp, bottom = 4.dp), color = palette.muted, fontSize = 14.sp)
                     if (!dock && (sample || connected)) SearchBox(search, palette, change = editSearch)
                 }
                 if (!sample && !connected) {
@@ -286,7 +303,7 @@ internal class InboxScreen(
                                     Box(Modifier.weight(1f)) {
                                         SearchBox(search, palette, inDock = true, change = editSearch)
                                     }
-                                    if (connected) ActionIcon("Compose", Glyph.Compose, palette.toolbarAction) { compose.run() }
+                                    if (connected && canSend) ActionIcon("Compose", Glyph.Compose, palette.toolbarAction) { compose.run() }
                                 }
                             }
                         }
@@ -419,6 +436,8 @@ internal class ConversationScreen @JvmOverloads constructor(
 ) {
     var draft by mutableStateOf("")
     var draftAttachment by mutableStateOf<Attachment?>(null)
+    /** Opens Settings → GIFs and stickers from the picker; set by the live chat. */
+    var openGifSettings: Runnable? = null
     fun setDraftPhoto(uri: Uri?) { draftAttachment = uri?.let(Attachment::photo) }
     private var sendVia by mutableStateOf<MessageProtocol?>(null)
     private var replyTo by mutableStateOf<ChatLine?>(null)
@@ -458,9 +477,14 @@ internal class ConversationScreen @JvmOverloads constructor(
             val context = LocalContext.current
             // Locations and contact cards work on every protocol; other files need a protocol that carries files.
             val filesAllowed = sample || if (via == active) routing?.attachments == true else via.transport().capabilities.attachments
-            val sources = AttachmentSource.entries.filter { filesAllowed || !it.needsFiles }
+            val sources = AttachmentSource.entries.filter { (filesAllowed || !it.needsFiles) &&
+                (it != AttachmentSource.GIF || GifSettings.gifsOn(prefs)) && (it != AttachmentSource.STICKER || GifSettings.stickersOn(prefs)) }
             var sheet by remember { mutableStateOf(false) }
             var moneyDialog by remember { mutableStateOf(false) }
+            var gifSheet by remember { mutableStateOf<Boolean?>(null) }
+            var pollDialog by remember { mutableStateOf(false) }
+            var eventDialog by remember { mutableStateOf(false) }
+            var chessDialog by remember { mutableStateOf(false) }
             var notice by remember { mutableStateOf<String?>(null) }
             var recorder by remember { mutableStateOf<VoiceRecorder?>(null) }
             var cameraTarget by remember { mutableStateOf<Uri?>(null) }
@@ -504,6 +528,11 @@ internal class ConversationScreen @JvmOverloads constructor(
                     }
                     AttachmentSource.DOCUMENT -> document.launch(arrayOf("*/*"))
                     AttachmentSource.MONEY -> moneyDialog = true
+                    AttachmentSource.GIF -> gifSheet = false
+                    AttachmentSource.STICKER -> gifSheet = true
+                    AttachmentSource.POLL -> pollDialog = true
+                    AttachmentSource.EVENT -> eventDialog = true
+                    AttachmentSource.CHESS -> chessDialog = true
                     AttachmentSource.AUDIO -> document.launch(arrayOf("audio/*"))
                     AttachmentSource.CONTACT -> runCatching { contactPicker.launch(null) }.onFailure { notice = "No contacts app is available." }
                     AttachmentSource.LOCATION -> if (context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -524,6 +553,12 @@ internal class ConversationScreen @JvmOverloads constructor(
             DisposableEffect(Unit) { onDispose { recorder?.cancel() } }
             val ircMode = active == MessageProtocol.IRC && routing?.combined != true
             val messages = remember(lines) { foldSmsReactions(lines) }
+            val currentSubmit by rememberUpdatedState<(String) -> Boolean>({ text -> submit(text) })
+            val previewsOn = remember { GifSettings.linkPreviews(prefs) }
+            val picturesOn = remember { GifSettings.autoPictures(prefs) }
+            val rich = remember(lines, blocked) {
+                richContext(lines, if (blocked.isEmpty()) ({ text -> currentSubmit(text); Unit }) else null, previewsOn, picturesOn)
+            }
             val headerMembers = remember(groupMembers, sampleMembers) {
                 groupMembers.ifEmpty { sampleMembers.map { GroupMember(it) } }
             }
@@ -667,7 +702,7 @@ internal class ConversationScreen @JvmOverloads constructor(
                             }
                             Box(Modifier.weight(1f)) {
                             MessageBubble(line, palette, if (line.outgoing) lineColor else receiveColor, grouped, continues, animatedId == line.id,
-                                exactTimes, display.reactions, quoted, forwarded, sourceIndex?.let { target ->
+                                exactTimes, display.reactions, quoted, forwarded, rich, sourceIndex?.let { target ->
                                     { scrollScope.launch {
                                         val listIndex = target + if (error != null) 1 else 0
                                         if (palette.appearance.speed == 0) list.scrollToItem(listIndex)
@@ -728,6 +763,14 @@ internal class ConversationScreen @JvmOverloads constructor(
                     notice?.let { Text(it, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
                         color = palette.muted, fontSize = 13.sp) }
                     if (moneyDialog) MoneyDialog({ moneyDialog = false }) { text -> submit(text) }
+                    if (pollDialog) PollDialog({ pollDialog = false }) { text -> submit(text) }
+                    if (eventDialog) EventDialog({ eventDialog = false }) { text -> submit(text) }
+                    if (chessDialog) ChessChallengeDialog({ chessDialog = false }) { text -> submit(text) }
+                    gifSheet?.let { stickersFirst ->
+                        GifSheet(stickersFirst, filesAllowed, { gifSheet = null }, { url -> submit(url, replyTo?.let(MessageRelation::reply)); replyTo = null },
+                            { picked -> if (picked.isSticker()) submit("", null, picked) else draftAttachment = picked },
+                            openGifSettings?.let { open -> { open.run() } })
+                    }
                     if (sheet) AttachmentSheet(sources, sendColor, when {
                         !filesAllowed -> "${via.label} can share locations and contact cards here. Files need another protocol."
                         via == MessageProtocol.SMS -> "A file turns this text into MMS. Carriers limit MMS size, often to 300 KB–1 MB."
@@ -775,7 +818,15 @@ internal class ConversationScreen @JvmOverloads constructor(
                             if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
                                 android.content.pm.PackageManager.PERMISSION_GRANTED) startRecording()
                             else micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
-                        } } else null) {
+                        } } else null, if (filesAllowed) { uri, type ->
+                            // A GIF or sticker from the keyboard: stickers send right away, GIFs wait in the composer.
+                            val picked = runCatching { Attachment.describe(context, uri, AttachmentKind.PHOTO) }.getOrNull()
+                            if (picked != null) {
+                                val keyboardSticker = type == "image/png" || type == "image/webp"
+                                val item = if (keyboardSticker) picked.copy(name = "sticker." + type.substringAfter('/')) else picked
+                                if (keyboardSticker && GifSettings.stickersOn(prefs)) submit("", null, item) else draftAttachment = item
+                            }
+                        } else null) {
                         if (submit(draft, replyTo?.let(MessageRelation::reply), draftAttachment)) {
                             sendVia = null
                             draft = ""
@@ -808,6 +859,7 @@ private fun MessageBubble(
     reactions: List<String>,
     quoted: QuotedReply?,
     forwarded: ForwardedMessage?,
+    rich: RichContext?,
     jumpToQuote: (() -> Unit)?,
     reply: () -> Unit,
     react: (String) -> Unit,
@@ -831,8 +883,11 @@ private fun MessageBubble(
         bottomStart = if (!line.outgoing && !continues) inner else round,
     )
     val chosenFill = bubbleColor
-    val fill = accessibleBubbleFill(chosenFill)
-    val padding = palette.appearance.padding
+    val picture = remember(line.text) { if (line.attachment == null && line.photo == null && rich?.pictures != false) parsePictureLink(line.text) else null }
+    // Stickers float on their own, with no bubble behind them.
+    val sticker = picture?.sticker == true || line.attachment?.isSticker() == true
+    val fill = if (sticker) Color.Transparent else accessibleBubbleFill(chosenFill)
+    val padding = if (sticker) 0 else palette.appearance.padding
     var showTime by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var customReaction by remember { mutableStateOf(false) }
@@ -851,7 +906,7 @@ private fun MessageBubble(
             }, horizontalAlignment = if (line.outgoing) Alignment.End else Alignment.Start) {
             Box {
                 Column(Modifier.widthIn(max = bubbleWidth)
-                    .bubbleTail(fill, palette.appearance.tails && !continues, line.outgoing).clip(shape).background(fill)
+                    .bubbleTail(fill, palette.appearance.tails && !continues && !sticker, line.outgoing).clip(shape).background(fill)
                     .pointerInput(line.id) {
                         detectHorizontalDragGestures(
                             onDragEnd = {
@@ -873,9 +928,7 @@ private fun MessageBubble(
                     ) }
                     .padding(horizontal = padding.dp, vertical = (padding * .72f).dp)) {
                     val foreground = bubbleTextColor(chosenFill)
-                    line.photo?.let {
-                        AttachmentPhoto(it, Modifier.width(220.dp).height(132.dp).padding(bottom = 5.dp), "Message photo")
-                    }
+                    line.photo?.let { MessagePicture(it, null, "Message photo", "image/jpeg") }
                     line.attachment?.let { AttachmentContent(it, foreground, download) }
                     val location = remember(line.text) { if (line.attachment == null) parseLocation(line.text) else null }
                     location?.let { LocationCard(it, foreground) }
@@ -883,6 +936,15 @@ private fun MessageBubble(
                     money?.let { MoneyCard(it, line.outgoing, foreground) }
                     val meeting = remember(line.text) { if (line.attachment == null) parseMeeting(line.text) else null }
                     meeting?.let { MeetingCard(it, line.outgoing, foreground) }
+                    picture?.let { MessagePicture(null, it.url, if (it.sticker) "Sticker" else "GIF", "image/gif", sticker = it.sticker) }
+                    val poll = remember(line.text) { if (line.attachment == null) parsePoll(line.text) else null }
+                    poll?.let { item -> PollCard(item, rich?.polls?.get(item.id), foreground,
+                        rich?.respond?.let { respond -> { index: Int -> respond(voteText(item, index)) } }) }
+                    val event = remember(line.text) { if (line.attachment == null) parseEvent(line.text) else null }
+                    event?.let { EventCard(it, foreground) }
+                    val chess = remember(line.text) { if (line.attachment == null) parseChess(line.text) else null }
+                    chess?.let { ChessCard(it, line.outgoing, rich?.latestChess?.get(it.id) == line.id, foreground, rich?.respond) }
+                    val card = picture != null || poll != null || event != null || chess != null || money != null || meeting != null
                     if (quoted != null) {
                         val quoteModifier = Modifier
                             .padding(bottom = 7.dp).clip(RoundedCornerShape(9.dp))
@@ -913,6 +975,8 @@ private fun MessageBubble(
                             location != null -> location.note
                             money != null -> ""
                             meeting != null -> ""
+                            card -> ""
+                            parseVote(line.text) != null -> "🗳️ Voted “" + parseVote(line.text)!!.second + "”"
                             quoted != null -> quoted.body
                             line.media != null && line.text == line.media?.caption -> ""
                             // IRC and Matrix actions read as "* name does something".
@@ -922,6 +986,9 @@ private fun MessageBubble(
                         if (shown.isNotEmpty()) Text(shown, fontSize = palette.appearance.size.sp,
                             lineHeight = (palette.appearance.size + 4).sp, color = foreground,
                             fontStyle = if (action) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal)
+                        // A preview of the first link, like a card for a video, song, or article.
+                        val link = remember(shown) { if (rich?.previews == true && !card && line.attachment == null) previewableLink(shown) else null }
+                        link?.let { LinkPreviewCard(it, foreground) }
                     }
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false },
@@ -984,8 +1051,10 @@ private fun MessageBubble(
                 .background(palette.wash, RoundedCornerShape(14.dp)).padding(horizontal = 7.dp, vertical = 2.dp),
                 fontSize = 14.sp)
             val failed = line.outgoing && line.status.startsWith("Couldn’t send")
-            val details = listOfNotNull(line.time.takeIf { (showTime || exactTimes) && it.isNotEmpty() },
+            val shown = listOfNotNull(line.time.takeIf { (showTime || exactTimes) && it.isNotEmpty() },
                 line.status.takeIf { it.isNotEmpty() && !failed }).joinToString(" · ")
+            // A small outlined lock marks every message FluidMessages encrypted, so you can check a chat at a glance.
+            val details = if (line.encrypted) "🔒\uFE0E" + (if (shown.isEmpty()) "" else " $shown") else shown
             if (details.isNotEmpty()) Text(details, Modifier.padding(top = 3.dp, end = 4.dp),
                 color = palette.muted, fontSize = 11.sp)
             if (failed) {
@@ -1056,38 +1125,13 @@ internal fun Modifier.bubbleTail(fill: Color, enabled: Boolean, outgoing: Boolea
     }
 }
 
-@Composable
-private fun AttachmentPhoto(uri: Uri, modifier: Modifier, description: String) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val bitmap by produceState<ImageBitmap?>(null, uri) {
-        value = withContext(Dispatchers.IO) {
-            try {
-                val resource = if (uri.scheme == "android.resource" && uri.authority == context.packageName)
-                    uri.lastPathSegment?.toIntOrNull() else null
-                val source = if (resource != null) ImageDecoder.createSource(context.resources, resource)
-                    else ImageDecoder.createSource(context.contentResolver, uri)
-                ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-                    val size = info.size
-                    val scale = (900f / maxOf(size.width, size.height)).coerceAtMost(1f)
-                    decoder.setTargetSize((size.width * scale).toInt().coerceAtLeast(1),
-                        (size.height * scale).toInt().coerceAtLeast(1))
-                }.asImageBitmap()
-            } catch (_: java.io.IOException) { null }
-              catch (_: SecurityException) { null }
-              catch (_: IllegalArgumentException) { null }
-        }
-    }
-    bitmap?.let {
-        Image(it, description, modifier.clip(RoundedCornerShape(11.dp)), contentScale = ContentScale.Crop)
-    } ?: Box(modifier, contentAlignment = Alignment.Center) { Text("Photo", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Composer(
     draft: String, changed: (String) -> Unit, palette: Palette, sendColor: Color,
     hint: String, sim: String?, chooseSim: Runnable?, focus: FocusRequester,
     hasAttachment: Boolean, attach: (() -> Unit)?, longSend: (() -> Unit)? = null, voice: (() -> Unit)? = null,
+    receive: ((Uri, String) -> Unit)? = null,
     send: () -> Unit,
 ) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -1106,13 +1150,36 @@ private fun Composer(
         ) {
             Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 13.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.Bottom) {
+                // The text lives in a TextFieldState so keyboards can insert GIFs and stickers straight into the chat.
+                val field = androidx.compose.foundation.text.input.rememberTextFieldState(draft)
+                val latestDraft by rememberUpdatedState(draft)
+                val latestChanged by rememberUpdatedState(changed)
+                LaunchedEffect(draft) {
+                    if (field.text.toString() != draft) field.edit { replace(0, length, draft) }
+                }
+                LaunchedEffect(field) {
+                    snapshotFlow { field.text.toString() }.collect { if (it != latestDraft) latestChanged(it) }
+                }
+                val latestReceive by rememberUpdatedState(receive)
                 BasicTextField(
-                    value = draft, onValueChange = changed, minLines = 1, maxLines = 4,
+                    state = field,
+                    lineLimits = androidx.compose.foundation.text.input.TextFieldLineLimits.MultiLine(1, 4),
                     modifier = Modifier.weight(1f).focusRequester(focus).padding(top = 9.dp, bottom = 9.dp, end = 5.dp)
-                        .semantics { contentDescription = hint },
+                        .semantics { contentDescription = hint }
+                        .then(if (receive == null) Modifier else Modifier.contentReceiver { content ->
+                            val clip = content.clipEntry.clipData
+                            var rest: androidx.compose.foundation.content.TransferableContent? = content
+                            for (index in 0 until clip.itemCount) {
+                                val uri = clip.getItemAt(index).uri ?: continue
+                                val type = clip.description.getMimeType(0) ?: "image/*"
+                                latestReceive?.invoke(uri, type)
+                                rest = null
+                            }
+                            rest
+                        }),
                     textStyle = TextStyle(color = palette.toolbarInk, fontSize = 16.sp, lineHeight = 21.sp),
                     cursorBrush = SolidColor(palette.action),
-                    decorationBox = { inner ->
+                    decorator = { inner ->
                         Box {
                             if (draft.isEmpty()) Text(hint, color = palette.toolbarInk.copy(alpha = .65f), fontSize = 16.sp)
                             inner()
@@ -1181,7 +1248,7 @@ internal fun Avatar(initials: String, seed: String, size: Int, photo: Int = 0, p
 }
 
 internal enum class Glyph { Settings, Filter, Compose, Search, Close, Back, Forward, More, Send, Person,
-    Plus, Photo, Camera, Document, Music, Pin, Mic, Play, Pause, Video, Stop, Money }
+    Plus, Photo, Camera, Document, Music, Pin, Mic, Play, Pause, Video, Stop, Money, Gif, Sticker, Poll, Calendar, Chess }
 
 @Composable
 internal fun ActionIcon(label: String, glyph: Glyph, color: Color, action: () -> Unit) {
@@ -1290,6 +1357,34 @@ internal fun DrawGlyph(glyph: Glyph, color: Color, modifier: Modifier) {
                 drawRoundRect(color, point(.12f, .28f), Size(size.width * .5f, size.height * .44f),
                     androidx.compose.ui.geometry.CornerRadius(stroke * 2), style = Stroke(stroke))
                 line(.62f, .44f, .86f, .3f); line(.86f, .3f, .86f, .7f); line(.86f, .7f, .62f, .56f)
+            }
+            Glyph.Gif -> {
+                // A rounded tag with three short marks, read as "GIF" at small sizes.
+                drawRoundRect(color, point(.1f, .26f), Size(size.width * .8f, size.height * .48f),
+                    androidx.compose.ui.geometry.CornerRadius(stroke * 2), style = Stroke(stroke))
+                line(.3f, .4f, .3f, .6f); line(.45f, .4f, .45f, .6f); line(.6f, .4f, .6f, .6f); line(.6f, .4f, .72f, .4f); line(.6f, .5f, .7f, .5f)
+            }
+            Glyph.Sticker -> {
+                // A square with its corner peeled over.
+                val outline = Path().apply {
+                    moveTo(size.width * .2f, size.height * .2f); lineTo(size.width * .8f, size.height * .2f)
+                    lineTo(size.width * .8f, size.height * .56f); lineTo(size.width * .56f, size.height * .8f)
+                    lineTo(size.width * .2f, size.height * .8f); close()
+                }
+                drawPath(outline, color, style = Stroke(stroke, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                line(.56f, .8f, .56f, .6f); line(.56f, .6f, .8f, .56f)
+            }
+            Glyph.Poll -> { line(.25f, .78f, .25f, .5f); line(.5f, .78f, .5f, .22f); line(.75f, .78f, .75f, .4f) }
+            Glyph.Calendar -> {
+                drawRoundRect(color, point(.16f, .24f), Size(size.width * .68f, size.height * .6f),
+                    androidx.compose.ui.geometry.CornerRadius(stroke * 1.6f), style = Stroke(stroke))
+                line(.16f, .42f, .84f, .42f); line(.34f, .16f, .34f, .3f); line(.66f, .16f, .66f, .3f)
+                drawCircle(color, stroke * .7f, point(.36f, .6f)); drawCircle(color, stroke * .7f, point(.5f, .6f)); drawCircle(color, stroke * .7f, point(.64f, .6f))
+            }
+            Glyph.Chess -> {
+                // A pawn: head, collar, and base.
+                drawCircle(color, size.minDimension * .12f, point(.5f, .28f), style = Stroke(stroke))
+                line(.38f, .46f, .62f, .46f); line(.43f, .46f, .37f, .74f); line(.57f, .46f, .63f, .74f); line(.28f, .8f, .72f, .8f)
             }
         }
     }

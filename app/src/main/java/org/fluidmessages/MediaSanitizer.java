@@ -98,15 +98,34 @@ final class MediaSanitizer {
             + android.text.format.Formatter.formatShortFileSize(context, limit) + ", the most this protocol can send.");
     }
 
+    /** Photo quality: "auto" (smaller on slow connections), "saver", "standard", or "high". */
+    static String quality(Context context) {
+        return context.getSharedPreferences("fluid", Context.MODE_PRIVATE).getString("mediaQuality", "auto");
+    }
+
+    /** True on a connection too slow for full-size photos, judged by Android's own bandwidth estimate. */
+    static boolean slowNetwork(Context context) {
+        var connectivity = context.getSystemService(android.net.ConnectivityManager.class);
+        var network = connectivity == null ? null : connectivity.getActiveNetwork();
+        var capabilities = network == null ? null : connectivity.getNetworkCapabilities(network);
+        if (capabilities == null) return true;
+        int up = capabilities.getLinkUpstreamBandwidthKbps();
+        return up > 0 && up < 1500 || !capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+    }
+
     private static Prepared photo(Context context, Uri source, String name, String mime, boolean strip, long limit) throws IOException {
-        if (!strip) {
+        String quality = quality(context);
+        boolean saver = quality.equals("saver") || quality.equals("auto") && slowNetwork(context);
+        boolean high = quality.equals("high");
+        if (!strip && !saver) {
             File copy = copy(context, source, extension(name), MAX_FILE);
             if (copy.length() <= limit) return new Prepared(copy, mime, name, false);
             copy.delete();
         }
         // Re-encoding keeps only pixels: EXIF, XMP, GPS, and maker notes are gone. Orientation is applied first.
         boolean alpha = mime.equals("image/png") || mime.equals("image/webp");
-        int longest = limit < 2 * 1024 * 1024 ? 1280 : 2560;
+        // Data saver keeps photos small for weak signal; high quality keeps much more detail where the protocol allows it.
+        int longest = saver || limit < 2 * 1024 * 1024 ? 1280 : high ? 4096 : 2560;
         Bitmap bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.getContentResolver(), source), (decoder, info, ignored) -> {
             var size = info.getSize();
             float scale = Math.min(1f, (float) longest / Math.max(size.getWidth(), size.getHeight()));
@@ -119,9 +138,9 @@ final class MediaSanitizer {
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
                 if (output.size() <= limit) return write(context, output, "png", "image/png", base(name) + ".png");
             }
-            for (int quality = 88; quality >= 30; quality -= 10) {
+            for (int level = saver ? 72 : high ? 95 : 88; level >= 30; level -= high ? 5 : 10) {
                 output.reset();
-                if (bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output) && output.size() <= limit) {
+                if (bitmap.compress(Bitmap.CompressFormat.JPEG, level, output) && output.size() <= (saver ? Math.min(limit, 450 * 1024) : limit)) {
                     return write(context, output, "jpg", "image/jpeg", base(name) + ".jpg");
                 }
             }

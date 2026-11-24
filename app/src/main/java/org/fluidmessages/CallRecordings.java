@@ -25,6 +25,8 @@ import java.util.Locale;
 final class CallRecordings {
     static final String DEVICE = "device";
     static final String APP = "app";
+    /** A folder you picked with Android's folder picker: "tree:" followed by its address. */
+    static final String TREE = "tree:";
     private static File partial;
     private static FileOutputStream output;
     private static String mime = "audio/webm";
@@ -39,6 +41,18 @@ final class CallRecordings {
 
     static String destination(SharedPreferences prefs, boolean video) {
         return prefs.getString(video ? "recordings.video" : "recordings.audio", DEVICE);
+    }
+
+    /** A short, readable description of where recordings go, for Settings. */
+    static String describe(SharedPreferences prefs, boolean video) {
+        String place = destination(prefs, video);
+        if (DEVICE.equals(place)) return "Your phone's " + (video ? "Movies" : "Recordings") + " folder";
+        if (APP.equals(place)) return "Only inside FluidMessages";
+        try {
+            String id = android.provider.DocumentsContract.getTreeDocumentId(android.net.Uri.parse(place.substring(TREE.length())));
+            String path = id.contains(":") ? id.substring(id.indexOf(':') + 1) : id;
+            return path.isEmpty() ? "The folder you chose" : path;
+        } catch (RuntimeException error) { return "The folder you chose"; }
     }
 
     static synchronized void start(Context context, String type, boolean withVideo, String name) throws IOException {
@@ -65,7 +79,21 @@ final class CallRecordings {
             if (file.length() == 0) return "";
             String name = (video ? "Video call with " : "Call with ") + title + " "
                 + new SimpleDateFormat("yyyy-MM-dd HHmm", Locale.ROOT).format(new Date()) + ".webm";
-            if (DEVICE.equals(destination(prefs(context), video))) {
+            String place = destination(prefs(context), video);
+            if (place.startsWith(TREE)) {
+                var tree = android.net.Uri.parse(place.substring(TREE.length()));
+                var resolver = context.getContentResolver();
+                var parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree,
+                    android.provider.DocumentsContract.getTreeDocumentId(tree));
+                var target = android.provider.DocumentsContract.createDocument(resolver, parent, mime, name);
+                if (target == null) throw new IOException("Couldn't save to the folder you chose. Choose it again in Settings.");
+                try (var out = resolver.openOutputStream(target)) {
+                    if (out == null) throw new IOException("Couldn't save to the folder you chose");
+                    Files.copy(file.toPath(), out);
+                }
+                return describe(prefs(context), video);
+            }
+            if (DEVICE.equals(place)) {
                 var values = new ContentValues();
                 values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
                 values.put(MediaStore.MediaColumns.MIME_TYPE, mime);

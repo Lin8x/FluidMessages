@@ -180,7 +180,7 @@ internal data class Account(val address: String, val protocol: MessageProtocol, 
 
 /** Someone you can call or message: an Android contact, a linked internet chat, or both. */
 internal data class Person(val key: String, val name: String, val photo: Uri?, val numbers: List<String>, val accounts: List<Account>,
-                           val photoRes: Int = 0) {
+                           val photoRes: Int = 0, val fields: List<ContactField> = emptyList()) {
     val tags: List<String> get() = (if (numbers.isNotEmpty()) listOf("Phone") else emptyList()) +
         accounts.map { it.protocol.label }.distinct()
     val matrix: Account? get() = accounts.firstOrNull { it.protocol == MessageProtocol.MATRIX }
@@ -216,7 +216,12 @@ private fun loadPeople(context: Context, prefs: SharedPreferences): List<Person>
         val draft = owner ?: people.getOrPut("chat:$address") { Draft(route.optString("title", address).ifEmpty { address }, null) }
         if (draft.accounts.none { it.address == address && it.protocol == account.protocol }) draft.accounts += account
     }
-    return people.map { (key, draft) -> Person(key, draft.name, draft.photo, draft.numbers, draft.accounts) }
+    // Every saved number, email, and other detail, read in one pass for all contacts.
+    val details = ContactFields.all(context)
+    return people.map { (key, draft) ->
+        Person(key, draft.name, draft.photo, draft.numbers, draft.accounts,
+            fields = key.removePrefix("contact:").toLongOrNull()?.let { details[it] }.orEmpty())
+    }
         .sortedBy { it.name.lowercase() }
 }
 
@@ -354,6 +359,10 @@ object PhoneTab {
                             keypad = false
                             prefs.edit().putInt("phoneSection", it).apply()
                         }
+                        // Read-only when every way to call is off: no keypad, and a note saying why.
+                        val canCall = sample || Calling.anyAllowed(prefs)
+                        if (!canCall) Text("Calling is off · turn a way to call back on in Settings → Calls", Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                            color = palette.muted, fontSize = 12.sp, textAlign = TextAlign.Center)
                         if (sample) Text("Sample calls and contacts · nothing here is real", Modifier.fillMaxWidth().padding(bottom = 4.dp),
                             color = palette.muted, fontSize = 12.sp, textAlign = TextAlign.Center)
                         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -367,7 +376,7 @@ object PhoneTab {
                                     else -> Contacts(palette, people, actions, sample) { opened = it }
                                 }
                                 // A floating keypad button, as in Google's Phone app, on every list.
-                                Box(Modifier.align(Alignment.BottomEnd).padding(18.dp).size(58.dp).clip(CircleShape)
+                                if (canCall) Box(Modifier.align(Alignment.BottomEnd).padding(18.dp).size(58.dp).clip(CircleShape)
                                     .background(palette.inboxAction).clickable(role = Role.Button) { keypad = true }
                                     .semantics { contentDescription = "Keypad" }, contentAlignment = Alignment.Center) {
                                     KeypadGlyph(bubbleTextColor(palette.inboxAction))
@@ -760,14 +769,23 @@ private fun PersonPage(prefs: SharedPreferences, sample: Boolean, palette: Palet
             }
             ReachTiles(prefs, person.key, options, palette.inboxAction, palette.wash, Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
         }
-        if (person.numbers.isNotEmpty() || person.accounts.isNotEmpty()) item {
-            Card(palette, "Phone numbers and accounts") {
-                person.numbers.forEachIndexed { index, value ->
+        if (person.numbers.isNotEmpty() || person.accounts.isNotEmpty() || person.fields.isNotEmpty()) item {
+            val context = LocalContext.current
+            Card(palette, "Contact info") {
+                // Saved details carry Android's labels (mobile, work…); numbers without one fall back to "Phone".
+                val labelled = person.fields.ifEmpty { person.numbers.map { ContactField(ContactField.Kind.PHONE, "Phone", it) } }
+                labelled.forEachIndexed { index, field ->
                     if (index > 0) HorizontalDivider(Modifier.padding(start = 14.dp), color = palette.edge, thickness = .5.dp)
-                    InfoRow(palette, "Phone", value) { actions.call(value) }
+                    InfoRow(palette, field.label, field.value) {
+                        when (field.kind) {
+                            ContactField.Kind.PHONE -> actions.call(field.value)
+                            ContactField.Kind.SIP -> actions.internetCall("sip:" + field.value.removePrefix("sip:"), person.name, false, "SIP")
+                            else -> openField(context, field)
+                        }
+                    }
                 }
-                person.accounts.forEach { account ->
-                    HorizontalDivider(Modifier.padding(start = 14.dp), color = palette.edge, thickness = .5.dp)
+                person.accounts.forEachIndexed { index, account ->
+                    if (index > 0 || labelled.isNotEmpty()) HorizontalDivider(Modifier.padding(start = 14.dp), color = palette.edge, thickness = .5.dp)
                     InfoRow(palette, account.protocol.label, account.target) { actions.openChat(account.address, account.protocol.name.lowercase()) }
                 }
             }
@@ -819,4 +837,16 @@ private fun InfoRow(palette: Palette, label: String, value: String, open: () -> 
         Text(label, color = palette.muted, fontSize = 13.sp)
         Text(value, color = palette.inboxAction, fontSize = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
+}
+
+/** Emails open the mail app, websites the browser, addresses the map app. */
+private fun openField(context: Context, field: ContactField) {
+    val intent = when (field.kind) {
+        ContactField.Kind.EMAIL -> android.content.Intent(android.content.Intent.ACTION_SENDTO, Uri.parse("mailto:" + Uri.encode(field.value)))
+        ContactField.Kind.WEBSITE -> android.content.Intent(android.content.Intent.ACTION_VIEW,
+            Uri.parse(if (field.value.startsWith("http", true)) field.value else "https://" + field.value))
+        ContactField.Kind.ADDRESS -> android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(field.value)))
+        else -> null
+    } ?: return
+    runCatching { context.startActivity(intent) }
 }

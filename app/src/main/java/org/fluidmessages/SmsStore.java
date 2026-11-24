@@ -54,12 +54,21 @@ final class SmsStore {
         return uri;
     }
 
-    static void send(Context context, String address, String body, int sim) {
+    static void send(Context context, String address, String body, int sim) { send(context, address, body, sim, address); }
+
+    /**
+     * Sends a text. [conversation] decides encryption: for a group sent as separate texts it's the group, so
+     * turning encryption on for the group covers every text that goes out.
+     */
+    static void send(Context context, String address, String body, int sim, String conversation) {
         MessageProtocol.SMS.requireEnabled(context);
         if (!validRecipient(address) || body == null || body.isBlank() || body.length() > 1600) {
             throw new IllegalArgumentException("Enter a phone number and 1–1,600 characters");
         }
-        try { body = SmsCrypto.outgoing(context, address, MessageProtocol.SMS, body); }
+        try {
+            body = SmsCrypto.outgoing(context, conversation, MessageProtocol.SMS, body);
+            if (!conversation.equals(address)) body = SmsCrypto.outgoing(context, address, MessageProtocol.SMS, body);
+        }
         catch (RuntimeException error) { throw error; }
         catch (Exception error) { throw new IllegalStateException("Could not encrypt the text", error); }
         if (sim < 0) sim = SubscriptionManager.getDefaultSmsSubscriptionId();

@@ -155,10 +155,10 @@ internal fun resolveChatAppearance(base: Appearance, profile: ChatProfile): Appe
 }
 
 object ConversationDetails {
-    @JvmStatic
+    @JvmStatic @JvmOverloads
     fun mount(root: LinearLayout, prefs: SharedPreferences, name: String, initials: String, subtitle: String, photo: Int, photoUri: Uri?,
               person: String, reach: List<ReachOption>, edit: Runnable?, actions: List<SettingsAction>, members: List<GroupMember>,
-              security: List<SettingsAction>) {
+              security: List<SettingsAction>, info: List<SettingsAction> = emptyList()) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -181,6 +181,8 @@ object ConversationDetails {
                     if (reach.isNotEmpty()) item {
                         ReachTiles(prefs, person, reach, Palette(appearance).inboxAction, scheme.surfaceContainer)
                     }
+                    // Every number, email, and other detail saved on the contact, like a contact card.
+                    if (info.isNotEmpty()) item { DetailGroup("Contact info", info) }
                     if (members.isNotEmpty()) item { GroupMembers(members) }
                     item { DetailGroup("Customize", actions.take(1)) }
                     if (actions.size > 1) item { DetailGroup("Conversation", actions.drop(1)) }

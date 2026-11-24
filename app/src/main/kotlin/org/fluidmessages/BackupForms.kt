@@ -32,7 +32,8 @@ enum class BackupCategory(val flag: Int, val label: String) {
     PROTOCOLS(64, "MMS, internet messages, and protocol settings"),
 }
 
-data class BackupFormDefaults(val categories: Int, val intervalMinutes: Int, val wifi: Boolean, val savedPassword: Boolean)
+data class BackupFormDefaults @JvmOverloads constructor(val categories: Int, val intervalMinutes: Int, val wifi: Boolean,
+                                                     val savedPassword: Boolean, val note: String = "")
 data class BackupFormSelection(
     val categories: Int, val password: String, val keepPassword: Boolean,
     val intervalMinutes: Int, val wifi: Boolean,
@@ -109,7 +110,7 @@ private fun BackupForm(mode: BackupFormMode, smsAllowed: Boolean, defaults: Back
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item {
-                Text(when (mode) {
+                Text(defaults.note.ifEmpty { when (mode) {
                     BackupFormMode.EXPORT -> "Save a portable FluidMessages archive."
                     BackupFormMode.SHARE -> "Create a backup and pass it to an app you choose from the Android share menu."
                     BackupFormMode.RESTORE -> "Choose what to restore, then open a FluidMessages backup file."
@@ -118,7 +119,7 @@ private fun BackupForm(mode: BackupFormMode, smsAllowed: Boolean, defaults: Back
                     BackupFormMode.LOCAL -> "Choose a device folder or a writable folder offered by a storage app."
                     BackupFormMode.LOCAL_EXISTING -> "Update the interval or contents. Your current folder stays selected."
                     BackupFormMode.CLOUD -> "Save recurring backups through FluidMessages Web."
-                }, color = scheme.onSurfaceVariant)
+                } }, color = scheme.onSurfaceVariant)
             }
             if (scheduled) item {
                 BackupCard {

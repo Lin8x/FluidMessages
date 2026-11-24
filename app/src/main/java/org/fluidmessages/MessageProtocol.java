@@ -32,6 +32,14 @@ enum MessageProtocol {
 
     String key() { return "protocol" + name(); }
     boolean enabled(SharedPreferences prefs) { return prefs.getBoolean(key(), true); }
+    /** With every way to message turned off, FluidMessages is read-only: you can read, but nothing is sent. */
+    static boolean anyEnabled(SharedPreferences prefs) {
+        for (MessageProtocol format : values()) if (format.enabled(prefs)) return true;
+        return false;
+    }
+
+    static final String READ_ONLY = "Read-only: every way to message is turned off in Settings → Ways to message.";
+
     String disabledReason(SharedPreferences prefs) {
         return enabled(prefs) ? "" : label + " is turned off in Settings. This conversation is read-only.";
     }

@@ -28,6 +28,26 @@ final class Calling {
         return prefs.getBoolean("call." + method.name(), fallback);
     }
 
+    /** With every way to call turned off, you can still see calls, but you can't place any. */
+    static boolean anyAllowed(SharedPreferences prefs) {
+        for (Method method : Method.values()) if (allowed(prefs, method)) return true;
+        return false;
+    }
+
+    static final String CALLS_OFF = "Calling is off: every way to call is turned off in Settings → Calls.";
+
+    /** The calling method for a call screen protocol name (Phone, Matrix, XMPP, SIP). */
+    static Method method(String protocol) {
+        if (protocol == null) return Method.MATRIX;
+        return switch (protocol.toUpperCase(java.util.Locale.ROOT)) {
+            case "PHONE" -> Method.PHONE;
+            case "XMPP" -> Method.XMPP;
+            case "SIP" -> Method.SIP;
+            case "MEETING", "JITSI" -> Method.MEETING;
+            default -> Method.MATRIX;
+        };
+    }
+
     static void set(SharedPreferences prefs, Method method, boolean on) { prefs.edit().putBoolean("call." + method.name(), on).apply(); }
 
     /** Calling over a protocol keeps its account connected even when its messaging is turned off. */
