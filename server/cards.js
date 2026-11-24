@@ -1290,6 +1290,116 @@ function playScreenEffect(effect) {
   requestAnimationFrame(frame);
 }
 
+// Reactions: each built-in reaction plays its own short animation around the bubble, like the phone's
+// ReactionEffects.kt. Custom emoji keep the small pop, so this returns false for them.
+const REACTION_ANIMATIONS = {'👍': ['thumb', 1100], '❤': ['hearts', 1400], '👎': ['drop', 1400], '😆': ['haha', 1300],
+  '‼': ['emphasis', 1100], '❓': ['tumble', 1300]};
+const reactionAnimation = (emoji) => REACTION_ANIMATIONS[String(emoji || '').trim().replace(/[︎️]/g, '')] || null;
+
+function playReactionEffect(emoji, bubble, outgoing) {
+  const found = reactionAnimation(emoji);
+  if (!found) return false;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return true;
+  const [kind, length] = found;
+  // The bubble moves too: a heartbeat, a bounce, a sink, a giggle, a shake, or a puzzled tilt.
+  bubble.classList.remove(...Object.values(REACTION_ANIMATIONS).map(([name]) => 'rx-' + name));
+  void bubble.offsetWidth;
+  bubble.style.setProperty('--rx-length', length + 'ms');
+  bubble.classList.add('rx-' + kind);
+  setTimeout(() => bubble.classList.remove('rx-' + kind), length + 50);
+  // Drawn over the page and ignoring the pointer, so a refresh redrawing the chat doesn't cut it short.
+  const canvas = Object.assign(document.createElement('canvas'), {className: 'screen-effect reaction-effect'});
+  canvas.setAttribute('aria-hidden', 'true');
+  document.body.append(canvas);
+  const context = canvas.getContext('2d');
+  const scale = devicePixelRatio || 1;
+  canvas.width = innerWidth * scale; canvas.height = innerHeight * scale;
+  Object.assign(canvas.style, {width: innerWidth + 'px', height: innerHeight + 'px'});
+  context.scale(scale, scale);
+  const box = bubble.getBoundingClientRect();
+  const ax = outgoing ? box.left + 6 : box.right - 6, ay = box.top + 6;
+  const pieces = Array.from({length: 14}, () => Array.from({length: 6}, Math.random));
+  const clamp = (t) => Math.max(0, Math.min(1, t));
+  const easeOut = (t) => 1 - (1 - t) ** 3;
+  const easeInOut = (t) => t < .5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+  const springPop = (t) => 1 - Math.exp(-6 * t) * Math.cos(12 * t);
+  const fadeOut = (t, from) => t < from ? 1 : clamp((1 - t) / (1 - from));
+  const rad = (degrees) => degrees * Math.PI / 180;
+  const glyph = (text, x, y, size, turn, alpha) => {
+    if (size <= 0 || alpha <= 0) return;
+    context.save(); context.globalAlpha = alpha; context.translate(x, y); context.rotate(rad(turn));
+    context.font = size + 'px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", system-ui, sans-serif';
+    context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText(text, 0, 0); context.restore();
+  };
+  const heart = (color, x, y, s, alpha) => {
+    context.save(); context.globalAlpha = alpha; context.fillStyle = color;
+    context.beginPath(); context.moveTo(x, y + s * .3);
+    context.bezierCurveTo(x - s, y - s * .4, x - s * .35, y - s, x, y - s * .35);
+    context.bezierCurveTo(x + s * .35, y - s, x + s, y - s * .4, x, y + s * .3); context.fill(); context.restore();
+  };
+  const hearts = ['#ff2d55', '#ff375f', '#e0245e'];
+  const began = performance.now();
+  const frame = (now) => {
+    const t = Math.min(1, (now - began) / length);
+    context.clearRect(0, 0, innerWidth, innerHeight);
+    if (kind === 'hearts') pieces.forEach((p, index) => {
+      const delay = p[0] * .25, local = clamp((t - delay) / (1 - delay));
+      if (local <= 0) return;
+      const angle = rad(-90 + (p[1] - .5) * 130), burst = easeOut(Math.min(1, local / .35)) * (50 + p[2] * 60);
+      const x = ax + Math.cos(angle) * burst + Math.sin(local * 6 + p[4] * 6) * 10;
+      const y = ay + Math.sin(angle) * burst - local * (160 + p[3] * 220);
+      heart(hearts[index % hearts.length], x, y, (12 + p[5] * 14) * Math.min(1, local / .15), fadeOut(local, .7));
+    });
+    else if (kind === 'thumb') {
+      const ring = easeOut(t) * 70, fade = 1 - t;
+      context.save(); context.strokeStyle = context.fillStyle = '#0a84ff';
+      context.globalAlpha = fade * .8; context.lineWidth = Math.max(1, 5 * fade);
+      context.beginPath(); context.arc(ax, ay, ring, 0, Math.PI * 2); context.stroke();
+      context.globalAlpha = fade;
+      for (let spark = 0; spark < 8; spark++) {
+        const angle = spark / 8 * Math.PI * 2;
+        context.beginPath();
+        context.arc(ax + Math.cos(angle) * ring * 1.18, ay + Math.sin(angle) * ring * 1.18, 3 * fade + 1, 0, Math.PI * 2);
+        context.fill();
+      }
+      context.restore();
+      glyph('👍', ax, ay - 44 - t * 10, 54 * springPop(Math.min(1, t / .7)), 0, fadeOut(t, .75));
+    } else if (kind === 'drop') {
+      const sway = Math.sin(t * 2 * Math.PI);
+      glyph('👎', ax + sway * 8, ay - 60 + easeInOut(t) * 140, 46, sway * 8, Math.min(1, t / .15) * fadeOut(t, .65));
+    } else if (kind === 'haha') for (let index = 0; index < 7; index++) {
+      const p = pieces[index], local = clamp((t - index * .05) / .8);
+      if (local <= 0) continue;
+      const angle = rad(-160 + index / 6 * 140 + (p[0] - .5) * 12), reach = easeOut(local) * (70 + p[1] * 70);
+      const x = ax + Math.cos(angle) * reach, y = ay + Math.sin(angle) * reach - local * 30;
+      const wiggle = Math.sin(t * 30 + index) * 14, grow = Math.min(1, local / .2), alpha = fadeOut(local, .7);
+      if (index % 2) { glyph('😆', x, y, (24 + p[2] * 10) * grow, wiggle, alpha); continue; }
+      // White text on a shaded orange, so "HA" stays readable on any wallpaper.
+      context.save(); context.globalAlpha = alpha; context.translate(x, y); context.rotate(rad(wiggle)); context.scale(grow, grow);
+      context.font = '900 15px system-ui, sans-serif'; context.textAlign = 'center'; context.textBaseline = 'middle';
+      const w = context.measureText('HA').width + 14, h = 24;
+      context.fillStyle = '#c2410c'; context.beginPath();
+      if (context.roundRect) context.roundRect(-w / 2, -h / 2, w, h, h / 2); else context.rect(-w / 2, -h / 2, w, h);
+      context.fill();
+      context.fillStyle = '#fff'; context.fillText('HA', 0, 1); context.restore();
+    } else if (kind === 'emphasis') for (let index = 0; index < 8; index++) {
+      const p = pieces[index], local = clamp((t - p[0] * .15) / .85);
+      if (local <= 0) continue;
+      const degrees = -180 + index / 7 * 180 + (p[1] - .5) * 14, reach = springPop(Math.min(1, local / .6)) * (55 + p[2] * 45);
+      glyph(index % 3 ? '❗' : '‼️', ax + Math.cos(rad(degrees)) * reach, ay + Math.sin(rad(degrees)) * reach,
+        18 + p[3] * 12, degrees + 90, fadeOut(local, .7));
+    } else if (kind === 'tumble') for (let index = 0; index < 6; index++) {
+      const p = pieces[index], local = clamp((t - index * .04) / .8);
+      if (local <= 0) continue;
+      const x = ax + (p[0] - .5) * 220 * local, y = ay - (220 + p[1] * 120) * local + .5 * 420 * local * local;
+      glyph('❓', x, y, 20 + p[3] * 12, local * (360 + p[2] * 360) * (p[4] < .5 ? -1 : 1), fadeOut(local, .7));
+    }
+    if (t < 1) requestAnimationFrame(frame); else canvas.remove();
+  };
+  requestAnimationFrame(frame);
+  return true;
+}
+
 /** Applies a message's effect to its bubble. [recent] messages play it once by themselves. */
 function messageEffect(message, bubble, recent) {
   if (message.attachment || !prefs.effects) return;

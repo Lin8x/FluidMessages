@@ -284,7 +284,7 @@ internal fun ScreenEffectOverlay(effect: MessageEffect?, key: Long, done: () -> 
     }
 }
 
-private fun DrawScope.heart(color: Color, at: Offset, size: Float) {
+internal fun DrawScope.heart(color: Color, at: Offset, size: Float) {
     val path = Path().apply {
         moveTo(at.x, at.y + size * .3f)
         cubicTo(at.x - size, at.y - size * .4f, at.x - size * .35f, at.y - size, at.x, at.y - size * .35f)

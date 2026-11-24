@@ -2,13 +2,15 @@
 # Publishes the current version of FluidMessages: builds and tests it, commits and tags it, pushes to GitHub,
 # and creates a GitHub release with the Android app (.apk) and the FluidMessages Web server (.zip, for Docker or
 # self-hosting). GitHub Actions then adds the FluidMessages Web desktop apps to the same release: Windows (.exe),
-# macOS (.dmg), and Linux (.AppImage), built on each system (.github/workflows/desktop.yml).
+# macOS (.dmg), and Linux (.AppImage), built on each system (.github/workflows/desktop.yml). The script waits for
+# them, retries a failed build once, and only finishes when all five files are on the release.
 #
 #   ./scripts/release                 release the version in app/build.gradle
 #   ./scripts/release --bump          raise the patch version (0.24.0 → 0.24.1) and versionCode first
 #   ./scripts/release --notes "..."   release notes (default: GitHub's generated notes)
 #   ./scripts/release --dry-run       show what would happen without changing anything
 #   ./scripts/release --no-main       don't move main up to this release
+#   ./scripts/release --no-wait       don't wait for the desktop apps to be attached
 #
 # Releasing from another branch also moves main up to it (fast-forward only), so GitHub's front page, README, and
 # website match the latest release. If main has commits the branch doesn't, main is left alone with a warning.
@@ -17,14 +19,15 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-BUMP=0 DRY=0 NOTES="" MAIN=1
+BUMP=0 DRY=0 NOTES="" MAIN=1 WAIT=1
 while (($#)); do
   case "$1" in
     --bump) BUMP=1 ;;
     --dry-run) DRY=1 ;;
     --no-main) MAIN=0 ;;
+    --no-wait) WAIT=0 ;;
     --notes) NOTES="${2:?--notes needs text}"; shift ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -108,9 +111,44 @@ if [[ -n "$NOTES" ]]; then
 else
   run gh release create "$TAG" "$ASSET" "$WEB" --title "FluidMessages $VERSION" --generate-notes
 fi
-if ((DRY)); then echo "Dry run only: nothing was built, committed, pushed, or published."; else
-  echo "Published $TAG with $ASSET and $WEB."
-  echo "GitHub Actions is now building the Windows, macOS, and Linux apps (added to the release) and the Docker image"
-  echo "(ghcr.io/lin8x/fluidmessages-web). They take a few minutes; watch the desktop apps with:"
-  echo "  gh run watch \$(gh run list --workflow desktop.yml --limit 1 --json databaseId -q '.[0].databaseId')"
-fi
+if ((DRY)); then echo "Dry run only: nothing was built, committed, pushed, or published."; exit 0; fi
+echo "Published $TAG with $ASSET and $WEB."
+if ((! WAIT)); then echo "GitHub Actions is adding the Windows, macOS, and Linux apps to the release in a few minutes."; exit 0; fi
+
+# The release isn't done until every download is on it. GitHub Actions builds the Windows, macOS, and Linux apps;
+# wait for them, retry a failed build once, and check that all five files are attached.
+EXPECTED=("FluidMessages-$VERSION.apk" "FluidMessages-Server-$VERSION.zip" "FluidMessages-Web-$VERSION-Windows.exe"
+  "FluidMessages-Web-$VERSION-macOS.dmg" "FluidMessages-Web-$VERSION-Linux-x86_64.AppImage")
+missing() {
+  local have; have=$(gh release view "$TAG" --json assets -q '.assets[].name')
+  for name in "${EXPECTED[@]}"; do grep -qxF "$name" <<<"$have" || echo "$name"; done
+}
+desktop_run() {  # The desktop workflow run for this tag, waiting up to two minutes for GitHub to start it.
+  local id
+  for _ in $(seq 24); do
+    id=$(gh run list --workflow desktop.yml --limit 10 --json databaseId,headBranch,event \
+      -q "map(select(.headBranch == \"$TAG\"))[0].databaseId // empty")
+    [[ -n "$id" ]] && { echo "$id"; return; }
+    sleep 5
+  done
+}
+echo "Waiting for GitHub Actions to build the Windows, macOS, and Linux apps (usually 5–15 minutes)…"
+for attempt in 1 2; do
+  RUN=$(desktop_run)
+  if [[ -z "$RUN" ]]; then
+    echo "The desktop build didn't start, so starting it now."
+    gh workflow run desktop.yml -f tag="$TAG"; sleep 10; RUN=$(desktop_run)
+  fi
+  [[ -n "$RUN" ]] || fail "Couldn't find the desktop build. Start it in GitHub → Actions → FluidMessages Web desktop apps."
+  gh run watch "$RUN" --interval 30 --exit-status >/dev/null 2>&1 || true
+  [[ -z "$(missing)" ]] && break
+  if ((attempt == 1)); then
+    echo "Some desktop apps failed to build; trying the failed ones again."
+    gh run rerun "$RUN" --failed >/dev/null 2>&1 || gh workflow run desktop.yml -f tag="$TAG"
+    sleep 15
+  fi
+done
+LEFT=$(missing)
+[[ -z "$LEFT" ]] || fail "$TAG is published but still missing: $(tr '\n' ' ' <<<"$LEFT"). See GitHub → Actions → FluidMessages Web desktop apps."
+echo "$TAG is complete: Android app, server zip, and the Windows, macOS, and Linux apps are all attached."
+echo "The Docker image (ghcr.io/lin8x/fluidmessages-web) builds separately in GitHub Actions."

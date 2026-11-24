@@ -654,6 +654,21 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
   0% { transform: translate(0, 0) scale(.4); opacity: 0; } 20% { opacity: 1; }
   100% { transform: translate(var(--dx, 0), -64px) scale(1); opacity: 0; } }
 
+/* Built-in reactions also move the bubble briefly (cards.js playReactionEffect). */
+.bubble:is(.rx-hearts, .rx-thumb, .rx-drop, .rx-haha, .rx-emphasis, .rx-tumble) { animation: var(--rx-length, 1.2s) linear both; }
+.bubble.rx-hearts { animation-name: rx-hearts; } .bubble.rx-thumb { animation-name: rx-thumb; } .bubble.rx-drop { animation-name: rx-drop; }
+.bubble.rx-haha { animation-name: rx-haha; } .bubble.rx-emphasis { animation-name: rx-emphasis; } .bubble.rx-tumble { animation-name: rx-tumble; }
+@keyframes rx-hearts { 12% { transform: scale(1.06); } 25% { transform: none; } 37% { transform: scale(1.03); } 50%, 100% { transform: none; } }
+@keyframes rx-thumb { 17% { transform: scale(1.08); } 50% { transform: scale(.97); } 83% { transform: scale(1.02); } 100% { transform: none; } }
+@keyframes rx-drop { 50% { transform: translateY(6px) scale(.97); } 100% { transform: none; } }
+@keyframes rx-haha { 6% { transform: rotate(3.5deg); } 19% { transform: rotate(-3deg); } 31% { transform: rotate(2.4deg); }
+  44% { transform: rotate(-1.8deg); } 56% { transform: rotate(1.2deg); } 69% { transform: rotate(-.7deg); } 100% { transform: none; } }
+@keyframes rx-emphasis { 5% { transform: translateX(6.5px); } 15% { transform: translateX(-5.8px); } 25% { transform: translateX(5px); }
+  35% { transform: translateX(-4.2px); } 45% { transform: translateX(3.4px); } 55% { transform: translateX(-2.6px); }
+  65% { transform: translateX(1.8px); } 75% { transform: translateX(-1px); } 100% { transform: none; } }
+@keyframes rx-tumble { 50% { transform: rotate(-7deg); } 100% { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .bubble:is(.rx-hearts, .rx-thumb, .rx-drop, .rx-haha, .rx-emphasis, .rx-tumble) { animation: none; } }
+
 /* Empty states: what to do next, instead of an empty box. */
 .empty-state { margin: auto; display: grid; justify-items: center; gap: .55rem; max-width: 380px; padding: 2rem 1rem; text-align: center; }
 .empty-state h2 { font-size: 1.25rem; letter-spacing: -.02em; }

@@ -2939,7 +2939,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             games = FunSettings.games(prefs), random = FunSettings.random(prefs);
         rows.add(toggleRow("Message effects", "Confetti, Slam, and the others play, and + offers Send with effect", effects, () -> {
             FunSettings.set(prefs, "effects", !effects); gifSettings(); }));
-        rows.add(toggleRow("Reaction animations", "A new reaction pops in and floats up", reactions, () -> {
+        rows.add(toggleRow("Reaction animations", "Each built-in reaction plays its own short animation; other emoji pop", reactions, () -> {
             FunSettings.set(prefs, "reactions", !reactions); gifSettings(); }));
         rows.add(toggleRow("Games", "Game boards in chats, and Games in the + menu. Off shows game messages as text", games, () -> {
             FunSettings.set(prefs, "games", !games); gifSettings(); }));

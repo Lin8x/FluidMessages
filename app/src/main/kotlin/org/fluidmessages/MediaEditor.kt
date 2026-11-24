@@ -24,9 +24,11 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateRotation
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -46,7 +48,9 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -446,8 +450,13 @@ private fun EditorBody(original: Bitmap, sticker: Boolean, dismiss: () -> Unit, 
     var thickness by remember { mutableFloatStateOf(12f) }
     var selected by remember { mutableStateOf<Long?>(null) }
     var editingText by remember { mutableStateOf<TextLayer?>(null) }
-    var crop by remember { mutableStateOf<RectF?>(null) }
+    // The crop box, in picture coordinates (null means the whole picture), and how far crop mode is zoomed and panned.
+    var crop by remember { mutableStateOf<CropBox?>(null) }
     var cropRatio by remember { mutableStateOf<Float?>(null) }
+    var zoomPan by remember { mutableStateOf(CropView(1f)) }
+    var resizing by remember { mutableStateOf(false) }
+    // A new picture size (a crop, a turn, undo across one) leaves any box and zoom behind.
+    LaunchedEffect(state.width, state.height) { crop = null; zoomPan = CropView(1f) }
     var working by remember { mutableStateOf(false) }
     val nextId = remember { java.util.concurrent.atomic.AtomicLong(1) }
     val scale = max(state.width, state.height) / 1000f
@@ -530,14 +539,19 @@ private fun EditorBody(original: Bitmap, sticker: Boolean, dismiss: () -> Unit, 
             }
         }
         // The picture, fitted to the space, with every gesture mapped back to picture coordinates.
-        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
+        // The canvas reaches [pad] past the picture on every side, so crop handles on the picture's edge get their whole touch target.
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             val density = androidx.compose.ui.platform.LocalDensity.current
-            val boxW = with(density) { maxWidth.toPx() }
-            val boxH = with(density) { maxHeight.toPx() }
+            val pad = with(density) { 8.dp.toPx() }
+            val reach = with(density) { 24.dp.toPx() }
+            val boxW = with(density) { maxWidth.toPx() } - pad * 2
+            val boxH = with(density) { maxHeight.toPx() } - pad * 2
             val fit = min(boxW / state.width, boxH / state.height)
             val viewW = state.width * fit
             val viewH = state.height * fit
-            fun toPicture(point: Offset) = Offset(point.x / fit, point.y / fit)
+            fun toPicture(point: Offset) = Offset((point.x - pad) / fit, (point.y - pad) / fit)
+            // Only crop mode zooms; everywhere else the picture is fitted.
+            fun cropView() = if (tool == EditTool.CROP) zoomPan.copy(fit = fit) else CropView(fit)
             var drawing by remember { mutableStateOf<List<Offset>?>(null) }
             val live = state
             val checkerCell = with(density) { 8.dp.toPx() }
@@ -547,8 +561,8 @@ private fun EditorBody(original: Bitmap, sticker: Boolean, dismiss: () -> Unit, 
                     shader = android.graphics.BitmapShader(tile, android.graphics.Shader.TileMode.REPEAT, android.graphics.Shader.TileMode.REPEAT)
                 }
             }
-            Canvas(Modifier.size(with(density) { viewW.toDp() }, with(density) { viewH.toDp() })
-                .pointerInput(tool, brush, ink, thickness, fit, scale, cropRatio, cutMode) {
+            Canvas(Modifier.size(with(density) { (viewW + pad * 2).toDp() }, with(density) { (viewH + pad * 2).toDp() })
+                .pointerInput(tool, brush, ink, thickness, fit, scale, cropRatio, cutMode, pad) {
                     when (tool) {
                         EditTool.BACKGROUND -> if (cutMode == CutMode.TAP) detectTapGestures { point ->
                             // Picture coordinates to photo pixels.
@@ -578,26 +592,60 @@ private fun EditorBody(original: Bitmap, sticker: Boolean, dismiss: () -> Unit, 
                             },
                             onDragCancel = { drawing = null },
                         ) { change, _ -> drawing = drawing.orEmpty() + toPicture(change.position) }
-                        EditTool.CROP -> detectDragGestures(onDragStart = { start ->
-                            val point = toPicture(start)
-                            val rect = crop ?: RectF(0f, 0f, state.width.toFloat(), state.height.toFloat())
-                            crop = RectF(rect)
-                            // Which corner, or the middle to move the whole box.
-                            dragCorner = listOf(Offset(rect.left, rect.top), Offset(rect.right, rect.top), Offset(rect.left, rect.bottom),
-                                Offset(rect.right, rect.bottom)).withIndex().minByOrNull { (it.value - point).getDistance() }
-                                ?.takeIf { (it.value - point).getDistance() < 64f / fit }?.index ?: -1
-                        }) { change, amount ->
-                            val delta = Offset(amount.x / fit, amount.y / fit)
-                            val rect = RectF(crop ?: return@detectDragGestures)
-                            when (dragCorner) {
-                                0 -> { rect.left += delta.x; rect.top += delta.y }
-                                1 -> { rect.right += delta.x; rect.top += delta.y }
-                                2 -> { rect.left += delta.x; rect.bottom += delta.y }
-                                3 -> { rect.right += delta.x; rect.bottom += delta.y }
-                                else -> rect.offset(delta.x, delta.y)
+                        EditTool.CROP -> coroutineScope {
+                            fun frameW() = size.width - pad * 2
+                            fun frameH() = size.height - pad * 2
+                            launch {
+                                // Double-tap: fitted, or about 2x around the spot.
+                                detectTapGestures(onDoubleTap = { point ->
+                                    zoomPan = toggleZoom(cropView(), point.x - pad, point.y - pad, frameW(), frameH())
+                                })
                             }
-                            change.consume()
-                            crop = constrainCrop(rect, state.width.toFloat(), state.height.toFloat(), cropRatio, dragCorner)
+                            launch {
+                                // One finger on a corner or edge resizes the box, inside it moves the box, and anywhere else pans the
+                                // photo. Two fingers zoom around themselves and pan. The box stays in picture coordinates throughout.
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    val startView = cropView()
+                                    val pictureW = state.width.toFloat()
+                                    val pictureH = state.height.toFloat()
+                                    val startBox = crop ?: CropBox.whole(pictureW, pictureH)
+                                    var handle = cropHandleAt(startView.toScreen(startBox), down.position.x - pad, down.position.y - pad, reach)
+                                    // A box that's the whole picture can't move, so a drag inside it pans instead.
+                                    val whole = startBox.width >= pictureW - .5f && startBox.height >= pictureH - .5f
+                                    if (handle == CropHandle.MOVE && whole) handle = CropHandle.NONE
+                                    var total = Offset.Zero
+                                    var dragging = false
+                                    var pinching = false
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        if (event.changes.count { it.pressed } > 1) pinching = true
+                                        if (pinching) {
+                                            val zoom = event.calculateZoom()
+                                            val pan = event.calculatePan()
+                                            val focus = event.calculateCentroid(useCurrent = true)
+                                            if (focus != Offset.Unspecified && (zoom != 1f || pan != Offset.Zero)) {
+                                                zoomPan = zoomView(cropView(), zoom, focus.x - pad, focus.y - pad, pan.x, pan.y, frameW(), frameH())
+                                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                            }
+                                            continue
+                                        }
+                                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                        val step = change.positionChange()
+                                        total += step
+                                        if (!dragging && total.getDistance() > viewConfiguration.touchSlop) dragging = true
+                                        if (!dragging) continue
+                                        if (handle == CropHandle.NONE) {
+                                            val now = cropView()
+                                            zoomPan = clampView(now.copy(panX = now.panX + step.x, panY = now.panY + step.y), frameW(), frameH())
+                                        } else {
+                                            crop = resizeCrop(startBox, handle, total.x / startView.scale, total.y / startView.scale,
+                                                pictureW, pictureH, cropRatio)
+                                        }
+                                        change.consume()
+                                    } while (event.changes.any { it.pressed })
+                                }
+                            }
                         }
                         EditTool.TEXT, EditTool.IMAGES -> coroutineScope {
                             launch {
@@ -644,11 +692,14 @@ private fun EditorBody(original: Bitmap, sticker: Boolean, dismiss: () -> Unit, 
                         else -> {}
                     }
                 }) {
+                val view = cropView()
                 drawIntoCanvas { canvas ->
                     val native = canvas.nativeCanvas
                     native.save()
-                    native.scale(fit, fit)
-                    checker.shader.setLocalMatrix(Matrix().apply { setScale(checkerCell / fit, checkerCell / fit) })
+                    native.clipRect(pad, pad, pad + viewW, pad + viewH)
+                    native.translate(pad + view.panX, pad + view.panY)
+                    native.scale(view.scale, view.scale)
+                    checker.shader.setLocalMatrix(Matrix().apply { setScale(checkerCell / view.scale, checkerCell / view.scale) })
                     val preview = drawing?.let { points ->
                         if (tool == EditTool.BACKGROUND) {
                             val cut = live.cutout ?: Cutout(fromEdges = false)
@@ -660,30 +711,48 @@ private fun EditorBody(original: Bitmap, sticker: Boolean, dismiss: () -> Unit, 
                     renderEdit(native, preview)
                     native.restore()
                 }
-                chosen?.let { layer ->
+                if (tool != EditTool.CROP) chosen?.let { layer ->
                     val box = bounds(layer)
-                    rotateAround(layer.rotation, Offset(layer.center.x * fit, layer.center.y * fit)) {
-                        drawRect(Color.White, Offset(box.left * fit, box.top * fit), androidx.compose.ui.geometry.Size(box.width() * fit, box.height() * fit),
-                            style = Stroke(2.dp.toPx(), pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(14f, 10f))))
+                    translate(pad, pad) {
+                        rotateAround(layer.rotation, Offset(layer.center.x * fit, layer.center.y * fit)) {
+                            drawRect(Color.White, Offset(box.left * fit, box.top * fit), androidx.compose.ui.geometry.Size(box.width() * fit, box.height() * fit),
+                                style = Stroke(2.dp.toPx(), pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(14f, 10f))))
+                        }
                     }
                 }
-                if (tool == EditTool.CROP) {
-                    val rect = crop ?: RectF(0f, 0f, live.width.toFloat(), live.height.toFloat())
+                if (tool == EditTool.CROP) translate(pad, pad) {
+                    val box = view.toScreen(crop ?: CropBox.whole(live.width.toFloat(), live.height.toFloat()))
+                    // The shade covers the photo outside the box; zoomed in, the box can run past the frame.
+                    val top = box.top.coerceIn(0f, viewH)
+                    val bottom = box.bottom.coerceIn(top, viewH)
+                    val left = box.left.coerceIn(0f, viewW)
+                    val right = box.right.coerceIn(left, viewW)
                     val shade = Color.Black.copy(alpha = .55f)
-                    drawRect(shade, Offset.Zero, androidx.compose.ui.geometry.Size(size.width, rect.top * fit))
-                    drawRect(shade, Offset(0f, rect.bottom * fit), androidx.compose.ui.geometry.Size(size.width, size.height - rect.bottom * fit))
-                    drawRect(shade, Offset(0f, rect.top * fit), androidx.compose.ui.geometry.Size(rect.left * fit, rect.height() * fit))
-                    drawRect(shade, Offset(rect.right * fit, rect.top * fit), androidx.compose.ui.geometry.Size(size.width - rect.right * fit, rect.height() * fit))
-                    drawRect(Color.White, Offset(rect.left * fit, rect.top * fit), androidx.compose.ui.geometry.Size(rect.width() * fit, rect.height() * fit),
-                        style = Stroke(2.dp.toPx()))
-                    for (third in 1..2) {
-                        val x = (rect.left + rect.width() * third / 3) * fit
-                        val y = (rect.top + rect.height() * third / 3) * fit
-                        drawLine(Color.White.copy(alpha = .5f), Offset(x, rect.top * fit), Offset(x, rect.bottom * fit), 1.dp.toPx())
-                        drawLine(Color.White.copy(alpha = .5f), Offset(rect.left * fit, y), Offset(rect.right * fit, y), 1.dp.toPx())
-                    }
-                    for (corner in listOf(Offset(rect.left, rect.top), Offset(rect.right, rect.top), Offset(rect.left, rect.bottom), Offset(rect.right, rect.bottom))) {
-                        drawCircle(Color.White, 9.dp.toPx(), Offset(corner.x * fit, corner.y * fit))
+                    drawRect(shade, Offset.Zero, androidx.compose.ui.geometry.Size(viewW, top))
+                    drawRect(shade, Offset(0f, bottom), androidx.compose.ui.geometry.Size(viewW, viewH - bottom))
+                    drawRect(shade, Offset(0f, top), androidx.compose.ui.geometry.Size(left, bottom - top))
+                    drawRect(shade, Offset(right, top), androidx.compose.ui.geometry.Size(viewW - right, bottom - top))
+                    clipRect(-pad, -pad, viewW + pad, viewH + pad) {
+                        drawRect(Color.White, Offset(box.left, box.top), androidx.compose.ui.geometry.Size(box.width, box.height), style = Stroke(2.dp.toPx()))
+                        for (third in 1..2) {
+                            val x = box.left + box.width * third / 3
+                            val y = box.top + box.height * third / 3
+                            drawLine(Color.White.copy(alpha = .5f), Offset(x, box.top), Offset(x, box.bottom), 1.dp.toPx())
+                            drawLine(Color.White.copy(alpha = .5f), Offset(box.left, y), Offset(box.right, y), 1.dp.toPx())
+                        }
+                        for (corner in listOf(Offset(box.left, box.top), Offset(box.right, box.top), Offset(box.left, box.bottom), Offset(box.right, box.bottom))) {
+                            drawCircle(Color.White, 9.dp.toPx(), corner)
+                        }
+                        // Short bars mark the edges, which drag on their own.
+                        val bar = 22.dp.toPx()
+                        val thick = 5.dp.toPx()
+                        val round = androidx.compose.ui.graphics.StrokeCap.Round
+                        if (box.width > bar * 2.5f) for (y in listOf(box.top, box.bottom)) {
+                            drawLine(Color.White, Offset(box.centerX - bar / 2, y), Offset(box.centerX + bar / 2, y), thick, cap = round)
+                        }
+                        if (box.height > bar * 2.5f) for (x in listOf(box.left, box.right)) {
+                            drawLine(Color.White, Offset(x, box.centerY - bar / 2), Offset(x, box.centerY + bar / 2), thick, cap = round)
+                        }
                     }
                 }
             }
@@ -736,22 +805,30 @@ private fun EditorBody(original: Bitmap, sticker: Boolean, dismiss: () -> Unit, 
                         for ((label, ratio) in listOf("Free" to null, "Square" to 1f, "4:3" to 4f / 3, "3:4" to 3f / 4, "16:9" to 16f / 9, "9:16" to 9f / 16)) {
                             FilterChip(cropRatio == ratio, {
                                 cropRatio = ratio
-                                crop = constrainCrop(RectF(0f, 0f, state.width.toFloat(), state.height.toFloat()), state.width.toFloat(), state.height.toFloat(), ratio, 3, center = true)
+                                crop = centeredCrop(state.width.toFloat(), state.height.toFloat(), ratio)
                             }, label = { Text(label) })
                         }
                     }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val (outW, outH) = clampOutputSize(state.width, state.height)
+                        Text(if (zoomPan.zoom > 1.01f) "$outW × $outH px · ${"%.1f".format(zoomPan.zoom)}×" else "$outW × $outH px",
+                            Modifier.weight(1f), fontSize = 12.sp, color = Color.LightGray)
+                        if (zoomPan.zoom > 1.01f) EditChip("Fit") { zoomPan = CropView(1f) }
+                        EditChip("Resize") { resizing = true }
+                    }
+                    Text("Pinch or double-tap to zoom. Drag the corners or edges to resize the box, or inside it to move it.",
+                        fontSize = 12.sp, color = Color.LightGray)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { commit(EditState(rotated(flatten(state), 90f))); crop = null }) { Text("⟳ Rotate") }
                         OutlinedButton(onClick = { commit(EditState(flipped(flatten(state)))); crop = null }) { Text("⇋ Flip") }
                         Spacer(Modifier.weight(1f))
                         Button(enabled = crop != null, onClick = {
-                            val rect = crop ?: return@Button
+                            val box = crop ?: return@Button
+                            // The box is in picture coordinates; flatten may have made the bitmap smaller than the picture.
                             val whole = flatten(state)
-                            val left = rect.left.toInt().coerceIn(0, whole.width - 1)
-                            val top = rect.top.toInt().coerceIn(0, whole.height - 1)
-                            val cropped = Bitmap.createBitmap(whole, left, top, rect.width().toInt().coerceIn(1, whole.width - left),
-                                rect.height().toInt().coerceIn(1, whole.height - top))
-                            commit(EditState(cropped)); crop = null; selected = null
+                            val px = cropPixels(box, state.width.toFloat(), state.height.toFloat(), whole.width, whole.height)
+                            commit(EditState(Bitmap.createBitmap(whole, px.left, px.top, px.width, px.height)))
+                            crop = null; selected = null; zoomPan = CropView(1f)
                         }) { Text("Crop") }
                     }
                 }
@@ -858,7 +935,7 @@ private fun EditorBody(original: Bitmap, sticker: Boolean, dismiss: () -> Unit, 
                 for (option in EditTool.entries) {
                     val on = tool == option
                     Text(option.label, Modifier.clip(RoundedCornerShape(18.dp)).background(if (on) Color.White else Color.Transparent)
-                        .clickable { tool = option; if (option != EditTool.CROP) crop = null }.padding(horizontal = 14.dp, vertical = 8.dp),
+                        .clickable { tool = option; if (option != EditTool.CROP) { crop = null; zoomPan = CropView(1f) } }.padding(horizontal = 14.dp, vertical = 8.dp),
                         color = if (on) Color.Black else Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                 }
             }
@@ -878,38 +955,62 @@ private fun EditorBody(original: Bitmap, sticker: Boolean, dismiss: () -> Unit, 
             }) { Text("OK") }
         }, dismissButton = { TextButton(onClick = { editingText = null }) { Text("Cancel") } })
     }
+    if (resizing) {
+        // The size the picture would be sent at now, within flatten's caps; the new size keeps its shape unless unlocked.
+        val (fromW, fromH) = clampOutputSize(state.width, state.height)
+        var widthText by remember { mutableStateOf(fromW.toString()) }
+        var heightText by remember { mutableStateOf(fromH.toString()) }
+        var locked by remember { mutableStateOf(true) }
+        fun pick(size: Pair<Int, Int>) { val (w, h) = clampOutputSize(size.first, size.second); widthText = w.toString(); heightText = h.toString() }
+        val wanted = widthText.toIntOrNull()?.takeIf { it > 0 }?.let { w -> heightText.toIntOrNull()?.takeIf { it > 0 }?.let { h -> w to h } }
+        val target = wanted?.let { clampOutputSize(it.first, it.second) }
+        FormPage(onDismissRequest = { resizing = false }, title = { Text("Resize") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Now $fromW × $fromH pixels.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val numbers = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
+                    OutlinedTextField(widthText, { typed ->
+                        widthText = typed.filter(Char::isDigit).take(5)
+                        if (locked) widthText.toIntOrNull()?.takeIf { it > 0 }?.let { heightText = lockedHeight(it, fromW, fromH).toString() }
+                    }, Modifier.weight(1f), label = { Text("Width") }, singleLine = true, keyboardOptions = numbers)
+                    Text("×")
+                    OutlinedTextField(heightText, { typed ->
+                        heightText = typed.filter(Char::isDigit).take(5)
+                        if (locked) heightText.toIntOrNull()?.takeIf { it > 0 }?.let { widthText = lockedWidth(it, fromW, fromH).toString() }
+                    }, Modifier.weight(1f), label = { Text("Height") }, singleLine = true, keyboardOptions = numbers)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Keep the shape", Modifier.weight(1f))
+                    Switch(locked, { on ->
+                        locked = on
+                        if (on) widthText.toIntOrNull()?.takeIf { it > 0 }?.let { heightText = lockedHeight(it, fromW, fromH).toString() }
+                    })
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (preset in ResizePreset.entries) {
+                        val size = clampOutputSize(preset.size(fromW, fromH).first, preset.size(fromW, fromH).second)
+                        FilterChip(target == size, { locked = true; pick(size) }, label = { Text(preset.label) })
+                    }
+                }
+                if (wanted != null && target != wanted) Text("Pictures can be up to $MAX_OUTPUT_SIDE pixels on a side and 16 megapixels, " +
+                    "so this one will be ${target?.first} × ${target?.second}.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }, confirmButton = {
+            TextButton(enabled = target != null, onClick = {
+                val size = target ?: return@TextButton
+                if (size != fromW to fromH) {
+                    commit(EditState(Bitmap.createScaledBitmap(flatten(state), size.first, size.second, true)))
+                    crop = null; selected = null
+                }
+                resizing = false
+            }) { Text("Resize") }
+        }, dismissButton = { TextButton(onClick = { resizing = false }) { Text("Cancel") } })
+    }
 }
-
-private var dragCorner = -1
 
 /** An Erase or Keep stroke for Background. Erase is marked with the eraser brush. */
 private fun cutTouch(points: List<Offset>, mode: CutMode, width: Float) =
     EditStroke(points, android.graphics.Color.BLACK, width * 2.4f, if (mode == CutMode.ERASE) EditBrush.ERASER else EditBrush.PEN)
-
-/** Keeps the crop box inside the picture, at least a little bigger than a fingertip, and at the chosen shape. */
-private fun constrainCrop(rect: RectF, width: Float, height: Float, ratio: Float?, corner: Int, center: Boolean = false): RectF {
-    val least = min(width, height) * .08f
-    val out = RectF(rect)
-    if (ratio != null) {
-        if (center) {
-            val w = min(width, height * ratio)
-            val h = w / ratio
-            out.set((width - w) / 2, (height - h) / 2, (width + w) / 2, (height + h) / 2)
-        } else {
-            val h = out.width() / ratio
-            if (corner == 0 || corner == 1) out.top = out.bottom - h else out.bottom = out.top + h
-        }
-    }
-    if (out.width() < least) out.right = out.left + least
-    if (out.height() < least) out.bottom = out.top + least
-    if (out.width() > width) { out.left = 0f; out.right = width }
-    if (out.height() > height) { out.top = 0f; out.bottom = height }
-    if (out.left < 0) out.offset(-out.left, 0f)
-    if (out.top < 0) out.offset(0f, -out.top)
-    if (out.right > width) out.offset(width - out.right, 0f)
-    if (out.bottom > height) out.offset(0f, height - out.bottom)
-    return out
-}
 
 private fun rotated(bitmap: Bitmap, degrees: Float): Bitmap =
     Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(degrees) }, true)

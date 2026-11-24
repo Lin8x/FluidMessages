@@ -395,7 +395,7 @@ function funSection(settings) {
   const motion = matchMedia('(prefers-reduced-motion: reduce)').matches ? ' Your device asks for reduced motion, so animations stay off.' : '';
   section.append(
     checkbox('Message effects', current.effects, save('effects'), 'Confetti, balloons, slams, and invisible ink. Off shows the words only.' + motion),
-    checkbox('Reaction animations', current.reactionEffects, save('reactionEffects'), 'A quick pop when someone reacts to a message.'),
+    checkbox('Reaction animations', current.reactionEffects, save('reactionEffects'), 'Each built-in reaction plays its own short animation; other emoji pop.'),
     checkbox('Games', current.games, save('games'), 'Chess, tic-tac-toe, four in a row, and rock paper scissors. Off shows moves as plain text.'),
     checkbox('Dice and random picks', current.random, save('random'), 'Dice, coin flips, and random choices.'),
     checkbox('GIFs and stickers', current.gifs, save('gifs'), 'Shows GIFs, stickers, and pictures from links. Off shows the link instead.'),

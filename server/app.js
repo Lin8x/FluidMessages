@@ -356,7 +356,8 @@ function messageActions(message, row) {
     openNewChat(prefix + body + suffix);
   });
   if (sendable) {
-    for (const [emoji, verb, name] of [['👍', 'Liked', 'Like'], ['❤️', 'Loved', 'Love'], ['😆', 'Laughed at', 'Laugh'], ['🎉', 'Reacted 🎉 to', 'Celebrate']]) {
+    for (const [emoji, verb, name] of [['👍', 'Liked', 'Like'], ['❤️', 'Loved', 'Love'], ['👎', 'Disliked', 'Dislike'],
+      ['😆', 'Laughed at', 'Laugh'], ['‼️', 'Emphasized', 'Emphasize'], ['❓', 'Questioned', 'Question'], ['🎉', 'Reacted 🎉 to', 'Celebrate']]) {
       action(emoji, () => {
         if (message.reactions.get('me') !== emoji) playReaction(row, emoji, reactionId(message, 'me', emoji));
         const own = message.type !== 1;
@@ -402,6 +403,8 @@ function playReaction(row, emoji, id) {
   if (!prefs.reactionEffects || matchMedia('(prefers-reduced-motion: reduce)').matches || !row?.isConnected) return;
   const bubble = row.querySelector('.bubble-wrap');
   if (!bubble) return;
+  // Built-in reactions play their own animation (cards.js); custom emoji get the pop below.
+  if (typeof playReactionEffect === 'function' && playReactionEffect(emoji, bubble.querySelector('.bubble') || bubble, row.classList.contains('out'))) return;
   // Drawn over the page at the bubble's corner, so a refresh redrawing the chat doesn't cut it short.
   const box = bubble.getBoundingClientRect();
   const burst = element('span', '', 'reaction-burst');

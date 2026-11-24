@@ -9,6 +9,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.content.SharedPreferences
 import android.widget.LinearLayout
 import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.animation.core.tween
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.Canvas
@@ -585,9 +587,12 @@ internal class ConversationScreen @JvmOverloads constructor(
                 }
             }
             var screenEffect by remember { mutableStateOf<Pair<MessageEffect, Long>?>(null) }
+            var reactionEffect by remember { mutableStateOf<ReactionShow?>(null) }
             Box(Modifier.fillMaxSize()) {
             CompositionLocalProvider(LocalEditPicture provides (if (filesAllowed) { uri: Uri -> editing = uri } else null),
-                LocalScreenEffect provides { effect: MessageEffect -> screenEffect = effect to System.nanoTime() }) {
+                LocalScreenEffect provides { effect: MessageEffect -> screenEffect = effect to System.nanoTime() },
+                LocalReactionEffect provides { animation: ReactionAnimation, anchor: androidx.compose.ui.geometry.Offset ->
+                    reactionEffect = ReactionShow(animation, anchor, System.nanoTime()) }) {
             WallpaperSurface(palette.appearance.wallpaper, palette.bg, Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize()) {
                     val floating = palette.appearance.toolbarFinish == "floating"
@@ -885,6 +890,7 @@ internal class ConversationScreen @JvmOverloads constructor(
             }
             }
             screenEffect?.let { (effect, key) -> ScreenEffectOverlay(effect, key) { screenEffect = null } }
+            ReactionEffectOverlay(reactionEffect) { reactionEffect = null }
             }
         }
     }
@@ -964,6 +970,28 @@ private fun MessageBubble(
         if (effect != null && recent && FunSettings.effects(context.getSharedPreferences("fluid", android.content.Context.MODE_PRIVATE)) &&
             EffectMemory.firstTime(context, line.id)) playEffect()
     }
+    // Reactions: a new one plays once, yours or theirs. Ones already there when the bubble first shows (opening the
+    // chat, scrolling back) don't, because the first list seen is the starting point.
+    val playReaction = LocalReactionEffect.current
+    var reactionsSeen by remember(line.id) { mutableStateOf(reactions) }
+    var reactionPop by remember(line.id) { mutableStateOf<Pair<String, Long>?>(null) }
+    var reactionMotion by remember(line.id) { mutableStateOf<ReactionAnimation?>(null) }
+    val reactionProgress = remember(line.id) { Animatable(1f) }
+    val bubbleBounds = remember(line.id) { floatArrayOf(0f, 0f, 0f) }
+    val inset = with(androidx.compose.ui.platform.LocalDensity.current) { 6.dp.toPx() }
+    LaunchedEffect(line.id, reactions) {
+        val added = addedReaction(reactionsSeen, reactions)
+        reactionsSeen = reactions
+        if (added == null || !reactionAnimationsOn(context, palette.appearance.speed)) return@LaunchedEffect
+        reactionPop = added to System.nanoTime()
+        val animation = reactionAnimation(added) ?: return@LaunchedEffect
+        // Anchored at the bubble's top corner, on the side facing the middle of the screen.
+        playReaction(animation, androidx.compose.ui.geometry.Offset(
+            if (line.outgoing) bubbleBounds[0] + inset else bubbleBounds[0] + bubbleBounds[2] - inset, bubbleBounds[1] + inset))
+        reactionMotion = animation
+        reactionProgress.snapTo(0f)
+        reactionProgress.animateTo(1f, tween(animation.millis, easing = androidx.compose.animation.core.LinearEasing))
+    }
     var editingMessage by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxWidth().padding(top = if (grouped) 3.dp else 8.dp)) {
         val bubbleWidth = minOf(maxWidth * .80f, 460.dp)
@@ -973,9 +1001,14 @@ private fun MessageBubble(
                 translationY = (1 - entrance.value) * 10.dp.toPx()
                 translationX = drag
                 val (effectScale, effectTurn) = bubbleEffectScale(effect?.second, effectProgress.value)
-                scaleX = effectScale; scaleY = effectScale; rotationZ = effectTurn
+                val moved = reactionBubbleMotion(reactionMotion, reactionProgress.value)
+                scaleX = effectScale * moved.scale; scaleY = effectScale * moved.scale; rotationZ = effectTurn + moved.rotation
+                translationX += moved.dx.dp.toPx(); translationY += moved.dy.dp.toPx()
             }, horizontalAlignment = if (line.outgoing) Alignment.End else Alignment.Start) {
-            Box {
+            Box(Modifier.onGloballyPositioned { coordinates ->
+                val at = coordinates.positionInRoot()
+                bubbleBounds[0] = at.x; bubbleBounds[1] = at.y; bubbleBounds[2] = coordinates.size.width.toFloat()
+            }) {
                 Column(Modifier.widthIn(max = bubbleWidth)
                     .bubbleTail(fill, palette.appearance.tails && !continues && !sticker, line.outgoing).clip(shape).background(fill)
                     .invisibleInk(inkHidden, bubbleTextColor(chosenFill))
@@ -1166,7 +1199,7 @@ private fun MessageBubble(
                     )
                 }
             }
-            if (reactions.isNotEmpty()) ReactionPill(reactions, palette, line.outgoing)
+            if (reactions.isNotEmpty()) ReactionPill(reactions, palette, line.outgoing, reactionPop)
             val failed = line.outgoing && line.status.startsWith("Couldn’t send")
             val shown = listOfNotNull("Edited".takeIf { earlier.isNotEmpty() }, line.time.takeIf { (showTime || exactTimes) && it.isNotEmpty() },
                 line.status.takeIf { it.isNotEmpty() && !failed }).joinToString(" · ")
@@ -1197,27 +1230,26 @@ private fun MessageBubble(
     }
 }
 
-/** The reactions under a bubble. A new one pops in and floats a copy of itself up, unless turned off in Settings. */
+/**
+ * The reactions under a bubble. [pop] is the newest reaction, set only when reaction animations are on: the pill
+ * pops, and a custom emoji also floats a copy of itself up. Built-in reactions play their own animation instead.
+ */
 @Composable
-private fun ReactionPill(reactions: List<String>, palette: Palette, outgoing: Boolean) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val animate = palette.appearance.speed > 0 && remember { FunSettings.reactions(context.getSharedPreferences("fluid", android.content.Context.MODE_PRIVATE)) }
-    var seen by remember { mutableStateOf(reactions) }
-    val pop = remember { Animatable(1f) }
+private fun ReactionPill(reactions: List<String>, palette: Palette, outgoing: Boolean, pop: Pair<String, Long>?) {
+    val scale = remember { Animatable(1f) }
     val float = remember { Animatable(1f) }
     var floating by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(reactions) {
-        val added = reactions.lastOrNull()?.takeIf { reactions.size > seen.size || reactions.lastOrNull() != seen.lastOrNull() }
-        seen = reactions
-        if (animate && added != null) {
+    LaunchedEffect(pop?.second) {
+        val (added, _) = pop ?: return@LaunchedEffect
+        launch { scale.snapTo(.4f); scale.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = .45f, stiffness = 500f)) }
+        if (reactionAnimation(added) == null) {
             floating = added
-            launch { pop.snapTo(.4f); pop.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = .45f, stiffness = 500f)) }
             float.snapTo(0f); float.animateTo(1f, tween(900)); floating = null
         }
     }
     Box(contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart) {
         Text(reactions.joinToString(" "), Modifier.padding(top = 2.dp)
-            .graphicsLayer { scaleX = pop.value; scaleY = pop.value }
+            .graphicsLayer { scaleX = scale.value; scaleY = scale.value }
             .background(palette.wash, RoundedCornerShape(14.dp)).padding(horizontal = 7.dp, vertical = 2.dp),
             fontSize = 14.sp)
         floating?.let { emoji ->
