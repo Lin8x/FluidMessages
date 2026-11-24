@@ -451,7 +451,7 @@ const BUILT_IN_ASSETS = {
     currencies: ['EUR', 'GBP', 'USD', 'CHF', 'PLN', 'SEK', 'NOK', 'DKK'], label: 'Revolut username'},
   'via UPI': {pattern: /^[A-Za-z0-9._-]{2,256}@[A-Za-z]{2,64}$/, uri: (to, amount, note) => 'upi://pay?pa=' + to + '&am=' + amount + '&cu=INR' + memo(note, 'tn'),
     currencies: ['INR'], label: 'UPI ID'},
-  'via bank transfer': {pattern: /^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/, uri: (to, amount, note, currency) =>
+  'via Bank transfer': {pattern: /^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/, uri: (to, amount, note, currency) =>
     'payto://iban/' + to.toUpperCase() + '?amount=' + currency + ':' + amount + memo(note),
     currencies: ['EUR', 'GBP', 'CHF', 'PLN', 'SEK', 'DKK', 'NOK', 'CZK', 'HUF', 'RON'], label: 'IBAN'},
 };
@@ -474,7 +474,8 @@ function allAssets() {
 const ASSETS = BUILT_IN_ASSETS;
 
 function knownAsset(asset) {
-  return Object.keys(BUILT_IN_ASSETS).some((name) => name === asset || (BUILT_IN_ASSETS[name].currencies && asset.endsWith(' ' + name)));
+  const lower = asset.toLowerCase();
+  return Object.keys(BUILT_IN_ASSETS).some((name) => name.toLowerCase() === lower || (BUILT_IN_ASSETS[name].currencies && lower.endsWith(' ' + name.toLowerCase())));
 }
 
 function moneyWarning(outgoing) {
@@ -498,7 +499,8 @@ function moneyCard(message, bubble) {
   const incoming = message.type === 1;
   const via = asset.includes(' via ');
   const unit = via ? asset.split(' via ')[0] : asset.split(' on ')[0];
-  const network = via ? 'via ' + asset.split(' via ')[1] : asset.includes(' on ') ? 'on ' + asset.split(' on ')[1] : '';
+  const service = via ? asset.split(' via ')[1].replace(/^./, (c) => c.toUpperCase()) : '';
+  const network = via ? 'via ' + service : asset.includes(' on ') ? 'on ' + asset.split(' on ')[1] : '';
   const unverified = !knownAsset(asset);
   const card = element('div', '', 'money-card');
   card.append(element('small', kind === 'Sent' ? (incoming ? 'Sent to you' : 'You sent') : (incoming ? 'Requested from you' : 'You requested')),
@@ -507,7 +509,7 @@ function moneyCard(message, bubble) {
   const known = /^((solana|ethereum|bitcoin|monero|lightning|upi):\S+|payto:\/\/iban\/\S+|https:\/\/(paypal\.me|venmo\.com|cash\.app|revolut\.me)\/\S+)$/;
   const payable = unverified ? /^[a-z][a-z0-9+.-]{1,30}:\S+$/.test(link || '') && !/^(javascript|data|file|vbscript):/i.test(link) : known.test(link || '');
   if (link && kind !== 'Sent' && incoming && payable) {
-    const pay = element('a', via ? 'Pay with ' + asset.split(' via ')[1] : 'Pay with your wallet', 'primary');
+    const pay = element('a', via ? 'Pay with ' + service : 'Pay with your wallet', 'primary');
     pay.href = link;
     pay.rel = 'noopener noreferrer';
     if (/^https:/.test(link)) pay.target = '_blank';

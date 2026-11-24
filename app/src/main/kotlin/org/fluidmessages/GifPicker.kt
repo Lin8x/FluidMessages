@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -164,6 +165,9 @@ internal fun GifSheet(startWithStickers: Boolean, filesAllowed: Boolean, dismiss
     var results by remember { mutableStateOf<List<GifResult>?>(null) }
     var saved by remember { mutableStateOf(SavedStickers.list(context)) }
     val searchable = GifSettings.searchable(prefs)
+    var browsing by remember { mutableStateOf(false) }
+    val sites = remember { GifSites.enabled(prefs) }
+    if (browsing) { GifSiteBrowser(prefs, query, { browsing = false }) { url -> link(url); dismiss() }; return }
     LaunchedEffect(query, stickers) {
         if (!searchable) return@LaunchedEffect
         results = null
@@ -184,6 +188,13 @@ internal fun GifSheet(startWithStickers: Boolean, filesAllowed: Boolean, dismiss
             }
             if (searchable) OutlinedTextField(query, { query = it.take(60) }, Modifier.fillMaxWidth(), singleLine = true,
                 placeholder = { Text("Search ${GifSettings.label(GifSettings.source(prefs))}") })
+            // GIF sites to browse in the app, no key needed. Change which ones show in Settings.
+            if (!stickers && sites.isNotEmpty()) Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Browse", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                for (site in sites) AssistChip(onClick = { prefs.edit().putString("gifSite.last", site.id).apply(); browsing = true },
+                    label = { Text(site.name) })
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!stickers && filesAllowed) OutlinedButton(onClick = {
                     phoneGif.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.SingleMimeType("image/gif")))
@@ -199,7 +210,7 @@ internal fun GifSheet(startWithStickers: Boolean, filesAllowed: Boolean, dismiss
                     Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 cells.isEmpty() -> Text(when {
                     stickers && !searchable -> "Tap Make a sticker to turn any photo into a sticker. Your keyboard's stickers work too."
-                    !searchable -> "Pick a GIF from your phone or your keyboard. To search GIFs here, choose Tenor or GIPHY in Settings → Media, GIFs, and links."
+                    !searchable -> "Tap a site above to browse GIFs, or pick one from your phone or keyboard. For search results right here, add a Tenor or GIPHY key in Settings → Media, GIFs, and links."
                     else -> "Nothing found."
                 }, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> LazyVerticalGrid(GridCells.Fixed(3), Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp),

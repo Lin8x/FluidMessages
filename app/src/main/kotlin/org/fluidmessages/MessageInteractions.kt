@@ -127,7 +127,7 @@ internal fun messageExcerpt(text: String, limit: Int): String {
 }
 
 /** A message with the reactions folded onto it: one per sender, keyed by [senderKey]. */
-internal data class DisplayMessage(val line: ChatLine, val bySender: Map<String?, String>) {
+internal data class DisplayMessage(val line: ChatLine, val bySender: Map<String?, String>, val earlier: List<String> = emptyList()) {
     val reactions: List<String> get() = bySender.values.toList()
 }
 
@@ -137,7 +137,19 @@ private fun ChatLine.unsettled() = status.startsWith("Sending") || status.starts
 internal fun foldSmsReactions(lines: List<ChatLine>): List<DisplayMessage> {
     val visible = mutableListOf<ChatLine>()
     val reactions = mutableMapOf<String, LinkedHashMap<String?, String>>()
+    val earlier = mutableMapOf<String, MutableList<String>>()
     for (line in lines) {
+        // "✏️ Edited “old” to: new" replaces the sender's own earlier message.
+        val edit = if (line.unsettled() || line.event || line.attachment != null) null else parseEdit(line.text)
+        if (edit != null) {
+            val index = visible.indexOfLast { it.senderKey() == line.senderKey() && it.attachment == null && editQuote(it.text) == edit.first }
+            if (index >= 0) {
+                val original = visible[index]
+                earlier.getOrPut(original.id) { mutableListOf() }.add(original.text)
+                visible[index] = original.copy(text = edit.second)
+                continue
+            }
+        }
         val parsed = if (line.unsettled() || line.event) null else parseReactionText(line.text)
         if (parsed == null) {
             visible.add(line)
@@ -163,7 +175,7 @@ internal fun foldSmsReactions(lines: List<ChatLine>): List<DisplayMessage> {
             else -> { folded.remove(line.senderKey()); folded[line.senderKey()] = parsed.symbol }
         }
     }
-    return visible.map { DisplayMessage(it, reactions[it.id].orEmpty()) }
+    return visible.map { DisplayMessage(it, reactions[it.id].orEmpty(), earlier[it.id].orEmpty()) }
 }
 
 internal fun ChatLine.senderKey(): String? = if (outgoing) null else author ?: ""

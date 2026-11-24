@@ -47,7 +47,7 @@ import javax.net.ssl.HttpsURLConnection
  */
 
 private fun encode(text: String) = URLEncoder.encode(text, "UTF-8").replace("+", "%20")
-private fun newId() = java.util.UUID.randomUUID().toString().replace("-", "").take(8)
+internal fun newId() = java.util.UUID.randomUUID().toString().replace("-", "").take(8)
 
 // Pictures and GIFs sent as links
 
@@ -92,7 +92,7 @@ internal class PollTally(val votes: Map<String, Int>) {
     val total: Int get() = votes.size
 }
 
-internal fun tallyPolls(lines: List<ChatLine>): Map<String, PollTally> {
+internal fun tallyPolls(lines: List<ChatLine>, gameMoves: Set<String> = emptySet()): Map<String, PollTally> {
     val polls = linkedMapOf<String, Poll>()
     val votes = mutableMapOf<String, MutableMap<String, Int>>()
     var latest: Poll? = null
@@ -107,6 +107,7 @@ internal fun tallyPolls(lines: List<ChatLine>): Map<String, PollTally> {
             continue
         }
         // People on other apps can answer with just the option's number.
+        if (line.id in gameMoves) continue
         val number = numberVote.find(line.text)?.groupValues?.get(1)?.toIntOrNull()
         val poll = latest
         if (number != null && poll != null && number in 1..poll.options.size) votes.getOrPut(poll.id) { mutableMapOf() }[voter] = number - 1
@@ -217,7 +218,64 @@ internal data class CalendarEvent(val title: String, val start: Long, val end: L
 
 internal fun eventText(event: CalendarEvent): String = listOfNotNull("📅 ${event.title}", event.whenText(),
     event.location.takeIf { it.isNotBlank() }?.let { "📍 $it" }, event.notes.takeIf { it.isNotBlank() },
-    "Add to calendar: ${event.googleLink()}").joinToString("\n")
+    "Add to calendar: ${event.googleLink()}", RSVP_ASK).joinToString("\n")
+
+private const val RSVP_ASK = "Coming? Reply yes, maybe, or no."
+
+/** An answer to an event invite. */
+internal enum class Rsvp(val label: String, val mark: String) { GOING("Going", "✅"), MAYBE("Maybe", "🤔"), NO("Can't go", "❌") }
+
+internal fun rsvpText(event: CalendarEvent, answer: Rsvp): String {
+    val title = event.title.replace('”', '"').take(200)
+    return when (answer) { Rsvp.GOING -> "✅ Going to “$title”"; Rsvp.MAYBE -> "🤔 Maybe going to “$title”"; Rsvp.NO -> "❌ Can't make “$title”" }
+}
+
+private val rsvpPattern = Regex("""^(✅ Going to|🤔 Maybe going to|❌ Can't make) “(.{1,200})”$""")
+private val rsvpReply = Regex("""(?i)^\s*(yes|yeah|yep|yup|sure|going|i'?m in|count me in|maybe|perhaps|not sure|no|nope|can'?t|can ?not|i can'?t)\s*[.!]*\s*$""")
+
+internal fun parseRsvp(text: String): Pair<Rsvp, String>? {
+    val match = rsvpPattern.matchEntire(text) ?: return null
+    val answer = when (match.groupValues[1]) { "✅ Going to" -> Rsvp.GOING; "🤔 Maybe going to" -> Rsvp.MAYBE; else -> Rsvp.NO }
+    return answer to match.groupValues[2]
+}
+
+/**
+ * Answers to each event, by the event message's id. FluidMessages sends "✅ Going to “Dinner”"; people on other apps
+ * can just reply yes, maybe, or no to the newest invite that asks for it, while the event hasn't happened yet.
+ */
+internal fun tallyRsvps(lines: List<ChatLine>, now: Long = System.currentTimeMillis()): Map<String, Map<String, Rsvp>> {
+    val byTitle = mutableMapOf<String, String>()
+    val answers = mutableMapOf<String, LinkedHashMap<String, Rsvp>>()
+    var newest: Pair<String, CalendarEvent>? = null
+    var asks = false
+    for (line in lines) {
+        if (line.attachment != null) continue
+        val person = if (line.outgoing) "you" else line.author ?: "them"
+        val event = parseEvent(line.text)
+        if (event != null) {
+            byTitle[event.title.replace('”', '"').take(200)] = line.id
+            newest = line.id to event
+            asks = line.text.contains(RSVP_ASK)
+            continue
+        }
+        val explicit = parseRsvp(line.text)
+        if (explicit != null) {
+            val target = byTitle[explicit.second] ?: continue
+            answers.getOrPut(target) { LinkedHashMap() }[person] = explicit.first
+            continue
+        }
+        val (eventId, invite) = newest ?: continue
+        if (!asks || invite.end < now) continue
+        val word = rsvpReply.matchEntire(line.text)?.groupValues?.get(1)?.lowercase() ?: continue
+        val answer = when {
+            word.startsWith("maybe") || word.startsWith("perhaps") || word.startsWith("not sure") -> Rsvp.MAYBE
+            word.startsWith("no") || word.contains("can") -> Rsvp.NO
+            else -> Rsvp.GOING
+        }
+        answers.getOrPut(eventId) { LinkedHashMap() }[person] = answer
+    }
+    return answers
+}
 
 private val eventLink = Regex("""Add to calendar: (https://calendar\.google\.com/calendar/render\?action=TEMPLATE\S+)""")
 
@@ -264,7 +322,8 @@ internal fun addToCalendar(context: Context, event: CalendarEvent): Boolean {
         .putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, event.start).putExtra(CalendarContract.EXTRA_EVENT_END_TIME, event.end)
         .putExtra(CalendarContract.EXTRA_EVENT_ALL_DAY, event.allDay).putExtra(CalendarContract.Events.TITLE, event.title)
         .putExtra(CalendarContract.Events.EVENT_LOCATION, event.location).putExtra(CalendarContract.Events.DESCRIPTION, event.notes)
-    return runCatching { context.startActivity(intent) }.isSuccess
+    // A chooser, so a calendar app that doesn't work can be skipped for another one.
+    return runCatching { context.startActivity(Intent.createChooser(intent, "Add to calendar")) }.isSuccess
 }
 
 /** Shares the event as an .ics file, for calendars that import files (Thunderbird, Apple, Outlook, Nextcloud). */
@@ -280,7 +339,7 @@ internal fun shareIcs(context: Context, event: CalendarEvent) {
 }
 
 @Composable
-internal fun EventCard(event: CalendarEvent, foreground: Color) {
+internal fun EventCard(event: CalendarEvent, foreground: Color, answers: Map<String, Rsvp>? = null, respond: ((String) -> Unit)? = null) {
     val context = LocalContext.current
     var missing by remember { mutableStateOf(false) }
     Column(Modifier.widthIn(min = 230.dp).padding(bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -299,11 +358,109 @@ internal fun EventCard(event: CalendarEvent, foreground: Color) {
         }
         if (event.location.isNotBlank()) Text("📍 " + event.location, color = foreground, fontSize = 14.sp)
         if (event.notes.isNotBlank()) Text(event.notes, color = foreground.copy(alpha = .9f), fontSize = 14.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FilledTonalButton(onClick = { missing = !addToCalendar(context, event) }) { Text("Add to calendar") }
-            TextButton(onClick = { shareIcs(context, event) }) { Text(".ics", color = foreground) }
+        val replies = answers.orEmpty()
+        if (replies.isNotEmpty()) {
+            val counts = Rsvp.entries.mapNotNull { answer -> replies.values.count { it == answer }.takeIf { it > 0 }?.let { "${answer.mark} $it ${answer.label.lowercase()}" } }
+            Text(counts.joinToString(" · "), color = foreground, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            val names = replies.filterKeys { it != "you" && it != "them" }
+            if (names.isNotEmpty()) Text(names.entries.joinToString(", ") { "${it.key} ${it.value.mark}" }, color = foreground.copy(alpha = .85f),
+                fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
-        if (missing) Text("No calendar app is installed. Use .ics to save it elsewhere.", color = foreground, fontSize = 12.sp)
+        if (respond != null && event.end >= System.currentTimeMillis()) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (answer in Rsvp.entries) {
+                val chosen = replies["you"] == answer
+                Box(Modifier.clip(RoundedCornerShape(16.dp)).background(foreground.copy(alpha = if (chosen) .32f else .12f))
+                    .clickable(onClickLabel = answer.label) { if (!chosen) respond(rsvpText(event, answer)) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)) {
+                    Text((if (chosen) "✓ " else "") + answer.label, color = foreground, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        var choosing by remember { mutableStateOf(false) }
+        FilledTonalButton(onClick = { choosing = true }) { Text("Add to calendar") }
+        if (missing) Text("No calendar app could open it. Use Save .ics to keep it.", color = foreground, fontSize = 12.sp)
+        if (choosing) CalendarSheet(event, { choosing = false }) { missing = it }
+    }
+}
+
+/** A calendar on this phone you can add events to: Google, CalDAV (DAVx⁵), Exchange, or one only on the phone. */
+internal data class PhoneCalendar(val id: Long, val name: String, val account: String, val color: Int)
+
+internal object PhoneCalendars {
+    fun allowed(context: Context) = context.checkSelfPermission(android.Manifest.permission.WRITE_CALENDAR) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED && context.checkSelfPermission(android.Manifest.permission.READ_CALENDAR) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    fun list(context: Context): List<PhoneCalendar> = runCatching {
+        val calendars = CalendarContract.Calendars.CONTENT_URI
+        context.contentResolver.query(calendars, arrayOf(CalendarContract.Calendars._ID, CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
+            CalendarContract.Calendars.ACCOUNT_NAME, CalendarContract.Calendars.CALENDAR_COLOR),
+            "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ? AND ${CalendarContract.Calendars.VISIBLE} = 1",
+            arrayOf(CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR.toString()), null)?.use { cursor ->
+            buildList { while (cursor.moveToNext()) add(PhoneCalendar(cursor.getLong(0), cursor.getString(1) ?: "Calendar",
+                cursor.getString(2).orEmpty(), cursor.getInt(3))) }
+        }.orEmpty()
+    }.getOrDefault(emptyList())
+
+    /** Saves the event straight into the calendar, without opening any other app. */
+    fun add(context: Context, calendar: PhoneCalendar, event: CalendarEvent): Boolean = runCatching {
+        val values = android.content.ContentValues().apply {
+            put(CalendarContract.Events.CALENDAR_ID, calendar.id)
+            put(CalendarContract.Events.TITLE, event.title)
+            put(CalendarContract.Events.DTSTART, event.start)
+            put(CalendarContract.Events.DTEND, event.end)
+            put(CalendarContract.Events.ALL_DAY, if (event.allDay) 1 else 0)
+            put(CalendarContract.Events.EVENT_TIMEZONE, if (event.allDay) "UTC" else TimeZone.getDefault().id)
+            if (event.location.isNotBlank()) put(CalendarContract.Events.EVENT_LOCATION, event.location)
+            if (event.notes.isNotBlank()) put(CalendarContract.Events.DESCRIPTION, event.notes)
+        }
+        context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values) != null
+    }.getOrDefault(false)
+}
+
+/**
+ * Where to add an event: straight into a calendar on this phone, another calendar app, Google Calendar on the web,
+ * or an .ics file. None of these depends on one particular calendar app working.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CalendarSheet(event: CalendarEvent, dismiss: () -> Unit, failed: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    var allowed by remember { mutableStateOf(PhoneCalendars.allowed(context)) }
+    val calendars by produceState(emptyList<PhoneCalendar>(), allowed) {
+        if (allowed) value = withContext(Dispatchers.IO) { PhoneCalendars.list(context) }
+    }
+    var done by remember { mutableStateOf<String?>(null) }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()) { allowed = PhoneCalendars.allowed(context) }
+    ModalBottomSheet(onDismissRequest = dismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 26.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Add “${event.title}”", style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            done?.let { Text(it, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(vertical = 6.dp)) }
+            @Composable fun Choice(title: String, detail: String, dot: Color? = null, run: () -> Unit) {
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = run).padding(horizontal = 6.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (dot != null) Box(Modifier.padding(end = 12.dp).size(12.dp).background(dot, androidx.compose.foundation.shape.CircleShape))
+                    Column {
+                        Text(title, style = MaterialTheme.typography.bodyLarge)
+                        if (detail.isNotEmpty()) Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            if (!allowed) Choice("Add to a calendar on this phone", "Allow calendar access once; FluidMessages only adds events you tap") {
+                permission.launch(arrayOf(android.Manifest.permission.READ_CALENDAR, android.Manifest.permission.WRITE_CALENDAR))
+            } else if (calendars.isEmpty()) Text("No calendars on this phone accept new events. Add an account in a calendar app, or use an option below.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 6.dp))
+            for (calendar in calendars) Choice(calendar.name, calendar.account, Color(calendar.color or 0xFF000000.toInt())) {
+                done = if (PhoneCalendars.add(context, calendar, event)) "Added to ${calendar.name} ✓" else "Couldn't add it to ${calendar.name}"
+            }
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            Choice("Open in a calendar app", "Choose which app") { failed(!addToCalendar(context, event)); dismiss() }
+            Choice("Google Calendar on the web", "Opens in your browser") {
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(event.googleLink()))) }; dismiss()
+            }
+            Choice("Save .ics file", "The standard file every calendar can import") { shareIcs(context, event); dismiss() }
+        }
     }
 }
 
@@ -420,6 +577,7 @@ internal object LinkPreviews {
         var target = URL(url)
         var html = ""
         for (hop in 0..3) {
+            if (!PublicHosts.allowed(target)) return null
             val connection = target.openConnection() as HttpsURLConnection
             connection.connectTimeout = 8_000
             connection.readTimeout = 10_000
@@ -488,183 +646,14 @@ internal fun LinkPreviewCard(url: String, foreground: Color) {
     }
 }
 
-// Chess
-
-/** One message of a chess game: who sent it as which color, and every move so far. */
-internal data class ChessMessage(val id: String, val senderWhite: Boolean, val moves: List<String>, val resigned: Boolean)
-
-private val chessPattern = Regex("""fm-chess:([a-z0-9]{6,12}):([wb]):([a-h1-8qrbn,]*)(:resign)?""")
-
-internal fun parseChess(text: String): ChessMessage? {
-    if (!text.startsWith("♟")) return null
-    val match = chessPattern.find(text) ?: return null
-    val moves = match.groupValues[3].split(',').filter { it.isNotEmpty() }
-    if (moves.size > 600) return null
-    return ChessMessage(match.groupValues[1], match.groupValues[2] == "w", moves, match.groupValues[4].isNotEmpty())
-}
-
-internal fun chessText(id: String, white: Boolean, moves: List<String>, summary: String, resign: Boolean = false): String {
-    val game = Chess.replay(moves) ?: Chess.start()
-    return "♟️ Chess · $summary\nSee the board: https://lichess.org/analysis/standard/${game.fen().replace(' ', '_')}\n" +
-        "fm-chess:$id:${if (white) "w" else "b"}:${moves.joinToString(",")}${if (resign) ":resign" else ""}"
-}
-
-internal fun newChessGame(white: Boolean): String = chessText(newId(), white, emptyList(),
-    if (white) "Let's play! I'm white, so I go first." else "Let's play! I'm black, so you go first.")
-
-private val pieceGlyph = mapOf(1 to "♟", 2 to "♞", 3 to "♝", 4 to "♜", 5 to "♛", 6 to "♚")
-
-@Composable
-private fun ChessBoard(game: Chess, flipped: Boolean, square: Dp, selected: Int?, targets: Set<Int>, last: Pair<Int, Int>?,
-                       tap: ((Int) -> Unit)?) {
-    val light = Color(0xFFEDE6D6)
-    val dark = Color(0xFF8DA37A)
-    Column(Modifier.clip(RoundedCornerShape(8.dp))) {
-        for (row in 0..7) Row {
-            for (column in 0..7) {
-                val rank = if (flipped) row else 7 - row
-                val file = if (flipped) 7 - column else column
-                val index = rank * 8 + file
-                val base = if ((rank + file) % 2 == 0) dark else light
-                val tint = when {
-                    index == selected -> Color(0xFFF6D365)
-                    last != null && (index == last.first || index == last.second) -> base.copy(red = (base.red + .25f).coerceAtMost(1f))
-                    else -> base
-                }
-                Box(Modifier.size(square).background(tint).then(if (tap != null) Modifier.clickable { tap(index) } else Modifier),
-                    contentAlignment = Alignment.Center) {
-                    val piece = game.board[index]
-                    if (piece != 0) Text(pieceGlyph[kotlin.math.abs(piece)] + "\uFE0E", fontSize = (square.value * .72f).sp,
-                        textAlign = TextAlign.Center, style = TextStyle(color = if (piece > 0) Color.White else Color(0xFF1E1E1E),
-                            shadow = Shadow(if (piece > 0) Color.Black else Color.White.copy(alpha = .4f), Offset(0f, 0f), 3f)))
-                    if (index in targets) Box(Modifier.size(square * .3f).background(Color.Black.copy(alpha = .25f), androidx.compose.foundation.shape.CircleShape))
-                }
-            }
-        }
-    }
-}
-
-/** Where a game stands for you, from the newest message of that game. */
-private fun chessStatus(game: Chess, mineWhite: Boolean, message: ChessMessage, latest: Boolean, outgoing: Boolean): String {
-    if (message.resigned) return if (outgoing) "You resigned" else "They resigned · you win"
-    return when (game.outcome()) {
-        Chess.Outcome.CHECKMATE -> if (game.whiteToMove != mineWhite) "Checkmate · you win! 🎉" else "Checkmate · they win"
-        Chess.Outcome.STALEMATE -> "Stalemate · it's a draw"
-        Chess.Outcome.DRAW -> "Draw"
-        Chess.Outcome.PLAYING -> when {
-            !latest -> "Move ${message.moves.size}"
-            game.whiteToMove == mineWhite -> if (game.inCheck()) "Check! Your move" else "Your move"
-            else -> "Their move"
-        }
-    }
-}
-
-@Composable
-internal fun ChessCard(message: ChessMessage, outgoing: Boolean, latest: Boolean, foreground: Color, respond: ((String) -> Unit)?) {
-    val game = remember(message) { Chess.replay(message.moves) }
-    if (game == null) { Text("♟ This chess move isn't valid.", color = foreground); return }
-    val mineWhite = if (outgoing) message.senderWhite else !message.senderWhite
-    var open by remember { mutableStateOf(false) }
-    val lastMove = remember(message) { message.moves.lastOrNull()?.let { game.parseUci(it) }?.let { it.from to it.to } }
-    Column(Modifier.padding(bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("CHESS", color = foreground.copy(alpha = .75f), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-        Box(Modifier.clickable(onClickLabel = "Open the board") { open = true }) {
-            ChessBoard(game, !mineWhite, 21.dp, null, emptySet(), lastMove, null)
-        }
-        val status = chessStatus(game, mineWhite, message, latest, outgoing)
-        Text(status, color = foreground, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-        val yourTurn = latest && !message.resigned && game.outcome() == Chess.Outcome.PLAYING && game.whiteToMove == mineWhite
-        if (yourTurn && respond != null) FilledTonalButton(onClick = { open = true }) { Text("Make your move") }
-        else TextButton(onClick = { open = true }) { Text("View board", color = foreground) }
-    }
-    if (open) ChessDialog(message, game, mineWhite, latest && respond != null, { open = false }) { text -> respond?.invoke(text); open = false }
-}
-
-@Composable
-private fun ChessDialog(message: ChessMessage, start: Chess, mineWhite: Boolean, canPlay: Boolean, dismiss: () -> Unit, send: (String) -> Unit) {
-    var selected by remember { mutableStateOf<Int?>(null) }
-    var pending by remember { mutableStateOf<Chess.Move?>(null) }
-    var promotionFor by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    val playing = canPlay && !message.resigned && start.outcome() == Chess.Outcome.PLAYING && start.whiteToMove == mineWhite
-    val legal = remember(start) { if (playing) start.legalMoves() else emptyList() }
-    val shown = remember(pending) { pending?.let { start.copy().apply { play(it) } } ?: start }
-    androidx.compose.ui.window.Dialog(onDismissRequest = dismiss) {
-        Surface(shape = RoundedCornerShape(22.dp), tonalElevation = 6.dp) {
-            BoxWithConstraints(Modifier.padding(16.dp)) {
-                val square = minOf((maxWidth - 2.dp) / 8, 46.dp)
-                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(if (playing) "Your move as ${if (mineWhite) "white" else "black"}" else "Chess", style = MaterialTheme.typography.titleMedium)
-                    val targets = selected?.let { from -> legal.filter { it.from == from }.map { it.to }.toSet() }.orEmpty()
-                    ChessBoard(shown, !mineWhite, square, selected, if (pending == null) targets else emptySet(),
-                        pending?.let { it.from to it.to }, if (playing && pending == null) { index ->
-                            val piece = start.board[index]
-                            val from = selected
-                            when {
-                                from != null && index in targets -> {
-                                    val options = legal.filter { it.from == from && it.to == index }
-                                    if (options.size > 1) promotionFor = from to index else pending = options.first()
-                                    selected = null
-                                }
-                                piece != 0 && (piece > 0) == mineWhite -> selected = index
-                                else -> selected = null
-                            }
-                        } else null)
-                    promotionFor?.let { (from, to) ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            for (kind in listOf(Chess.QUEEN, Chess.ROOK, Chess.BISHOP, Chess.KNIGHT)) OutlinedButton(onClick = {
-                                pending = Chess.Move(from, to, kind); promotionFor = null
-                            }) { Text(pieceGlyph[kind] + "\uFE0E", fontSize = 20.sp) }
-                        }
-                    }
-                    val move = pending
-                    if (move != null) {
-                        val san = start.san(move)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = { pending = null }) { Text("Undo") }
-                            Button(onClick = {
-                                val moves = message.moves + start.uci(move)
-                                val after = Chess.replay(moves)!!
-                                val summary = when (after.outcome()) {
-                                    Chess.Outcome.CHECKMATE -> "I played $san. Checkmate!"
-                                    Chess.Outcome.STALEMATE -> "I played $san. Stalemate, it's a draw."
-                                    Chess.Outcome.DRAW -> "I played $san. It's a draw."
-                                    else -> "I played $san (move ${(moves.size + 1) / 2}). Your turn!"
-                                }
-                                send(chessText(message.id, mineWhite, moves, summary))
-                            }) { Text("Send $san") }
-                        }
-                    } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (playing) TextButton(onClick = { send(chessText(message.id, mineWhite, message.moves, "I resign. Good game!", resign = true)) }) {
-                            Text("Resign", color = MaterialTheme.colorScheme.error)
-                        }
-                        if (!playing && canPlay && (message.resigned || start.outcome() != Chess.Outcome.PLAYING)) {
-                            TextButton(onClick = { send(newChessGame(!mineWhite)) }) { Text("Rematch") }
-                        }
-                        TextButton(onClick = dismiss) { Text("Close") }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun ChessChallengeDialog(dismiss: () -> Unit, post: (String) -> Unit) {
-    AlertDialog(onDismissRequest = dismiss, title = { Text("Play chess") }, text = {
-        Text("Take turns right in this chat. People on other apps get each move as text with a link to see the board.")
-    }, confirmButton = {
-        Row {
-            TextButton(onClick = { post(newChessGame(false)); dismiss() }) { Text("Play black") }
-            TextButton(onClick = { post(newChessGame(true)); dismiss() }) { Text("Play white") }
-        }
-    }, dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } })
-}
-
 /** What cards in a chat need from the conversation around them. */
 internal class RichContext(
     val polls: Map<String, PollTally>,
-    /** The newest message of each chess game, by game id: only that one offers a move. */
-    val latestChess: Map<String, String>,
+    /** Each message that's part of a game, by message id, including plain replies that counted as moves. */
+    val games: Map<String, GameView>,
+    val rps: Map<String, RpsView>,
+    /** Answers to each event, by the event message's id. */
+    val rsvps: Map<String, Map<String, Rsvp>>,
     val respond: ((String) -> Unit)?,
     val previews: Boolean,
     /** Show pictures and GIFs from links; off means they stay plain links. */
@@ -672,9 +661,9 @@ internal class RichContext(
 )
 
 internal fun richContext(lines: List<ChatLine>, respond: ((String) -> Unit)?, previews: Boolean, pictures: Boolean = true): RichContext {
-    val latest = mutableMapOf<String, String>()
-    for (line in lines) parseChess(line.text)?.let { latest[it.id] = line.id }
-    return RichContext(tallyPolls(lines), latest, respond, previews, pictures)
+    val moves = mutableSetOf<String>()
+    val games = trackGames(lines, moves)
+    return RichContext(tallyPolls(lines, moves), games, trackRps(lines), tallyRsvps(lines), respond, previews, pictures)
 }
 
 /** A short inbox line for a card message, so the inbox never shows the raw text behind it. */
@@ -683,7 +672,12 @@ internal fun cardPreview(text: String): String? {
     parsePoll(text)?.let { return "📊 Poll: " + it.question }
     parseVote(text)?.let { return "🗳️ Voted “" + it.second + "”" }
     parseEvent(text)?.let { return "📅 " + it.title }
-    parseChess(text)?.let { return "♟️ " + text.substringAfter("Chess · ").substringBefore('\n') }
+    parseRps(text)?.let { return "✊✋✌️ Rock paper scissors" }
+    parseGameLink(text)?.let { return "🎮 ${it.game} on ${it.site}" }
+    parseRandom(text)?.let { return text.substringBefore('\n') }
+    parseEdit(text)?.let { return "✏️ " + plainPreview(it.second) }
+    if (parseEffect(text) != null || text.contains("||")) return plainPreview(text).takeIf { it != text }
+    parseGame(text)?.let { return "${it.kind.icon} ${it.kind.title} · " + text.substringAfter(" · ").substringBefore('\n') }
     parseMoney(text)?.let { return "💸 " + (if (it.sent) "Sent " else "Requested ") + it.amount + " " + it.asset.substringBefore(" on ").substringBefore(" via ") }
     return null
 }

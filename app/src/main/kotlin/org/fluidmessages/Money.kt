@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
@@ -85,7 +88,7 @@ internal val builtInMoney = listOf(
     // UPI and payto: are open standards: UPI for India's banks and apps, payto: (RFC 8905) for bank transfers by IBAN.
     MoneyAsset("via UPI", Regex("[A-Za-z0-9._-]{2,256}@[A-Za-z]{2,64}"), "", { to, amount, memo, _ ->
         "upi://pay?pa=$to&am=${amount.toPlainString()}&cu=INR" + note(memo, "&", "tn") }, listOf("INR"), "UPI ID"),
-    MoneyAsset("via bank transfer", Regex("[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}"), "", { to, amount, memo, currency ->
+    MoneyAsset("via Bank transfer", Regex("[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}"), "", { to, amount, memo, currency ->
         "payto://iban/${to.uppercase()}?amount=$currency:${amount.toPlainString()}" + note(memo, "&") },
         listOf("EUR", "GBP", "CHF", "PLN", "SEK", "DKK", "NOK", "CZK", "HUF", "RON"), "IBAN"),
 )
@@ -135,7 +138,7 @@ internal fun defaultMoney(prefs: android.content.SharedPreferences): MoneyAsset 
 
 internal data class MoneyMessage(val sent: Boolean, val amount: String, val asset: String, val note: String, val link: String) {
     /** Not one of FluidMessages' built-in ways to pay, so nobody has checked how its link works. */
-    val unverified: Boolean get() = builtInMoney.none { it.name == asset || it.fiat && asset.endsWith(" " + it.name) }
+    val unverified: Boolean get() = builtInMoney.none { it.name.equals(asset, true) || it.fiat && asset.endsWith(" " + it.name, true) }
 }
 
 private val moneyPattern = Regex("""^💸 (Payment request|Sent): ([0-9]+(?:\.[0-9]+)?) (.+?)\n(?:For: (.+)\n)?(?:(?:Pay|Transaction): (\S+))?""")
@@ -169,7 +172,7 @@ internal fun MoneyCard(money: MoneyMessage, outgoing: Boolean, foreground: Color
     val viaService = " via " in money.asset
     val unit = if (viaService) money.asset.substringBefore(" via ") else money.asset.substringBefore(" on ")
     val network = when {
-        viaService -> "via " + money.asset.substringAfter(" via ")
+        viaService -> "via " + money.asset.substringAfter(" via ").replaceFirstChar { it.uppercase() }
         " on " in money.asset -> "on " + money.asset.substringAfter(" on ")
         else -> ""
     }
@@ -187,7 +190,7 @@ internal fun MoneyCard(money: MoneyMessage, outgoing: Boolean, foreground: Color
             else paymentLink.matches(money.link)
         if (!money.sent && !outgoing && payable) {
             FilledTonalButton(onClick = { noWallet = !openWallet(context, money.link) }) {
-                Text(if (viaService) "Pay " + money.asset.substringAfter(" via ") else "Pay with your wallet")
+                Text(if (viaService) "Pay with " + money.asset.substringAfter(" via ").replaceFirstChar { it.uppercase() } else "Pay with your wallet")
             }
             TextButton(onClick = { clipboard.setText(AnnotatedString(money.link)) }) { Text("Copy payment link", color = foreground) }
             if (noWallet) Text("No app on this phone handles this link.", color = foreground, fontSize = 12.sp)
@@ -212,29 +215,115 @@ private fun UnverifiedNotice(foreground: Color, outgoing: Boolean) {
     }
 }
 
-/** Request or send money from the attachment menu. post() adds the text to the composer's send. */
+/** How a way to pay looks in the picker: a friendly name, a short detail, and a colored badge. */
+internal data class MoneyLook(val title: String, val detail: String, val badge: String, val color: Color)
+
+internal fun moneyLook(asset: MoneyAsset): MoneyLook = when (asset.name) {
+    "XMR on Monero" -> MoneyLook("Monero", "XMR · private by default", "ɱ", Color(0xFFFF6600))
+    "BTC on Bitcoin" -> MoneyLook("Bitcoin", "BTC", "₿", Color(0xFFF7931A))
+    "BTC on Lightning" -> MoneyLook("Lightning", "Fast, tiny-fee bitcoin", "⚡", Color(0xFF7B3FE4))
+    "USDC on Solana" -> MoneyLook("USDC", "on Solana", "$", Color(0xFF2775CA))
+    "SOL on Solana" -> MoneyLook("Solana", "SOL", "◎", Color(0xFF9945FF))
+    "USDC on Ethereum" -> MoneyLook("USDC", "on Ethereum", "$", Color(0xFF2775CA))
+    "USDC on Base" -> MoneyLook("USDC", "on Base", "$", Color(0xFF0052FF))
+    "ETH on Ethereum" -> MoneyLook("Ethereum", "ETH", "Ξ", Color(0xFF627EEA))
+    "via PayPal" -> MoneyLook("PayPal", "PayPal.me link", "P", Color(0xFF003087))
+    "via Venmo" -> MoneyLook("Venmo", "US dollars", "V", Color(0xFF008CFF))
+    "via Cash App" -> MoneyLook("Cash App", "\$cashtag", "$", Color(0xFF00C244))
+    "via Revolut" -> MoneyLook("Revolut", "Revolut.me link", "R", Color(0xFF191C1F))
+    "via UPI" -> MoneyLook("UPI", "Indian rupees", "₹", Color(0xFF097939))
+    "via Bank transfer" -> MoneyLook("Bank transfer", "IBAN · payto: link", "⌂", Color(0xFF5856D6))
+    else -> MoneyLook(asset.name.removePrefix("via "), "Added by you", asset.name.take(1).uppercase(), Color(0xFF8E8E93))
+}
+
+@Composable
+private fun MoneyBadge(look: MoneyLook, size: androidx.compose.ui.unit.Dp) {
+    Box(Modifier.size(size).background(look.color, androidx.compose.foundation.shape.CircleShape), contentAlignment = androidx.compose.ui.Alignment.Center) {
+        Text(look.badge, color = Color.White, fontSize = (size.value * .45f).sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun MoneyTile(asset: MoneyAsset, modifier: Modifier, pick: () -> Unit) {
+    val look = moneyLook(asset)
+    Column(modifier.clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+        .background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(onClickLabel = look.title, onClick = pick)
+        .padding(horizontal = 8.dp, vertical = 12.dp), horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        MoneyBadge(look, 38.dp)
+        Text(look.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, color = MaterialTheme.colorScheme.onSurface)
+        Text(look.detail, fontSize = 11.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+    }
+}
+
+/**
+ * Request or send money from the attachment menu, in two steps: pick how (Monero first), then fill in only
+ * what that method needs. post() adds the text to the composer's send.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun MoneyDialog(dismiss: () -> Unit, post: (String) -> Unit) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("fluid", Context.MODE_PRIVATE) }
-    val assets = remember { moneyAssets(prefs) }
+    var assets by remember { mutableStateOf(moneyAssets(prefs)) }
     var request by remember { mutableStateOf(true) }
-    var asset by remember { mutableStateOf(defaultMoney(prefs)) }
-    var currency by remember { mutableStateOf(prefs.getString("money.currency." + asset.name, null) ?: asset.currencies.firstOrNull().orEmpty()) }
-    var amount by remember { mutableStateOf("") }
-    var wallet by remember { mutableStateOf(prefs.getString("wallet." + asset.name, "").orEmpty()) }
-    var memo by remember { mutableStateOf("") }
-    var transaction by remember { mutableStateOf("") }
-    var assetMenu by remember { mutableStateOf(false) }
-    var currencyMenu by remember { mutableStateOf(false) }
+    var chosen by remember { mutableStateOf<MoneyAsset?>(null) }
     var adding by remember { mutableStateOf(false) }
-    var problem by remember { mutableStateOf<String?>(null) }
-    var paid by remember { mutableStateOf(false) }
-    fun pick(option: MoneyAsset) {
-        asset = option; assetMenu = false; problem = null
-        currency = prefs.getString("money.currency." + option.name, null) ?: option.currencies.firstOrNull().orEmpty()
-        wallet = if (request) prefs.getString("wallet." + option.name, "").orEmpty() else ""
+    if (adding) { CustomMoneyDialog({ adding = false }) { added -> adding = false; assets = moneyAssets(prefs); chosen = added }; return }
+    ModalBottomSheet(onDismissRequest = dismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(horizontal = 18.dp)
+            .padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                if (chosen != null) TextButton(onClick = { chosen = null }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("‹ All methods") }
+                Spacer(Modifier.weight(1f))
+                SingleChoiceSegmentedButtonRow {
+                    SegmentedButton(request, { request = true }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("Request") }
+                    SegmentedButton(!request, { request = false }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("Send") }
+                }
+            }
+            val asset = chosen
+            if (asset == null) {
+                Text(if (request) "How do you want to be paid?" else "How are you paying?", style = MaterialTheme.typography.titleLarge)
+                val usual = defaultMoney(prefs)
+                // The usual method sits on top as one big button, so most requests are a single tap away.
+                Row(Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer).clickable { chosen = usual }.padding(14.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    MoneyBadge(moneyLook(usual), 44.dp)
+                    Column(Modifier.weight(1f)) {
+                        Text("Your usual", fontSize = 12.sp, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .8f))
+                        Text(moneyLook(usual).title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    }
+                    Text("›", fontSize = 26.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                }
+                for ((title, group) in listOf("Crypto" to assets.filter { !it.fiat && !it.custom }, "Payment apps and banks" to assets.filter { it.fiat },
+                    "Added by you" to assets.filter { it.custom })) {
+                    if (group.isEmpty()) continue
+                    Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    for (row in group.chunked(3)) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (item in row) MoneyTile(item, Modifier.weight(1f)) { chosen = item }
+                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+                OutlinedButton(onClick = { adding = true }, modifier = Modifier.fillMaxWidth()) { Text("+ Add your own way to pay") }
+                Text("FluidMessages never holds money, keys, or card numbers. Payment links open the payer's own app.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else MoneyForm(asset, request, prefs, { dismiss() }) { text -> post(text); dismiss() }
+        }
     }
+}
+
+@Composable
+private fun MoneyForm(asset: MoneyAsset, request: Boolean, prefs: android.content.SharedPreferences, close: () -> Unit, post: (String) -> Unit) {
+    val context = LocalContext.current
+    val look = moneyLook(asset)
+    var currency by remember(asset) { mutableStateOf(prefs.getString("money.currency." + asset.name, null) ?: asset.currencies.firstOrNull().orEmpty()) }
+    var amount by remember(asset) { mutableStateOf("") }
+    var wallet by remember(asset, request) { mutableStateOf(if (request) prefs.getString("wallet." + asset.name, "").orEmpty() else "") }
+    var memo by remember(asset) { mutableStateOf("") }
+    var transaction by remember(asset) { mutableStateOf("") }
+    var problem by remember(asset) { mutableStateOf<String?>(null) }
     fun validated(): Pair<BigDecimal, String>? {
         val value = amount.trim().toBigDecimalOrNull()
         if (value == null || value.signum() <= 0 || value.scale() > 18 || !Regex("[0-9]+(\\.[0-9]+)?").matches(amount.trim())) {
@@ -245,82 +334,53 @@ internal fun MoneyDialog(dismiss: () -> Unit, post: (String) -> Unit) {
         if (!asset.address.matches(to)) { problem = "That doesn't look like a ${asset.addressLabel}"; return null }
         return value to asset.link(to, value, memo.trim(), currency)
     }
-    if (adding) { CustomMoneyDialog({ adding = false }) { added -> adding = false; pick(added) }; return }
-    AlertDialog(onDismissRequest = dismiss, title = { Text(if (request) "Request money" else "Send money") },
-        text = {
-            Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(request, onClick = {
-                        request = true; paid = false
-                        wallet = prefs.getString("wallet." + asset.name, "").orEmpty()
-                    }, label = { Text("Request") })
-                    FilterChip(!request, onClick = { request = false; wallet = "" }, label = { Text("Send") })
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(Modifier.weight(1f)) {
-                        OutlinedButton(onClick = { assetMenu = true }, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (asset.fiat) asset.name.removePrefix("via ") else asset.name, maxLines = 1)
-                        }
-                        DropdownMenu(assetMenu, onDismissRequest = { assetMenu = false }) {
-                            Text("Crypto", Modifier.padding(horizontal = 14.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium)
-                            for (option in assets.filter { !it.fiat && !it.custom }) DropdownMenuItem(text = { Text(option.name) }, onClick = { pick(option) })
-                            HorizontalDivider()
-                            Text("Payment apps and banks", Modifier.padding(horizontal = 14.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium)
-                            for (option in assets.filter { it.fiat }) DropdownMenuItem(text = { Text(option.name.removePrefix("via ")) }, onClick = { pick(option) })
-                            val custom = assets.filter { it.custom }
-                            if (custom.isNotEmpty()) {
-                                HorizontalDivider()
-                                Text("Added by you", Modifier.padding(horizontal = 14.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium)
-                                for (option in custom) DropdownMenuItem(text = { Text(option.name) }, onClick = { pick(option) })
-                            }
-                            HorizontalDivider()
-                            DropdownMenuItem(text = { Text("Add your own…") }, onClick = { assetMenu = false; adding = true })
-                        }
-                    }
-                    if (asset.currencies.size > 1) Box {
-                        OutlinedButton(onClick = { currencyMenu = true }) { Text(currency) }
-                        DropdownMenu(currencyMenu, onDismissRequest = { currencyMenu = false }) {
-                            for (option in asset.currencies) DropdownMenuItem(text = { Text(option) }, onClick = { currency = option; currencyMenu = false })
-                        }
-                    }
-                }
-                OutlinedTextField(amount, { amount = it; problem = null }, label = { Text(if (asset.fiat) "Amount in $currency" else "Amount") },
-                    singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-                OutlinedTextField(wallet, { wallet = it; problem = null }, singleLine = true,
-                    label = { Text(if (request) "Your ${asset.addressLabel}" else "Their ${asset.addressLabel}") })
-                OutlinedTextField(memo, { memo = it.take(120) }, label = { Text("What it's for (optional)") }, singleLine = true)
-                if (!request) {
-                    OutlinedButton(onClick = {
-                        val checked = validated() ?: return@OutlinedButton
-                        paid = openWallet(context, checked.second)
-                        if (!paid) problem = "No app on this phone handles ${asset.name.substringAfter(" on ").removePrefix("via ")} payment links."
-                    }, modifier = Modifier.fillMaxWidth()) { Text(if (asset.fiat) "Open ${asset.name.removePrefix("via ")} to pay" else "Open your wallet to pay") }
-                    if (!asset.fiat && asset.explorer.isNotEmpty()) OutlinedTextField(transaction, { transaction = it.trim() }, singleLine = true,
-                        label = { Text("Transaction ID after paying (optional)") })
-                }
-                if (asset.custom) UnverifiedNotice(MaterialTheme.colorScheme.onSurface, true)
-                Text(if (asset.fiat) "FluidMessages never holds money. The payment happens in ${asset.name.removePrefix("via ")}."
-                    else "FluidMessages never holds money or keys. Crypto payments can't be reversed, so check the address.",
-                    style = MaterialTheme.typography.bodySmall)
-                problem?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        MoneyBadge(look, 46.dp)
+        Column {
+            Text((if (request) "Request with " else "Pay with ") + look.title, style = MaterialTheme.typography.titleLarge)
+            Text(look.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+    if (asset.currencies.size > 1) Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (option in asset.currencies) FilterChip(currency == option, { currency = option }, label = { Text(option) })
+    }
+    OutlinedTextField(amount, { amount = it.filter { c -> c.isDigit() || c == '.' }.take(24); problem = null }, Modifier.fillMaxWidth(),
+        label = { Text("Amount") }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 26.sp, fontWeight = FontWeight.SemiBold),
+        suffix = { Text(if (asset.fiat) currency else asset.name.substringBefore(" on ").substringBefore(" via ")) },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+    OutlinedTextField(wallet, { wallet = it; problem = null }, Modifier.fillMaxWidth(), singleLine = true,
+        label = { Text(if (request) "Your ${asset.addressLabel}" else "Their ${asset.addressLabel}") },
+        supportingText = if (request && wallet.isNotEmpty()) ({ Text("Remembered for next time") }) else null)
+    OutlinedTextField(memo, { memo = it.take(120) }, Modifier.fillMaxWidth(), label = { Text("What it's for (optional)") }, singleLine = true)
+    if (!request) {
+        OutlinedButton(onClick = {
+            val checked = validated() ?: return@OutlinedButton
+            if (!openWallet(context, checked.second)) problem = "No app on this phone opens ${look.title} payment links."
+        }, modifier = Modifier.fillMaxWidth()) { Text("Open ${if (asset.fiat) look.title else "your wallet"} to pay") }
+        if (!asset.fiat && asset.explorer.isNotEmpty()) OutlinedTextField(transaction, { transaction = it.trim() }, Modifier.fillMaxWidth(),
+            singleLine = true, label = { Text("Transaction ID after paying (optional)") })
+    }
+    if (asset.custom) UnverifiedNotice(MaterialTheme.colorScheme.onSurface, true)
+    Text(if (asset.fiat) "The payment happens in ${look.title}. FluidMessages never holds money."
+        else "Crypto payments can't be reversed, so check the address.", style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant)
+    problem?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = close, modifier = Modifier.weight(1f)) { Text("Cancel") }
+        Button(onClick = {
+            val checked = validated() ?: return@Button
+            if (!request && transaction.isNotEmpty() && !Regex("[A-Za-z0-9]{32,128}").matches(transaction)) {
+                problem = "Enter the transaction ID only"; return@Button
             }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                val checked = validated() ?: return@TextButton
-                if (!request && transaction.isNotEmpty() && !Regex("[A-Za-z0-9]{32,128}").matches(transaction)) {
-                    problem = "Enter the transaction ID only"; return@TextButton
-                }
-                val edit = prefs.edit().putString("money.default", asset.name)
-                if (asset.fiat) edit.putString("money.currency." + asset.name, currency)
-                if (request) edit.putString("wallet." + asset.name, wallet.trim())
-                edit.apply()
-                val link = if (request) checked.second else if (transaction.isEmpty() || asset.explorer.isEmpty()) "" else asset.explorer + transaction
-                post(moneyText(request, checked.first, asset.label(currency), memo, link))
-                dismiss()
-            }) { Text(if (request) "Send request" else "Post that you paid") }
-        },
-        dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } })
+            val edit = prefs.edit().putString("money.default", asset.name)
+            if (asset.fiat) edit.putString("money.currency." + asset.name, currency)
+            if (request) edit.putString("wallet." + asset.name, wallet.trim())
+            edit.apply()
+            val link = if (request) checked.second else if (transaction.isEmpty() || asset.explorer.isEmpty()) "" else asset.explorer + transaction
+            post(moneyText(request, checked.first, asset.label(currency), memo, link))
+        }, modifier = Modifier.weight(1f)) { Text(if (request) "Send request" else "Post that you paid") }
+    }
 }
 
 /** Add a coin or payment service FluidMessages doesn't include, by its payment link. */

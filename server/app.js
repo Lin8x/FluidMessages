@@ -122,6 +122,13 @@ const senderKey = (message) => message.type === 1 ? 'from:' + (message.author ||
 function fold(history) {
   const shown = [];
   for (const message of history) {
+    // "✏️ Edited “old” to: new" replaces the sender's own earlier message.
+    const edit = [4, 5, 6].includes(message.type) || message.attachment ? null : /^✏️ Edited “([\s\S]+?)” to: ([\s\S]+)$/.exec(message.body || '');
+    if (edit) {
+      const target = [...shown].reverse().find((row) => senderKey(row) === senderKey(message) && !row.attachment
+        && excerpt((row.body || '').replace(/”/g, '"'), 300) === edit[1]);
+      if (target) { target.earlier = (target.earlier || []).concat(target.body); target.body = edit[2]; continue; }
+    }
     const parsed = [4, 5, 6].includes(message.type) ? null : parseReaction(message.body);
     if (parsed?.quote) {
       const quoted = parsed.quote;
@@ -229,6 +236,9 @@ function messageActions(message) {
       });
     }
   }
+  if (sendable && message.type !== 1 && !message.attachment && ![4, 5, 6].includes(message.type) && typeof openEditMessage === 'function') {
+    action('Edit', () => openEditMessage(message));
+  }
   if (message.attachment) action('Download ' + message.attachment.name, () => download(message).catch(showError));
   return menu;
 }
@@ -240,7 +250,9 @@ function showMessages(preserve = false) {
   conversation.replaceChildren();
   const history = threads.get(active) || [];
   let lastDay = '';
+  let position = -1;
   for (const message of history) {
+    position++;
     const messageDay = day(timeOf(message));
     if (messageDay !== lastDay) conversation.append(element('p', messageDay, 'day'));
     lastDay = messageDay;
@@ -255,6 +267,7 @@ function showMessages(preserve = false) {
     const forwarded = /^Forwarded (?:“([\s\S]+?)”|"([\s\S]+?)") by (?:“([^”\r\n]+)”|"([^"\r\n]+)")$/.exec(message.body);
     if (quoted) bubble.append(quoteCard('Replying to', quoted[1] || quoted[2]), element('p', quoted[3]));
     else if (forwarded) bubble.append(quoteCard('Forwarded from ' + (forwarded[3] || forwarded[4]), forwarded[1] || forwarded[2]));
+    else if (typeof formattedText === 'function') bubble.replaceChildren(formattedText(message.body));
     else bubble.textContent = message.body;
     if (/^FM1:/.test(message.body || '')) {
       // FluidMessages encryption: only phones with the shared key can read it.
@@ -264,10 +277,11 @@ function showMessages(preserve = false) {
     if (typeof moneyCard === 'function') moneyCard(message, bubble);
     if (typeof meetingCard === 'function') meetingCard(message, bubble);
     if (typeof richCard === 'function') richCard(message, bubble, history);
+    if (typeof messageEffect === 'function' && !/^FM1:/.test(message.body || '')) setTimeout(() => messageEffect(message, bubble, position >= history.length - 3));
     if (message.attachment) {
       if (message.body === message.attachment.name || /^(Photo|sticker\.\w+)$/.test(message.body || '')) bubble.textContent = '';
       // Pictures show inline and open full screen; other files download.
-      if (!(typeof attachmentPicture === 'function' && attachmentPicture(message, bubble))) {
+      if (!(typeof attachmentPicture === 'function' && (attachmentPicture(message, bubble) || attachmentContact(message, bubble)))) {
         const file = element('button', '📎 ' + message.attachment.name, 'file-card');
         file.type = 'button';
         file.addEventListener('click', () => download(message).catch(showError));
@@ -279,6 +293,7 @@ function showMessages(preserve = false) {
     const failed = message.type === 5 || (message.status || '').startsWith('Couldn’t send');
     const status = failed ? ' · Not delivered' : [4, 6].includes(message.type) ? ' · Sending…' : message.status ? ' · ' + message.status : '';
     if (failed) row.classList.add('failed');
+    if (message.earlier?.length) row.append(element('small', 'Edited', 'message-time'));
     if (appearance.exactTimes || status) row.append(element('small', clock(timeOf(message)) + status, 'message-time'));
     row.append(messageActions(message));
     conversation.append(row);

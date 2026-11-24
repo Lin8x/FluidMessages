@@ -51,7 +51,7 @@ New groups use one protocol that everyone shares. That is MMS for phone numbers.
 
 ### Money
 
-**+ → Money** requests or sends money through standard payment links, so paying always happens in the other person's own app. **Monero (XMR)** is the default; the last method you use becomes the new default, and **Settings → Payments** changes it.
+**+ → Money** requests or sends money through standard payment links, so paying always happens in the other person's own app. It works in two steps: pick how (your usual method sits on top as one big button, then crypto, payment apps and banks, and your own), then fill in only what that method needs. **Monero (XMR)** is the default; the last method you use becomes the new default, and **Settings → Payments** changes it.
 
 - **Crypto:** Monero, Bitcoin, Bitcoin over Lightning (Lightning address or LNURL), USDC and SOL on Solana, USDC and ETH on Ethereum, USDC on Base.
 - **Payment apps and banks:** PayPal.me, Venmo, Cash App, Revolut, UPI, and bank transfers by IBAN using the open `payto:` standard. Pick the currency where the service supports several.
@@ -59,15 +59,49 @@ New groups use one protocol that everyone shares. That is MMS for phone numbers.
 
 Google Pay and Apple Pay don't offer payment links that other apps can use, so they aren't listed. FluidMessages never holds money, keys, seed phrases, or card numbers and never signs a transaction. The message is readable text, so people without FluidMessages still see the amount and link. Crypto payments can't be reversed.
 
-### GIFs, stickers, polls, events, chess, and link previews
+### GIFs, stickers, polls, events, games, and link previews
 
 Every one of these is sent as readable text or an ordinary picture, so people on other apps get something that makes sense, and FluidMessages shows it as a card.
 
-- **GIFs and stickers:** **+ → GIF** or **Sticker**, or insert them straight from your keyboard (Gboard and others). Searching inside the app is optional: choose Tenor or GIPHY with your own free API key, and optionally your own compatible API address, in **Settings → Media, GIFs, and links**. Searched GIFs are sent as a link (light on data, and other apps preview it); GIFs from your phone are sent as a file where the service carries files. **Make a sticker** turns any photo into a sticker. Stickers show without a bubble. GIFs and stickers can each be turned off.
+- **GIFs and stickers:** **+ → GIF** or **Sticker**, or insert them straight from your keyboard (Gboard and others). Browse Tenor, GIPHY, Imgur, or Reddit r/gifs right in the picker with no account: long-press a GIF, then **Send**. Turn each site off or add your own (with `{query}` where search words go) under **GIF sites to browse** in **Settings → Media, GIFs, and links**. For search results inside the picker, choose Tenor or GIPHY with your own free API key, and optionally your own compatible API address, in **Settings → Media, GIFs, and links**. Searched GIFs are sent as a link (light on data, and other apps preview it); GIFs from your phone are sent as a file where the service carries files. **Make a sticker** turns any photo into a sticker. Stickers show without a bubble. GIFs and stickers can each be turned off.
 - **Polls:** **+ → Poll** with 2 to 10 options. Everyone in the chat taps to vote and sees live counts. People on other apps see a numbered list and can reply with a number, which is counted too.
-- **Events:** **+ → Event** shares a title, time (or all day), place, and notes. The card adds it to any calendar app on the phone, opens Google Calendar, or saves an `.ics` file (the open iCalendar standard). `.ics` invites that others send show as the same card.
-- **Chess:** **+ → Chess** starts a game as white or black. Tap a piece, then a highlighted square, then **Send**. The full rules are built in: castling, en passant, promotion, check, checkmate, stalemate. Each move also carries a link to the board on lichess.org, so people on other apps can follow along. Resign and rematch are on the board.
+- **Events:** **+ → Event** shares a title, time (or all day), place, and notes. Everyone can answer **Going**, **Maybe**, or **Can't go** on the card, and it shows the counts and who said what. People on other apps can just reply `yes`, `maybe`, or `no` to the newest invite before it happens. **Add to calendar** saves it straight into a calendar on your phone (Google, CalDAV/DAVx⁵, Exchange, or local; it asks for calendar access once), or opens another calendar app, Google Calendar on the web, or saves an `.ics` file (the open iCalendar standard). It never depends on one calendar app working. `.ics` invites that others send show as the same card.
+- **Games:** **+ → Games** offers chess, tic-tac-toe, and four in a row. Pick one, then who goes first (white or black for chess). With FluidMessages, tap the board to play, then **Send**; resign and play again are on the board. Chess has the full rules: castling, en passant, promotion, check, checkmate, and stalemate.
+  - **With people on other apps:** they get each move as text with the board drawn in it and a line saying how to answer. They just reply with their move: `e5`, `Nf6`, or `O-O` in chess, a square number in tic-tac-toe, or a column number in four in a row. Their reply counts as their move, and your next move carries it on.
+  - **Fair play:** a game message that changes earlier moves, plays for the other side, or keeps going after the game ended is marked as skipped and changes nothing. A number sent after a newer poll counts as a vote, not a move.
+  - **On a website instead:** after picking a game, choose where to play. **Lichess** (chess, free, no account) makes a real game link for you: your side opens in your browser and the other link is sent. **Chess.com** (needs free accounts), **Foony**, and **Papergames** (tic-tac-toe and four in a row) open the site; start a private game there and paste its invite link. The chat gets a card with **Join the game**, and other apps get the link.
+- **Rock paper scissors:** **+ → Games → Rock paper scissors**. Your pick is sealed (a SHA-256 hash of the game, your pick, and a secret), so you can't change it after seeing theirs. They pick on the card, or reply `rock`, `paper`, or `scissors` from any app. Then tap **Reveal my pick**; FluidMessages checks the reveal against the seal and warns if it doesn't match. Reveal from the device you started on, which keeps the secret. People on other apps can't check the seal themselves, and the message tells them their pick comes first.
+- **Dice and random:** **+ → Dice and random** rolls up to six dice (d4 to d100), flips a coin, or picks one of your choices. Your device picks with a secure random generator, and everyone, on any app, sees the same result.
 - **Link previews:** the first link in a message shows a card with the page's title, summary, and picture, with a play button for videos (YouTube, Vimeo, Twitch) and the same for songs and articles. Turn previews, or pictures from links, off in **Settings → Media, GIFs, and links**.
+
+### Formatting, spoilers, edits, and effects
+
+- **Formatting:** write `*bold*`, `_italic_`, `~strikethrough~`, `` `code` ``, or a ```` ``` ```` code block, the same way as WhatsApp. Other apps show the marks as typed. Marks inside web addresses are left alone.
+- **Spoilers:** wrap words in `||double bars||`. FluidMessages covers them until you tap; the inbox and notifications never show them. Other apps show the words with the bars.
+- **Edit a message:** touch and hold one of your sent text messages, then **Edit**. FluidMessages replaces the bubble and marks it **Edited**; **Message details** lists earlier versions. Other apps get `✏️ Edited “old text” to: new text`. Only the person who sent a message can edit it.
+- **Effects:** type a message, then **+ → Send with effect**. Bubble effects are Slam, Loud, Gentle, and Invisible ink (hidden under sparkles until tapped). Screen effects are Confetti, Balloons, Hearts, and Fireworks. Each plays once when it arrives; touch and hold the message to replay it. Other apps get your words with a note like `(sent with Confetti 🎉)`. With motion turned off in appearance settings (or reduced motion in your browser), effects don't animate.
+
+### Voice message transcripts
+
+Under any voice message, tap **Show transcript**. The phone's own on-device speech recognizer writes it out, so the recording never leaves your phone; nothing is sent to a cloud service. Android asks for microphone permission the first time, because its speech recognizer requires it, but nothing is recorded. Transcripts are kept privately in the app's cache. Phones without on-device speech recognition (including most emulators) say so instead. FluidMessages Web doesn't transcribe, because browsers have no private way to do it.
+
+### Contact cards
+
+**+ → Contact** shares a contact as a vCard, the standard every phone understands. In FluidMessages it shows as a card with the name, numbers, and emails, plus **Add to contacts** and **Call**. FluidMessages Web shows the same card with **Save contact (.vcf)**.
+
+### Editing photos
+
+Tap **Edit** on a photo waiting to send, **Edit** in the full-screen viewer on any photo in the chat, or **+ → Edit a photo**. The editor has:
+
+- **Crop:** free or square, 4:3, 3:4, 16:9, and 9:16, plus rotate and flip.
+- **Adjust:** brightness, contrast, saturation, warmth, tint, and fade.
+- **Filters:** Vivid, Mono, Noir, Sepia, Warm, Cool, Fade, Drama, Intense, and Invert. Adjustments apply on top of the filter.
+- **Draw:** pen, pencil, marker, highlighter, and eraser, in 12 colors and any size.
+- **Text:** eight fonts (Bold, Classic, Heavy, Serif, Typewriter, Handwritten, Casual, Small caps), outlined, boxed, or plain, in any color. Tap the picture to add words, drag to move, pinch to resize or turn, and double-tap to change the words. Layouts add top and bottom text, a title bar above, a caption bar below, or a label.
+- **Images:** add another photo or one of your stickers, then move, resize, and turn it.
+- **Size:** stretch wider or taller, and add space on any side in a color you pick.
+
+Undo and redo cover every step, sliders included. **Send** sends the edit straight to the chat; **Done** puts it in the message box so you can add words first. Edits of a GIF are sent as a still picture.
 
 ### Viewing photos and videos
 

@@ -2830,7 +2830,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         gifs.add(toggleRow("Stickers", "Send stickers, and make your own from photos", stickersOn, () -> {
             prefs.edit().putBoolean("stickers", !stickersOn).apply(); gifSettings(); }));
         String source = GifSettings.source(prefs);
-        gifs.add(action("Search GIFs and stickers with", GifSettings.label(source), () -> {
+        gifs.add(action("Search results in the picker", GifSettings.label(source).equals("Your phone and keyboard") ? "Off · browse sites instead" : GifSettings.label(source), () -> {
             List<String[]> items = List.of(
                 new String[]{"Your phone and keyboard", "No searching here. Nothing is sent anywhere until you send a GIF."},
                 new String[]{"Tenor", "Search Tenor with your own free API key from Google"},
@@ -2849,6 +2849,32 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 : GifSettings.apiBase(prefs), () -> textSetting("API address", "Optional. A compatible server or proxy, starting with https://. "
                     + "Leave blank to use " + GifSettings.label(source) + " directly.", "gifApi", false, this::gifSettings)));
         }
+        List<SettingsAction> sites = new ArrayList<>();
+        for (var site : GifSites.INSTANCE.getDefaults()) {
+            boolean on = GifSites.on(prefs, site);
+            sites.add(toggleRow(site.getName(), on ? "Shown in the GIF picker" : "Hidden", on, () -> {
+                GifSites.setOn(prefs, site.getId(), !on); gifSettings(); }));
+        }
+        for (String name : GifSites.names(prefs)) sites.add(action(name, "Added by you · tap to remove", () ->
+            showDialog(dialogBuilder().setTitle("Remove " + name + "?").setNegativeButton("Cancel", null)
+                .setPositiveButton("Remove", (dialog, which) -> { GifSites.remove(prefs, name); gifSettings(); }))));
+        sites.add(action("Add a GIF site", "Any site you like, with {query} where search words go", () -> {
+            EditText name = field("Name");
+            EditText link = field("Address, like https://example.com/search/{query}");
+            name.setSingleLine(true);
+            link.setSingleLine(true);
+            link.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+            var layout = new LinearLayout(this);
+            layout.setOrientation(LinearLayout.VERTICAL);
+            layout.setPadding(dp(20), dp(8), dp(20), 0);
+            layout.addView(name);
+            layout.addView(link);
+            showDialog(dialogBuilder().setTitle("Add a GIF site").setMessage("It opens inside the GIF picker. Long-press a GIF there to send it.")
+                .setView(layout).setNegativeButton("Cancel", null).setPositiveButton("Add", (dialog, which) -> {
+                    if (!GifSites.add(prefs, name.getText().toString(), link.getText().toString())) toast("Enter a name and an https:// address");
+                    gifSettings();
+                }));
+        }));
         List<SettingsAction> media = new ArrayList<>();
         String quality = MediaSanitizer.quality(this);
         String[] qualities = {"auto", "saver", "standard", "high"};
@@ -2866,7 +2892,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             prefs.edit().putBoolean("autoPictures", !pictures).apply(); gifSettings(); }));
         links.add(toggleRow("Link previews", "A card with the title and picture of shared links, like videos and songs", previews, () -> {
             prefs.edit().putBoolean("linkPreviews", !previews).apply(); gifSettings(); }));
-        SettingsPages.mount(root, prefs, List.of(new SettingsSection("GIFs and stickers", gifs), new SettingsSection("Photos and videos", media),
+        SettingsPages.mount(root, prefs, List.of(new SettingsSection("GIFs and stickers", gifs), new SettingsSection("GIF sites to browse", sites),
+            new SettingsSection("Photos and videos", media),
             new SettingsSection("Links", links)));
     }
 

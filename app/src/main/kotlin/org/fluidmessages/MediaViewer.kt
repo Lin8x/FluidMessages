@@ -49,6 +49,9 @@ import java.net.URL
 import java.security.MessageDigest
 import javax.net.ssl.HttpsURLConnection
 
+/** Set by a chat: opens the photo editor on a picture, so any photo in the chat can be edited and sent back. */
+internal val LocalEditPicture = androidx.compose.runtime.staticCompositionLocalOf<((Uri) -> Unit)?> { null }
+
 /** A decoded picture: a still bitmap, or an animated GIF/WebP that plays. */
 internal class DecodedMedia(val still: ImageBitmap?, val animated: Drawable?, val width: Int, val height: Int) {
     val ratio: Float get() = if (height <= 0) 1f else width.toFloat() / height
@@ -80,6 +83,31 @@ internal object MediaDecoding {
 }
 
 /** Pictures and GIFs linked in messages, downloaded once into a private cache. HTTPS only, 15 MB at most. */
+/**
+ * Links in messages come from other people, so pictures and previews are only fetched from public addresses:
+ * never this phone, the home network, or carrier-internal ones a sender could use to probe what's around you.
+ */
+internal object PublicHosts {
+    fun allowed(url: URL): Boolean {
+        if (url.protocol != "https" || url.host.isNullOrEmpty()) return false
+        val addresses = runCatching { java.net.InetAddress.getAllByName(url.host) }.getOrNull() ?: return false
+        return addresses.isNotEmpty() && addresses.all { public(it) }
+    }
+
+    private fun public(address: java.net.InetAddress): Boolean {
+        if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress || address.isSiteLocalAddress ||
+            address.isMulticastAddress) return false
+        val bytes = address.address
+        if (bytes.size == 4) {
+            val first = bytes[0].toInt() and 0xFF
+            val second = bytes[1].toInt() and 0xFF
+            if (first == 0 || first >= 224 || first == 100 && second in 64..127 || first == 192 && second == 0 && (bytes[2].toInt() and 0xFF) == 0 ||
+                first == 198 && second in 18..19) return false
+        } else if (bytes.size == 16 && (bytes[0].toInt() and 0xFE) == 0xFC) return false // Unique local (fc00::/7).
+        return true
+    }
+}
+
 internal object RemoteMedia {
     private const val LIMIT = 15L * 1024 * 1024
 
@@ -90,11 +118,24 @@ internal object RemoteMedia {
         val file = cached(context, url)
         if (file.isFile && file.length() > 0) return file
         return try {
-            val connection = URL(url).openConnection() as HttpsURLConnection
-            connection.connectTimeout = 15_000
-            connection.readTimeout = 30_000
-            connection.setRequestProperty("User-Agent", "FluidMessages")
-            connection.instanceFollowRedirects = true
+            // Redirects are followed by hand so every hop is checked.
+            var target = URL(url)
+            var connection: HttpsURLConnection
+            var hops = 0
+            while (true) {
+                if (!PublicHosts.allowed(target)) return null
+                connection = target.openConnection() as HttpsURLConnection
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 30_000
+                connection.setRequestProperty("User-Agent", "FluidMessages")
+                connection.instanceFollowRedirects = false
+                val code = connection.responseCode
+                if (code !in 300..399) break
+                val next = connection.getHeaderField("Location")
+                connection.disconnect()
+                if (next == null || ++hops > 4) return null
+                target = URL(target, next)
+            }
             try {
                 if (connection.responseCode !in 200..299) return null
                 val type = connection.contentType.orEmpty()
@@ -260,6 +301,11 @@ internal fun MediaViewer(uri: Uri, mime: String, title: String, link: String? = 
                 verticalAlignment = Alignment.CenterVertically) {
                 ViewerButton("Close", "✕") { dismiss() }
                 Spacer(Modifier.weight(1f))
+                val editPicture = LocalEditPicture.current
+                if (editPicture != null && !video) {
+                    ViewerButton("Edit this picture", "Edit") { dismiss(); editPicture(uri) }
+                    Spacer(Modifier.width(8.dp))
+                }
                 ViewerButton("Share", "Share") { shareMedia(context, uri, mime, link) }
                 Spacer(Modifier.width(8.dp))
                 ViewerButton("Open with another app", "Open") { openMedia(context, uri, mime) }

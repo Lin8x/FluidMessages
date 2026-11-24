@@ -65,7 +65,7 @@ internal fun AttachmentSheet(sources: List<AttachmentSource>, accent: Color, not
 
 /** Selected attachment above the composer. */
 @Composable
-internal fun DraftAttachment(attachment: Attachment, ink: Color, muted: Color, remove: () -> Unit, closeTint: Color) {
+internal fun DraftAttachment(attachment: Attachment, ink: Color, muted: Color, remove: () -> Unit, closeTint: Color, edit: (() -> Unit)? = null) {
     val context = LocalContext.current
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         AttachmentThumb(attachment, Modifier.size(60.dp).clip(RoundedCornerShape(12.dp)), muted)
@@ -79,6 +79,9 @@ internal fun DraftAttachment(attachment: Attachment, ink: Color, muted: Color, r
             val detail = listOf(attachment.kind.label.takeIf { attachment.kind != AttachmentKind.PHOTO }.orEmpty(),
                 attachment.sizeLabel(context)).filter { it.isNotEmpty() }.joinToString(" · ")
             if (detail.isNotEmpty()) Text(detail, color = muted, fontSize = 12.sp)
+        }
+        if (edit != null && attachment.kind == AttachmentKind.PHOTO && attachment.uri != null) {
+            TextButton(onClick = edit) { Text("Edit", color = closeTint, fontWeight = FontWeight.SemiBold) }
         }
         ActionIcon("Remove attachment", Glyph.Close, closeTint, remove)
     }
@@ -135,6 +138,9 @@ internal fun AttachmentContent(attachment: Attachment, foreground: Color, downlo
             }
             if (playing) MediaViewer(attachment.uri, attachment.mime, attachment.name) { playing = false }
         } else FileRow(attachment, foreground, download)
+        // A shared contact (vCard) shows the person with Add to contacts and Call.
+        AttachmentKind.CONTACT -> if (attachment.uri != null) ContactCard(attachment, foreground) { FileRow(attachment, foreground, download) }
+            else FileRow(attachment, foreground, download)
         else -> {
             // A calendar invite (.ics) shows as an event card with Add to calendar.
             val calendar = attachment.uri != null && (attachment.mime.contains("calendar") || attachment.name.endsWith(".ics", true))
@@ -203,6 +209,39 @@ private fun AudioRow(attachment: Attachment, foreground: Color) {
                 trackColor = foreground.copy(alpha = .25f))
             Text(durationLabel(if (playing) position.toLong() else attachment.durationMs), color = foreground.copy(alpha = .8f),
                 fontSize = 11.sp)
+        }
+    }
+    if (attachment.kind == AttachmentKind.VOICE) VoiceTranscript(uri, foreground)
+}
+
+/** A transcript made on this phone only; the recording never leaves it. */
+@Composable
+private fun VoiceTranscript(uri: android.net.Uri, foreground: Color) {
+    val context = LocalContext.current
+    var text by remember(uri) { mutableStateOf(VoiceTranscripts.cached(context, uri)) }
+    var working by remember(uri) { mutableStateOf(false) }
+    var problem by remember(uri) { mutableStateOf<String?>(null) }
+    val microphone = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) problem = "Transcripts use the phone's own speech recognizer, which needs microphone access. Nothing is recorded."
+        else { working = true; VoiceTranscripts.transcribe(context, uri) { result -> working = false; text = result.getOrNull(); problem = result.exceptionOrNull()?.message } }
+    }
+    when {
+        text != null -> Text("“${text}”", color = foreground, fontSize = 14.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+            modifier = Modifier.padding(bottom = 4.dp).widthIn(max = 280.dp))
+        working -> Text("Transcribing on this phone…", color = foreground.copy(alpha = .8f), fontSize = 12.sp)
+        else -> Column {
+            problem?.let { Text(it, color = foreground.copy(alpha = .85f), fontSize = 12.sp, modifier = Modifier.widthIn(max = 260.dp)) }
+            Text("Show transcript", color = foreground, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable(onClickLabel = "Transcribe this voice message on this phone") {
+                    problem = null
+                    if (!VoiceTranscripts.available(context)) { problem = "This phone can't transcribe voice messages on the device."; return@clickable }
+                    if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        microphone.launch(android.Manifest.permission.RECORD_AUDIO); return@clickable
+                    }
+                    working = true
+                    VoiceTranscripts.transcribe(context, uri) { result -> working = false; text = result.getOrNull(); problem = result.exceptionOrNull()?.message }
+                }.padding(vertical = 3.dp))
         }
     }
 }

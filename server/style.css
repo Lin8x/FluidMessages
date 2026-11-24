@@ -294,7 +294,7 @@ dialog.sheet { border: 0; border-radius: 24px; box-shadow: 0 20px 60px rgb(0 0 0
 .meeting-text small { opacity: .8; }
 .meeting-join { background: #34c759; color: #fff; text-decoration: none; font-weight: 650; border-radius: 999px; padding: .35rem .9rem; }
 
-/* Cards: pictures, stickers, polls, events, chess, link previews, and the full-screen viewer (cards.js). */
+/* Cards: pictures, stickers, polls, events, games, link previews, and the full-screen viewer (cards.js). */
 .picture { display: block; padding: 0; border: 0; background: none; border-radius: 14px; overflow: hidden; cursor: zoom-in; max-width: 260px; }
 .picture img { display: block; width: 100%; max-height: 320px; object-fit: cover; min-height: 60px; background: color-mix(in srgb, currentColor 10%, transparent); }
 .picture.sticker { max-width: 150px; border-radius: 0; }
@@ -323,6 +323,12 @@ dialog.sheet { border: 0; border-radius: 24px; box-shadow: 0 20px 60px rgb(0 0 0
 .event-date strong { font-size: 1.35rem; }
 .card-actions { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
 .card-actions a, .card-actions button { font-size: .85rem; }
+/* On a colored outgoing bubble, card text follows the bubble's own ink so it stays readable (white on bright fills). */
+.out .bubble .muted, .out .bubble .card-kind { color: inherit; opacity: .88; }
+.out .bubble .event-date small { color: inherit; }
+.out .bubble .card-actions a:not(.primary), .out .bubble .card-actions button:not(.primary) {
+  color: inherit; background: color-mix(in srgb, currentColor 18%, transparent); border-color: color-mix(in srgb, currentColor 40%, transparent); }
+.out .bubble .card-actions .primary { background: #fff; color: #111; border-color: #fff; }
 .chess-board { display: grid; grid-template-columns: repeat(8, 1fr); width: min(264px, 70vw); aspect-ratio: 1; border-radius: 8px; overflow: hidden; }
 .chess-square { display: grid; place-items: center; padding: 0; border: 0; border-radius: 0; aspect-ratio: 1; position: relative; }
 .chess-square.dark { background: #8da37a; }
@@ -331,6 +337,19 @@ dialog.sheet { border: 0; border-radius: 24px; box-shadow: 0 20px 60px rgb(0 0 0
 .chess-square.selected { background: #f6d365; }
 .chess-square.target::after { content: ''; width: 30%; height: 30%; border-radius: 50%; background: rgb(0 0 0 / 25%); position: absolute; }
 button.chess-square { cursor: pointer; }
+.grid-board { display: grid; gap: 3px; padding: 4px; border-radius: 10px; background: #2a2a2e; width: min(200px, 60vw); }
+.grid-board.four { gap: 4px; padding: 6px; background: #2f5bd3; width: min(280px, 72vw); }
+.grid-cell { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 0; border-radius: 5px; background: #f7f7fa;
+  font-size: 2.2rem; font-weight: 800; line-height: 1; color: #ff3b30; }
+.grid-cell.p2 { color: #007aff; }
+.four .grid-cell { border-radius: 50%; background: #f2f2f7; }
+.four .grid-cell.p1 { background: radial-gradient(circle, #ff3b30 62%, #f2f2f7 64%); }
+.four .grid-cell.p2 { background: radial-gradient(circle, #ffcc00 62%, #f2f2f7 64%); }
+.grid-cell.win { box-shadow: inset 0 0 0 3px #34c759; }
+.grid-cell.pending { opacity: .7; }
+button.grid-cell { cursor: pointer; }
+button.grid-cell:hover { filter: brightness(.94); }
+.game-choice { display: block; width: 100%; text-align: left; margin-bottom: .4rem; }
 .piece { font-size: clamp(16px, 4.6vw, 26px); line-height: 1; }
 .piece.white { color: #fff; text-shadow: 0 0 2px #000, 0 0 1px #000; }
 .piece.black { color: #1e1e1e; text-shadow: 0 0 2px rgb(255 255 255 / 40%); }
@@ -355,3 +374,38 @@ button.chess-square { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .viewer, .viewer img, .poll-option::before { transition: none; } }
 .card-actions a.primary { text-decoration: none; padding: .45rem .9rem; border-radius: 999px; }
 .vote-line { font-style: italic; opacity: .9; }
+
+/* Formatting, spoilers, effects, and the newer cards (cards.js). */
+.bubble code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; padding: .05em .3em; border-radius: 5px;
+  background: color-mix(in srgb, currentColor 14%, transparent); }
+.bubble code.code-block { display: block; white-space: pre-wrap; padding: .45rem .6rem; margin: .2rem 0; }
+.spoiler { border-radius: 4px; padding: 0 .1em; background: color-mix(in srgb, currentColor 18%, transparent); transition: color .2s ease, background .2s ease; }
+.spoiler:not(.shown) { color: transparent; background: color-mix(in srgb, currentColor 0%, rgb(128 128 128 / 60%)); cursor: pointer; user-select: none; }
+.spoiler:not(.shown) * { color: transparent !important; background: transparent !important; }
+.spoiler:focus-visible { outline: 2px solid var(--accent, #007aff); }
+.fx-ink { position: relative; cursor: pointer; }
+.bubble.fx-ink, .bubble.fx-ink * { color: transparent !important; text-shadow: none; }
+.bubble.fx-ink .spoiler { background: transparent; }
+.fx-ink::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background-image: radial-gradient(circle, rgb(255 255 255 / 75%) 1px, transparent 1.6px), radial-gradient(circle, rgb(255 255 255 / 45%) 1px, transparent 1.6px);
+  background-size: 9px 9px, 13px 13px; background-position: 0 0, 4px 6px; animation: ink 1.6s linear infinite; }
+.fx-ink img, .fx-ink .event-card { visibility: hidden; }
+@keyframes ink { to { background-position: 9px 9px, -9px 19px; } }
+.fx-slam { animation: slam .9s cubic-bezier(.2, .8, .3, 1); }
+.fx-loud { animation: loud .9s ease; }
+.fx-gentle { animation: gentle 1.2s ease; }
+@keyframes slam { 0% { transform: scale(2.2); opacity: .2; } 35% { transform: scale(.95); opacity: 1; } 55% { transform: scale(1.04); } 100% { transform: scale(1); } }
+@keyframes loud { 0% { transform: scale(1); } 20% { transform: scale(1.55) rotate(-3deg); } 30% { transform: scale(1.55) rotate(3deg); } 40% { transform: scale(1.5) rotate(-2deg); } 100% { transform: scale(1); } }
+@keyframes gentle { 0% { transform: scale(.55); opacity: .4; } 50% { transform: scale(.6); opacity: 1; } 100% { transform: scale(1); } }
+.replay-effect { align-self: inherit; margin-top: .15rem; padding: .1rem .45rem; font-size: .72rem; border-radius: 999px; background: transparent; border: 0; color: var(--muted); }
+.out .replay-effect { align-self: flex-end; }
+canvas.screen-effect { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 1000; }
+.dice-row, .rps-row { display: flex; gap: .45rem; align-items: center; }
+.die { display: grid; place-items: center; min-width: 46px; height: 46px; padding: 0 .4rem; border-radius: 10px; font-size: 1.25rem; font-weight: 700;
+  background: color-mix(in srgb, currentColor 15%, transparent); animation: spin .6s ease; }
+.die.face { font-size: 2.1rem; font-weight: 400; }
+.coin { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; background: #e0b23a; color: #5a3e00; font-size: 1.8rem; font-weight: 900; animation: spin .7s ease; }
+@keyframes spin { from { transform: rotate(-360deg) scale(.6); opacity: .3; } to { transform: none; opacity: 1; } }
+.rsvp { display: grid; gap: .3rem; }
+.contact-card span { font-size: .92rem; }
+@media (prefers-reduced-motion: reduce) { .fx-slam, .fx-loud, .fx-gentle, .die, .coin { animation: none; } .fx-ink::after { animation: none; } }

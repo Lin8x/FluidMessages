@@ -484,7 +484,11 @@ internal class ConversationScreen @JvmOverloads constructor(
             var gifSheet by remember { mutableStateOf<Boolean?>(null) }
             var pollDialog by remember { mutableStateOf(false) }
             var eventDialog by remember { mutableStateOf(false) }
-            var chessDialog by remember { mutableStateOf(false) }
+            var gamesDialog by remember { mutableStateOf(false) }
+            var effectsDialog by remember { mutableStateOf(false) }
+            var randomDialog by remember { mutableStateOf(false) }
+            var editing by remember { mutableStateOf<Uri?>(null) }
+            val pickToEdit = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) editing = uri }
             var notice by remember { mutableStateOf<String?>(null) }
             var recorder by remember { mutableStateOf<VoiceRecorder?>(null) }
             var cameraTarget by remember { mutableStateOf<Uri?>(null) }
@@ -532,7 +536,10 @@ internal class ConversationScreen @JvmOverloads constructor(
                     AttachmentSource.STICKER -> gifSheet = true
                     AttachmentSource.POLL -> pollDialog = true
                     AttachmentSource.EVENT -> eventDialog = true
-                    AttachmentSource.CHESS -> chessDialog = true
+                    AttachmentSource.GAMES -> gamesDialog = true
+                    AttachmentSource.EFFECT -> if (draft.isBlank()) notice = "Type your message first, then choose an effect." else effectsDialog = true
+                    AttachmentSource.RANDOM -> randomDialog = true
+                    AttachmentSource.EDIT -> pickToEdit.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     AttachmentSource.AUDIO -> document.launch(arrayOf("audio/*"))
                     AttachmentSource.CONTACT -> runCatching { contactPicker.launch(null) }.onFailure { notice = "No contacts app is available." }
                     AttachmentSource.LOCATION -> if (context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -572,6 +579,10 @@ internal class ConversationScreen @JvmOverloads constructor(
                     keyboard?.show()
                 }
             }
+            var screenEffect by remember { mutableStateOf<Pair<MessageEffect, Long>?>(null) }
+            Box(Modifier.fillMaxSize()) {
+            CompositionLocalProvider(LocalEditPicture provides (if (filesAllowed) { uri: Uri -> editing = uri } else null),
+                LocalScreenEffect provides { effect: MessageEffect -> screenEffect = effect to System.nanoTime() }) {
             WallpaperSurface(palette.appearance.wallpaper, palette.bg, Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize()) {
                     val floating = palette.appearance.toolbarFinish == "floating"
@@ -702,7 +713,10 @@ internal class ConversationScreen @JvmOverloads constructor(
                             }
                             Box(Modifier.weight(1f)) {
                             MessageBubble(line, palette, if (line.outgoing) lineColor else receiveColor, grouped, continues, animatedId == line.id,
-                                exactTimes, display.reactions, quoted, forwarded, rich, sourceIndex?.let { target ->
+                                exactTimes, display.reactions, quoted, forwarded, rich, display.earlier, index >= messages.size - 3,
+                                if (line.outgoing && line.attachment == null && blocked.isEmpty() && !line.status.startsWith("Sending") &&
+                                    !line.status.startsWith("Couldn’t")) { updated: String -> submit(editText(line.text, updated)); Unit } else null,
+                                sourceIndex?.let { target ->
                                     { scrollScope.launch {
                                         val listIndex = target + if (error != null) 1 else 0
                                         if (palette.appearance.speed == 0) list.scrollToItem(listIndex)
@@ -758,14 +772,28 @@ internal class ConversationScreen @JvmOverloads constructor(
                         }
                     }
                     draftAttachment?.let { item ->
-                        DraftAttachment(item, palette.ink, palette.muted, { draftAttachment = null }, palette.toolbarAction)
+                        DraftAttachment(item, palette.ink, palette.muted, { draftAttachment = null }, palette.toolbarAction,
+                            item.uri?.let { uri -> { editing = uri } })
                     }
                     notice?.let { Text(it, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
                         color = palette.muted, fontSize = 13.sp) }
                     if (moneyDialog) MoneyDialog({ moneyDialog = false }) { text -> submit(text) }
                     if (pollDialog) PollDialog({ pollDialog = false }) { text -> submit(text) }
                     if (eventDialog) EventDialog({ eventDialog = false }) { text -> submit(text) }
-                    if (chessDialog) ChessChallengeDialog({ chessDialog = false }) { text -> submit(text) }
+                    if (gamesDialog) GamesDialog({ gamesDialog = false }) { text -> submit(text) }
+                    if (randomDialog) RandomDialog({ randomDialog = false }) { text -> submit(text) }
+                    if (effectsDialog) EffectsDialog({ effectsDialog = false }) { chosen ->
+                        effectsDialog = false
+                        if (draft.isNotBlank() && submit(effectText(draft, chosen), replyTo?.let(MessageRelation::reply))) { draft = ""; replyTo = null }
+                    }
+                    editing?.let { uri ->
+                        MediaEditor(uri, { editing = null }) { edited, sendNow ->
+                            editing = null
+                            // Send goes straight to the chat; Done puts the edit in the composer for a caption.
+                            if (sendNow && filesAllowed) { if (submit("", replyTo?.let(MessageRelation::reply), edited)) replyTo = null }
+                            else draftAttachment = edited
+                        }
+                    }
                     gifSheet?.let { stickersFirst ->
                         GifSheet(stickersFirst, filesAllowed, { gifSheet = null }, { url -> submit(url, replyTo?.let(MessageRelation::reply)); replyTo = null },
                             { picked -> if (picked.isSticker()) submit("", null, picked) else draftAttachment = picked },
@@ -837,6 +865,9 @@ internal class ConversationScreen @JvmOverloads constructor(
                     }
                 }
             }
+            }
+            screenEffect?.let { (effect, key) -> ScreenEffectOverlay(effect, key) { screenEffect = null } }
+            }
         }
     }
 }
@@ -860,6 +891,9 @@ private fun MessageBubble(
     quoted: QuotedReply?,
     forwarded: ForwardedMessage?,
     rich: RichContext?,
+    earlier: List<String>,
+    recent: Boolean,
+    editMessage: ((String) -> Unit)?,
     jumpToQuote: (() -> Unit)?,
     reply: () -> Unit,
     react: (String) -> Unit,
@@ -896,6 +930,22 @@ private fun MessageBubble(
     val currentReply by rememberUpdatedState(reply)
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val context = androidx.compose.ui.platform.LocalContext.current
+    // Message effects: bubble effects move this bubble, screen effects play over the whole chat. Each plays once.
+    val effect = remember(line.text) { if (line.attachment == null) parseEffect(line.text) else null }
+    var inkHidden by remember(line.id, effect) { mutableStateOf(effect?.second == MessageEffect.INVISIBLE_INK) }
+    val effectProgress = remember(line.id) { Animatable(1f) }
+    val playScreen = LocalScreenEffect.current
+    val effectScope = rememberCoroutineScope()
+    fun playEffect() {
+        val chosen = effect?.second ?: return
+        if (palette.appearance.speed == 0) return
+        if (chosen.screen) playScreen(chosen)
+        else effectScope.launch { effectProgress.snapTo(0f); effectProgress.animateTo(1f, tween(900)) }
+    }
+    LaunchedEffect(line.id, effect) {
+        if (effect != null && recent && EffectMemory.firstTime(context, line.id)) playEffect()
+    }
+    var editingMessage by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxWidth().padding(top = if (grouped) 3.dp else 8.dp)) {
         val bubbleWidth = minOf(maxWidth * .80f, 460.dp)
         Column(Modifier.align(if (line.outgoing) Alignment.CenterEnd else Alignment.CenterStart)
@@ -903,10 +953,13 @@ private fun MessageBubble(
                 alpha = entrance.value
                 translationY = (1 - entrance.value) * 10.dp.toPx()
                 translationX = drag
+                val (effectScale, effectTurn) = bubbleEffectScale(effect?.second, effectProgress.value)
+                scaleX = effectScale; scaleY = effectScale; rotationZ = effectTurn
             }, horizontalAlignment = if (line.outgoing) Alignment.End else Alignment.Start) {
             Box {
                 Column(Modifier.widthIn(max = bubbleWidth)
                     .bubbleTail(fill, palette.appearance.tails && !continues && !sticker, line.outgoing).clip(shape).background(fill)
+                    .invisibleInk(inkHidden, bubbleTextColor(chosenFill))
                     .pointerInput(line.id) {
                         detectHorizontalDragGestures(
                             onDragEnd = {
@@ -920,7 +973,7 @@ private fun MessageBubble(
                             drag = (drag + amount).coerceIn(0f, 64.dp.toPx())
                         }
                     }
-                    .combinedClickable(onClick = { showTime = !showTime }, onLongClickLabel = "Message actions",
+                    .combinedClickable(onClick = { if (inkHidden) inkHidden = false else showTime = !showTime }, onLongClickLabel = "Message actions",
                         onLongClick = { menu = true })
                     .semantics { customActions = listOf(
                         CustomAccessibilityAction("Reply") { reply(); true },
@@ -941,10 +994,17 @@ private fun MessageBubble(
                     poll?.let { item -> PollCard(item, rich?.polls?.get(item.id), foreground,
                         rich?.respond?.let { respond -> { index: Int -> respond(voteText(item, index)) } }) }
                     val event = remember(line.text) { if (line.attachment == null) parseEvent(line.text) else null }
-                    event?.let { EventCard(it, foreground) }
-                    val chess = remember(line.text) { if (line.attachment == null) parseChess(line.text) else null }
-                    chess?.let { ChessCard(it, line.outgoing, rich?.latestChess?.get(it.id) == line.id, foreground, rich?.respond) }
-                    val card = picture != null || poll != null || event != null || chess != null || money != null || meeting != null
+                    event?.let { EventCard(it, foreground, rich?.rsvps?.get(line.id), rich?.respond) }
+                    val game = rich?.games?.get(line.id)
+                    game?.let { GameCard(it, foreground, rich.respond) }
+                    val rps = rich?.rps?.get(line.id)
+                    rps?.let { RpsCard(it, foreground, rich.respond) }
+                    val random = remember(line.text) { if (line.attachment == null) parseRandom(line.text) else null }
+                    random?.let { RandomCard(it, line.outgoing, foreground) }
+                    val gameLink = remember(line.text) { if (line.attachment == null) parseGameLink(line.text) else null }
+                    gameLink?.let { GameLinkCard(it, line.outgoing, foreground) }
+                    val card = picture != null || poll != null || event != null || game != null || money != null || meeting != null ||
+                        rps != null || random != null || gameLink != null
                     if (quoted != null) {
                         val quoteModifier = Modifier
                             .padding(bottom = 7.dp).clip(RoundedCornerShape(9.dp))
@@ -981,11 +1041,18 @@ private fun MessageBubble(
                             line.media != null && line.text == line.media?.caption -> ""
                             // IRC and Matrix actions read as "* name does something".
                             action -> "* " + (if (line.outgoing) "you" else line.author ?: "") + " " + line.text.removePrefix("/me ")
-                            else -> line.text
+                            else -> effect?.first ?: line.text
                         }
-                        if (shown.isNotEmpty()) Text(shown, fontSize = palette.appearance.size.sp,
-                            lineHeight = (palette.appearance.size + 4).sp, color = foreground,
-                            fontStyle = if (action) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal)
+                        // *Bold*, _italic_, ~strike~, `code`, and ||spoilers|| that stay covered until tapped.
+                        var revealed by remember(shown) { mutableStateOf(setOf<Int>()) }
+                        val formatted = remember(shown, revealed, foreground) {
+                            if (hasFormatting(shown)) formatMessage(shown, foreground, revealed) { revealed = revealed + it } else null
+                        }
+                        val style = if (action) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal
+                        if (formatted != null) Text(formatted, fontSize = palette.appearance.size.sp,
+                            lineHeight = (palette.appearance.size + 4).sp, color = foreground, fontStyle = style)
+                        else if (shown.isNotEmpty()) Text(shown, fontSize = palette.appearance.size.sp,
+                            lineHeight = (palette.appearance.size + 4).sp, color = foreground, fontStyle = style)
                         // A preview of the first link, like a card for a video, song, or article.
                         val link = remember(shown) { if (rich?.previews == true && !card && line.attachment == null) previewableLink(shown) else null }
                         link?.let { LinkPreviewCard(it, foreground) }
@@ -1009,6 +1076,9 @@ private fun MessageBubble(
                     }
                     HorizontalDivider(Modifier.padding(horizontal = 8.dp))
                     DropdownMenuItem(text = { Text("Reply") }, onClick = { menu = false; reply() })
+                    if (editMessage != null) DropdownMenuItem(text = { Text("Edit") }, onClick = { menu = false; editingMessage = true })
+                    if (effect != null && palette.appearance.speed > 0) DropdownMenuItem(text = { Text("Replay ${effect.second.label.lowercase()}") },
+                        onClick = { menu = false; inkHidden = false; playEffect() })
                     DropdownMenuItem(text = { Text("Forward") }, onClick = { menu = false; forward() })
                     DropdownMenuItem(text = { Text("Copy") }, onClick = {
                         clipboard.setText(androidx.compose.ui.text.AnnotatedString(line.text))
@@ -1025,6 +1095,19 @@ private fun MessageBubble(
                     DropdownMenuItem(text = { Text("Delete for me", color = MaterialTheme.colorScheme.error) },
                         onClick = { menu = false; delete() })
                 }
+                if (editingMessage && editMessage != null) {
+                    var words by remember { mutableStateOf(effect?.first ?: line.text) }
+                    AlertDialog(onDismissRequest = { editingMessage = false }, title = { Text("Edit message") }, text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedTextField(words, { words = it.take(1500) }, Modifier.fillMaxWidth(), minLines = 2, maxLines = 8)
+                            Text("FluidMessages updates the message. People on other apps get the new text as a correction.",
+                                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }, confirmButton = {
+                        TextButton(enabled = words.isNotBlank() && words.trim() != (effect?.first ?: line.text).trim(),
+                            onClick = { editingMessage = false; editMessage(words) }) { Text("Save") }
+                    }, dismissButton = { TextButton(onClick = { editingMessage = false }) { Text("Cancel") } })
+                }
                 if (customReaction) EmojiReactionDialog({ customReaction = false }) {
                     customReaction = false
                     react(it)
@@ -1039,8 +1122,14 @@ private fun MessageBubble(
                                     Text(line.text, Modifier.heightIn(max = 290.dp).verticalScroll(rememberScrollState()))
                                 }
                             } else {
-                                Text(listOf(if (line.outgoing) "Outgoing" else "Incoming", line.day, line.time, line.status)
-                                    .filter(String::isNotEmpty).joinToString(" · "))
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(listOf(if (line.outgoing) "Outgoing" else "Incoming", line.day, line.time, line.status)
+                                        .filter(String::isNotEmpty).joinToString(" · "))
+                                    if (earlier.isNotEmpty()) {
+                                        Text("Earlier versions", fontWeight = FontWeight.SemiBold)
+                                        for (version in earlier) Text(stripEffect(version), fontSize = 14.sp)
+                                    }
+                                }
                             }
                         },
                         confirmButton = { TextButton(onClick = { selectedAction = "" }) { Text("Done") } },
@@ -1051,7 +1140,7 @@ private fun MessageBubble(
                 .background(palette.wash, RoundedCornerShape(14.dp)).padding(horizontal = 7.dp, vertical = 2.dp),
                 fontSize = 14.sp)
             val failed = line.outgoing && line.status.startsWith("Couldn’t send")
-            val shown = listOfNotNull(line.time.takeIf { (showTime || exactTimes) && it.isNotEmpty() },
+            val shown = listOfNotNull("Edited".takeIf { earlier.isNotEmpty() }, line.time.takeIf { (showTime || exactTimes) && it.isNotEmpty() },
                 line.status.takeIf { it.isNotEmpty() && !failed }).joinToString(" · ")
             // A small outlined lock marks every message FluidMessages encrypted, so you can check a chat at a glance.
             val details = if (line.encrypted) "🔒\uFE0E" + (if (shown.isEmpty()) "" else " $shown") else shown
@@ -1248,7 +1337,7 @@ internal fun Avatar(initials: String, seed: String, size: Int, photo: Int = 0, p
 }
 
 internal enum class Glyph { Settings, Filter, Compose, Search, Close, Back, Forward, More, Send, Person,
-    Plus, Photo, Camera, Document, Music, Pin, Mic, Play, Pause, Video, Stop, Money, Gif, Sticker, Poll, Calendar, Chess }
+    Plus, Photo, Camera, Document, Music, Pin, Mic, Play, Pause, Video, Stop, Money, Gif, Sticker, Poll, Calendar, Chess, Brush, Sparkle, Dice }
 
 @Composable
 internal fun ActionIcon(label: String, glyph: Glyph, color: Color, action: () -> Unit) {
@@ -1375,11 +1464,27 @@ internal fun DrawGlyph(glyph: Glyph, color: Color, modifier: Modifier) {
                 line(.56f, .8f, .56f, .6f); line(.56f, .6f, .8f, .56f)
             }
             Glyph.Poll -> { line(.25f, .78f, .25f, .5f); line(.5f, .78f, .5f, .22f); line(.75f, .78f, .75f, .4f) }
+            Glyph.Brush -> {
+                // A pencil drawing a short squiggle.
+                line(.62f, .18f, .82f, .38f); line(.62f, .18f, .3f, .5f); line(.82f, .38f, .5f, .7f); line(.3f, .5f, .5f, .7f)
+                line(.3f, .5f, .24f, .76f); line(.24f, .76f, .5f, .7f)
+            }
             Glyph.Calendar -> {
                 drawRoundRect(color, point(.16f, .24f), Size(size.width * .68f, size.height * .6f),
                     androidx.compose.ui.geometry.CornerRadius(stroke * 1.6f), style = Stroke(stroke))
                 line(.16f, .42f, .84f, .42f); line(.34f, .16f, .34f, .3f); line(.66f, .16f, .66f, .3f)
                 drawCircle(color, stroke * .7f, point(.36f, .6f)); drawCircle(color, stroke * .7f, point(.5f, .6f)); drawCircle(color, stroke * .7f, point(.64f, .6f))
+            }
+            Glyph.Sparkle -> {
+                // A four-pointed star and a small one.
+                line(.45f, .14f, .45f, .76f); line(.14f, .45f, .76f, .45f)
+                line(.45f, .14f, .52f, .38f); line(.45f, .76f, .38f, .52f); line(.14f, .45f, .38f, .38f); line(.76f, .45f, .52f, .52f)
+                line(.78f, .66f, .78f, .86f); line(.68f, .76f, .88f, .76f)
+            }
+            Glyph.Dice -> {
+                drawRoundRect(color, point(.2f, .2f), Size(size.width * .6f, size.height * .6f),
+                    androidx.compose.ui.geometry.CornerRadius(stroke * 2f), style = Stroke(stroke))
+                drawCircle(color, stroke * .9f, point(.36f, .36f)); drawCircle(color, stroke * .9f, point(.5f, .5f)); drawCircle(color, stroke * .9f, point(.64f, .64f))
             }
             Glyph.Chess -> {
                 // A pawn: head, collar, and base.
