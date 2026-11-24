@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-label="Animated comparison: on an iPhone, chats with other iPhones are blue and texts to Android phones are green. On Android, FluidMessages is your texting app, and adds reactions, polls, and your other chats, each with its own color and tag.">
+  <defs>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".14"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .m { opacity: 0; animation: in 10s ease-out infinite; }
+      .d1 { animation-delay: .3s; } .d2 { animation-delay: 1.1s; } .d3 { animation-delay: 1.9s; } .d4 { animation-delay: 2.7s; } .d5 { animation-delay: 3.5s; } .d6 { animation-delay: 4.3s; }
+      @keyframes in { 0% { opacity: 0; transform: translateY(10px); } 4%, 90% { opacity: 1; transform: none; } 97%, 100% { opacity: 0; } }
+      .heart { opacity: 0; transform-box: fill-box; transform-origin: center; animation: heart 10s cubic-bezier(.34, 1.7, .5, 1) infinite; animation-delay: 3.1s; }
+      @keyframes heart { 0% { opacity: 0; transform: scale(0); } 4%, 86% { opacity: 1; transform: scale(1); } 94%, 100% { opacity: 0; } }
+      .bar { transform-box: fill-box; transform-origin: left; animation: bar 10s ease-out infinite; animation-delay: 4.5s; }
+      @keyframes bar { 0%, 4% { transform: scaleX(.05); } 14%, 100% { transform: scaleX(1); } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .m, .heart { opacity: 1 !important; } }
+    </style>
+  </defs>
+  <rect width="1200" height="400" rx="28" fill="#f4f6fa"/>
+
+  <!-- iPhone side -->
+  <text x="300" y="56" fill="#1b1b1f" font-size="22" font-weight="800" text-anchor="middle">On an iPhone</text>
+  <text x="300" y="82" fill="#5b6070" font-size="15" text-anchor="middle">Blue for iPhone friends. Green for everyone else.</text>
+  <g filter="url(#shadow)"><rect x="140" y="104" width="320" height="270" rx="26" fill="#fff"/></g>
+  <g font-size="15">
+    <g class="m d1"><rect x="160" y="124" width="190" height="36" rx="18" fill="#e9e9ee"/><text x="176" y="147" fill="#1b1b1f">Movie tonight? 🍿</text></g>
+    <g class="m d2"><rect x="250" y="170" width="190" height="36" rx="18" fill="#0a84ff"/><text x="266" y="193" fill="#fff">Yes! 7 o'clock?</text></g>
+    <text class="m d2" x="440" y="222" fill="#8b90a0" font-size="11" text-anchor="end">to an iPhone · blue</text>
+    <g class="m d3"><rect x="250" y="236" width="190" height="36" rx="18" fill="#2fb350"/><text x="266" y="259" fill="#fff">Are you coming, Sam?</text></g>
+    <text class="m d3" x="440" y="288" fill="#8b90a0" font-size="11" text-anchor="end">to an Android phone · green (a plain text)</text>
+    <g class="m d4"><rect x="160" y="304" width="250" height="44" rx="14" fill="#f4f6fa"/><text x="174" y="322" fill="#5b6070" font-size="12">Sam's phone sees:</text><text x="174" y="339" fill="#1b1b1f" font-size="13">Loved “Yes! 7 o'clock?”</text></g>
+  </g>
+
+  <!-- Divider -->
+  <line x1="600" y1="110" x2="600" y2="370" stroke="#d6d9e2" stroke-width="2" stroke-dasharray="4 8"/>
+
+  <!-- FluidMessages side -->
+  <text x="900" y="56" fill="#1b1b1f" font-size="22" font-weight="800" text-anchor="middle">On Android, with FluidMessages</text>
+  <text x="900" y="82" fill="#5b6070" font-size="15" text-anchor="middle">Your texts, plus the extras, plus your other chats.</text>
+  <g filter="url(#shadow)"><rect x="740" y="104" width="320" height="270" rx="26" fill="#fff"/></g>
+  <g font-size="15">
+    <g class="m d1"><rect x="760" y="124" width="190" height="36" rx="18" fill="#e9e9ee"/><text x="776" y="147" fill="#1b1b1f">Movie tonight? 🍿</text></g>
+    <g class="m d2"><rect x="850" y="170" width="190" height="36" rx="18" fill="#2a8f48"/><text x="866" y="193" fill="#fff">Yes! 7 o'clock?</text></g>
+    <g class="heart"><circle cx="1034" cy="172" r="13" fill="#fff" stroke="#e3e5ec"/><text x="1034" y="177" font-size="13" text-anchor="middle">❤️</text></g>
+    <text class="m d4" x="1040" y="222" fill="#8b90a0" font-size="11" text-anchor="end">the heart shows as a heart, not a sentence</text>
+    <g class="m d5"><rect x="760" y="236" width="230" height="74" rx="16" fill="#e9e9ee"/>
+      <text x="776" y="256" fill="#5b6070" font-size="10" font-weight="700" letter-spacing="1">POLL</text>
+      <text x="776" y="274" fill="#1b1b1f" font-size="13" font-weight="700">Which movie?</text>
+      <rect x="776" y="282" width="198" height="18" rx="6" fill="#fff"/><rect class="bar" x="776" y="282" width="140" height="18" rx="6" fill="#9fdcb1"/>
+      <text x="784" y="295" fill="#1b1b1f" font-size="11">Space Story · 3 votes</text></g>
+    <g class="m d6"><rect x="760" y="320" width="280" height="36" rx="18" fill="#f4f6fa"/>
+      <text x="776" y="343" fill="#1b1b1f" font-size="13">💼 Work chat and 🔭 club, same inbox</text></g>
+  </g>
+</svg>

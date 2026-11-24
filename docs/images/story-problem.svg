@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-label="Animated: one phone keeps buzzing with messages from five different apps: texts, a family group, a work chat, a hobby club, and email.">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff4ec"/><stop offset="1" stop-color="#fdecef"/></linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity=".18"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .buzz { transform-box: fill-box; transform-origin: center; animation: buzz 3s ease-in-out infinite; }
+      @keyframes buzz { 0%, 70%, 100% { transform: rotate(0); } 74% { transform: rotate(-4deg); } 78% { transform: rotate(4deg); } 82% { transform: rotate(-3deg); } 86% { transform: rotate(2deg); } }
+      .note { opacity: 0; animation: pop 10s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+      .n2 { animation-delay: 1.4s; } .n3 { animation-delay: 2.8s; } .n4 { animation-delay: 4.2s; } .n5 { animation-delay: 5.6s; }
+      @keyframes pop { 0% { opacity: 0; transform: scale(.6); } 4%, 88% { opacity: 1; transform: scale(1); } 96%, 100% { opacity: 0; transform: scale(1); } }
+      .badge { animation: badge 10s steps(1) infinite; }
+      .b1 { animation-delay: 0s; }
+      @keyframes badge { 0% { opacity: 1; } }
+      .count text { opacity: 0; animation: count 10s steps(1) infinite; }
+      .c1 { animation-delay: 0s; } .c2 { animation-delay: 1.4s; } .c3 { animation-delay: 2.8s; } .c4 { animation-delay: 4.2s; } .c5 { animation-delay: 5.6s; }
+      @keyframes count { 0%, 13.9% { opacity: 1; } 14%, 100% { opacity: 0; } }
+      .c5 { animation-name: count5; }
+      @keyframes count5 { 0%, 34% { opacity: 1; } 35%, 100% { opacity: 0; } }
+      .sigh { opacity: 0; animation: sigh 10s ease-out infinite; animation-delay: 6.6s; }
+      @keyframes sigh { 0% { opacity: 0; transform: translateY(6px); } 6%, 30% { opacity: 1; transform: none; } 36%, 100% { opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .note, .sigh { opacity: 1 !important; } .count text { opacity: 0 !important; } .count .c5 { opacity: 1 !important; } }
+    </style>
+  </defs>
+  <rect width="1200" height="420" rx="28" fill="url(#bg)"/>
+
+  <text x="60" y="78" fill="#7a2e3a" font-size="15" font-weight="800" letter-spacing="2">THE PROBLEM</text>
+  <text x="60" y="124" fill="#2a1a1e" font-size="38" font-weight="800">Your messages are</text>
+  <text x="60" y="168" fill="#2a1a1e" font-size="38" font-weight="800">all over the place.</text>
+  <text x="60" y="214" fill="#5a4a4e" font-size="19">Texts in one app. The family group in another.</text>
+  <text x="60" y="242" fill="#5a4a4e" font-size="19">Work in a third. Your hobby club somewhere else.</text>
+  <text x="60" y="270" fill="#5a4a4e" font-size="19">And every one of them wants your attention.</text>
+  <g class="sigh"><text x="60" y="330" fill="#7a2e3a" font-size="22" font-weight="700">😮‍💨 Five apps, five sets of notifications.</text></g>
+
+  <!-- Phone -->
+  <g class="buzz" filter="url(#shadow)">
+    <rect x="820" y="40" width="200" height="340" rx="34" fill="#1b1b1f"/>
+    <rect x="830" y="54" width="180" height="312" rx="26" fill="#f6f6f8"/>
+    <text x="920" y="96" fill="#1b1b1f" font-size="30" font-weight="300" text-anchor="middle">9:41</text>
+    <rect x="890" y="352" width="60" height="5" rx="2.5" fill="#1b1b1f" opacity=".3"/>
+  </g>
+  <g class="count">
+    <circle cx="1012" cy="52" r="17" fill="#e0353f"/>
+    <text class="c1" x="1012" y="58" fill="#fff" font-size="16" font-weight="800" text-anchor="middle">1</text>
+    <text class="c2" x="1012" y="58" fill="#fff" font-size="16" font-weight="800" text-anchor="middle">2</text>
+    <text class="c3" x="1012" y="58" fill="#fff" font-size="16" font-weight="800" text-anchor="middle">3</text>
+    <text class="c4" x="1012" y="58" fill="#fff" font-size="16" font-weight="800" text-anchor="middle">4</text>
+    <text class="c5" x="1012" y="58" fill="#fff" font-size="16" font-weight="800" text-anchor="middle">5</text>
+  </g>
+
+  <!-- Notifications from different apps, landing on the lock screen and around it -->
+  <g class="note" filter="url(#shadow)">
+    <rect x="570" y="70" width="230" height="58" rx="16" fill="#fff"/>
+    <rect x="582" y="82" width="34" height="34" rx="9" fill="#2fb350"/><text x="599" y="105" font-size="18" text-anchor="middle">💬</text>
+    <text x="626" y="96" fill="#1b1b1f" font-size="13" font-weight="700">Texts · Mom</text><text x="626" y="114" fill="#555" font-size="13">Call me when you can</text>
+  </g>
+  <g class="note n2" filter="url(#shadow)">
+    <rect x="1010" y="110" width="176" height="58" rx="16" fill="#fff"/>
+    <rect x="1022" y="122" width="34" height="34" rx="9" fill="#f08b2c"/><text x="1039" y="145" font-size="18" text-anchor="middle">👨‍👩‍👧</text>
+    <text x="1064" y="136" fill="#1b1b1f" font-size="13" font-weight="700">Family group</text><text x="1064" y="154" fill="#555" font-size="13">Dinner Sunday?</text>
+  </g>
+  <g class="note n3" filter="url(#shadow)">
+    <rect x="560" y="190" width="236" height="58" rx="16" fill="#fff"/>
+    <rect x="572" y="202" width="34" height="34" rx="9" fill="#6c4cdc"/><text x="589" y="225" font-size="18" text-anchor="middle">💼</text>
+    <text x="616" y="216" fill="#1b1b1f" font-size="13" font-weight="700">Work chat</text><text x="616" y="234" fill="#555" font-size="13">Meeting moved to 3</text>
+  </g>
+  <g class="note n4" filter="url(#shadow)">
+    <rect x="1010" y="230" width="176" height="58" rx="16" fill="#fff"/>
+    <rect x="1022" y="242" width="34" height="34" rx="9" fill="#1f7fd6"/><text x="1039" y="265" font-size="18" text-anchor="middle">🔭</text>
+    <text x="1064" y="256" fill="#1b1b1f" font-size="13" font-weight="700">Astronomy club</text><text x="1064" y="274" fill="#555" font-size="13">Clear skies tonight</text>
+  </g>
+  <g class="note n5" filter="url(#shadow)">
+    <rect x="580" y="300" width="220" height="58" rx="16" fill="#fff"/>
+    <rect x="592" y="312" width="34" height="34" rx="9" fill="#d13c55"/><text x="609" y="335" font-size="18" text-anchor="middle">✉️</text>
+    <text x="636" y="326" fill="#1b1b1f" font-size="13" font-weight="700">Email · Jordan</text><text x="636" y="344" fill="#555" font-size="13">Photos from the trip</text>
+  </g>
+</svg>

@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-label="Animated: the messages from five apps flow into one FluidMessages inbox on one phone, each with a small tag saying where it came from, then a lock appears.">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e9fbee"/><stop offset="1" stop-color="#e6f1ff"/></linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity=".16"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .fly { animation: fly 9s cubic-bezier(.5, 0, .3, 1) infinite; }
+      .f2 { animation-delay: .25s; } .f3 { animation-delay: .5s; } .f4 { animation-delay: .75s; } .f5 { animation-delay: 1s; }
+      @keyframes fly { 0%, 6% { opacity: 1; transform: translate(0, 0); } 22% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(.4); } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(.4); } }
+      .row { opacity: 0; animation: row 9s ease-out infinite; }
+      .r2 { animation-delay: .25s; } .r3 { animation-delay: .5s; } .r4 { animation-delay: .75s; } .r5 { animation-delay: 1s; }
+      @keyframes row { 0%, 20% { opacity: 0; transform: translateY(10px); } 28%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+      .lock { opacity: 0; transform-box: fill-box; transform-origin: center; animation: lock 9s cubic-bezier(.34, 1.5, .5, 1) infinite; }
+      @keyframes lock { 0%, 40% { opacity: 0; transform: scale(.3); } 48%, 92% { opacity: 1; transform: scale(1); } 100% { opacity: 0; } }
+      .words2 { opacity: 0; animation: words 9s ease-out infinite; }
+      @keyframes words { 0%, 44% { opacity: 0; } 52%, 92% { opacity: 1; } 100% { opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .fly { opacity: 0 !important; } .row, .lock, .words2 { opacity: 1 !important; } }
+    </style>
+  </defs>
+  <rect width="1200" height="420" rx="28" fill="url(#sky)"/>
+
+  <text x="60" y="78" fill="#0f7a34" font-size="15" font-weight="800" letter-spacing="2">THE FIX</text>
+  <text x="60" y="124" fill="#14231a" font-size="38" font-weight="800">One app for all of them.</text>
+  <text x="60" y="170" fill="#3d4d43" font-size="19">FluidMessages puts your texts and your other chats</text>
+  <text x="60" y="198" fill="#3d4d43" font-size="19">in one inbox. A small tag shows where each one</text>
+  <text x="60" y="226" fill="#3d4d43" font-size="19">came from, and you reply from the same place.</text>
+  <g class="words2">
+    <text x="60" y="290" fill="#0f7a34" font-size="22" font-weight="700">🔒 Private by design.</text>
+    <text x="60" y="322" fill="#3d4d43" font-size="18">Free. No ads. Nobody reads your messages to sell you things.</text>
+  </g>
+
+  <!-- Five scattered app bubbles that fly into the phone -->
+  <g font-size="13">
+    <g class="fly" style="--dx: 210px; --dy: 120px"><rect x="560" y="40" width="120" height="36" rx="18" fill="#2fb350"/><text x="620" y="63" fill="#fff" text-anchor="middle" font-weight="700">💬 Texts</text></g>
+    <g class="fly f2" style="--dx: 180px; --dy: 70px"><rect x="580" y="150" width="140" height="36" rx="18" fill="#f08b2c"/><text x="650" y="173" fill="#fff" text-anchor="middle" font-weight="700">👨‍👩‍👧 Family</text></g>
+    <g class="fly f3" style="--dx: 220px; --dy: -40px"><rect x="560" y="300" width="130" height="36" rx="18" fill="#6c4cdc"/><text x="625" y="323" fill="#fff" text-anchor="middle" font-weight="700">💼 Work</text></g>
+    <g class="fly f4" style="--dx: -160px; --dy: 90px"><rect x="1060" y="70" width="120" height="36" rx="18" fill="#1f7fd6"/><text x="1120" y="93" fill="#fff" text-anchor="middle" font-weight="700">🔭 Club</text></g>
+    <g class="fly f5" style="--dx: -150px; --dy: -50px"><rect x="1060" y="290" width="120" height="36" rx="18" fill="#d13c55"/><text x="1120" y="313" fill="#fff" text-anchor="middle" font-weight="700">✉️ Email</text></g>
+  </g>
+
+  <!-- One phone, one inbox -->
+  <g filter="url(#shadow)">
+    <rect x="790" y="30" width="250" height="364" rx="38" fill="#1b1b1f"/>
+    <rect x="801" y="44" width="228" height="336" rx="29" fill="#fff"/>
+  </g>
+  <text x="818" y="90" fill="#14231a" font-size="22" font-weight="800">Messages</text>
+  <g class="lock"><circle cx="1004" cy="82" r="15" fill="#1fa84a"/><text x="1004" y="88" font-size="15" text-anchor="middle">🔒</text></g>
+  <g font-size="12">
+    <g class="row"><circle cx="830" cy="124" r="15" fill="#e0567a"/><text x="830" y="128" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">M</text>
+      <text x="852" y="121" fill="#14231a" font-weight="700">Mom</text><text x="852" y="137" fill="#666">Call me later</text>
+      <rect x="966" y="112" width="44" height="16" rx="5" fill="none" stroke="#2fb350"/><text x="988" y="124" fill="#1d7a35" font-size="9" font-weight="700" text-anchor="middle">TEXT</text></g>
+    <g class="row r2"><circle cx="830" cy="174" r="15" fill="#f08b2c"/><text x="830" y="178" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">F</text>
+      <text x="852" y="171" fill="#14231a" font-weight="700">Family group</text><text x="852" y="187" fill="#666">Dinner Sunday?</text>
+      <rect x="966" y="162" width="44" height="16" rx="5" fill="none" stroke="#2fb350"/><text x="988" y="174" fill="#1d7a35" font-size="9" font-weight="700" text-anchor="middle">GROUP</text></g>
+    <g class="row r3"><circle cx="830" cy="224" r="15" fill="#6c4cdc"/><text x="830" y="228" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">W</text>
+      <text x="852" y="221" fill="#14231a" font-weight="700">Work chat</text><text x="852" y="237" fill="#666">Meeting moved to 3</text>
+      <rect x="958" y="212" width="52" height="16" rx="5" fill="none" stroke="#6c4cdc"/><text x="984" y="224" fill="#5236b8" font-size="9" font-weight="700" text-anchor="middle">MATRIX</text></g>
+    <g class="row r4"><circle cx="830" cy="274" r="15" fill="#1f7fd6"/><text x="830" y="278" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">#</text>
+      <text x="852" y="271" fill="#14231a" font-weight="700">#astronomy</text><text x="852" y="287" fill="#666">Clear skies tonight</text>
+      <rect x="974" y="262" width="36" height="16" rx="5" fill="none" stroke="#1f7fd6"/><text x="992" y="274" fill="#1960a8" font-size="9" font-weight="700" text-anchor="middle">IRC</text></g>
+    <g class="row r5"><circle cx="830" cy="324" r="15" fill="#d13c55"/><text x="830" y="328" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">J</text>
+      <text x="852" y="321" fill="#14231a" font-weight="700">Jordan</text><text x="852" y="337" fill="#666">Photos from the trip</text>
+      <rect x="962" y="312" width="48" height="16" rx="5" fill="none" stroke="#d13c55"/><text x="986" y="324" fill="#a82a40" font-size="9" font-weight="700" text-anchor="middle">EMAIL</text></g>
+  </g>
+</svg>

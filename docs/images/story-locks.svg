@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="260" viewBox="0 0 1200 260" role="img" aria-label="Three locks: green means only you and the other person can read it, yellow means the service could read it, and red open means it's like a regular text.">
+  <defs>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .card { opacity: 0; animation: up 9s ease-out infinite; }
+      .k2 { animation-delay: .6s; } .k3 { animation-delay: 1.2s; }
+      @keyframes up { 0% { opacity: 0; transform: translateY(14px); } 6%, 90% { opacity: 1; transform: none; } 97%, 100% { opacity: 0; } }
+      .shackle { animation: close 9s ease-in-out infinite; transform-box: fill-box; transform-origin: center bottom; }
+      @keyframes close { 0%, 10% { transform: translateY(-6px); } 16%, 100% { transform: none; } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .card { opacity: 1 !important; } }
+    </style>
+  </defs>
+  <rect width="1200" height="260" rx="28" fill="#f6f7fb"/>
+  <g class="card">
+    <rect x="40" y="30" width="360" height="200" rx="22" fill="#fff" stroke="#e3e5ec"/>
+    <g transform="translate(76 66)"><path class="shackle" d="M10 22 V14 a14 14 0 0 1 28 0 V22" fill="none" stroke="#1b9e45" stroke-width="6"/><rect x="0" y="22" width="48" height="38" rx="9" fill="#1b9e45"/></g>
+    <text x="150" y="88" fill="#1b1b1f" font-size="22" font-weight="800">Green lock</text>
+    <text x="150" y="114" fill="#3c4150" font-size="16">Only you and the other</text>
+    <text x="150" y="136" fill="#3c4150" font-size="16">person can read it.</text>
+    <text x="76" y="196" fill="#6b7080" font-size="14">Like a sealed letter.</text>
+  </g>
+  <g class="card k2">
+    <rect x="420" y="30" width="360" height="200" rx="22" fill="#fff" stroke="#e3e5ec"/>
+    <g transform="translate(456 66)"><path class="shackle" d="M10 22 V14 a14 14 0 0 1 28 0 V22" fill="none" stroke="#b07d00" stroke-width="6"/><rect x="0" y="22" width="48" height="38" rx="9" fill="#c08a00"/></g>
+    <text x="530" y="88" fill="#1b1b1f" font-size="22" font-weight="800">Yellow lock</text>
+    <text x="530" y="114" fill="#3c4150" font-size="16">Protected on the way,</text>
+    <text x="530" y="136" fill="#3c4150" font-size="16">but the service could read it.</text>
+    <text x="456" y="196" fill="#6b7080" font-size="14">Like a letter the post office could open.</text>
+  </g>
+  <g class="card k3">
+    <rect x="800" y="30" width="360" height="200" rx="22" fill="#fff" stroke="#e3e5ec"/>
+    <g transform="translate(836 66)"><path d="M10 22 V14 a14 14 0 0 1 28 0" fill="none" stroke="#c4141f" stroke-width="6" transform="rotate(-25 24 22)"/><rect x="0" y="22" width="48" height="38" rx="9" fill="#c4141f"/></g>
+    <text x="910" y="88" fill="#1b1b1f" font-size="22" font-weight="800">Red, open lock</text>
+    <text x="910" y="114" fill="#3c4150" font-size="16">Not scrambled, like a</text>
+    <text x="910" y="136" fill="#3c4150" font-size="16">regular text message.</text>
+    <text x="836" y="196" fill="#6b7080" font-size="14">Like a postcard.</text>
+  </g>
+</svg>
