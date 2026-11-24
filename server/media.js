@@ -134,12 +134,19 @@ function photoQuality() {
   return connection && (connection.saveData || /(^|-)2g|3g/.test(connection.effectiveType || '')) ? 'saver' : 'standard';
 }
 
-/** Resized for the photo quality setting and saved again, which also drops location and camera details. */
+/** Settings → Media → Remove location and camera details from files you send. On unless turned off; this browser's. */
+function stripDetails() { return localStorage.getItem('stripMetadata') !== 'off'; }
+
+/**
+ * Resized for the photo quality setting and saved again, which also drops location and camera details. With
+ * Remove location and camera details off, a photo that's already small enough goes as it is, details and all.
+ */
 async function preparePhoto(blob, name) {
   if (!/^image\/(jpeg|png|webp)$/.test(blob.type)) return [blob, name];
   const [longest, quality] = QUALITY[photoQuality()] || QUALITY.standard;
   let bitmap;
   try { bitmap = await createImageBitmap(blob); } catch (error) { return [blob, name]; }
+  if (!stripDetails() && Math.max(bitmap.width, bitmap.height) <= longest) { bitmap.close?.(); return [blob, name]; }
   const scale = Math.min(1, longest / Math.max(bitmap.width, bitmap.height));
   const canvas = Object.assign(document.createElement('canvas'), {width: Math.max(1, Math.round(bitmap.width * scale)), height: Math.max(1, Math.round(bitmap.height * scale))});
   canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
@@ -328,21 +335,50 @@ function gifSites() {
   return GIF_SITE_DEFAULTS.filter((site) => !off.includes(site.id)).concat(own);
 }
 
+// GIF search in the picker: Tenor or GIPHY with your own key, or off ("none"), and an optional API address in place
+// of the service's own. All three stay in this browser.
+const GIF_SEARCH = [['none', 'Off · browse sites instead'], ['tenor', 'Tenor'], ['giphy', 'GIPHY']];
+function gifSearchSource() { const value = localStorage.getItem('gifSource') || 'tenor'; return GIF_SEARCH.some(([key]) => key === value) ? value : 'tenor'; }
+const GIF_API_ADDRESS = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)+(?::443)?(?:\/[A-Za-z0-9._~-]+)*\/?$/;
+function gifApiAddress() { const value = (localStorage.getItem('gifApi') || '').trim(); return GIF_API_ADDRESS.test(value) ? value : ''; }
+
 /** Settings → Media, GIFs, and fun: GIFs and stickers, GIF sites to browse, and Photos and videos, as on the phone. */
 function mediaSettingsSection() {
   const gifs = element('section', '', 'settings-section');
   gifs.id = 'settings-media';
   gifs.append(element('h3', 'GIFs and stickers'));
+  // Sending GIFs and stickers: for every browser on this server, like Fun and effects.
+  const send = (name) => async (value) => {
+    prefs = {...prefs, [name]: value};
+    try { companionSettings = await api('settings', {prefs: {[name]: value}}); } catch (error) { showError(error); }
+  };
+  gifs.append(checkbox('GIFs', prefs.sendGifs !== false, send('sendGifs'), 'Send GIFs from the + menu.'),
+    checkbox('Stickers', prefs.sendStickers !== false, send('sendStickers'), 'Send stickers, and make your own from photos.'));
   // Search in the GIF picker, with your own free key; it stays in this browser.
   const source = element('select', '');
-  for (const [value, label] of [['tenor', 'Tenor'], ['giphy', 'GIPHY']]) source.append(Object.assign(element('option', label), {value}));
-  source.value = localStorage.getItem('gifSource') || 'tenor';
-  source.addEventListener('change', () => localStorage.setItem('gifSource', source.value));
+  for (const [value, label] of GIF_SEARCH) source.append(Object.assign(element('option', label), {value}));
+  source.value = gifSearchSource();
   const key = Object.assign(element('input', ''), {type: 'password', autocomplete: 'off', value: localStorage.getItem('gifKey') || '',
     placeholder: 'Your free API key', maxLength: 200});
   key.addEventListener('change', () => localStorage.setItem('gifKey', key.value.trim()));
-  gifs.append(field('Search results in the picker', source, 'Searches go through your server to the service you pick.'),
-    field('API key', key, 'Create a free key at developers.google.com/tenor or developers.giphy.com. Saved in this browser.'));
+  const address = Object.assign(element('input', ''), {type: 'url', autocomplete: 'off', spellcheck: false, maxLength: 300,
+    value: localStorage.getItem('gifApi') || '', placeholder: 'https://gifs.example.org'});
+  const addressProblem = element('p', '', 'error');
+  addressProblem.setAttribute('role', 'alert');
+  address.addEventListener('change', () => {
+    const value = address.value.trim();
+    if (value && !GIF_API_ADDRESS.test(value)) { addressProblem.textContent = 'The address needs to start with https://, with no ? or # in it.'; return; }
+    addressProblem.textContent = '';
+    if (value) localStorage.setItem('gifApi', value); else localStorage.removeItem('gifApi');
+  });
+  const keyField = field('API key', key, 'Create a free key at developers.google.com/tenor or developers.giphy.com. Saved in this browser.');
+  const addressField = field('API address', address, 'Optional. A compatible server or proxy, starting with https://. Leave blank to use the service directly.');
+  addressField.append(addressProblem);
+  const showSearch = () => { keyField.hidden = addressField.hidden = source.value === 'none'; };
+  source.addEventListener('change', () => { localStorage.setItem('gifSource', source.value); showSearch(); });
+  showSearch();
+  gifs.append(field('Search results in the picker', source, 'Searches go through your server to the service you pick. Off: no searching, '
+    + 'and nothing is sent anywhere until you send a GIF.'), keyField, addressField);
   const stickers = element('div', '', 'subsection');
   stickers.append(element('h4', 'Your stickers'));
   const count = element('p', 'Checking…', 'muted');
@@ -416,7 +452,11 @@ function mediaSettingsSection() {
     ['auto', 'Automatic', 'Smaller photos on a slow connection.'], ['saver', 'Data saver', 'Up to 1024 pixels.'],
     ['standard', 'Standard', 'Up to 1600 pixels.'], ['high', 'High quality', 'Up to 4096 pixels.']],
   localStorage.getItem('photoQuality') || 'auto', (value) => localStorage.setItem('photoQuality', value)),
-  element('p', 'Photos are saved again before they go, which also removes location and camera details. Saved in this browser.', 'muted'));
+  checkbox('Remove location and camera details from files you send', stripDetails(),
+    (value) => localStorage.setItem('stripMetadata', value ? 'on' : 'off'),
+    'Photos are saved again before they go, which removes them. Other files, like videos, PDFs, and documents, are sent as they are, '
+      + 'with any details inside them. Off: a photo that’s already small enough goes as it is.'),
+  element('p', 'Saved in this browser.', 'muted'));
 
   return [gifs, section, photo];
 }

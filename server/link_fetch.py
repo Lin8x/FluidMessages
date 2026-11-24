@@ -153,20 +153,32 @@ def picture(url):
     return kind, body
 
 
-def gif_search(provider, query, key, stickers):
-    """Searches Tenor or GIPHY with the person's own API key. Only those two services' own addresses are used."""
+# An API address in place of Tenor's or GIPHY's own (the phone's GifSettings.apiBase): https, a host name, and an
+# optional path, with no query, user, or fragment. fetch() still refuses anything that isn't a public address.
+GIF_API = re.compile(r"https://[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)+(?::443)?(?:/[A-Za-z0-9._~-]+)*/?")
+
+
+def gif_api_base(value):
+    """The API address without its trailing slash, or "" for the service's own (also for anything not allowed)."""
+    value = (value or "").strip()
+    return value.rstrip("/") if GIF_API.fullmatch(value) else ""
+
+
+def gif_search(provider, query, key, stickers, base=""):
+    """Searches Tenor or GIPHY with the person's own API key, at the service's own address or a compatible one."""
     import json
     from urllib.parse import quote
     q, k = quote(query.strip()), quote(key.strip())
+    base = gif_api_base(base)
     if provider == "tenor":
         media = "tinygif_transparent,gif_transparent" if stickers else "tinygif,gif"
         path = ("/v2/featured?" if not query.strip() else "/v2/search?q=%s&" % q)
-        url = "https://tenor.googleapis.com%skey=%s&client_key=fluidmessages&limit=30&contentfilter=medium&media_filter=%s%s" % (
-            path, k, media, "&searchfilter=sticker" if stickers else "")
+        url = "%s%skey=%s&client_key=fluidmessages&limit=30&contentfilter=medium&media_filter=%s%s" % (
+            base or "https://tenor.googleapis.com", path, k, media, "&searchfilter=sticker" if stickers else "")
     elif provider == "giphy":
         kind = "stickers" if stickers else "gifs"
         path = ("/v1/%s/trending?" % kind) if not query.strip() else ("/v1/%s/search?q=%s&" % (kind, q))
-        url = "https://api.giphy.com%sapi_key=%s&limit=30&rating=pg-13" % (path, k)
+        url = "%s%sapi_key=%s&limit=30&rating=pg-13" % (base or "https://api.giphy.com", path, k)
     else:
         return []
     try:

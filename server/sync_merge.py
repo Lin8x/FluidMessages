@@ -20,10 +20,13 @@ import secrets
 import shutil
 import time
 
-KEY = re.compile(r"(look|fun|folder|muted|muteuntil|sender|timer|wallpaper|gif|gifoff|pay|sticker|account|protocol):[^\x00-\x1f]{1,300}")
+import message_requests
+
+KEY = re.compile(r"(look|fun|pref|folder|muted|muteuntil|favorite|sender|timer|wallpaper|gif|gifoff|pay|sticker|account|protocol"
+                 r"|request|requests):[^\x00-\x1f]{1,300}")
 # Settings that follow the phone only while FluidMessages Web uses the phone's settings (Settings → Phone and other
-# devices). With "This web app's own" chosen, each side keeps its own look, fun, and timers.
-SETTINGS_GROUPS = ("look", "fun", "timer", "wallpaper")
+# devices). With "This web app's own" chosen, each side keeps its own look, fun, inbox choices, and timers.
+SETTINGS_GROUPS = ("look", "fun", "pref", "timer", "wallpaper")
 STICKER_ID = re.compile(r"[A-Za-z0-9_-]{1,80}")
 STICKER_TYPES = {"image/png": "png", "image/webp": "webp", "image/gif": "gif"}
 STICKER_LIMIT, STICKER_COUNT = 2_000_000, 300
@@ -41,7 +44,17 @@ FUN = {"effects": "effects", "reactions": "reactionEffects", "games": "games", "
        "linkPreviews": "linkPreviews"}
 FOLDERS = ("pinned", "archived", "blocked")
 # Item groups named after a chat's address, which leave a private chat out of the merge.
-ADDRESSED = ("folder", "muted", "muteuntil", "sender", "timer", "wallpaper")
+ADDRESSED = ("folder", "muted", "muteuntil", "favorite", "sender", "timer", "wallpaper", "request")
+# Inbox and messaging choices, "pref:<name>", with the value that means "no item" (the default on both sides):
+# Settings → Messaging → Counts on tabs and Show community chats, the Communities sort, the inbox filter menu (its
+# order, a hidden filter with "-" in front), and Settings → Privacy → Announce setting changes.
+PREFS = {"tabCounts": "on", "showCommunityChats": "on", "communitySort": "recent", "announceSettings": "on", "inboxFilters": None}
+PREF_SWITCHES = ("tabCounts", "showCommunityChats")
+COMMUNITY_SORTS = ("recent", "name", "joined")
+# The same filters, in the same order, as main.py INBOX_FILTERS and the phone's InboxFilters.ALL (Requests and
+# Automated come from message requests).
+INBOX_FILTERS = ("inbox", "unread", "favorites", "groups", "direct", "texts", "matrix", "xmpp", "email", "irc", "requests", "automated",
+                 "archived", "blocked")
 # Timed mutes. "muted:<key>" = "on" stays what every version compares, for timed mutes too, so an older phone or
 # server still sees the chat as muted and nothing it doesn't know ever reaches it. When the mute ends there's no item
 # at all, which older versions read as unmuted. How long is a second item, "muteuntil:<key>" = the end in epoch
@@ -49,6 +62,19 @@ ADDRESSED = ("folder", "muted", "muteuntil", "sender", "timer", "wallpaper")
 # item as a change, so these items are only exchanged once both sides say they understand them: the phone asks with
 # the X-Fluid-Merge-Items: muteuntil header and posts "mute_until": 1; this server answers "mute_until": 1.
 TIMED = "muteuntil"
+# Item groups newer than the merge itself, the same way: exchanged only with a phone that names them in
+# X-Fluid-Merge-Groups (comma-separated; X-Fluid-Merge-Items stays exactly "muteuntil", since servers from before
+# compare it whole) and posts them back in "items"; this server lists the ones it knows in "items". Older servers never answer "items" and refuse groups they don't know; older phones never ask, and would
+# read a group they don't know as the web deleting it. So each side only ever sees groups both understand.
+# "favorite:<address>" = "on": a starred person's number (its digits and a leading +, see favorite_address) or chat
+# address. Phones star contacts by contact id, which means nothing here, so the phone lists a starred contact's numbers.
+# Message requests (message_requests.py): "requests:<setting>" for Settings → Requests and spam, and
+# "request:<address>" for what you decided about a chat ("accepted", or "deleted:<epoch ms>"). They're optional groups
+# too. Phones that name them in X-Fluid-Merge-Groups / "items" get them; so do phones built for the earlier requests
+# flag, which ask with the X-Fluid-Merge-Requests: 1 header and post "requests": 1. This server still answers
+# "requests": 1 next to "items" for those phones.
+REQUESTS = ("request", "requests")
+OPTIONAL = (TIMED, "pref", "favorite") + REQUESTS
 INTERNET = ("matrix", "xmpp", "email", "irc")
 # The phone's CustomMoney.validTemplate: a link an app can open, never javascript:, a file, or an intent.
 PAY_TEMPLATE = re.compile(r"(?!(?:javascript|file|content|intent|data|vbscript):)[a-z][a-z0-9+.-]{1,30}:\S*\{address\}\S*")
@@ -79,6 +105,44 @@ def _put(db, key, value):
 
 def group(key):
     return key.split(":", 1)[0]
+
+
+def optional_groups(header=None, posted=None, timed=False, requests=False):
+    """The newer item groups a phone understands (OPTIONAL): from its X-Fluid-Merge-Groups / X-Fluid-Merge-Items
+    headers, or the "items" it posts. Phones from before "items" only ever said muteuntil (header) or "mute_until": 1
+    (post), and phones from the first message requests release said X-Fluid-Merge-Requests: 1 or "requests": 1."""
+    names = posted if isinstance(posted, list) else (header or "").split(",")
+    found = {name.strip() for name in names if isinstance(name, str)} & set(OPTIONAL)
+    if timed:
+        found.add(TIMED)
+    if requests:
+        found.update(REQUESTS)
+    return tuple(name for name in OPTIONAL if name in found)
+
+
+def favorite_address(text):
+    """A favorite as an item name: a phone number as its digits (and a leading +), anything else as it is. The
+    phone's SyncMerge.favoriteAddress does the same, so one number is one item on both sides."""
+    text = text.strip() if isinstance(text, str) else ""
+    if re.fullmatch(r"\+?[0-9(][0-9 ().-]{1,38}", text) and sum(char.isdigit() for char in text) >= 3:
+        return ("+" if text.startswith("+") else "") + re.sub(r"[^0-9]", "", text)
+    return text
+
+
+def inbox_filters_item(order):
+    """The inbox filter menu as one item value, or None for the default (every filter shown, in the usual order)."""
+    order = [item for item in order if isinstance(item, str)]
+    order = order + [item for item in INBOX_FILTERS if item not in [entry.removeprefix("-") for entry in order]]
+    return None if order == list(INBOX_FILTERS) else ",".join(order)
+
+
+def inbox_filters_value(value):
+    """An item value back as the filter menu, or None when it names a filter this server doesn't know."""
+    order = value.split(",") if value else []
+    ids = [item.removeprefix("-") for item in order]
+    if any(item not in INBOX_FILTERS for item in ids) or len(set(ids)) != len(ids) or "-inbox" in order:
+        return None
+    return order + [item for item in INBOX_FILTERS if item not in ids]
 
 
 def clean_items(value, nullable=False):
@@ -206,6 +270,20 @@ class Merge:
         for name, key in FUN.items():
             if prefs.get(key) is False:
                 items["fun:" + name] = "off"
+        for name in PREF_SWITCHES:
+            if prefs.get(name) is False:
+                items["pref:" + name] = "off"
+        if look.get("announceSettings") is False:
+            items["pref:announceSettings"] = "off"
+        if prefs.get("communitySort") in COMMUNITY_SORTS and prefs["communitySort"] != PREFS["communitySort"]:
+            items["pref:communitySort"] = prefs["communitySort"]
+        filters = inbox_filters_item(prefs.get("inboxFilters") or [])
+        if filters:
+            items["pref:inboxFilters"] = filters
+        for favorite in hooks["favorites"](db) if "favorites" in hooks else []:
+            name = favorite_address(favorite)
+            if name and not re.search(r"[\x00-\x1f]", name):
+                items["favorite:" + name] = "on"
         chats = hooks["chats"](db)
         places = {}
         for folder in FOLDERS:
@@ -224,6 +302,7 @@ class Merge:
                 items[TIMED + ":" + address] = str(ends)
         for address, kind in (chats.get("senders") or {}).items():
             items["sender:" + address] = kind
+        items.update(message_requests.merge_items(prefs, chats))
         timers = self.gateway.settings(db)["disappearing"]
         if timers.get("default"):
             items["timer:*"] = str(timers["default"])
@@ -277,8 +356,10 @@ class Merge:
         timers = json.loads(json.dumps(settings["disappearing"]))
         extras = clean_extras(_state(db, "web_extras", {}))
         enabled = _state(db, "web_enabled")
+        favorites = list(hooks["favorites"](db)) if "favorites" in hooks else []
         hidden = self.private(db)
         touched = set()
+        now = int(self.clock() * 1000)
         for key, value in changes.items():
             kind, name = key.split(":", 1)
             if hidden and kind in ADDRESSED and hidden(key):
@@ -307,6 +388,24 @@ class Merge:
                 look["chatWallpapers"] = walls
             elif kind == "fun" and name in FUN:
                 prefs[FUN[name]] = value != "off"
+            elif kind == "pref":
+                if name == "announceSettings":
+                    look["announceSettings"] = value != "off"
+                    touched.add("look")
+                elif name in PREF_SWITCHES:
+                    prefs[name] = value != "off"
+                elif name == "communitySort":
+                    prefs[name] = value if value in COMMUNITY_SORTS else PREFS[name]
+                elif name == "inboxFilters":
+                    # A filter from a newer phone that this server doesn't know leaves the web's menu as it is.
+                    order = inbox_filters_value(value) if value else list(INBOX_FILTERS)
+                    if order:
+                        prefs[name] = order
+            elif kind == "favorite":
+                # The same number however it's written: every spelling of it goes, and on adds it once.
+                favorites = [item for item in favorites if favorite_address(item) != name]
+                if value == "on":
+                    favorites.append(name)
             elif kind == "folder":
                 wanted = set(value.split("+")) if value else set()
                 for folder in FOLDERS:
@@ -331,14 +430,22 @@ class Merge:
                 else:
                     senders.pop(name, None)
                 chats["senders"] = senders
+            elif kind in REQUESTS:
+                message_requests.apply_merge(kind, name, value, prefs, chats)
             elif kind == "timer":
                 seconds = int(value) if value and value.isdigit() else None
+                # Like a timer changed in the browser, a new one starts now, so earlier messages stay until the phone's
+                # next sync brings its own start time.
                 if name == "*":
+                    if (seconds or 0) != timers.get("default", 0):
+                        timers["default_since"] = now
                     timers["default"] = seconds or 0
                 elif seconds is None:
                     timers["chats"].pop(name, None)
                     timers.get("since", {}).pop(name, None)
                 else:
+                    if timers["chats"].get(name) != seconds:
+                        timers.setdefault("since", {})[name] = now
                     timers["chats"][name] = seconds
             elif kind == "gif":
                 own = [site for site in extras["gifs"]["own"] if site["name"] != name]
@@ -365,9 +472,11 @@ class Merge:
             # Accounts: the phone never sends passwords here, so a merge only decides which side connects.
         if touched & {"look", "wallpaper"}:
             hooks["save_appearance"](db, look)
-        if "fun" in touched:
+        if touched & {"fun", "pref", "requests"}:
             hooks["save_prefs"](db, prefs)
-        if touched & {"folder", "muted", TIMED, "sender"}:
+        if "favorite" in touched and "save_favorites" in hooks:
+            hooks["save_favorites"](db, list(dict.fromkeys(favorites)))
+        if touched & {"folder", "muted", TIMED, "sender", "request"}:
             hooks["save_chats"](db, chats)
         if "timer" in touched:
             self.gateway.save_settings(db, {"disappearing": timers})
@@ -394,44 +503,50 @@ class Merge:
             _put(db, "merge_seen", seen)
         return {key: entry[1] for key, entry in seen.items()}
 
-    def view(self, db, timed=False):
-        """What the phone merges against. [timed]: the phone understands "muteuntil:" items (see TIMED)."""
+    def view(self, db, groups=()):
+        """What the phone merges against. [groups]: the newer item groups it understands (OPTIONAL, optional_groups)."""
         web = self.web_items(db)
         stamps = self.stamps(db, web)
-        if not timed:
-            web = {key: value for key, value in web.items() if group(key) != TIMED}
+        web = {key: value for key, value in web.items() if group(key) not in OPTIONAL or group(key) in groups}
         pair = _state(db, "merge_pair")
         pending, resolved = _state(db, "merge_pending"), _state(db, "merge_resolved")
         baseline, decisions = _state(db, "merge_baseline"), _state(db, "merge_decisions", {})
         follow = self.gateway.settings(db)["follow_phone"]
         revision = hashlib.sha256(json.dumps([web, pair, baseline, decisions, follow, pending and pending["id"],
                                               resolved and resolved["id"]], sort_keys=True).encode()).hexdigest()[:24]
-        return {"supported": 1, "mute_until": 1, "pair": pair, "revision": revision, "follow_phone": follow, "web": web,
+        return {"supported": 1, "mute_until": 1, "requests": 1, "items": list(OPTIONAL), "pair": pair, "revision": revision,
+                "follow_phone": follow, "web": web,
                 "stamps": {key: stamps[key] for key in web if key in stamps}, "baseline": baseline,
                 "decisions": decisions, "pending": pending, "resolved": resolved}
 
     def summary(self, db):
         """For the inbox snapshot: whether the merge is in use and what waits for a choice."""
         pending = _state(db, "merge_pending")
-        return {"active": _state(db, "merge_pair") is not None, "pending": pending}
+        # [at]: the phone's last merge, which the web's sync guide also waits for: a phone paired only for backups,
+        # or without the SMS role, merges settings but never sends texts.
+        return {"active": _state(db, "merge_pair") is not None, "pending": pending, "at": _state(db, "merge_at")}
 
     # Changes
 
     def post(self, db, data):
         """The phone's merge result. Refused when the web changed since the phone looked, so nothing is lost."""
         db.execute("BEGIN IMMEDIATE")
-        timed = data.get("mute_until") == 1
+        timed = optional_groups(posted=data.get("items"), timed=data.get("mute_until") == 1,
+                                requests=data.get("requests") == 1)
         current = self.view(db, timed)
         if data.get("revision") != current["revision"]:
             raise Conflict("FluidMessages Web changed while merging. Try again.")
         apply_web = clean_items(data.get("apply_web") or {}, nullable=True)
         baseline = clean_items(data.get("baseline") or {})
+        # Groups the phone didn't say it understands were never shown to it, so nothing it sends for them is a change.
+        apply_web = {key: value for key, value in apply_web.items() if group(key) not in OPTIONAL or group(key) in timed}
         conflicts = data.get("conflicts") or []
         if not isinstance(conflicts, list) or len(conflicts) > 2000:
             raise ValueError("Invalid conflicts")
         self.apply_web(db, apply_web)
         pair = current["pair"] or secrets.token_hex(12)
         _put(db, "merge_pair", pair)
+        _put(db, "merge_at", int(self.clock() * 1000))
         _put(db, "merge_baseline", baseline)
         web = self.web_items(db)
         stamps = self.stamps(db, web)
@@ -444,7 +559,7 @@ class Merge:
                 raise ValueError("Invalid conflict")
             key = item["key"]
             # The web's value comes from this server, never from what the phone says it is.
-            if web.get(key) == phone or any(entry["key"] == key for entry in found):
+            if group(key) in OPTIONAL and group(key) not in timed or web.get(key) == phone or any(entry["key"] == key for entry in found):
                 continue
             stamp = item.get("phone_t")
             found.append({"key": key, "phone": phone, "web": web.get(key),
@@ -493,16 +608,23 @@ class Merge:
         return self.view(db)
 
     def hold_timers(self, db, privacy):
-        """While a timer waits for a choice, the phone's regular sync doesn't overwrite the web's side of it."""
+        """The phone's regular sync sends all its timers, and doesn't overwrite the web's side of one that waits for a
+        choice, or one changed here since the last merge: the phone merges at most once a minute, so a sync can come
+        before the merge that would carry the web's change over (or ask, if the phone changed it too)."""
         pending = _state(db, "merge_pending")
+        baseline = _state(db, "merge_baseline")
         timers = privacy.get("disappearing") if isinstance(privacy, dict) else None
-        if not pending or not isinstance(timers, dict):
+        if not pending and baseline is None or not isinstance(timers, dict):
             return
         web = self.gateway.settings(db)["disappearing"]
-        for entry in pending["conflicts"]:
-            kind, name = entry["key"].split(":", 1)
-            if kind != "timer":
-                continue
+        held = {entry["key"] for entry in (pending or {}).get("conflicts", []) if group(entry["key"]) == "timer"}
+        if baseline is not None:
+            items = {"timer:" + address: str(seconds) for address, seconds in web.get("chats", {}).items()}
+            if web.get("default"):
+                items["timer:*"] = str(web["default"])
+            held |= {key for key in set(items) | {key for key in baseline if group(key) == "timer"} if items.get(key) != baseline.get(key)}
+        for key in sorted(held):
+            kind, name = key.split(":", 1)
             if name == "*":
                 timers["default"], timers["default_since"] = web.get("default", 0), web.get("default_since", 0)
                 continue

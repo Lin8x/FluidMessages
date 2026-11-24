@@ -107,6 +107,8 @@ internal data class ThreadRow @JvmOverloads constructor(
     val joinedAt: Long = 0L,
     /** Muted right now, by itself or its server: "Muted", "Muted until 3:40 PM"…; empty when it isn't (Mutes). */
     val muted: String = "",
+    /** A small hint of the account a chat is on, when it isn't the service's first of several (FromAccount.inboxHint). */
+    val account: String = "",
 )
 
 /**
@@ -137,6 +139,8 @@ internal data class ChatLine @JvmOverloads constructor(
     val encrypted: Boolean = false,
     /** When a disappearing message goes (epoch millis), or 0: shows a small timer by the time. */
     val expires: Long = 0L,
+    /** A channel or room message that names you: shows a small "@ Mentions you" mark (IRC, Matrix). */
+    val mention: Boolean = false,
 ) {
     /** Photo or other attachment, as one value for forwarding and previews. */
     val media: Attachment? get() = attachment ?: photo?.let(Attachment::photo)
@@ -319,7 +323,7 @@ internal class InboxScreen(
                     if (connected && !canSend) Text("Read-only · sending is off in Settings → Chat services",
                         Modifier.padding(top = 3.dp, bottom = 4.dp), color = palette.muted, fontSize = 14.sp)
                     // Chats | Communities: the phone has no room for a third tab, so Communities lives here.
-                    if (communitiesOffered && !sample && connected) InboxSwitch(palette, showingCommunities,
+                    if (communitiesOffered && (sample || connected)) InboxSwitch(palette, showingCommunities,
                         if (Communities.show(prefs)) 0 else counts?.communities ?: 0) { side ->
                         showingCommunities = side
                         pickView?.accept(side)
@@ -477,7 +481,11 @@ internal fun ConversationRow(thread: ThreadRow, palette: Palette, showProtocol: 
                     DrawGlyph(Glyph.Forward, palette.muted, Modifier.size(12.dp))
                 }
                 if (showProtocol) ProtocolTags(thread, palette.appearance, palette.muted)
-                else if (thread.muted.isNotEmpty()) MutedMark(thread.muted, palette.muted, Modifier.padding(top = 3.dp, bottom = 1.dp))
+                else if (thread.muted.isNotEmpty() || thread.account.isNotEmpty()) Row(Modifier.padding(top = 3.dp, bottom = 1.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (thread.muted.isNotEmpty()) MutedMark(thread.muted, palette.muted)
+                    if (thread.account.isNotEmpty()) AccountHint(thread.account, palette.muted)
+                }
                 Text(thread.preview, Modifier.padding(top = 3.dp, end = 15.dp), color = palette.muted,
                     fontSize = 15.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
@@ -529,6 +537,14 @@ internal class ConversationScreen @JvmOverloads constructor(
     var lines by mutableStateOf(emptyList<ChatLine>())
     var animatedId by mutableStateOf<String?>(null)
     var error by mutableStateOf<String?>(null)
+    /** "irc", "matrix", or "xmpp" in those chats, for the "/" hints above the message box (ChatCommands); "" elsewhere. */
+    var commandFamily by mutableStateOf("")
+    /** The network account whose connection shows "Disconnected · Reconnect" in this chat (ChatExtras); "" for none. */
+    var connectionAccount by mutableStateOf("")
+    /** /help's page for this chat's service, while it's open. */
+    var helpFamily by mutableStateOf<String?>(null)
+    /** Accept, Delete, Block, and Block and report spam, while this chat is a message request (MessageRequests). */
+    var request by mutableStateOf<RequestBar?>(null)
 
     init {
         mount(root, prefs, profile) { palette ->
@@ -548,6 +564,7 @@ internal class ConversationScreen @JvmOverloads constructor(
             val activeColor = profile.outgoing()?.let { Color(it) } ?: styleColor(active)
             val sendColor = if (via == active) activeColor else styleColor(via)
             var viaMenu by remember { mutableStateOf(false) }
+            var fromInfo by remember { mutableStateOf(false) }
             fun chooseVia(next: MessageProtocol) {
                 viaMenu = false
                 // Within one conversation (combined, or RCS falling back to SMS) only the next send changes.
@@ -735,6 +752,9 @@ internal class ConversationScreen @JvmOverloads constructor(
                         if (more != null) ActionIcon("Conversation options", Glyph.More, palette.toolbarAction) { more.run() }
                     }
                     if (!floating) HorizontalDivider(color = palette.edge)
+                    // While this chat's network is disconnected: "Disconnected from <network> · Reconnect" (ChatExtras).
+                    ConnectionBar(connectionAccount, palette)
+                    helpFamily?.let { family -> CommandHelpPage(family, palette) { helpFamily = null } }
                     val list = rememberLazyListState()
                     val scrollScope = rememberCoroutineScope()
                     LaunchedEffect(messages.size) {
@@ -753,6 +773,7 @@ internal class ConversationScreen @JvmOverloads constructor(
                             before = now
                         }
                     }
+                    request?.let { RequestBanner(it, palette) }
                     LazyColumn(
                         Modifier.weight(1f).fillMaxWidth(),
                         state = list,
@@ -949,7 +970,38 @@ internal class ConversationScreen @JvmOverloads constructor(
                             }
                         }
                     }
+                    val from = routing?.from.orEmpty()
+                    if (from.isNotEmpty() && !sample) {
+                        // Which account replies go out from, like a mail app's From field. Replies always use the
+                        // chat's own account; another account means a new message. Tapping opens the note in place.
+                        Row(Modifier.padding(start = 16.dp, top = 4.dp, end = 16.dp).clip(RoundedCornerShape(10.dp))
+                            .background(palette.wash).clickable(onClickLabel = "About sending from this account") { fromInfo = !fromInfo }
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                            .semantics(mergeDescendants = true) { contentDescription = "Sending from $from. About sending from this account" },
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text("From: ", color = palette.muted, fontSize = 12.sp)
+                            Text(from, Modifier.weight(1f, fill = false), color = palette.ink, fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(if (fromInfo) "  ▴" else "  ▾", color = palette.inboxAction, fontSize = 12.sp)
+                        }
+                        if (fromInfo) Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
+                            .clip(RoundedCornerShape(14.dp)).background(palette.wash).padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(FromAccount.explain(from), color = palette.ink, fontSize = 14.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (routing?.newFromAnother != null) Text(FromAccount.NEW_MESSAGE,
+                                    Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button) {
+                                        fromInfo = false
+                                        routing.newFromAnother.run()
+                                    }.padding(vertical = 6.dp), color = palette.inboxAction, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Done", Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button) { fromInfo = false }
+                                    .padding(vertical = 6.dp), color = palette.inboxAction, fontSize = 14.sp)
+                            }
+                        }
+                    }
                     val recording = recorder
+                    // The commands matching what's typed after "/" (ChatExtras).
+                    if (blocked.isEmpty() && recording == null) CommandHints(commandFamily, draft, palette) { draft = it }
                     if (blocked.isNotEmpty()) {
                         Text(blocked, Modifier.fillMaxWidth().padding(16.dp), color = palette.muted, fontSize = 14.sp)
                     } else if (recording != null) RecordingBar(recording, sendColor, palette.ink, palette.muted, {
@@ -1187,6 +1239,8 @@ private fun MessageBubble(
                                 lineHeight = (palette.appearance.size + 4).sp)
                         }
                     } else {
+                        if (line.mention && !line.outgoing) Text("@ Mentions you", Modifier.padding(bottom = 2.dp).semantics { contentDescription = "Mentions you" },
+                            color = foreground, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         // Hide automatic captions ("Photo", a file name) that only repeat the attachment card.
                         val action = line.text.startsWith("/me ")
                         val shown = when {
@@ -1853,7 +1907,9 @@ private fun nickColor(nick: String, palette: Palette): Color {
 private fun ChannelEvent(line: ChatLine, palette: Palette, tint: Color) {
     val ink = if (palette.appearance.dark) tint else accessibleBubbleFill(tint)
     Box(Modifier.fillMaxWidth().padding(vertical = 5.dp), contentAlignment = Alignment.Center) {
-        Text(line.text + if (line.time.isNotEmpty()) " · " + line.time else "",
+        // A chat setting notice shows only its note, not the line meant for other apps.
+        val text = remember(line.text) { parseChatNotice(line.text)?.let(::chatNoticeLabel) ?: line.text }
+        Text(text + if (line.time.isNotEmpty()) " · " + line.time else "",
             Modifier.border(1.dp, ink.copy(alpha = .7f), RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 3.dp),
             color = ink, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }

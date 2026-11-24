@@ -17,6 +17,9 @@ const INBOX_FILTERS = [
   {id: 'xmpp', label: 'XMPP', about: 'XMPP chats and group chats', service: 'xmpp'},
   {id: 'email', label: 'Email', about: 'Email conversations', service: 'email'},
   {id: 'irc', label: 'IRC', about: 'IRC channels and direct messages', service: 'irc'},
+  // Message requests and automated senders (requests.js).
+  {id: 'requests', label: 'Requests', about: 'Chats from people you don’t know, waiting for you to accept them'},
+  {id: 'automated', label: 'Automated', about: 'Short codes and sender IDs, like delivery updates and sign-in codes'},
   {id: 'archived', label: 'Archived', about: 'Chats you archived'},
   {id: 'blocked', label: 'Blocked', about: 'Chats you blocked'},
 ];
@@ -64,15 +67,26 @@ function inboxFilterMatches(id, chat) {
     case 'favorites': return !!chat.favorite;
     case 'groups': return !!chat.group;
     case 'direct': return !chat.group;
+    case 'automated': return !!chat.automated;
     default: return true;
   }
 }
 
-/** Where a chat is: {hidden (private folder), archived, blocked}. Scope 'private' lists only the private folder's chats. */
+/**
+ * Where a chat is: {hidden (private folder), archived, blocked, request, automatedOut, dismissed}. Scope 'private'
+ * lists only the private folder's chats. Requests show only under Requests, and automated chats kept out of the inbox
+ * only under Automated (requests.js); a deleted request with nothing new shows nowhere.
+ */
 function inboxFilterPlaces(scope, id, place) {
   if (scope === 'private' ? !place.hidden : place.hidden) return false;
+  if (place.dismissed) return false;
   const where = inboxFilterPlace(id);
-  return where === 'blocked' ? place.blocked : !place.blocked && (where === 'archived' ? place.archived : !place.archived);
+  if (where === 'blocked') return !!place.blocked;
+  if (place.blocked || (where === 'archived') !== !!place.archived) return false;
+  if (where === 'archived') return true;
+  if (id === 'requests') return !!place.request;
+  if (place.request) return false;
+  return !place.automatedOut || id === 'automated';
 }
 
 const inboxDecoy = () => typeof decoyLike === 'function' && decoyLike();
@@ -101,7 +115,7 @@ function favoriteChat(key) {
 
 /** The facts inboxFilterMatches reads for one chat. */
 function inboxChatFacts(key, messages, unread) {
-  return {group: threadIsGroup(key), favorite: favoriteChat(key), unread,
+  return {group: threadIsGroup(key), favorite: favoriteChat(key), unread, automated: typeof automatedThread === 'function' && automatedThread(key),
     services: new Set(messages.length ? messages.map((row) => family(row.protocol || 'sms')) : [family(threadProtocol(key))])};
 }
 

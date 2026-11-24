@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalTextStyle
@@ -24,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -76,4 +79,17 @@ internal fun FormPage(
             }
         }
     }
+}
+
+/**
+ * A deep red that keeps white text readable (about 6.5:1) on light and dark pages alike, so a destructive
+ * button stands out without depending on the theme's own colors.
+ */
+internal val DangerFill = Color(0xFFB3261E)
+
+/** The button for an action that deletes, removes, or erases something: filled red with white text. */
+@Composable
+internal fun DangerButton(onClick: () -> Unit, label: String, modifier: Modifier = Modifier) {
+    Button(onClick = onClick, modifier = modifier, colors = ButtonDefaults.buttonColors(containerColor = DangerFill,
+        contentColor = Color.White)) { androidx.compose.material3.Text(label) }
 }

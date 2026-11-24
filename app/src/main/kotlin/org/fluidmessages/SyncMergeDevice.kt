@@ -16,6 +16,8 @@ import javax.net.ssl.HttpsURLConnection
  *
  * Left out on purpose: chats in the private folder and decoy chats, chat codes (their hashes stay where they were
  * made), account passwords and tokens, wallet addresses, custom colors, sounds and vibration, and wallpaper photos.
+ * Sounds stay on each device on purpose: the phone plays Android tones, the web its own, with nothing to compare.
+ * Contacts made on the web travel on their own endpoint (WebContacts), never as items.
  */
 internal object PhoneSyncItems {
     private val themes = MessageStyle.Theme.values().associateBy { it.name.lowercase(Locale.ROOT) }
@@ -32,6 +34,10 @@ internal object PhoneSyncItems {
     private val layout = listOf("radius", "size", "padding", "wallpaper", "searchPosition", "toolbarFinish", "chromeOpacity",
         "inboxDensity", "bubbleTails")
     private val stickerId = Regex("[A-Za-z0-9_-]{1,80}")
+    /** Messaging item → phone setting, each on by default. */
+    private val switches = mapOf("tabCounts" to TabBadges.PREF, "showCommunityChats" to Communities.SHOW_PREF,
+        "announceSettings" to MainActivity.ANNOUNCE_SETTINGS)
+    private val defaultFilters = InboxFilters.encode(InboxFilters.parse(emptyList()))
 
     /** Chats that never leave this phone: the private folder and decoys. */
     fun privateChat(prefs: SharedPreferences, address: String) =
@@ -67,6 +73,12 @@ internal object PhoneSyncItems {
         }
         // Fun
         for ((item, setting) in funKeys) if (!prefs.getBoolean(setting, true)) items["fun:$item"] = "off"
+        // Messaging: counts on tabs, community chats and their order, the inbox filter menu, announcing changes
+        for ((item, setting) in switches) if (!prefs.getBoolean(setting, true)) items["pref:$item"] = "off"
+        Communities.sort(prefs).takeIf { it != Communities.Sort.RECENT }?.let { items["pref:communitySort"] = it.id }
+        InboxFilters.encode(InboxFilters.read(prefs)).takeIf { it != defaultFilters }?.let { items["pref:inboxFilters"] = it.joinToString(",") }
+        // Favorites, by number or chat address (FavoriteItems)
+        for (address in FavoriteItems.read(context, prefs).orEmpty()) chat("favorite", address, "on")
         // Chats
         val places = linkedMapOf<String, MutableSet<String>>()
         for (folder in listOf("pinned", "archived", "blocked")) {
@@ -87,6 +99,8 @@ internal object PhoneSyncItems {
             }
         }
         Disappearing.globalSeconds(prefs).takeIf { it > 0 }?.let { items["timer:*"] = it.toString() }
+        // Requests and spam, and what you decided about each request (MessageRequests; SyncMergeRun.REQUESTS).
+        items.putAll(MessageRequests.syncItems(prefs) { privateChat(prefs, it) })
         // GIF sites and payments you added
         for (site in GifSites.custom(prefs)) if (site.name.isNotBlank()) items["gif:" + site.name] = site.search
         runCatching { JSONArray(prefs.getString("money.custom", "[]")) }.getOrNull()?.let { array ->
@@ -139,6 +153,7 @@ internal object PhoneSyncItems {
         val muteEnds = Mutes.until(prefs).toMutableMap()
         var foldersChanged = false
         var timers = false
+        val favorites = linkedMapOf<String, Boolean>()
         val afterwards = mutableListOf<() -> Unit>()
         for ((key, value) in changes) {
             val name = SyncMerge.name(key)
@@ -161,6 +176,14 @@ internal object PhoneSyncItems {
                         profile.background(), profile.outgoing(), profile.incoming()).save(prefs, name)
                 }
                 "fun" -> funKeys[name]?.let { edit.putBoolean(it, value != "off") }
+                "pref" -> when (name) {
+                    in switches -> edit.putBoolean(switches.getValue(name), value != "off")
+                    "communitySort" -> edit.putString(Communities.SORT_PREF, Communities.Sort.parse(value).id)
+                    // A filter this phone doesn't know is dropped and the rest keep their order (InboxFilters.parse).
+                    "inboxFilters" -> if (value == null) edit.remove(InboxFilters.PREF)
+                        else edit.putString(InboxFilters.PREF, JSONArray(InboxFilters.encode(InboxFilters.parse(value.split(',')))).toString())
+                }
+                "favorite" -> if (!privateChat(prefs, name)) favorites[name] = value == "on"
                 "folder" -> if (!privateChat(prefs, name)) {
                     val wanted = SyncMerge.folderSet(value)
                     for (folder in listOf("pinned", "archived", "blocked")) {
@@ -178,6 +201,8 @@ internal object PhoneSyncItems {
                     if (end == null) muteEnds.remove(name) else muteEnds[name] = end
                     foldersChanged = true
                 }
+                "requests" -> MessageRequests.applySync(edit, "requests", name, value)
+                "request" -> if (!privateChat(prefs, name)) MessageRequests.applySync(edit, "request", name, value)
                 "sender" -> if (!privateChat(prefs, name)) {
                     if (value == "automated" || value == "person") edit.putString("senderType.$name", value) else edit.remove("senderType.$name")
                 }
@@ -222,8 +247,102 @@ internal object PhoneSyncItems {
             Mutes.write(edit, folders.getValue("muted") to muteEnds.filterKeys { it in folders.getValue("muted") })
         }
         edit.commit()
+        if (favorites.isNotEmpty()) FavoriteItems.apply(context, prefs, favorites)
         for (run in afterwards) run()
         if (timers) runCatching { SyncJob.reschedule(context) }
+    }
+}
+
+/**
+ * The Phone tab's favorites as merge items. The phone stars people by key ("contact:<id>", "web:<id>", "chat:<address>",
+ * "number:<number>"); FluidMessages Web stars a number or chat address. Contact ids mean nothing on the web, so each
+ * starred person becomes the numbers and addresses it reaches, and a favorite from the web stars the contact with
+ * that number, or else the address itself.
+ */
+internal object FavoriteMerge {
+    /** What each starred key reaches, as item names. */
+    fun items(reach: Map<String, List<String>>): Set<String> =
+        reach.values.flatten().map(SyncMerge::favoriteAddress).filter { it.isNotEmpty() }.toSortedSet()
+
+    /**
+     * The starred keys after [changes] (item name → starred or not). Unstarring takes every key that reaches the
+     * address; starring adds [find]'s key for it unless one already reaches it.
+     */
+    fun apply(reach: Map<String, List<String>>, changes: Map<String, Boolean>, find: (String) -> String): List<String> {
+        val now = LinkedHashMap(reach.mapValues { (_, addresses) -> addresses.map(SyncMerge::favoriteAddress) })
+        for ((address, on) in changes) {
+            if (on) {
+                if (now.values.none { address in it }) now[find(address)] = listOf(address)
+            } else {
+                now.entries.removeAll { address in it.value }
+            }
+        }
+        return now.keys.toList()
+    }
+}
+
+internal object FavoriteItems {
+    private const val KEY = "phoneFavorites"
+
+    private fun keys(prefs: SharedPreferences): List<String> = runCatching {
+        val array = JSONArray(prefs.getString(KEY, "[]"))
+        (0 until array.length()).map(array::getString)
+    }.getOrDefault(emptyList())
+
+    private fun contactsAllowed(context: Context) =
+        context.checkSelfPermission(android.Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    /** Each starred key and what it reaches, or null when a starred contact can't be read (contacts not allowed). */
+    private fun reach(context: Context, prefs: SharedPreferences): Map<String, List<String>>? {
+        val keys = keys(prefs)
+        val ids = keys.mapNotNull { key -> key.removePrefix("contact:").takeIf { key.startsWith("contact:") }?.toLongOrNull() }
+        val numbers = mutableMapOf<Long, MutableList<String>>()
+        if (ids.isNotEmpty()) {
+            if (!contactsAllowed(context)) return null
+            val phone = android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+            try {
+                context.contentResolver.query(phone, arrayOf(android.provider.ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+                    android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER),
+                    android.provider.ContactsContract.CommonDataKinds.Phone.CONTACT_ID + " IN (" + ids.joinToString(",") + ")", null, null)?.use { cursor ->
+                    while (cursor.moveToNext()) cursor.getString(1)?.let { numbers.getOrPut(cursor.getLong(0)) { mutableListOf() } += it }
+                }
+            } catch (_: RuntimeException) { return null }
+        }
+        val web = WebContacts.list(prefs).associateBy { it.id }
+        return keys.associateWith { key ->
+            when {
+                key.startsWith("contact:") -> key.removePrefix("contact:").toLongOrNull()?.let { numbers[it] }.orEmpty()
+                key.startsWith("web:") -> web[key.removePrefix("web:")]?.draft?.let { it.numbers + it.addresses.map { chat -> chat.address } }.orEmpty()
+                key.startsWith("chat:") -> listOf(key.removePrefix("chat:"))
+                key.startsWith("number:") -> listOf(key.removePrefix("number:"))
+                else -> emptyList() // The sample's and decoy people never leave this phone.
+            }.filter { !it.startsWith(Privacy.DECOY) }
+        }
+    }
+
+    /** Favorites as item names, or null when they can't all be read: then they stay out of this merge. */
+    fun read(context: Context, prefs: SharedPreferences): Set<String>? = reach(context, prefs)?.let(FavoriteMerge::items)
+
+    fun apply(context: Context, prefs: SharedPreferences, changes: Map<String, Boolean>) {
+        val reach = reach(context, prefs) ?: return
+        val web = WebContacts.list(prefs)
+        val keys = FavoriteMerge.apply(reach, changes) { address ->
+            contactFor(context, address)?.let { "contact:$it" }
+                ?: web.firstOrNull { entry -> (entry.draft.numbers + entry.draft.addresses.map { it.address }).any { SyncMerge.favoriteAddress(it) == address } }
+                    ?.let { "web:" + it.id }
+                ?: "chat:$address"
+        }
+        prefs.edit().putString(KEY, JSONArray(keys).toString()).apply()
+    }
+
+    private fun contactFor(context: Context, address: String): Long? {
+        if (!SmsStore.validRecipient(address) || !contactsAllowed(context)) return null
+        val uri = android.net.Uri.withAppendedPath(android.provider.ContactsContract.PhoneLookup.CONTENT_FILTER_URI, android.net.Uri.encode(address))
+        return try {
+            context.contentResolver.query(uri, arrayOf(android.provider.ContactsContract.PhoneLookup._ID), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getLong(0) else null
+            }
+        } catch (_: RuntimeException) { null }
     }
 }
 
@@ -271,6 +390,19 @@ object SyncMergeRun {
      */
     const val TIMED = "muteuntil"
     private const val ITEMS_HEADER = "X-Fluid-Merge-Items"
+    /**
+     * Every newer group this phone understands (SyncMerge.optionalGroups, message requests included). [ITEMS_HEADER]
+     * stays exactly "muteuntil", which servers from before compare whole; FluidMessages Web answers the groups it knows
+     * as "items".
+     */
+    private const val GROUPS_HEADER = "X-Fluid-Merge-Groups"
+    /**
+     * Message requests: "requests:<setting>" and "request:<address>" (MessageRequests) are in [GROUPS_HEADER] too. The
+     * first FluidMessages Web with requests only knew a header of its own, so this phone also asks with
+     * [REQUESTS_HEADER] and posts "requests": 1; that server answers "requests": 1 rather than listing them in "items".
+     */
+    val REQUESTS = SyncMerge.requestGroups.toSet()
+    private const val REQUESTS_HEADER = "X-Fluid-Merge-Requests"
     @Volatile private var nextRun = 0L
 
     private class Unsupported : IOException("FluidMessages Web doesn't merge settings yet")
@@ -315,12 +447,17 @@ object SyncMergeRun {
                 all.optJSONObject(key)?.let { key to SyncDecision(it.text("phone"), it.text("web"), it.optString("pick")) }
             }.toMap()
         }.orEmpty()
-        // Timed mutes travel only when FluidMessages Web understands them; otherwise a timed mute is just "muted".
-        val timed = state.optInt("mute_until") == 1
-        val phone = PhoneSyncItems.read(context, prefs).filterKeys { timed || SyncMerge.group(it) != TIMED }
+        // Newer item groups travel only when FluidMessages Web understands them; otherwise a timed mute is just "muted",
+        // and inbox choices, favorites, and message requests stay on each side.
+        val shared = SyncMerge.sharedGroups(state.optJSONArray("items")?.let { list -> (0 until list.length()).map(list::optString) },
+            state.optInt("mute_until") == 1, state.optInt("requests") == 1)
+        // Favorites of contacts that can't be read now (contacts not allowed) sit this merge out, rather than look deleted.
+        val favorites = "favorite" in shared && FavoriteItems.read(context, prefs) != null
+        val phone = PhoneSyncItems.read(context, prefs).filterKeys { SyncMerge.understood(it, shared) }
         val stamps = stamps(prefs, phone)
         val result = SyncMerge.merge(phone, state.optJSONObject("web")?.strings().orEmpty(), baseline, decisions) { key ->
-            (follow || SyncMerge.group(key) !in SyncMerge.settingsGroups) && !chatKeyPrivate(prefs, key) && (timed || SyncMerge.group(key) != TIMED)
+            (follow || SyncMerge.group(key) !in SyncMerge.settingsGroups) && !chatKeyPrivate(prefs, key) && SyncMerge.understood(key, shared)
+                && (favorites || SyncMerge.group(key) != "favorite")
         }
         // This phone's share goes in first: if posting fails, the next run sees both sides already agree.
         PhoneSyncItems.apply(context, prefs, result.applyPhone) { download(context, prefs, it) }
@@ -345,11 +482,13 @@ object SyncMergeRun {
                 .put("phone_t", stamps[conflict.key] ?: 0L))
         }
         val baselineJson = JSONObject()
-        for ((key, value) in agreed) baselineJson.put(key, value)
+        // Only groups this FluidMessages Web knows: an older one refuses the whole merge for any other.
+        for ((key, value) in agreed) if (SyncMerge.understood(key, shared)) baselineJson.put(key, value)
         val answer = try {
             request(prefs, "POST", "merge", JSONObject().put("revision", state.optString("revision"))
                 .put("apply_web", applyWeb).put("baseline", baselineJson).put("conflicts", conflicts)
-                .apply { if (timed) put("mute_until", 1) })
+                .put("items", JSONArray(SyncMerge.optionalGroups.filter { it in shared }))
+                .apply { if (TIMED in shared) put("mute_until", 1); if (shared.containsAll(REQUESTS)) put("requests", 1) })
         } catch (error: HttpProblem) { if (error.code == 409) throw Stale() else throw error }
         prefs.edit().putString(PAIR, answer.optString("pair")).apply()
         SyncPending.save(prefs, answer.optJSONObject("pending"))
@@ -357,7 +496,7 @@ object SyncMergeRun {
     }
 
     private fun chatKeyPrivate(prefs: SharedPreferences, key: String) =
-        SyncMerge.group(key) in setOf("folder", "muted", TIMED, "sender", "timer", "wallpaper") && SyncMerge.name(key) != "*" &&
+        SyncMerge.group(key) in setOf("folder", "muted", TIMED, "favorite", "sender", "timer", "wallpaper", "request") && SyncMerge.name(key) != "*" &&
             PhoneSyncItems.privateChat(prefs, SyncMerge.name(key))
 
     /** When each item last changed on this phone, as far as merges noticed. */
@@ -419,7 +558,11 @@ object SyncMergeRun {
         val connection = open(prefs, endpoint)
         try {
             connection.requestMethod = method
-            if (endpoint == "merge" && method == "GET") connection.setRequestProperty(ITEMS_HEADER, TIMED)
+            if (endpoint == "merge" && method == "GET") {
+                connection.setRequestProperty(ITEMS_HEADER, TIMED)
+                connection.setRequestProperty(GROUPS_HEADER, SyncMerge.optionalGroups.joinToString(","))
+                connection.setRequestProperty(REQUESTS_HEADER, "1")
+            }
             if (payload != null) {
                 val data = payload.toString().toByteArray(StandardCharsets.UTF_8)
                 connection.setRequestProperty("Content-Type", "application/json")

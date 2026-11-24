@@ -26,9 +26,11 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
-from accounts import AccountStore, CHANNEL, JID, MXID, NICK, identity as account_name, tag as account_tag
+from accounts import AccountStore, CHANNEL, IMAP_PORT, JID, MXID, NICK, SMTP_PORT, identity as account_name, imap_starttls, smtp_starttls, tag as account_tag
+from chat_features import ChatFeatures, edit_text
 import irc_client
 import matrix_e2ee
+import message_requests
 import xmpp_client
 
 INTERNET = ("matrix", "xmpp", "email", "irc")
@@ -58,6 +60,25 @@ def valid_address(address):
         return False
     base, mark, suffix = address.partition("~")
     return bool(ID.fullmatch(base) or NUMBER.fullmatch(base)) and (not mark or bool(TAG.fullmatch(suffix)))
+
+
+IRC_LOWER = str.maketrans("[]\\~", "{}|^")
+
+
+def target_key(via, target):
+    """An address compared the way its service does, so one person, group, channel, or room is one chat per account.
+
+    Email and XMPP addresses and Matrix user IDs and aliases ignore case; a Matrix room ID keeps its own case but not its
+    server's; IRC channels and nicks fold case by RFC 1459 ([]\\~ are the capitals of {}|^)."""
+    if not isinstance(target, str):
+        return ""
+    target = target.strip()
+    if via == "irc":
+        return target.lower().translate(IRC_LOWER)
+    if via == "matrix" and target.startswith("!"):
+        room, _, server = target.partition(":")
+        return room + ":" + server.lower()
+    return target.lower()
 
 
 def via_for(format, target):
@@ -224,7 +245,7 @@ def configured():
     return result
 
 
-class Gateway:
+class Gateway(ChatFeatures):
     def __init__(self, connect, config, files=None, accounts=None):
         self.connect = connect
         # Attachments live beside the database, one file per message id; uploads wait in a staging folder.
@@ -331,10 +352,11 @@ class Gateway:
         for entry in everyone:
             if entry["protocol"] != "irc":
                 continue
-            linked = {r["target"].lower() for r in routes if r["protocol"] == "irc" and r["account"] == entry["id"]}
+            linked = {target_key("irc", r["target"]) for r in routes if r["protocol"] == "irc" and r["account"] == entry["id"]}
             scope = self.scope(entry["id"])
             for channel in entry["values"].get("channels", []):
-                if channel.lower() not in linked:
+                if target_key("irc", channel) not in linked:
+                    linked.add(target_key("irc", channel))
                     key = ((scope + ":") if scope else "") + channel.lower()
                     routes.append({"address": "irc-" + hashlib.sha256(key.encode()).hexdigest()[:16],
                                    "protocol": "irc", "target": channel, "via": "irc", "group": True, "title": channel,
@@ -380,7 +402,7 @@ class Gateway:
                 raise ValueError("Enter an IRC #channel or nickname")
         else:
             raise ValueError("Unknown internet format")
-        if any(r.get("via", r["protocol"]) == via and r["target"].lower() == target.lower()
+        if any(r.get("via", r["protocol"]) == via and target_key(via, r["target"]) == target_key(via, target)
                and (r.get("account") or "") == account for r in existing):
             raise ValueError("Each address or room can belong to one conversation per account")
         members = route.get("members", [])
@@ -407,6 +429,14 @@ class Gateway:
         if account and account not in choices:
             raise ValueError("That account isn’t on FluidMessages Web anymore")
         existing = self.routes
+        # One chat per person, group, channel, or room on a service and account: the same one again opens that chat.
+        # (A different account on the service gets a chat of its own, below.)
+        wanted = target_key(via, data.get("target"))
+        same = next((r for r in existing if r.get("via", r["protocol"]) == via and wanted
+                     and target_key(via, r["target"]) == wanted and (r.get("account") or "") == (account or "")), None)
+        # Linking it to a contact's phone-number conversation (details → Link an address) still says it's taken.
+        if same and data.get("protocol") == same["protocol"] and not NUMBER.fullmatch(str(data.get("address") or "").partition("~")[0]):
+            return {"route": {key: value for key, value in same.items() if key != "via"}, "existing": True}
         address = data.get("address")
         if account and valid_address(address) and any(r["address"] == address and r["protocol"] == data.get("protocol")
                                                        and r["account"] != account for r in existing):
@@ -450,7 +480,7 @@ class Gateway:
             if not isinstance(enabled, list) or any(not isinstance(item, str) for item in enabled):
                 raise ValueError("Invalid protocol settings")
             db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('enabled', ?) ", (json.dumps(enabled),))
-        rows = db.execute("SELECT payload FROM protocol_messages ORDER BY date DESC LIMIT 1500")
+        rows = db.execute("SELECT payload FROM protocol_messages ORDER BY date DESC, rowid DESC LIMIT 1500")
         messages, size = [], 0
         for row in rows:
             size += len(row[0].encode())
@@ -464,6 +494,7 @@ class Gateway:
             channels[key.removeprefix("channel:")] = json.loads(value)
         listed = [account for account in self.accounts.redacted() if "error" not in account]
         names = {account["id"]: account["name"] for account in listed}
+        keep = self.keep_map()
         def shown(route):
             item = {key: value for key, value in route.items() if key != "via"}
             if not item.get("account"):
@@ -471,15 +502,32 @@ class Gateway:
             elif item["account"] in names:
                 # Shown as "via alice@example.org" when a service has more than one account.
                 item["account_name"] = names[item["account"]]
+            if route.get("via") == "irc" and route.get("group"):
+                item["keep_joined"] = keep.get(route["address"], True) is not False
             secure = self.secure(route.get("account")) if route.get("via") == "matrix" else None
             if secure is not None:
                 item["encrypted"] = secure.encrypted(route["target"])
             return item
         routes = [shown(route) for route in self.routes if not self.hidden(settings, route)]
-        # Older phones read only protocol and source; the id and public address name each account.
+        # Each service's account used most recently (else its newest), which New message preselects as From.
+        recent = {}
+        for message in messages:
+            account = message.get("account")
+            protocol = account.partition(":")[0] if isinstance(account, str) else ""
+            if protocol and protocol not in recent and account in names:
+                recent[protocol] = account
+        for account in listed:
+            recent.setdefault(account["protocol"], next(item["id"] for item in reversed(listed) if item["protocol"] == account["protocol"]))
+        # Older phones read only protocol and source; the id and public address name each account. The primary one
+        # (the service's first) owns chats from before multiple accounts.
         return {"messages": messages, "routes": routes, "enabled": sorted(self.enabled(db)), "channels": channels,
+                # IRC, Matrix, and XMPP invitations and XMPP contact requests waiting for an answer (chat_features.py).
+                "invites": [invite for invite in self.invites() if invite["account"] in names],
+                # Each IRC network's connection state, for the Disconnected · Reconnect bar.
+                "connections": self.connections(),
                 "accounts": [{"protocol": account["protocol"], "source": account["source"], "id": account["id"],
-                              "name": account["name"]} for account in listed]}
+                              "name": account["name"], "primary": bool(account.get("primary")),
+                              "recent": recent.get(account["protocol"]) == account["id"]} for account in listed]}
 
     @staticmethod
     def mark_read(db, data):
@@ -746,6 +794,7 @@ class Gateway:
             raise ValueError("Enter 1–1,600 characters")
         if not isinstance(request, str) or not ID.fullmatch(request):
             raise ValueError("Invalid message request")
+        self.check_not_command(route, body, data)
         return route, body, "gateway-" + request
 
     def relation(self, db, data, route):
@@ -845,7 +894,7 @@ class Gateway:
         if not isinstance(value, str) or not value:
             return None
         with closing(self.connect()) as db:
-            for row in db.execute("SELECT payload FROM protocol_messages ORDER BY date DESC LIMIT 1500"):
+            for row in db.execute("SELECT payload FROM protocol_messages ORDER BY date DESC, rowid DESC LIMIT 1500"):
                 item = json.loads(row[0])
                 if item["address"] == address and item["protocol"] == protocol and item.get(key) == value:
                     return item
@@ -870,6 +919,8 @@ class Gateway:
         if db.execute("SELECT count(*) FROM protocol_jobs WHERE date>=?", (cutoff,)).fetchone()[0] >= 30:
             raise ValueError("Too many messages queued. Try again in a minute.")
         message = self.message(route, message_id, body, True, now, "Queued" if due <= now else "Scheduled")
+        if data.get("literal") is True:
+            message["literal"] = True  # Typed with //: "/me" goes out as written, not as an action.
         settings = self.settings(db)
         seconds = settings["disappearing"]["chats"].get(route["address"], settings["disappearing"]["default"])
         if seconds > 0:
@@ -1019,10 +1070,41 @@ class Gateway:
             maintype, _, subtype = attachment["mime"].partition("/")
             envelope.add_attachment(self.file_path(message["id"]).read_bytes(), maintype=maintype, subtype=subtype,
                                     filename=attachment["name"])
-        with smtplib.SMTP_SSL(cfg["smtp_host"], int(cfg.get("smtp_port", 465)), context=self.tls, timeout=12) as server:
+        with self.smtp_connection(cfg) as server:
             server.login(cfg.get("smtp_user", cfg["address"]), cfg["smtp_password"])
             server.send_message(envelope, from_addr=cfg["address"], to_addrs=[route["target"]])
         return {"mail_id": str(envelope["Message-ID"]), "mail_subject": str(envelope["Subject"])}
+
+    def smtp_connection(self, cfg):
+        """SMTP with TLS from the start on 465 (the default), or STARTTLS on any other port such as 587. Never plain text."""
+        port = int(cfg.get("smtp_port") or SMTP_PORT)
+        if not smtp_starttls(port):
+            return smtplib.SMTP_SSL(cfg["smtp_host"], port, context=self.tls, timeout=12)
+        server = smtplib.SMTP(cfg["smtp_host"], port, timeout=12)
+        try:
+            server.ehlo()
+            if not server.has_extn("starttls"):
+                raise RuntimeError(f"The mail server on port {port} doesn’t offer STARTTLS, so nothing was sent. Try port 465.")
+            server.starttls(context=self.tls)
+            server.ehlo()
+        except BaseException:
+            server.close()
+            raise
+        return server
+
+    def imap_connection(self, cfg):
+        """IMAP with TLS from the start (993, the default), or STARTTLS on 143. Never plain text."""
+        port = int(cfg.get("imap_port") or IMAP_PORT)
+        if not imap_starttls(port):
+            return imaplib.IMAP4_SSL(cfg["imap_host"], port, ssl_context=self.tls, timeout=12)
+        mailbox = imaplib.IMAP4(cfg["imap_host"], port, timeout=12)
+        try:
+            # Raises if the server doesn't offer STARTTLS, so the password never goes out unencrypted.
+            mailbox.starttls(ssl_context=self.tls)
+        except BaseException:
+            mailbox.shutdown()
+            raise
+        return mailbox
 
     def receive_mail(self, account=None):
         with self.using(account):
@@ -1031,7 +1113,7 @@ class Gateway:
     def receive_mail_as(self, account):
         cfg = self.email
         scope = self.scope(account)
-        with imaplib.IMAP4_SSL(cfg["imap_host"], int(cfg.get("imap_port", 993)), ssl_context=self.tls, timeout=12) as mailbox:
+        with self.imap_connection(cfg) as mailbox:
             mailbox.login(cfg.get("imap_user", cfg["address"]), cfg["imap_password"])
             if mailbox.select(cfg.get("folder", "INBOX"), readonly=True)[0] != "OK":
                 return
@@ -1161,6 +1243,8 @@ class Gateway:
             # Matrix v1.13 replies carry no quoted fallback; the relation links the original event.
             content = {"msgtype": "m.text", "body": message.get("text") or message["body"],
                        "m.relates_to": {"m.in_reply_to": {"event_id": event}}}
+        if not message.get("attachment"):
+            self.matrix_outgoing(content, "" if message.get("literal") else content["body"])
         if message.get("expire_seconds"):
             content[DISAPPEAR] = message["expire_seconds"]
         if secure is not None:
@@ -1223,8 +1307,14 @@ class Gateway:
 
     def receive_matrix_as(self, account):
         rooms = {route["target"]: route for route in self.routes if route.get("via") == "matrix" and route["account"] == account}
-        filter = {"presence": {"types": []}, "room": {"rooms": list(rooms), "timeline": {"limit": 60,
-                  "types": ["m.room.message", "m.room.encrypted", "m.reaction", "m.room.redaction", *CALL_TYPES]}}}
+        # Linked rooms' timelines (with topic, name, and membership changes), and every invitation: the room filter
+        # sits on the timeline, state, and ephemeral parts so rooms.invite still lists rooms you aren't in yet.
+        linked = list(rooms)
+        filter = {"presence": {"types": []}, "room": {"timeline": {"limit": 60, "rooms": linked,
+                  "types": ["m.room.message", "m.room.encrypted", "m.reaction", "m.room.redaction", "m.room.topic",
+                            "m.room.name", "m.room.member", *CALL_TYPES]},
+                  "state": {"rooms": linked, "lazy_load_members": True}, "ephemeral": {"rooms": linked, "types": []},
+                  "account_data": {"rooms": linked, "types": []}}}
         args = {"filter": json.dumps(filter, separators=(",", ":")), "timeout": 10_000}
         scope = self.scope(account)
         since = "matrix:since" + (":" + scope if scope else "")
@@ -1236,6 +1326,13 @@ class Gateway:
                 continue
             for event in data.get("timeline", {}).get("events", []):
                 self.accept_matrix(rooms[room], event)
+        for room, data in (joined.get("rooms", {}).get("invite") or {}).items():
+            if isinstance(room, str) and ROOM.fullmatch(room) and isinstance(data, dict):
+                self.matrix_invited(account, room, data)
+        for room in (joined.get("rooms", {}).get("leave") or {}):
+            # Declined or withdrawn somewhere else: the invitation goes.
+            if isinstance(room, str) and room not in rooms:
+                self.drop_invite(account, room)
         if isinstance(joined.get("next_batch"), str):
             self.save_state(since, joined["next_batch"])
 
@@ -1257,6 +1354,10 @@ class Gateway:
         date = event.get("origin_server_ts")
         date = date if type(date) is int else self.time()
         author = event.get("sender", "")
+        if event.get("type") in ("m.room.topic", "m.room.name", "m.room.member"):
+            self.matrix_state(route, event, content, date)
+            return
+        edited = relates.get("rel_type") == "m.replace" and isinstance(content.get("m.new_content"), dict)
         if event.get("type") == "m.reaction":
             target = self.find(route["address"], route["protocol"], "event_id", relates.get("event_id"))
             if relates.get("rel_type") != "m.annotation" or target is None or not is_emoji(relates.get("key")):
@@ -1300,10 +1401,18 @@ class Gateway:
             record["attachment"] = {"kind": kind, "name": name, "mime": mime, "size": len(data),
                                     "duration": info.get("duration") if type(info.get("duration")) is int else 0}
             self.file_path(record["id"]).write_bytes(data)
+        elif event.get("type") == "m.room.message" and edited:
+            # An edit replaces the sender's earlier message, the way the phone shows its own edits.
+            new = content["m.new_content"]
+            original = self.find(route["address"], route["protocol"], "event_id", relates.get("event_id"))
+            if original is None or not isinstance(new.get("body"), str):
+                return
+            text = ("/me " if new.get("msgtype") == "m.emote" else "") + new["body"]
+            record = self.message(route, "matrix-" + stable, edit_text(original["body"], text), False, date, author=author)
         elif event.get("type") == "m.room.message":
             if content.get("msgtype") not in ("m.text", "m.notice", "m.emote") or not isinstance(content.get("body"), str):
                 return
-            body = content["body"]
+            body = ("/me " if content["msgtype"] == "m.emote" else "") + content["body"]
             reply = relates.get("m.in_reply_to") if isinstance(relates.get("m.in_reply_to"), dict) else {}
             target = self.find(route["address"], route["protocol"], "event_id", reply.get("event_id")) if reply else None
             if target is not None:
@@ -1316,6 +1425,10 @@ class Gateway:
             record = self.message(route, "matrix-" + stable, body, False, date, author=author)
             if target is not None:
                 record["reply_target"] = target["id"]
+            if content["msgtype"] == "m.notice":
+                record["notice"] = True  # Bots send notices.
+            if self.matrix_mentioned(content, content["body"]):
+                record["mention"] = True
             if type(content.get(DISAPPEAR)) is int and 0 < content[DISAPPEAR] <= 366 * 86400:
                 record["expires"] = date + content[DISAPPEAR] * 1000
         else:
@@ -1355,7 +1468,8 @@ class Gateway:
             if not self.active(protocol):
                 continue
             mine = [r for r in routes if r.get("via", r["protocol"]) == protocol and r["account"] == ident]
-            if protocol == "matrix" and mine:
+            if protocol == "matrix":
+                # Running with no rooms linked yet too, so invitations (and new direct chats) arrive.
                 secure = matrix_e2ee.available()
                 wanted[ident] = (json.dumps([account, secure], sort_keys=True),
                                  (lambda i=ident, a=account: self.secure_client(i, a)) if secure else
@@ -1366,11 +1480,11 @@ class Gateway:
                                  lambda i=ident, every=interval: Poller(lambda: self.receive_mail(i), every), None)
             elif protocol in ("irc", "xmpp"):
                 native = [r for r in mine if r["protocol"] == protocol]
-                if not (native or protocol == "irc" and account.get("channels")):
-                    continue
+                # Connected even with no chats yet: bots, people, and invitations can reach you.
                 if protocol == "xmpp" and not xmpp_client.available():
                     continue
-                rooms = sorted({r["target"] for r in native if r.get("group")})
+                # An invitation still waiting (message_requests.note_invite) isn't joined until it's accepted.
+                rooms = sorted({r["target"] for r in native if r.get("group") and not r.get("invite")})
                 if protocol == "irc":
                     rooms = sorted(set(account.get("channels", [])) | set(rooms), key=str.lower)
                 # Joining or leaving a channel or group chat doesn't reconnect: sync() updates the live session.
@@ -1403,14 +1517,20 @@ class Gateway:
         scope = self.scope(ident)
         store = self.files / ("matrix-store" + ("-" + scope if scope else ""))
         rooms = lambda: {r["target"] for r in self.routes if r.get("via") == "matrix" and r["account"] == ident}
-        return matrix_e2ee.MatrixE2ee(account, store, rooms, lambda room, event: self.accept_secure(room, event, ident))
+        return matrix_e2ee.MatrixE2ee(account, store, rooms, lambda room, event: self.accept_secure(room, event, ident),
+                                      on_invite=lambda room, sender, name: self.add_invite(ident, "matrix", "room", room,
+                                                                                           sender, name))
 
     def chat_client(self, protocol, ident, account, rooms):
         if protocol == "irc":
             return irc_client.IrcClient({**account, "channels": list(rooms)},
                                         lambda *args: self.accept_irc(*args, account=ident),
-                                        lambda channel, state: self.channel_state(channel, state, ident))
-        return xmpp_client.XmppClient(account, lambda *args: self.accept_xmpp(*args, account=ident), rooms)
+                                        lambda channel, state: self.channel_state(channel, state, ident),
+                                        on_invite=lambda channel, sender: self.add_invite(ident, "irc", "channel", channel,
+                                                                                          sender, channel),
+                                        keep=lambda channel: self.keeps(ident, channel))
+        return xmpp_client.XmppClient(account, lambda *args: self.accept_xmpp(*args, account=ident), rooms,
+                                      on_event=lambda *args: self.accept_xmpp_event(*args, account=ident))
 
     def erase(self):
         """Erase everything: stops every chat connection and forgets recent calls, before the data behind them goes."""
@@ -1583,8 +1703,10 @@ class Gateway:
             target = target.lower()
             # A group chat's name is its address before the @ unless the directory gave a better one.
             title = title or target.split("@", 1)[0]
-        existing = next((r for r in self.routes if r["account"] == entry["id"] and r.get("via") == protocol
-                         and r["target"].lower() == target.lower()), None)
+        # Joining a channel or room you're already in (on this account) opens it rather than adding it again.
+        # An invitation still waiting (message_requests.note_invite) isn't joined yet.
+        existing = next((r for r in self.routes if r["account"] == entry["id"] and r.get("via", r["protocol"]) == protocol
+                         and not r.get("invite") and target_key(protocol, r["target"]) == target_key(protocol, target)), None)
         if existing:
             return {"route": {key: value for key, value in existing.items() if key != "via"}, "joined": False}
         address = "room-" + hashlib.sha256((entry["id"] + "\n" + target.lower()).encode()).hexdigest()[:16]
@@ -1634,10 +1756,21 @@ class Gateway:
             self.save_state("channel:" + route["address"], json.dumps({"name": channel, **state}))
 
     def accept_irc(self, conversation, nick, text, tags, date, outgoing, account=None):
-        route = self.irc_route(conversation, account)
-        # Direct messages from nicks you haven't linked are ignored, the same way unknown email is.
-        if route is None or outgoing:
+        if outgoing:
             return
+        route = self.irc_route(conversation, account)
+        # A direct message from a person you haven't linked starts a chat of its own, marked as a message request.
+        # Network services (NickServ and the like), notices, and servers are left out (message_requests.py) and go
+        # through irc_fallback below, which labels them automated or puts them in the server chat.
+        if route is None and conversation != irc_client.SERVER and conversation[:1] not in "#&$" and not tags.get("event") \
+                and not tags.get("service") and not tags.get("notice"):
+            message_requests.inbound_route(self, "irc", conversation, account)
+            route = self.irc_route(conversation, account)
+        if route is None:
+            # Someone new (a person or a bot such as NickServ) gets a direct chat; the rest goes to the server chat.
+            route, text = self.irc_fallback(conversation, nick, text, tags, account)
+            if route is None:
+                return
         msgid = tags.get("msgid", "")
         stable = self.stable(route, msgid or f"{conversation}:{nick}:{date}:{text}")
         react, reply = tags.get("+draft/react"), tags.get("+draft/reply")
@@ -1653,7 +1786,13 @@ class Gateway:
             if target:
                 record["reply_target"] = target["id"]
             if tags.get("event"):
-                record["event"] = True
+                self.mark_event(record, tags["event"])
+            if tags.get("mention"):
+                record["mention"] = True
+            if tags.get("notice"):
+                record["notice"] = True
+        if route.get("server_chat"):
+            record["read"] = 1  # Connection notices come with every reconnect; they never leave an unread dot.
         record["irc_msgid"] = msgid
         self.add_incoming(record)
 
@@ -1661,7 +1800,10 @@ class Gateway:
         relation = message.get("relation") or {}
         if message.get("attachment"):
             raise ValueError("IRC has no file transfer. Send the file with another protocol.")
+        if route["target"] == irc_client.SERVER:
+            raise ValueError("This is the network’s server chat. Type a command here, such as /join, /msg, or /quote.")
         client = self.client("irc")
+        client.ensure_joined(route["target"], wait=5)  # A channel that isn't kept joined rejoins before you write.
         reply = relation.get("irc_msgid")
         tagged = reply and "message-tags" in client.caps
         if revises(relation):
@@ -1673,7 +1815,7 @@ class Gateway:
                 client.send(route["target"], message["body"])
         else:
             client.send(route["target"], message.get("text") if tagged and relation.get("kind") == "reply" else message["body"],
-                        reply=reply if tagged else None)
+                        reply=reply if tagged else None, plain=bool(message.get("literal")))
         return {}
 
     # XMPP
@@ -1688,10 +1830,14 @@ class Gateway:
 
     def accept_xmpp(self, conversation, author, text, message_id, date, outgoing, extra, account=None):
         route = self.xmpp_route(conversation, account)
+        if route is None and not outgoing and author == conversation and text:
+            # A one-to-one chat from an address you haven't linked: a message request unless it's in your roster.
+            message_requests.inbound_route(self, "xmpp", conversation, account, known=extra.get("roster") is True)
+            route = self.xmpp_route(conversation, account)
         if route is None:
             return
-        if outgoing and self.find(route["address"], "xmpp", "xmpp_id", message_id):
-            return  # Our own message reflected back by a group or carbon.
+        if (outgoing or extra.get("archived")) and self.find(route["address"], "xmpp", "xmpp_id", message_id):
+            return  # Our own message reflected back by a group or carbon, or one the archive catch-up already gave.
         stable = self.stable(route, f"{conversation}:{message_id}:{date}")
         if "retract" in extra:
             target = self.find(route["address"], "xmpp", "xmpp_id", extra["retract"])

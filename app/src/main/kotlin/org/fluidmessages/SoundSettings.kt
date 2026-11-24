@@ -42,6 +42,7 @@ private fun Page(prefs: SharedPreferences, motion: Int, status: NotificationStat
     var volume by remember { mutableIntStateOf(SoundPrefs.volume(prefs.getInt(SoundPrefs.VOLUME, SoundPrefs.DEFAULT_VOLUME))) }
     var stream by remember { mutableStateOf(prefs.getString(SoundPrefs.STREAM, SoundPrefs.NOTIFICATION) ?: SoundPrefs.NOTIFICATION) }
     var sent by remember { mutableStateOf<String?>(null) }
+    var tabCounts by remember { mutableStateOf(prefs.getBoolean(TabBadges.PREF, true)) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item {
             PreferencesCard("Notifications") {
@@ -66,6 +67,16 @@ private fun Page(prefs: SharedPreferences, motion: Int, status: NotificationStat
                 Text("New-message notifications play the receive chime below, unless you pick another sound in Android's settings.",
                     Modifier.padding(start = 15.dp, end = 15.dp, bottom = 12.dp), color = scheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        item {
+            // Badge settings sit with notifications, where Android and iOS keep them. Same pref as before (tabCounts).
+            PreferencesCard("App badges") {
+                SettingsSwitch("Show counts on tabs", "Missed calls on Phone and unread chats on Messages. Muted, archived, and blocked chats aren't counted.",
+                    tabCounts) {
+                    tabCounts = it
+                    prefs.edit().putBoolean(TabBadges.PREF, it).apply()
+                }
             }
         }
         item {

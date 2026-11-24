@@ -11,18 +11,30 @@ const callButtons = {};
 
 // Settings and standalone use
 
+// Email ports, like the phone's (EmailPorts.kt) and accounts.py: filled in for a new account, and what an account saved
+// without ports uses. FluidMessages always uses TLS and never falls back to plain text.
+const EMAIL_PORTS = {imap_port: 993, smtp_port: 465};
+const EMAIL_PORT_HINTS = {
+  imap: '993 uses TLS from the start. 143 upgrades with STARTTLS.',
+  smtp: '465 uses TLS from the start. Other ports, like 587, upgrade with STARTTLS.',
+};
+const validPort = (text) => /^[0-9]{1,5}$/.test(String(text)) && Number(text) >= 1 && Number(text) <= 65535;
+
 const ACCOUNT_FIELDS = {
   matrix: [['homeserver', 'Homeserver', 'https://matrix.example.org'], ['user_id', 'Matrix ID', '@you:example.org'],
     ['access_token', 'Access token', '', true]],
   xmpp: [['jid', 'Address', 'you@example.org'], ['password', 'Password', '', true], ['host', 'Server (optional)', ''],
     ['port', 'Port (optional)', '5222']],
   email: [['address', 'Email address', 'you@example.org'], ['imap_host', 'IMAP server', 'imap.example.org'],
-    ['imap_user', 'IMAP user (optional)', ''], ['imap_password', 'IMAP password', '', true],
-    ['smtp_host', 'SMTP server', 'smtp.example.org'], ['smtp_user', 'SMTP user (optional)', ''],
-    ['smtp_password', 'SMTP password (optional)', '', true]],
+    ['imap_port', 'IMAP port', '993', false, EMAIL_PORT_HINTS.imap], ['imap_user', 'IMAP user (optional)', ''],
+    ['imap_password', 'IMAP password', '', true],
+    ['smtp_host', 'SMTP server', 'smtp.example.org'], ['smtp_port', 'SMTP port', '465', false, EMAIL_PORT_HINTS.smtp],
+    ['smtp_user', 'SMTP user (optional)', ''], ['smtp_password', 'SMTP password (optional)', '', true]],
   irc: [['server', 'Server', 'irc.libera.chat'], ['port', 'Port (optional)', '6697'], ['nick', 'Nickname', ''],
     ['sasl_user', 'SASL user (optional)', ''], ['sasl_password', 'SASL password (optional)', '', true],
-    ['channels', 'Channels (comma-separated)', '#example']],
+    ['nickserv_password', 'NickServ password (optional, identify on connect when SASL isn’t used)', '', true],
+    ['channels', 'Channels (comma-separated)', '#example'],
+    ['ctcp_replies', 'Answer CTCP VERSION and PING (off keeps your client private)', '', 'check']],
 };
 const TIMERS = [[0, 'Off'], [30, '30 seconds'], [300, '5 minutes'], [3600, '1 hour'], [28800, '8 hours'], [86400, '1 day'],
   [604800, '1 week'], [2419200, '4 weeks']];
@@ -205,33 +217,67 @@ function appearanceSection(settings) {
     webLook.mode || 'system', (value) => { saveWebLook({...webLook, mode: value}, true); refreshAppearanceControls(); });
   mode.classList.add('segmented');
 
+  // The live preview, with the phone's Conversation | Inbox switch. Opening Inbox and toolbar shows the inbox there,
+  // and opening Customize colors or Message bubbles shows the conversation, where those settings show.
+  let previewing = 'conversation';
+  const previewBox = element('div', '', 'look-preview-box');
+  const previewSwitch = element('div', '', 'segmented-buttons preview-switch');
+  previewSwitch.setAttribute('role', 'radiogroup');
+  previewSwitch.setAttribute('aria-label', 'Preview');
   const preview = element('div', '', 'look-preview');
-  preview.setAttribute('aria-label', 'Preview');
   preview.setAttribute('role', 'img');
-  for (const [text, out] of [['Are we still on for Saturday?', false], ['Yes! I’ll bring the map 🗺️', true]]) {
-    const row = element('div', '', out ? 'message out' : 'message');
-    row.append(element('div', text, 'bubble'));
-    preview.append(row);
+  const drawPreview = () => {
+    for (const button of previewSwitch.children) button.setAttribute('aria-checked', String(button.dataset.view === previewing));
+    preview.classList.toggle('inbox-preview', previewing === 'inbox');
+    preview.setAttribute('aria-label', previewing === 'inbox' ? 'Preview of the inbox' : 'Preview of a conversation');
+    preview.replaceChildren();
+    if (previewing === 'inbox') { preview.append(...inboxPreview()); return; }
+    for (const [text, out] of [['Are we still on for Saturday?', false], ['Yes! I’ll bring the map 🗺️', true]]) {
+      const row = element('div', '', out ? 'message out' : 'message');
+      row.append(element('div', text, 'bubble'));
+      preview.append(row);
+    }
+  };
+  const showPreview = (view) => { previewing = view; drawPreview(); };
+  for (const [view, label] of [['conversation', 'Conversation'], ['inbox', 'Inbox']]) {
+    const button = element('button', label);
+    button.type = 'button';
+    button.dataset.view = view;
+    button.setAttribute('role', 'radio');
+    button.addEventListener('click', () => showPreview(view));
+    previewSwitch.append(button);
   }
+  previewBox.append(previewSwitch, preview);
+  drawPreview();
 
   const colorsBox = element('details', '', 'more');
   colorsBox.append(element('summary', 'Customize colors'));
   const colorGrid = element('div', '', 'color-grid');
   const colorInputs = {};
+  // The phone's order: message colors, then the background, buttons, and toolbar tints.
   for (const [key, label] of [['sms', 'Your texts'], ['incoming', 'Incoming'], ['automated', 'Automated texts'], ['rcs', 'RCS (preview)'],
-    ['matrix', 'Matrix'], ['xmpp', 'XMPP'], ['email', 'Email'], ['irc', 'IRC']]) {
+    ['matrix', 'Matrix'], ['xmpp', 'XMPP'], ['email', 'Email'], ['irc', 'IRC'], ['canvas', 'Background color'],
+    ['controls', 'Buttons and unread indicators'], ['chrome', 'Toolbar and composer tint']]) {
     const input = Object.assign(element('input', ''), {type: 'color'});
-    input.addEventListener('input', () => saveWebLook({...webLook, colors: {...(webLook.colors || {}), [key]: input.value}}));
+    input.addEventListener('input', () => { saveWebLook({...webLook, colors: {...(webLook.colors || {}), [key]: input.value}}); drawPreview(); });
     colorInputs[key] = input;
     colorGrid.append(field(label, input));
   }
+  const contrastChoice = element('select', '');
+  for (const [value, label] of [['standard', 'Standard'], ['increased', 'Increased']]) contrastChoice.append(Object.assign(element('option', label), {value}));
+  contrastChoice.addEventListener('change', () => {
+    const {contrast, ...rest} = webLook;
+    saveWebLook(contrastChoice.value === 'increased' ? {...rest, contrast: true} : rest, true);
+    refreshAppearanceControls();
+  });
+  const contrastField = field('Palette contrast', contrastChoice, 'Increased uses deeper or brighter versions of the colors, and stronger text and outlines.');
   const resetTheme = element('button', 'Reset to theme');
   resetTheme.type = 'button';
   resetTheme.addEventListener('click', () => {
     saveWebLook(themeLook(webLook, webLook.theme || 'fluid', webLook.activePalette), true);
     refreshAppearanceControls();
   });
-  colorsBox.append(element('p', 'Colored bubbles always use white text; bright colors are shaded so it stays readable.', 'muted'), colorGrid, resetTheme);
+  colorsBox.append(contrastField, element('p', 'Colored bubbles always use white text; bright colors are shaded so it stays readable.', 'muted'), colorGrid, resetTheme);
 
   const bubbles = element('details', '', 'more');
   bubbles.append(element('summary', 'Message bubbles'));
@@ -251,6 +297,12 @@ function appearanceSection(settings) {
     const look = themeAppearance(webLook);
     for (const [key, input] of Object.entries(colorInputs)) input.value = (webLook.colors || {})[key] || look.colors[key];
     for (const [key, [input, output]] of Object.entries(sliders)) { input.value = look[key]; output.textContent = look[key] + ' px'; }
+    contrastChoice.value = webLook.contrast ? 'increased' : 'standard';
+    // The tints start from the theme's own, before any contrast adjustment.
+    const raw = (look.contrast && (webLook.theme || 'fluid') === 'fluid' ? FLUID_CONTRAST : (THEMES[webLook.theme] || THEMES.fluid))[look.dark ? 'dark' : 'light'];
+    colorInputs.controls.value = (webLook.colors || {}).controls || raw[3];
+    colorInputs.chrome.value = (webLook.colors || {}).chrome || raw[4];
+    if (typeof drawPreview === 'function') drawPreview();
     for (const input of themes.querySelectorAll('input')) {
       input.checked = input.value === (webLook.theme || 'fluid');
       input.parentElement.querySelector('.theme-swatch')?.replaceWith(themeSwatch(input.value));
@@ -259,7 +311,13 @@ function appearanceSection(settings) {
   refreshAppearanceControls();
   // Saved palettes, wallpaper, inbox and toolbar, bubble tails, and motion and sound, as on the phone (look.js).
   const extras = typeof lookExtras === 'function' ? lookExtras({themes, colorsBox, bubbles, refresh: refreshAppearanceControls}) : {groups: [], feedback: null};
-  controls.append(themes, mode, preview, colorsBox, ...extras.groups, bubbles);
+  // Opening a group shows the preview where its settings show, as on the phone.
+  for (const [group, view] of [[colorsBox, 'conversation'], [bubbles, 'conversation'], [extras.groups[1], 'inbox']]) {
+    group?.addEventListener('toggle', () => { if (group.open) showPreview(view); });
+  }
+  for (const input of extras.groups[1]?.querySelectorAll('select, input') || []) input.addEventListener('change', drawPreview);
+  for (const input of extras.groups[1]?.querySelectorAll('input') || []) input.addEventListener('input', drawPreview);
+  controls.append(themes, mode, previewBox, colorsBox, ...extras.groups, bubbles);
   section.append(controls);
   if (extras.feedback) section.append(extras.feedback);
   return section;
@@ -322,24 +380,45 @@ async function accountRows(list, again) {
 function accountForm(protocol, account, done, {add = false, preset = {}} = {}) {
   const form = element('form', '', 'settings-section');
   const inputs = {};
-  for (const [name, label, hint, secret] of ACCOUNT_FIELDS[protocol]) {
+  for (const [name, label, hint, secret, help] of ACCOUNT_FIELDS[protocol]) {
+    if (secret === 'check') {
+      // A yes-or-no choice, such as answering CTCP requests.
+      const box = Object.assign(element('input', ''), {type: 'checkbox', name, checked: !!(account?.fields?.[name] ?? preset[name])});
+      const label_ = element('label', '', 'check-row');
+      label_.append(box, element('span', label));
+      inputs[name] = box;
+      form.append(label_);
+      continue;
+    }
     const input = Object.assign(element('input', ''), {name, placeholder: hint, type: secret ? 'password' : 'text', autocomplete: secret ? 'new-password' : 'off',
       spellcheck: false});
-    const current = account?.fields?.[name] ?? preset[name];
+    // Ports start filled in, for new accounts and for ones saved before they could be changed.
+    const current = account?.fields?.[name] ?? preset[name] ?? (protocol === 'email' ? EMAIL_PORTS[name] : undefined);
     if (current && !secret) input.value = Array.isArray(current) ? current.join(', ') : String(current);
     if (secret && current) input.placeholder = 'Saved · leave blank to keep';
+    if (name in EMAIL_PORTS) Object.assign(input, {inputMode: 'numeric', maxLength: 5});
     inputs[name] = input;
-    form.append(field(label, input));
+    form.append(field(label, input, help));
   }
   const status = element('p', '', 'muted');
   status.setAttribute('role', 'status');
   const save = element('button', 'Save', 'primary');
   form.append(element('p', 'Passwords are kept in a private file on your server and are never shown again.'
-    + (protocol === 'irc' ? ' FluidMessages connects to IRC with TLS only.' : ''), 'muted'), save, status);
+    + (protocol === 'irc' ? ' FluidMessages connects to IRC with TLS only.' : protocol === 'email' ? ' Email always uses TLS, never plain text.' : ''), 'muted'), save, status);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const fields = {};
-    for (const [name, input] of Object.entries(inputs)) if (input.value.trim()) fields[name] = input.value.trim();
+    for (const [name, input] of Object.entries(inputs)) {
+      if (input.type === 'checkbox') fields[name] = input.checked;
+      else if (input.value.trim()) fields[name] = input.value.trim();
+    }
+    const badPort = protocol === 'email' && Object.keys(EMAIL_PORTS).find((name) => fields[name] && !validPort(fields[name]));
+    if (badPort) {
+      status.textContent = 'Enter a ' + (badPort === 'imap_port' ? 'IMAP' : 'SMTP') + ' port from 1 to 65535.';
+      inputs[badPort].focus();
+      return;
+    }
+    if (protocol === 'email') for (const name of Object.keys(EMAIL_PORTS)) if (fields[name]) fields[name] = Number(fields[name]);
     save.disabled = true;
     try {
       await api('protocols/accounts', {protocol, fields, ...(account?.id ? {id: account.id} : add ? {add: true} : {})});
@@ -552,8 +631,12 @@ function phoneConnect(state, changed) {
  * recently used one otherwise).
  */
 async function startInternetChat({service, target, name = '', account = '', group = false}) {
-  const same = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
-  const existing = routes.find((route) => route.protocol === service && (!account || !route.account || route.account === account)
+  // One chat per address, service, and account (servers.js targetKey compares addresses the way each service does).
+  const same = (a, b) => typeof targetKey === 'function' ? targetKey(service, a) === targetKey(service, b)
+    : String(a || '').toLowerCase() === String(b || '').toLowerCase();
+  // With an account picked, only a chat through that account is the same chat; older links are the first account's.
+  const first = chatAccounts.find((item) => item.protocol === service && item.id)?.id;
+  const existing = routes.find((route) => route.protocol === service && (!account || (route.account || first) === account)
     && (same(route.target, target) || service === 'matrix' && !route.group && same(route.title, target)));
   if (existing) return threadKey({address: existing.address, protocol: existing.protocol});
   let result;
@@ -588,8 +671,11 @@ function openNewChat(prefill = '', {to = '', back} = {}) {
   toField.append(target, formats);
   const people = element('div', '', 'new-chat-people');
   const choices = element('fieldset', '', 'choices new-chat-choices');
+  // From, like a mail app's: which of your accounts on this service starts the chat (servers.js preselectFrom).
   const account = element('select', '');
-  const accountField = field('Account', account, 'You have more than one account on this service.');
+  account.setAttribute('aria-label', 'From');
+  const accountField = field('From', account, 'The chat starts from this account, and replies in it stay with it.');
+  accountField.classList.add('from-field');
   const name = Object.assign(element('input', ''), {placeholder: 'Shown in your chat list', autocomplete: 'off', maxLength: 120});
   const nameField = field('Name (optional)', name);
   const group = Object.assign(element('input', ''), {type: 'checkbox'});
@@ -660,8 +746,11 @@ function openNewChat(prefill = '', {to = '', back} = {}) {
     const mine = service ? accountsFor(service) : [];
     // An IRC nickname on a network goes through your account there.
     const preferred = option?.network ? mine.find((item) => String(item.name).toLowerCase().endsWith('@' + option.network)) : null;
-    account.replaceChildren(Object.assign(element('option', 'Most recently used'), {value: ''}),
-      ...mine.map((item) => Object.assign(element('option', item.name), {value: item.id, selected: item === preferred})));
+    // Every account on the service with its service tag; the one used most recently is picked to begin with.
+    const chosen = mine.length > 1 && typeof preselectFrom === 'function' ? preselectFrom(mine, option?.network || '') : '';
+    account.replaceChildren(...mine.map((item) => Object.assign(element('option', (item.name || item.id) + ' · ' + (labels[service] || service)),
+      {value: item.id, selected: item.id === chosen})));
+    if (mine.length < 2) account.value = '';
     accountField.hidden = mine.length < 2;
     const chat = option && !['sms', 'sip'].includes(service);
     nameField.hidden = !chat || !!option.group;
@@ -709,7 +798,7 @@ function openNewChat(prefill = '', {to = '', back} = {}) {
     start.disabled = true;
     try {
       const key = await startInternetChat({service: option.service, target: option.target, name: name.value.trim(),
-        account: account.value, group: group.checked});
+        account: accountField.hidden ? '' : account.value, group: group.checked});
       openThread(key);
       fill();
     } catch (error) { status.textContent = error.message; }
@@ -791,7 +880,7 @@ function reachTiles(key) {
   if (callable(key)) {
     tile('voice', 'Call', 'Matrix', () => { back(); startCall(false).catch(showError); });
     tile('video', 'Video', 'Matrix', () => { back(); startCall(true).catch(showError); });
-  } else if (threadAddress(key) && (!get('schedule').hidden || sampleOn)) {
+  } else if (threadAddress(key) && (!get('schedule').hidden || sampleOn) && callWayOn('meeting')) {
     tile('voice', 'Call', 'Meeting link', () => { back(); startMeeting(false).catch(showError); });
     tile('video', 'Video', 'Meeting link', () => { back(); startMeeting(true).catch(showError); });
   }
@@ -895,8 +984,130 @@ async function openDetails({back} = {}) {
   }
   // Leave a channel or room on its server (servers.js).
   if (typeof leaveSection === 'function' && !sampleOn) nodes.push(leaveSection(route));
+  if (!group && !sampleOn) nodes.push(linkedSection(key, title, back));
   nodes.push(...conversationSettings(key, settings));
   detailsPage('Conversation details', nodes, back);
+}
+
+// Link an address: reach the same person on Matrix, XMPP, Email, or IRC from this chat, like the phone's conversation
+// details (MainActivity linkAddress and confirmUnlink). A link is a route with this chat's address, so their messages
+// on that service belong to this person; with Combine linked conversations on, they're in this one chat.
+
+const LINK_SERVICES = ['matrix', 'xmpp', 'email', 'irc'];
+const LINK_HINTS = {matrix: '@maya:example.org', xmpp: 'maya@example.org or room@conference.example.org', email: 'maya@example.org',
+  irc: 'nickname or #channel'};
+
+/** The addresses linked to a chat: routes with its address on another service. Its own route isn't one. */
+function linkedRoutes(key) {
+  const address = threadAddress(key);
+  const own = internet(threadProtocol(key)) ? threadProtocol(key) : '';
+  return routes.filter((route) => route.address === address && route.protocol !== own && LINK_SERVICES.includes(route.protocol)
+    && !(route.group && route.account));
+}
+
+function detailsRowButton(title, detail, run) {
+  const row = element('button', '', 'settings-row');
+  row.type = 'button';
+  const words = element('span', '', 'settings-words');
+  words.append(element('strong', title), element('small', detail));
+  const chevron = element('span', '', 'settings-chevron');
+  if (typeof settingsIcon === 'function') chevron.append(settingsIcon('chevron'));
+  row.append(words, chevron);
+  row.addEventListener('click', run);
+  return row;
+}
+
+function linkedSection(key, name, back) {
+  const section = element('section', '', 'settings-section');
+  section.id = 'details-links';
+  section.append(element('h3', 'Linked addresses'));
+  const reopen = () => openDetails({back}).catch(showError);
+  for (const route of linkedRoutes(key)) {
+    const via = typeof accountVia === 'function' ? accountVia(route).replace(/^ · /, '') : '';
+    section.append(detailsRowButton(protocolName(route.protocol) + ' · ' + route.target, (via ? via + ' · ' : '') + 'Linked · tap to unlink',
+      () => confirmUnlink(key, route, reopen)));
+  }
+  section.append(detailsRowButton('Link an address', 'Reach ' + name + ' on Matrix, XMPP, Email, or IRC', () => openLinkAddress(key, name, reopen)));
+  if (!webLook.combineProtocols && !usingPhoneLook()) {
+    section.append(element('p', 'To see every way you talk to them in this one chat, turn on Combine linked conversations in Settings → Chat services.', 'muted'));
+  }
+  return section;
+}
+
+/** Link an address, step one: which service. */
+function openLinkAddress(key, name, done) {
+  const box = element('section', '', 'settings-section');
+  const usable = LINK_SERVICES.filter((service) => chatAccounts.some((account) => account.protocol === service) && gatewayEnabled.includes(service));
+  for (const service of LINK_SERVICES) {
+    const ready = usable.includes(service);
+    box.append(detailsRowButton(labels[service], ready ? LINK_HINTS[service]
+      : chatAccounts.some((account) => account.protocol === service) ? 'Turned off in Settings → Chat services' : 'Add ' + (service === 'matrix' ? 'a ' : 'an ') + labels[service] + ' account in Settings → Accounts first',
+    () => (ready ? linkAddressForm(key, name, service, () => openLinkAddress(key, name, done), done) : openSettings(chatAccounts.some((account) => account.protocol === service) ? 'ways' : 'accounts').catch(showError))));
+  }
+  detailsPage('Link an address', [box], done);
+}
+
+/** Link an address, step two: their address there, and for XMPP whether it's a group chat. */
+function linkAddressForm(key, name, service, back, done) {
+  const form = element('form', '', 'settings-section stack');
+  const target = Object.assign(element('input', ''), {required: true, maxLength: 300, placeholder: LINK_HINTS[service], autocomplete: 'off',
+    spellcheck: false, type: service === 'email' ? 'email' : 'text'});
+  form.append(field(labels[service] + ' address', target));
+  const group = checkbox('This is a group chat', false, () => {});
+  if (service === 'xmpp') form.append(group);
+  const accounts = chatAccounts.filter((account) => account.protocol === service);
+  const from = element('select', '');
+  for (const account of accounts) from.append(Object.assign(element('option', account.name || account.id), {value: account.id}));
+  if (accounts.length > 1) form.append(field('From', from));
+  const status = element('p', '', 'error');
+  status.setAttribute('role', 'alert');
+  const link = element('button', 'Link', 'primary');
+  form.append(status, link);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const value = target.value.trim();
+    if (!value) { status.textContent = 'Enter an address.'; return; }
+    link.disabled = true;
+    try {
+      const result = await api('protocols/routes', {address: threadAddress(key), protocol: service, target: value, title: name,
+        group: service === 'xmpp' && group.querySelector('input').checked, ...(accounts.length > 1 ? {account: from.value} : {})});
+      if (result.route && !routes.some((route) => route.address === result.route.address && route.protocol === result.route.protocol)) routes.push(result.route);
+      refresh().catch(() => {});
+      say(labels[service] + ' linked');
+      done();
+    } catch (error) { status.textContent = error.message; }
+    finally { link.disabled = false; }
+  });
+  detailsPage(labels[service] + ' for ' + name, [form], back);
+  target.focus();
+}
+
+/** Unlink, on its own page; Cancel goes back to the chat's details. */
+function confirmUnlink(key, route, done) {
+  const box = element('section', '', 'settings-section');
+  const label = protocolName(route.protocol);
+  box.append(element('p', 'New ' + label + ' messages stop appearing here. Earlier messages stay.', 'muted'));
+  const status = element('p', '', 'error');
+  status.setAttribute('role', 'alert');
+  const row = element('div', '', 'button-row wrap');
+  const unlink = element('button', 'Unlink', 'danger-button');
+  unlink.type = 'button';
+  unlink.addEventListener('click', async () => {
+    unlink.disabled = true;
+    try {
+      await api('protocols/routes/delete', {address: route.address, protocol: route.protocol});
+      const index = routes.findIndex((item) => item.address === route.address && item.protocol === route.protocol);
+      if (index >= 0) routes.splice(index, 1);
+      refresh().catch(() => {});
+      done();
+    } catch (error) { status.textContent = error.message; unlink.disabled = false; }
+  });
+  const cancel = element('button', 'Cancel');
+  cancel.type = 'button';
+  cancel.addEventListener('click', done);
+  row.append(unlink, cancel);
+  box.append(status, row);
+  detailsPage('Unlink ' + label + '?', [box], done);
 }
 
 /** Shown wherever disappearing messages can be turned on for texts. */
@@ -927,8 +1138,11 @@ function conversationSettings(key, settings) {
     security.append(field('Disappearing messages: remove messages in this chat after', timer));
     if (!internet(threadProtocol(key))) security.append(element('p', CARRIER_COPY_NOTE, 'muted carrier-note'));
     if (settings.follow_phone && settings.phone.paired) {
-      security.append(element('p', 'Your phone’s timers replace this when it syncs. Change it on the phone, or choose '
-        + '“This web app’s own” in Settings → Phone and other devices.', 'muted'));
+      // A phone that merges settings (sync-merge.js) takes this timer; an older one sends its own over it.
+      security.append(element('p', typeof mergeActive === 'function' && mergeActive()
+        ? 'Your phone gets this timer on its next sync. If it changed this one too, you choose which to keep.'
+        : 'Your phone’s timers replace this when it syncs. Change it on the phone, or choose '
+          + '“This web app’s own” in Settings → Phone and other devices.', 'muted'));
     }
   } else if (sampleOn) {
     security.append(element('p', 'Disappearing messages are set per chat in your real chats’ details. Nothing in the sample inbox is saved.', 'muted'));
@@ -957,8 +1171,11 @@ async function announceSetting(key, text) {
 
 function callable(key) {
   const route = key && routeFor(key);
-  return !!route && route.protocol === 'matrix';
+  return !!route && route.protocol === 'matrix' && callWayOn('matrix');
 }
+
+/** Settings → Calls → Ways to call: Matrix voice and video, and meeting links, each on unless turned off. */
+function callWayOn(way) { return prefs[way === 'matrix' ? 'callMatrix' : 'callMeetings'] !== false; }
 
 // The same traffic-light badge as the phone: red not encrypted, yellow in transit, green end to end.
 function fluidEncrypted(key) {
@@ -983,7 +1200,7 @@ function updateCallButtons() {
   const matrix = callable(active);
   callButtons.voice.hidden = callButtons.video.hidden = !matrix;
   // Matrix chats call natively; everywhere else the camera button sends a meeting link.
-  if (callButtons.meeting) callButtons.meeting.hidden = !active || !threadAddress(active) || matrix;
+  if (callButtons.meeting) callButtons.meeting.hidden = !active || !threadAddress(active) || matrix || !callWayOn('meeting');
   get('details').hidden = !active || !threadAddress(active);
   let badge = document.getElementById('security-badge');
   if (!badge) {
@@ -991,7 +1208,8 @@ function updateCallButtons() {
     badge.id = 'security-badge';
     get('transport').after(badge);
   }
-  badge.hidden = !active;
+  // Settings → Chat services → Encryption status: Off hides the lock (Security in Details still says it).
+  badge.hidden = !active || appearance.encryptionMode === 'off';
   if (!active) return;
   const [tone, label] = protection(active);
   // A small padlock in the protection color; Details explains it.
@@ -1389,37 +1607,45 @@ function openMoney() {
   function addCustom() {
     sheet.back = pick;
     sheet.setTitle('Add a way to pay');
-    const box = element('form', '', 'stack');
-    const name = Object.assign(element('input', ''), {required: true, maxLength: 40, placeholder: 'DOGE on Dogecoin', autocomplete: 'off'});
-    const template = Object.assign(element('input', ''), {required: true, maxLength: 300, placeholder: 'dogecoin:{address}?amount={amount}',
-      autocomplete: 'off', spellcheck: false});
-    const status = element('p', '', 'error');
-    status.setAttribute('role', 'alert');
-    const buttons = element('div', '', 'button-row end');
-    const cancel = element('button', 'Cancel');
-    cancel.type = 'button';
-    cancel.addEventListener('click', pick);
-    buttons.append(cancel, element('button', 'Add', 'primary'));
-    box.append(element('p', 'Any coin or service with a payment link works. Put {address}, {amount}, and {note} where they go.', 'muted'),
-      field('Name', name), field('Payment link', template), moneyWarning(true), status, buttons);
-    box.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const link = template.value.trim();
-      if (!/^[a-z][a-z0-9+.-]{1,30}:\S*\{address\}\S*$/.test(link) || /^(javascript|data|file|intent|content|vbscript|blob):/i.test(link)) {
-        status.textContent = 'Enter a link like coin:{address}?amount={amount}';
-        return;
-      }
-      const title = name.value.trim().slice(0, 40);
-      if (BUILT_IN_ASSETS[title]) { status.textContent = 'That name is already in the list.'; return; }
-      localStorage.setItem('money.custom', JSON.stringify(customAssets().filter((item) => item.name !== title).concat({name: title, template: link})));
-      form(title);
-    });
-    body.replaceChildren(box);
-    name.focus();
+    body.replaceChildren(customPayForm({done: (title) => form(title), cancel: pick}));
+    body.querySelector('input')?.focus();
   }
 
   pick();
   sheet.showModal();
+}
+
+/**
+ * The form that adds your own way to pay: a name and a payment link with {address}, {amount}, and {note}. Used in
+ * Money (in a chat) and in Settings → Payments → Add a way to pay. [done] gets the new name.
+ */
+function customPayForm({done, cancel}) {
+  const box = element('form', '', 'stack');
+  const name = Object.assign(element('input', ''), {required: true, maxLength: 40, placeholder: 'DOGE on Dogecoin', autocomplete: 'off'});
+  const template = Object.assign(element('input', ''), {required: true, maxLength: 300, placeholder: 'dogecoin:{address}?amount={amount}',
+    autocomplete: 'off', spellcheck: false});
+  const status = element('p', '', 'error');
+  status.setAttribute('role', 'alert');
+  const buttons = element('div', '', 'button-row end');
+  const back = element('button', 'Cancel');
+  back.type = 'button';
+  back.addEventListener('click', cancel);
+  buttons.append(back, element('button', 'Add', 'primary'));
+  box.append(element('p', 'Any coin or service with a payment link works. Put {address}, {amount}, and {note} where they go.', 'muted'),
+    field('Name', name), field('Payment link', template), moneyWarning(true), status, buttons);
+  box.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const link = template.value.trim();
+    if (!/^[a-z][a-z0-9+.-]{1,30}:\S*\{address\}\S*$/.test(link) || /^(javascript|data|file|intent|content|vbscript|blob):/i.test(link)) {
+      status.textContent = 'Enter a link like coin:{address}?amount={amount}';
+      return;
+    }
+    const title = name.value.trim().slice(0, 40);
+    if (BUILT_IN_ASSETS[title]) { status.textContent = 'That name is already in the list.'; return; }
+    localStorage.setItem('money.custom', JSON.stringify(customAssets().filter((item) => item.name !== title).concat({name: title, template: link})));
+    done(title);
+  });
+  return box;
 }
 
 // Wiring into the existing page
@@ -1565,6 +1791,7 @@ function meetingCard(message, bubble) {
 // Starts a meeting-link call from the browser: the link goes to this chat, then the meeting opens.
 async function startMeeting(video) {
   if (!active) return;
+  if (!callWayOn('meeting')) throw new Error('Meeting links are off. Turn them on in Settings → Calls.');
   const room = 'FluidMessages-' + fluidCallId().slice(0, 16);
   const link = 'https://meet.jit.si/' + room;
   const body = (video ? '📹 Join my video call: ' : '📞 Join my call: ') + link;

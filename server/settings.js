@@ -54,7 +54,7 @@ const SETTINGS_GROUPS = [
     {id: 'messaging', icon: 'messaging', title: 'Messaging', summary: 'Timestamps, inbox filters, communities, sending, and gestures', page: messagingPage},
     // The phone's page of the same name. Sounds, their volume, and this browser's notifications (notify.js).
     {id: 'sounds', icon: 'sounds', title: 'Sounds and notifications', page: (settings) => soundsPage(settings),
-      summary: () => typeof notifySummary === 'function' ? notifySummary() : 'Send and receive sounds, volume, and notifications'}]],
+      summary: () => typeof notifySummary === 'function' ? notifySummary() : 'Send and receive sounds, volume, notifications, and tab counts'}]],
   ['Accounts and calls', [
     {id: 'accounts', icon: 'account', title: 'Accounts', summary: 'Sign in to Matrix, XMPP, Email, or IRC to chat there too', page: accountsPage},
     {id: 'ways', icon: 'ways', title: 'Chat services', page: waysPage,
@@ -66,8 +66,9 @@ const SETTINGS_GROUPS = [
     {id: 'payments', icon: 'payments', title: 'Payments', summary: () => 'Default: ' + moneyLook(defaultAsset()).title, page: paymentsPage}]],
   ['Privacy', [
     {id: 'privacy', icon: 'privacy', title: 'Privacy and security', page: privacyPage, summary: () => {
-      const codes = Object.keys(webChats.locks || {}).length;
-      return (codes ? codes + (codes === 1 ? ' chat code' : ' chat codes') : 'No chat codes') + ' · blocked chats, disappearing messages, erase';
+      const {chats: codes, kinds} = lockCounts(webChats);
+      return (codes ? codes + (codes === 1 ? ' chat code' : ' chat codes') : 'No chat codes') + (kinds ? ' · ' + kinds + (kinds === 1 ? ' kind' : ' kinds') + ' locked' : '')
+        + ' · blocked chats, disappearing messages, erase';
     }}]],
   ['Storage and devices', [
     {id: 'backups', icon: 'backups', title: 'Backups', summary: 'Save and restore chat settings and messages (.fmb)', page: backupsPage},
@@ -83,7 +84,11 @@ const SETTINGS_GROUPS = [
 ];
 // Pages reached from inside another page.
 const SETTINGS_SUBPAGES = [
-  {id: 'erase', icon: 'erase', title: 'Erase everything on this server', parent: 'privacy', page: erasePage}];
+  {id: 'erase', icon: 'erase', title: 'Erase everything on this server', parent: 'privacy', page: erasePage},
+  {id: 'payment-add', icon: 'payments', title: 'Add a way to pay', parent: 'payments', page: (settings, context) => addPaymentPage(context)},
+  {id: 'chat-locks', icon: 'privacy', title: 'Chat locks', parent: 'privacy', page: () => chatLocksPage()},
+  ...LOCK_KINDS.map(([kind, label]) => ({id: 'lock-' + kind, icon: 'privacy', title: label, parent: 'chat-locks', page: () => kindLockPage(kind, label)})),
+  {id: 'encryption', icon: 'privacy', title: 'Encryption', parent: 'privacy', page: () => encryptionPage()}];
 
 function settingsItem(id) {
   return SETTINGS_GROUPS.flatMap(([, items]) => items).concat(SETTINGS_SUBPAGES).find((item) => item.id === id);
@@ -249,10 +254,13 @@ function messagingPage(settings) {
   element('p', 'To schedule a message, open Send later under the message box. Internet messages send from this server at their time; '
     + 'texts wait for your phone. Cancel any that haven’t gone yet here.', 'muted'), queue);
 
-  const privacy = settingsCard('Privacy', 'Photos you send are saved again first, which removes location and camera details. Other files are sent as they are.');
+  const privacy = settingsCard('Privacy', stripDetails() ? 'Photos you send are saved again first, which removes location and camera details. '
+    + 'Other files are sent as they are.' : 'Location and camera details stay in the photos you send.');
+  privacy.append(settingsLink('media', 'Remove location and camera details from files you send · Photos and videos'));
   const gestures = settingsCard('Gestures');
   const list = element('dl', '', 'settings-facts');
-  for (const [term, detail] of [['Right-click or touch and hold a chat', 'Pin, archive, mute, block, or open its details.'],
+  for (const [term, detail] of [['Swipe right to reply', 'On a touch screen, quote a message and add your reply underneath. With a mouse or keyboard, Reply is in the message’s ⋯ menu.'],
+    ['Right-click or touch and hold a chat', 'Pin, archive, mute, block, or open its details.'],
     ['Right-click or touch and hold a message', 'React, reply, copy, select text, see message details, or delete it for you. With a mouse, its ⋯ shows when you point at it.'],
     ['Chat details', 'The details button at the top of a chat: disappearing timer, people, chat code, and wallpaper.']]) {
     list.append(element('dt', term), element('dd', detail));
@@ -271,7 +279,7 @@ function messagingPage(settings) {
   }
   if (typeof communityChatsSwitch === 'function') inbox.append(communityChatsSwitch());
   // Counts on the Calls and Chats tabs (people.js).
-  return [display, inbox, ...(typeof tabCountsCard === 'function' ? [tabCountsCard()] : []), sending, privacy, gestures];
+  return [display, inbox, sending, privacy, gestures];
 }
 
 // Accounts and calls
@@ -310,30 +318,52 @@ function waysPage(settings) {
   for (const [value, label] of [['auto', 'Automatic'], ['always', 'Always'], ['off', 'Off']]) tags.append(Object.assign(element('option', label), {value}));
   tags.value = webLook.tagMode || 'auto';
   tags.addEventListener('change', () => saveWebLook({...webLook, tagMode: tags.value}, true));
+  // Encryption status, as on the phone (ProtocolUi DisplayRules.ENCRYPTION): Off hides the lock beside the chat name.
+  const locks = element('select', '');
+  for (const [value, label] of [['auto', 'Automatic'], ['always', 'Always'], ['off', 'Off']]) locks.append(Object.assign(element('option', label), {value}));
+  locks.value = webLook.encryptionMode || 'auto';
+  locks.addEventListener('change', () => saveWebLook({...webLook, encryptionMode: locks.value}, true));
   conversations.append(
     lockInput(checkbox('Combine linked conversations', !!webLook.combineProtocols, (value) => saveWebLook({...webLook, combineProtocols: value}, true),
       'Every way you talk to someone in one chat, with each message labeled.'), locked),
-    lockInput(field('Inbox protocol tags', tags, 'Automatic shows them once you have more than one kind of conversation.'), locked));
+    lockInput(field('Inbox protocol tags', tags, 'Automatic shows them once you have more than one kind of conversation.'), locked),
+    lockInput(field('Encryption status', locks, 'A colored lock beside the chat name: green for end-to-end, yellow for in transit only, '
+      + 'red for not encrypted. Every chat’s Security section says the same.'), locked));
   if (locked) conversations.append(followingPhoneNote());
   const order = element('p', 'New chats use the account you pick in New chat. A protocol that’s turned off stays readable.', 'muted');
   return [texts, internetCard, conversations, order];
 }
 
+// The phone's Ways to call (Calling.Method): Matrix and meeting links work from this browser, so they're switches here,
+// kept for every browser on this server. Phone, XMPP, and SIP calls are made on the phone, so they're shown as facts.
 function callsPage() {
-  const ways = settingsCard('Ways to call');
-  const list = element('dl', '', 'settings-facts');
+  const ways = settingsCard('Ways to call · separate from messaging');
+  const save = (name) => async (value) => {
+    prefs = {...prefs, [name]: value};
+    updateCallButtons();
+    try { companionSettings = await api('settings', {prefs: {[name]: value}}); } catch (error) { showError(error); }
+  };
   const matrix = chatAccounts.some((account) => account.protocol === 'matrix');
+  ways.append(
+    checkbox('Matrix', callWayOn('matrix'), save('callMatrix'), 'Voice and video with Matrix contacts. End-to-end encrypted.'
+      + (matrix ? '' : ' Add a Matrix account in Accounts to call from here.')),
+    checkbox('Meeting links', callWayOn('meeting'), save('callMeetings'), 'A Jitsi Meet link anyone can tap to join, on any app. Free and open source.'),
+    element('p', 'Off hides that way to call in chats, their details, and contact pages. Calls you get still show.', 'muted'));
+  const phone = settingsCard('On your phone');
+  const list = element('dl', '', 'settings-facts');
   for (const [term, detail] of [
-    ['Voice and video (Matrix)', matrix ? 'On · call Matrix contacts from a chat or the Calls tab.' : 'Add a Matrix account in Accounts to call from here.'],
-    ['Meeting links', 'Start a video meeting from any chat. Its link is sent to the chat, so anyone can join from any app.'],
-    ['Phone calls', phonePaired() ? 'The Call button in a text chat asks your phone to dial.' : 'Connect your phone to call numbers through it.']]) {
+    ['Phone', 'Calls with your phone number, through Android’s call screen. ' + (phonePaired()
+      ? 'The Call button in a text chat asks your phone to dial.' : 'Connect your phone to call numbers through it.')],
+    ['XMPP', 'Voice and video with XMPP contacts, such as people using Conversations. Placed from FluidMessages for Android.'],
+    ['SIP', 'Internet phone service from a SIP provider, including regular phone numbers. Set up and made on your phone.']]) {
     list.append(element('dt', term), element('dd', detail));
   }
+  phone.append(list, element('p', 'Turn these on or off, and set call recording, the meeting server, and regular phone calls in Recents, in '
+    + 'FluidMessages for Android.', 'muted'));
   const open = element('button', 'Open Calls', 'primary');
   open.type = 'button';
   open.addEventListener('click', () => showSection('calls'));
-  ways.append(list, open);
-  const phone = settingsCard('On your phone', 'SIP calling, call recording, the meeting server, and regular phone calls in Recents are set in FluidMessages for Android.');
+  ways.append(open);
   return [ways, phone];
 }
 
@@ -350,7 +380,7 @@ function paymentsPage() {
   const draw = () => {
     custom.replaceChildren(element('h3', 'Added by you'));
     const own = customAssets();
-    if (!own.length) custom.append(element('p', 'Add your own way to pay from Money in any chat.', 'muted'));
+    if (!own.length) custom.append(element('p', 'None yet. Add one here, or from Money in any chat.', 'muted'));
     for (const item of own) {
       const row = element('div', '', 'account-row');
       const words = element('span', '', 'account-words');
@@ -363,9 +393,71 @@ function paymentsPage() {
     }
   };
   draw();
+  const add = settingsCard('');
+  add.append(settingsLink('payment-add', 'Any coin or service with a payment link'));
   const about = settingsCard('How paying works', 'FluidMessages never holds money, keys, or card numbers. A request is a standard payment link that '
     + 'opens the payer’s own app.');
-  return [main, custom, about];
+  return [main, custom, add, about];
+}
+
+/** Settings → Payments → Add a way to pay: the same form as in Money. */
+function addPaymentPage(context) {
+  const card = settingsCard('');
+  const leave = () => settingsBack(settingsItem('payment-add'));
+  card.append(customPayForm({done: (name) => { say(name + ' added. It’s in Money in every chat.'); leave(); }, cancel: leave}));
+  return [card];
+}
+
+// Privacy → Chat locks: lock every chat of one kind with one passcode (chats.js), as on the phone.
+
+function chatLocksPage() {
+  const how = settingsCard('How it works');
+  how.append(element('strong', 'Locked chats ask for a passcode', 'privacy-lead'), element('p', 'Their previews are hidden in the inbox and '
+    + 'search, and they ask again each time you come back to them. To lock one chat, open its details and add a chat code.', 'muted'));
+  const kinds = settingsCard('Lock every chat of one kind');
+  for (const [kind, label] of LOCK_KINDS) {
+    kinds.append(settingsLink('lock-' + kind, webChats.locks?.[serviceLock(kind)] ? 'Locked · change or remove the passcode' : 'Not locked'));
+  }
+  const relock = element('button', 'Lock them again now');
+  relock.type = 'button';
+  relock.addEventListener('click', () => { unlockedAddress = ''; showMessages(); say('Locked chats are locked again.'); });
+  kinds.append(relock);
+  return [how, kinds];
+}
+
+function kindLockPage(kind, label) {
+  const card = settingsCard('');
+  const lower = label.charAt(0).toLowerCase() + label.slice(1);
+  lockCodeForm(card, serviceLock(kind), {
+    title: 'Passcode',
+    on: 'Locked. ' + label + ' ask for this passcode before they open, and their previews are hidden. A chat with its own code asks for that one.',
+    off: 'Add a passcode to lock ' + lower + '. They ask for it before they open, and their previews are hidden in the inbox and search.',
+    wrong: 'That isn’t the passcode.',
+    saved: (added) => { unlockedAddress = ''; showMessages(true); say(added ? label + ' are locked.' : label + ' are unlocked.'); },
+  });
+  return [card];
+}
+
+// Privacy → Encryption: what the lock colors mean, like the phone's page.
+
+function encryptionPage() {
+  const legend = settingsCard('What the lock colors mean');
+  for (const [tone, title, detail] of [
+    ['green', 'Green lock', 'End-to-end encrypted, or encrypted with FluidMessages. Only you and the people in the chat can read it.'],
+    ['yellow', 'Yellow lock', 'Protected on its way to the server, but the service can read it.'],
+    ['red', 'Red open lock', 'Not encrypted. Regular texts work this way; your carrier can read them.']]) {
+    const row = element('div', '', 'detail-row');
+    const words = element('span', '', 'detail-words');
+    words.append(element('strong', title), element('small', detail));
+    row.append(lockBadge(tone, title, 'large'), words);
+    legend.append(row);
+  }
+  legend.append(element('p', 'Each chat shows its lock beside its name, and its details say what it means there. Settings → Chat services → '
+    + 'Encryption status can hide the lock.', 'muted'));
+  const fluid = settingsCard('Encrypt with FluidMessages', 'You and the other person enter the same encryption key, and messages are scrambled '
+    + 'before they leave your phone. Both of you need FluidMessages. A chat’s own setting, in its details on the phone, always wins. Turn it on '
+    + 'in FluidMessages for Android: the key stays on your phone, so messages sent from this browser aren’t encrypted that way.');
+  return [legend, fluid];
 }
 
 // Privacy → Privacy and security
@@ -405,7 +497,9 @@ function disappearingSection(settings) {
     .then(loadSettings).catch(showError));
   card.append(field('Disappearing messages', timer, 'The default for every chat; each chat’s details can change it. Your own Matrix and XMPP '
     + 'messages are taken back for everyone; texts, email, and IRC stay on the other person’s device.'
-    + (settings.follow_phone && settings.phone.paired ? ' Your phone’s timers replace this when it syncs.' : '')));
+    + (settings.follow_phone && settings.phone.paired ? (typeof mergeActive === 'function' && mergeActive()
+      ? ' Your phone gets this on its next sync; if it changed this too, you choose which to keep.'
+      : ' Your phone’s timers replace this when it syncs.') : '')));
   if (typeof CARRIER_COPY_NOTE === 'string') card.append(element('p', CARRIER_COPY_NOTE, 'muted carrier-note'));
   // Sends “⏱️ Disappearing messages are on…” in the chat when you change its timer, like the phone.
   const locked = lookLocked(settings);
@@ -419,9 +513,13 @@ function disappearingSection(settings) {
 async function privacyPage(settings, context) {
   const erase = settingsCard('Erase');
   erase.append(settingsLink('erase', 'Removes all accounts, messages, keys, and settings from this server', true));
+  const encryption = settingsCard('Encryption');
+  encryption.append(settingsLink('encryption', 'What the green, yellow, and red locks mean'));
   // Protect the app and Keep things private: the emergency erase passcode, the private folder, and decoy mode (privacy.js).
   const own = typeof privacySections === 'function' ? await privacySections() : [];
-  return [...own, chatCodesSection(), privateNoteSection(), blockedSection(context), disappearingSection(settings), erase];
+  // Requests and spam: unknown senders and automated messages (requests.js).
+  const requests = typeof requestSettingsLink === 'function' ? [requestSettingsLink()] : [];
+  return [...own, ...requests, chatCodesSection(), encryption, privateNoteSection(), blockedSection(context), disappearingSection(settings), erase];
 }
 
 // Storage and devices → Backups: the phone's .fmb format, unchanged. A web backup holds this server's conversation

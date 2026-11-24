@@ -16,7 +16,9 @@ Object.assign(SETTINGS_ICONS, {
 });
 SETTINGS_SUBPAGES.push(
   {id: 'private-folder', icon: 'folder', title: 'Private folder', parent: 'privacy', page: (settings, context) => privateFolderPage(context)},
+  {id: 'private-services', icon: 'folder', title: 'Hide whole services', parent: 'private-folder', page: (settings, context) => privateServicesPage(context)},
   {id: 'decoy-mode', icon: 'mask', title: 'Decoy mode', parent: 'privacy', page: (settings, context) => decoyModePage(context)},
+  {id: 'decoy-allowed', icon: 'mask', title: 'Real chats in decoy mode', parent: 'decoy-mode', page: (settings, context) => decoyAllowedPage(context)},
   {id: 'emergency-erase', icon: 'alarm', title: 'Emergency erase passcode', parent: 'privacy', page: (settings, context) => emergencyPage(context)});
 
 let privacyStatus = null;
@@ -24,7 +26,7 @@ let privacySession = -1;
 let privateChats = [];
 // The chat list's prompt: '' (none), 'wrong' (an empty folder after a passcode that opened nothing), or 'reveal'.
 let privateGateMode = '';
-const privateGate = {form: null, reveal: null};
+const privateGate = {form: null, reveal: null, close: null, closeTo: ''};
 
 async function loadPrivacy() {
   privacyStatus = await api('privacy');
@@ -103,12 +105,43 @@ async function reloadInbox() {
   showMessages();
 }
 
+const inPrivateFolder = (value) => value === PRIVATE_FOLDER || String(value || '').startsWith('private:');
+let folderBefore = get('folder').value;
+
 get('folder').addEventListener('change', () => {
   const folder = get('folder').value;
+  const before = folderBefore;
+  folderBefore = folder;
   if (folder === QUICK_HIDE) { quickHide().catch(showError); return; }
+  // Leaving the open private folder asks for the passcode again, then locks it, as on the phone (Ask for the
+  // passcode to close it). Until then the folder stays on screen.
+  if (inPrivateFolder(before) && !inPrivateFolder(folder) && privateOpen() && !decoyLike() && privacyStatus?.private?.close_code !== false) {
+    get('folder').value = folderBefore = before;
+    privateGateMode = 'close';
+    privateGate.close = null;
+    privateGate.closeTo = folder;
+    showThreads();
+    return;
+  }
   // Filters inside the open private folder (inbox-filters.js) stay in it.
-  if (folder !== PRIVATE_FOLDER && !folder.startsWith('private:')) privateGateMode = privateGateMode === 'reveal' ? 'reveal' : '';
+  if (!inPrivateFolder(folder)) privateGateMode = privateGateMode === 'reveal' ? 'reveal' : '';
 });
+
+/** Close the private folder: its passcode, then it locks and the folder you picked opens. Cancel stays in the folder. */
+function privateCloseForm() {
+  const form = passcodeForm('Close the private folder', 'Enter your passcode to close it.', async (code, status) => {
+    const result = await api('privacy/private/unlock', {code});
+    if (!result.open) { status.textContent = 'That passcode doesn’t match'; return; }
+    const to = privateGate.closeTo || 'Inbox';
+    await api('privacy/private/lock', {});
+    resetChatView();
+    await reloadInbox();
+    get('folder').value = folderBefore = [...get('folder').options].some((option) => option.value === to) ? to : 'Inbox';
+    showThreads();
+    say('The private folder is locked');
+  }, {label: 'Close', back: () => { privateGateMode = ''; privateGate.close = null; showThreads(); }});
+  return form;
+}
 
 /** Quick hide: this browser switches to the decoy inbox at once. The private folder closes. */
 async function quickHide() {
@@ -131,22 +164,22 @@ function secretInput(label, autocomplete = 'off') {
 }
 
 /** The passcode prompt in the chat list: Private folder, or Show your real inbox in decoy mode. */
-function passcodeForm(title, intro, submit) {
+function passcodeForm(title, intro, submit, {label = 'Open', back = null} = {}) {
   const form = element('form', '', 'private-gate');
   form.append(gateIcon(), element('h2', title), element('p', intro, 'muted'));
   const input = secretInput('Passcode', 'current-password');
   input.required = true;
   const status = element('p', '', 'error');
   status.setAttribute('role', 'alert');
-  const open = element('button', 'Open', 'primary');
+  const open = element('button', label, 'primary');
   const cancel = element('button', 'Cancel', 'quiet');
   cancel.type = 'button';
-  cancel.addEventListener('click', () => {
+  cancel.addEventListener('click', back || (() => {
     privateGateMode = '';
     privateGate.form = privateGate.reveal = null;
     get('folder').value = 'Inbox';
     showThreads();
-  });
+  }));
   const row = element('div', '', 'button-row');
   row.append(open, cancel);
   form.append(field('Passcode', input), status, row);
@@ -156,7 +189,7 @@ function passcodeForm(title, intro, submit) {
     status.textContent = '';
     open.textContent = 'Checking…';
     try { await submit(input.value, status); } catch (error) { status.textContent = error.message; }
-    finally { open.disabled = false; open.textContent = 'Open'; input.value = ''; }
+    finally { open.disabled = false; open.textContent = label; input.value = ''; }
   });
   form.focusFirst = () => requestAnimationFrame(() => input.focus());
   return form;
@@ -245,6 +278,11 @@ function privateFolderGate(list, folder) {
     return true;
   }
   if (folder !== PRIVATE_FOLDER || sampleOn) return false;
+  if (privateGateMode === 'close' && privateOpen() && !decoyLike()) {
+    if (!privateGate.close) { privateGate.close = privateCloseForm(); privateGate.close.focusFirst(); }
+    list.append(privateGate.close);
+    return true;
+  }
   if (privateOpen() && !decoyLike()) { list.append(privateOpenBar()); return false; }
   if (privateGateMode === 'wrong') {
     const empty = element('div', '', 'empty-list');
@@ -392,7 +430,8 @@ function howItWorks(title, text) {
 async function privateFolderPage(context) {
   const status = await loadPrivacy();
   const cards = [howItWorks('Chats in the private folder stay out of your inbox', 'They’re only in the private folder. Open it from the filter '
-    + 'at the top of the inbox with your passcode. It stays open in this browser until you lock it or sign out. While it’s closed, its chats '
+    + 'at the top of the inbox with your passcode. It stays open in this browser until you lock it, leave it for another folder (when it asks for the '
+    + 'passcode to close it), or sign out. While it’s closed, its chats '
     + 'never reach this browser: not the inbox, search, chimes, or the Scheduled list. Your phone’s own private folder stays on your phone.')];
   if (!status.private) return cards;
   if (!status.private.set) {
@@ -449,10 +488,14 @@ async function privateFolderPage(context) {
     done.textContent = 'Passcode saved';
   }, problem);
   form.append(element('h4', 'Change passcode'), ...fields.nodes, problem, change, done);
-  opening.append(element('p', 'Open in this browser.', 'muted'), lock, form);
+  const closing = checkbox('Ask for the passcode to close it', status.private.close_code !== false, async (on) => {
+    try { await api('privacy/private/close-code', {on}); await loadPrivacy(); } catch (error) { showError(error); }
+  }, 'Leaving the private folder for another folder asks again, then locks it.');
+  opening.append(element('p', 'Open in this browser.', 'muted'), lock, closing, form);
   const hidden = settingsCard('What’s hidden');
   const count = status.private.count || 0;
   hidden.append(element('p', count ? count + (count === 1 ? ' chat is' : ' chats are') + ' in the private folder.' : 'No chats in the private folder yet.', 'muted'));
+  hidden.append(settingsLink('private-services', hiddenServicesLabel(status.private.services)));
   const facts = element('dl', '', 'settings-facts');
   facts.append(element('dt', 'Hide one chat'), element('dd', 'Right-click or touch and hold it in the inbox, or open its details, and choose Move to private folder.'),
     element('dt', 'Show it again'), element('dd', 'Open the private folder, then choose Move out of private folder the same way.'));
@@ -468,10 +511,80 @@ async function privateFolderPage(context) {
   return [...cards, opening, hidden, end];
 }
 
+const SERVICE_NAMES = {sms: 'Texts', matrix: 'Matrix', xmpp: 'XMPP', email: 'Email', irc: 'IRC'};
+
+function hiddenServicesLabel(services) {
+  return services?.length ? services.map((name) => SERVICE_NAMES[name]).join(', ') : 'None';
+}
+
+/** Private folder → Hide whole services: every chat on a service goes in the private folder, as on the phone. */
+async function privateServicesPage(context) {
+  const status = await loadPrivacy();
+  const card = settingsCard('Hide whole services', 'Every chat on a service you choose is in the private folder, new ones too: '
+    + 'it stays out of your inbox, search, chimes, and the Scheduled list until you open the folder.');
+  if (!status.private?.set || !status.private.open) {
+    card.append(element('p', 'Open the private folder first.', 'notice'), settingsLink('private-folder', 'Open it with your passcode'));
+    return [card];
+  }
+  const chosen = new Set(status.private.services || []);
+  const problem = errorLine();
+  const save = element('button', 'Save', 'primary');
+  const form = settingsForm(save, async () => {
+    await api('privacy/private/services', {services: [...chosen]});
+    await reloadInbox();
+    say(chosen.size ? hiddenServicesLabel([...chosen]) + ' hidden in the private folder' : 'No services hidden');
+    settingsBack(settingsItem('private-services'));
+  }, problem);
+  const set = element('fieldset', '', 'stack');
+  set.append(element('legend', 'Services', 'visually-hidden'));
+  for (const [name, label] of Object.entries(SERVICE_NAMES)) {
+    set.append(checkbox(label, chosen.has(name), (on) => { if (on) chosen.add(name); else chosen.delete(name); },
+      name === 'sms' ? 'Texts from your phone: SMS, MMS, and RCS (preview)' : 'Every ' + label + ' chat and room'));
+  }
+  form.append(set, problem, save);
+  card.append(form);
+  return [card];
+}
+
+/** Decoy mode → Real chats that stay visible: real chats that look normal to someone else. */
+async function decoyAllowedPage(context) {
+  const status = await loadPrivacy();
+  const card = settingsCard('Real chats in decoy mode', 'These stay visible in decoy mode. Choose chats that would look normal to someone else. '
+    + 'Anything sent in decoy mode stays on that page, in these chats too.');
+  if (!status.decoy) return [card];
+  const chosen = new Set(status.decoy.allowed || []);
+  // Real chats only: never the sample inbox or a private chat, and up to 60, newest first.
+  const keys = [...threads.keys()].filter((key) => threads.get(key)?.length && !privateFolderHas(threadAddress(key)))
+    .sort((a, b) => timeOf(threads.get(b).at(-1)) - timeOf(threads.get(a).at(-1))).slice(0, 60);
+  const seen = new Set();
+  const set = element('fieldset', '', 'stack');
+  set.append(element('legend', 'Chats', 'visually-hidden'));
+  for (const key of keys) {
+    const address = threadAddress(key);
+    if (seen.has(address)) continue;
+    seen.add(address);
+    set.append(checkbox(threadTitle(key), chosen.has(address), (on) => { if (on) chosen.add(address); else chosen.delete(address); },
+      protocolName(threadProtocol(key))));
+  }
+  if (sampleOn) set.replaceChildren(element('p', 'Leave the sample inbox to choose your real chats.', 'notice'));
+  else if (!seen.size) set.append(element('p', 'No chats yet.', 'muted'));
+  const problem = errorLine();
+  const save = element('button', 'Save', 'primary');
+  save.disabled = sampleOn;
+  const form = settingsForm(save, async () => {
+    await api('privacy/decoy/allowed', {addresses: [...chosen].slice(0, 60)});
+    say(chosen.size ? chosen.size + (chosen.size === 1 ? ' real chat stays' : ' real chats stay') + ' visible in decoy mode' : 'Only pretend chats show in decoy mode');
+    settingsBack(settingsItem('decoy-allowed'));
+  }, problem);
+  form.append(set, problem, save);
+  card.append(form);
+  return [card];
+}
+
 async function decoyModePage(context) {
   const status = await loadPrivacy();
-  const cards = [howItWorks('For when someone else is using your browser', 'Decoy mode swaps your inbox for pretend chats. Nothing real '
-    + 'shows: no real messages, accounts, settings, pairing, or erase, and nothing sent there leaves the page. Nothing is deleted. Sign in '
+  const cards = [howItWorks('For when someone else is using your browser', 'Decoy mode swaps your inbox for pretend chats, plus only the real '
+    + 'chats you allow. Nothing else real shows: no other messages, accounts, settings, pairing, or erase, and nothing sent there leaves the page. Nothing is deleted. Sign in '
     + 'with your decoy password to open it, or choose Quick hide (decoy mode) in the inbox filter. To end it, touch and hold the Chats title '
     + 'and enter your private folder passcode, or sign out and sign in with your real password.')];
   if (!status.decoy) return cards;
@@ -515,11 +628,13 @@ async function decoyModePage(context) {
     turnOn.append(settingsLink('private-folder', 'Decoy mode ends with your private folder passcode, so set one up'));
     turnOn.querySelector('strong').textContent = 'Set up the private folder first';
   }
-  return [...cards, password, turnOn, decoyChatsCard(status.decoy.chats, context)];
+  return [...cards, password, turnOn, decoyChatsCard(status.decoy.chats, context, status.decoy.allowed || [])];
 }
 
-function decoyChatsCard(chats, context) {
-  const card = settingsCard('What decoy mode shows', 'Pretend chats. They look like normal texts, and nothing is ever sent.');
+function decoyChatsCard(chats, context, allowed = []) {
+  const card = settingsCard('What decoy mode shows', 'Pretend chats, plus only the real chats you allow. Pretend chats look like normal texts, and nothing is ever sent.');
+  card.append(settingsLink('decoy-allowed', allowed.length ? allowed.length + ' chosen' : 'None · only pretend chats show'));
+  card.querySelector('.settings-row:last-child strong').textContent = 'Real chats that stay visible';
   const list = element('div', '', 'settings-rows');
   const save = async (next) => { await api('privacy/decoy/chats', {chats: next}); context.rerender(); };
   chats.forEach((chat, index) => {

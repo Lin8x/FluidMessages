@@ -18,11 +18,14 @@ const SERVICE_TITLES = {irc: 'IRC network', matrix: 'Matrix homeserver', xmpp: '
 const spaceCache = {};
 
 function serverAccounts() {
+  // The sample inbox has its own fictional servers, never your accounts (sampleServers below).
+  if (typeof sampleOn !== 'undefined' && sampleOn) return SAMPLE_SERVERS;
   return (chatAccounts || []).filter((account) => SERVER_PROTOCOLS.includes(account.protocol) && account.id);
 }
 
 /** The short name of a server: the IRC network, the homeserver, or the XMPP domain. */
 function serverName(account) {
+  if (account.label) return account.label;
   const name = account.name || '';
   const host = account.protocol === 'irc' ? name.split('@').pop() : account.protocol === 'matrix' ? name.split(':').slice(1).join(':')
     : name.split('@').pop();
@@ -30,21 +33,130 @@ function serverName(account) {
   return known ? known.name : host || labels[account.protocol];
 }
 
-/** " · via alice@example.org" when a service has more than one account, for chat headers and details. */
+// from-account:start (scripts/test-local runs this block on its own)
+// Which account sends, like a mail app's From field and the phone's FromAccount (AccountKeys.kt). Nothing shows while a
+// service has one account. A chat always replies from its own account; a link from before multiple accounts names none
+// and belongs to the service's first one. New chat preselects the account used most recently, else the newest.
+
+/**
+ * An address compared the way its service does (protocol_gateway.target_key, AccountKeys.targetKey), so one person,
+ * group, channel, or room is one chat per account: case-blind for email, XMPP, and Matrix users and aliases; a Matrix
+ * room ID keeps its case but not its server's; IRC folds case by RFC 1459, where []\\~ are the capitals of {}|^.
+ */
+function targetKey(service, target) {
+  const text = String(target || '').trim();
+  const via = text.startsWith('!') ? 'matrix' : service;
+  if (via === 'irc') return text.toLowerCase().replace(/[[\]\\~]/g, (c) => ({'[': '{', ']': '}', '\\': '|', '~': '^'})[c]);
+  if (via === 'matrix' && text.startsWith('!')) {
+    const at = text.indexOf(':');
+    return at < 0 ? text : text.slice(0, at) + ':' + text.slice(at + 1).toLowerCase();
+  }
+  return text.toLowerCase();
+}
+
+const accountShown = (account) => account.name || String(account.id || '').split(':').slice(1).join(':');
+
+function sendAccounts(service, accounts) {
+  return (accounts || []).filter((account) => account.id && account.protocol === service);
+}
+
+/** The account a chat sends from, or null with one account (or none). */
+function chatFromAccount(route, accounts) {
+  if (!route) return null;
+  const same = sendAccounts(route.account ? route.account.split(':')[0] : route.protocol, accounts);
+  if (same.length < 2) return null;
+  return same.find((account) => account.id === route.account) || (route.account ? null : same[0]);
+}
+
+/** "From: alice@example.org" above the composer, or ''. */
+function fromLineText(route, accounts) {
+  const account = chatFromAccount(route, accounts);
+  return account ? 'From: ' + accountShown(account) : '';
+}
+
+/** New chat's From: an IRC network typed with the nick, else the account used last, else the newest one. */
+function preselectFrom(list, network = '') {
+  if (!list.length) return '';
+  const typed = network && list.find((account) => String(account.name || '').toLowerCase().endsWith('@' + network.toLowerCase()));
+  return (typed || list.find((account) => account.recent) || list[list.length - 1]).id;
+}
+
+/** The inbox row's small hint, for a chat on another account than the service's first. */
+function inboxAccountHint(route, accounts) {
+  const account = chatFromAccount(route, accounts);
+  if (!account) return '';
+  return account.id === sendAccounts(account.protocol, accounts)[0].id ? '' : accountShown(account);
+}
+// from-account:end
+
+/** " · from alice@example.org" when a service has more than one account, for chat headers and details. */
 function accountVia(route) {
-  if (!route?.account) return '';
-  const same = (chatAccounts || []).filter((account) => account.id && account.protocol === route.account.split(':')[0]);
-  return same.length > 1 ? ' · via ' + (route.account_name || route.account.split(':').slice(1).join(':')) : '';
+  const account = chatFromAccount(route, chatAccounts);
+  return account ? ' · from ' + accountShown(account) : '';
+}
+
+/**
+ * The composer's "From: alice@example.org ▾" while the chat's service has more than one account. Replies always go
+ * out from the chat's own account (the server sends through its link); tapping explains that and offers a new chat.
+ */
+function updateFromLine() {
+  const form = document.getElementById('schedule');
+  if (!form) return;
+  let line = document.getElementById('from-line');
+  const route = !sampleOn && typeof active === 'string' && active && typeof routeFor === 'function' ? routeFor(active) : null;
+  const account = route && internet(route.protocol) ? chatFromAccount(route, chatAccounts) : null;
+  let info = document.getElementById('from-info');
+  if (!account) { if (line) line.hidden = true; if (info) info.hidden = true; return; }
+  if (!line) {
+    line = element('button', '', 'from-line');
+    line.id = 'from-line';
+    line.type = 'button';
+    line.setAttribute('aria-controls', 'from-info');
+    // The note opens in place, under the line, rather than as a pop-up.
+    info = element('div', '', 'from-info');
+    info.id = 'from-info';
+    info.hidden = true;
+    line.addEventListener('click', () => {
+      info.hidden = !info.hidden;
+      line.setAttribute('aria-expanded', String(!info.hidden));
+      line.querySelector('.from-caret').textContent = info.hidden ? '▾' : '▴';
+    });
+    form.querySelector('.compose-row')?.before(line, info);
+  }
+  const name = accountShown(account);
+  line.replaceChildren(element('span', 'From:', 'from-label'), element('strong', name), element('span', info.hidden ? '▾' : '▴', 'from-caret'));
+  line.setAttribute('aria-label', 'Sending from ' + name + '. About sending from this account');
+  line.setAttribute('aria-expanded', String(!info.hidden));
+  const another = element('button', 'New message from another account', 'quiet');
+  another.type = 'button';
+  another.addEventListener('click', () => { info.hidden = true; openNewChat(); });
+  const done = element('button', 'Done', 'quiet');
+  done.type = 'button';
+  done.addEventListener('click', () => { line.click(); line.focus(); });
+  const actions = element('div', '', 'from-actions');
+  actions.append(another, done);
+  info.replaceChildren(element('p', 'Replies in this chat come from ' + name + '. To write from another account, start a new message.'), actions);
+  line.hidden = false;
 }
 
 // Messages → Chats | Communities. Communities lists each server with its channels and rooms, like chat rows, under a
 // collapsible header with its actions. The same design as the phone (Communities.kt).
 
 const COMMUNITY_SORTS = {recent: 'Recent activity', name: 'Name (A–Z)', joined: 'Date joined'};
-let inboxView = localStorage.getItem('inboxView') === 'communities' ? 'communities' : 'chats';
-const collapsedServers = new Set((() => {
+let realInboxView = localStorage.getItem('inboxView') === 'communities' ? 'communities' : 'chats';
+const realCollapsed = new Set((() => {
   try { return JSON.parse(localStorage.getItem('communityCollapsed') || '[]'); } catch (error) { return []; }
 })());
+// The sample inbox keeps its own view, sort, and collapsed servers on this page only, so trying them changes nothing of yours.
+const sampleCommunity = {view: 'chats', sort: 'recent', collapsed: new Set()};
+const inSample = () => typeof sampleOn !== 'undefined' && sampleOn;
+const collapsedNow = () => inSample() ? sampleCommunity.collapsed : realCollapsed;
+const inboxViewMode = () => inSample() ? sampleCommunity.view : realInboxView;
+function setInboxView(value) {
+  if (inSample()) { sampleCommunity.view = value; return; }
+  realInboxView = value;
+  localStorage.setItem('inboxView', value);
+}
 
 /** A pref the phone also has: the phone's value while following its settings (like tabCounts), otherwise this server's. */
 function syncedPref(key, fallback) {
@@ -60,11 +172,15 @@ async function saveSyncedPref(key, value) {
 }
 
 const showCommunityChats = () => syncedPref('showCommunityChats', true) !== false;
-const communitySort = () => COMMUNITY_SORTS[syncedPref('communitySort', 'recent')] ? syncedPref('communitySort', 'recent') : 'recent';
+function communitySort() {
+  const sort = inSample() ? sampleCommunity.sort : syncedPref('communitySort', 'recent');
+  return COMMUNITY_SORTS[sort] ? sort : 'recent';
+}
 
-/** A channel or room on a server (not a direct message there, and never in the sample inbox or a decoy session). */
+/** A channel or room on a server (not a direct message there, and never in a decoy session). In the sample inbox,
+ * only the sample servers' channels and rooms, since serverAccounts and routes are the sample's then. */
 function isCommunityChat(key) {
-  if (sampleOn || (typeof inboxDecoy === 'function' && inboxDecoy())) return false;
+  if (typeof inboxDecoy === 'function' && inboxDecoy()) return false;
   const route = typeof routeFor === 'function' ? routeFor(key) : null;
   return !!route?.group && !!route.account && serverAccounts().some((account) => account.id === route.account);
 }
@@ -72,12 +188,12 @@ function isCommunityChat(key) {
 /** Whether Chats lists [key]: community chats only while "Show community chats in Chats" is on. */
 const chatsShows = (key, show = showCommunityChats()) => show || !isCommunityChat(key);
 
-/** The switch shows in the real inbox only: not the sample inbox, a decoy session, or the private folder. */
+/** The switch shows in the inbox and the sample inbox: not in a decoy session or the private folder. */
 function communitiesOffered(folder) {
-  return !sampleOn && !(typeof inboxDecoy === 'function' && inboxDecoy()) && !(typeof PRIVATE_FOLDER !== 'undefined' && folder === PRIVATE_FOLDER);
+  return !(typeof inboxDecoy === 'function' && inboxDecoy()) && !(typeof PRIVATE_FOLDER !== 'undefined' && folder === PRIVATE_FOLDER);
 }
 
-const inboxViewNow = (folder) => communitiesOffered(folder) ? inboxView : 'chats';
+const inboxViewNow = (folder) => communitiesOffered(folder) ? inboxViewMode() : 'chats';
 
 /** A channel's name for sorting: "#radio-club" sorts as "radio-club". */
 const communityKey = (name) => String(name || '').replace(/^[#&!+]+/, '').toLocaleLowerCase();
@@ -125,7 +241,7 @@ function drawInboxSwitch(folder) {
     const button = element('button', '', 'segment');
     button.type = 'button';
     button.append(element('span', label));
-    button.setAttribute('aria-pressed', String(inboxView === value));
+    button.setAttribute('aria-pressed', String(inboxViewMode() === value));
     if (value === 'communities' && unread) {
       const badge = element('span', unread > 99 ? '99+' : String(unread), 'segment-badge');
       badge.setAttribute('aria-hidden', 'true');
@@ -133,9 +249,8 @@ function drawInboxSwitch(folder) {
       button.setAttribute('aria-label', label + ', ' + unread + ' unread');
     }
     button.addEventListener('click', () => {
-      if (inboxView === value) return;
-      inboxView = value;
-      localStorage.setItem('inboxView', value);
+      if (inboxViewMode() === value) return;
+      setInboxView(value);
       showThreads();
     });
     return button;
@@ -144,9 +259,10 @@ function drawInboxSwitch(folder) {
 }
 
 function toggleServer(id) {
-  if (collapsedServers.has(id)) collapsedServers.delete(id);
-  else collapsedServers.add(id);
-  localStorage.setItem('communityCollapsed', JSON.stringify([...collapsedServers]));
+  const collapsed = collapsedNow();
+  if (collapsed.has(id)) collapsed.delete(id);
+  else collapsed.add(id);
+  if (!inSample()) localStorage.setItem('communityCollapsed', JSON.stringify([...collapsed]));
   showThreads();
 }
 
@@ -180,9 +296,12 @@ function drawCommunities(list, rows, row) {
   sort.setAttribute('aria-label', 'Sort communities');
   for (const [value, label] of Object.entries(COMMUNITY_SORTS)) sort.append(Object.assign(element('option', label), {value}));
   sort.value = communitySort();
-  sort.addEventListener('change', () => saveSyncedPref('communitySort', sort.value));
+  sort.addEventListener('change', () => {
+    if (inSample()) { sampleCommunity.sort = sort.value; showThreads(); } else saveSyncedPref('communitySort', sort.value);
+  });
   const sortLabel = element('label', '', 'community-sort');
   sortLabel.append(element('span', 'Sort'), sort);
+  if (inSample()) bar.prepend(element('span', 'Sample servers · fictional, and nothing is sent', 'community-sample-note'));
   bar.append(sortLabel);
   list.append(bar);
   const unread = typeof unreadChats === 'function' ? unreadChats() : new Set();
@@ -193,14 +312,15 @@ function drawCommunities(list, rows, row) {
     return {key, messages, account: route.account, name: threadTitle(key), last: last ? timeOf(last) : 0,
       joined: route.joined || index.get(route.address + '\u001f' + route.protocol) || 0, unread: unread.has(key)};
   });
-  const servers = accounts.map((account) => ({id: account.id, name: serverName(account), order: chatAccounts.indexOf(account), account}));
+  const servers = accounts.map((account, index) => ({id: account.id, name: serverName(account),
+    order: account.sample ? index : chatAccounts.indexOf(account), account}));
   let shown = 0;
   for (const group of communityGroups(servers, channels, communitySort())) {
     const {account} = group.server;
     // While searching, servers with nothing matching stay out.
     if (query && !group.channels.length) continue;
     shown++;
-    const open = !collapsedServers.has(account.id) || !!query;
+    const open = !collapsedNow().has(account.id) || !!query;
     const section = element('section', '', 'community');
     const head = element('div', '', 'community-head');
     const toggle = element('button', '', 'community-toggle');
@@ -236,6 +356,9 @@ function drawCommunities(list, rows, row) {
     more.setAttribute('aria-expanded', 'false');
     head.append(toggle, ...(serverMark ? [serverMark] : []), more);
     section.append(head);
+    // "Disconnected from <network> · Reconnect" while it isn't connected (connections.js).
+    const connection = typeof connectionBar === 'function' ? connectionBar(account.id, group.server.name) : null;
+    if (connection) section.append(connection);
     const actions = element('div', '', 'community-actions');
     actions.hidden = true;
     actions.setAttribute('role', 'group');
@@ -274,6 +397,7 @@ function drawCommunities(list, rows, row) {
 
 /** A server's details on a full page: its account, Browse and Join, and Remove for one added here or on the phone. */
 function openServerDetails(account) {
+  if (account.sample) { sampleServerPage(account, 'details'); return; }
   const section = element('section', '', 'settings-section');
   const noun = account.protocol === 'irc' ? 'channels' : account.protocol === 'matrix' ? 'rooms' : 'group chats';
   const joined = routes.filter((route) => route.account === account.id && route.group).length;
@@ -317,7 +441,7 @@ function communityChatsSwitch() {
 
 async function loadSpaces(ident, refresh = false) {
   const account = serverAccounts().find((item) => item.id === ident);
-  if (account?.protocol !== 'matrix' || spaceCache[ident] && !refresh) return;
+  if (account?.sample || account?.protocol !== 'matrix' || spaceCache[ident] && !refresh) return;
   spaceCache[ident] = [];
   try {
     spaceCache[ident] = (await api('protocols/servers/spaces', {account: ident, refresh})).spaces || [];
@@ -330,6 +454,7 @@ function serverHint(account) {
 }
 
 async function joinTarget(account, target, title, status) {
+  if (account.sample) return sampleJoin(account, target, title, status);
   status.textContent = 'Joining…';
   try {
     const result = await api('protocols/join', {account: account.id, target, title});
@@ -346,6 +471,7 @@ async function joinTarget(account, target, title, status) {
 
 /** Join a channel or room by name: a full page, like the phone's. */
 function openJoin(account) {
+  if (account.sample) { sampleServerPage(account, 'join'); return; }
   const form = element('form', '', 'settings-section');
   const target = Object.assign(element('input', ''), {required: true, placeholder: serverHint(account), autocomplete: 'off', spellcheck: false});
   const status = element('p', '', 'muted');
@@ -386,6 +512,7 @@ function openRoute(route) {
  * after you stop typing, where it can search.
  */
 function openBrowse(account, service = '') {
+  if (account.sample) { sampleServerPage(account, 'browse'); return; }
   const section = element('section', '', 'settings-section');
   const search = Object.assign(element('input', ''), {type: 'search', placeholder: account.protocol === 'irc' ? 'Search channels'
     : account.protocol === 'matrix' ? 'Search rooms' : service ? 'Search group chats' : 'Search services', autocomplete: 'off', spellcheck: false});
@@ -535,6 +662,7 @@ function leaveSection(route) {
 
 /** Add server, step 1: pick a service, on a full page. */
 function openAddServer() {
+  if (inSample()) { sampleServerPage(null, 'add'); return; }
   const section = element('section', '', 'settings-section');
   section.append(element('h3', 'Choose a service'),
     element('p', 'Connect another IRC network, Matrix homeserver, or XMPP server. Each one shows up in Messages → Communities with its channels and rooms.', 'muted'));
@@ -622,11 +750,11 @@ function showServerForm(protocol, entry, preset = {}) {
   }
   if (protocol === 'irc') {
     // TLS is always on: FluidMessages never sends IRC passwords or messages in plain text.
-    const tls = Object.assign(element('input', ''), {type: 'checkbox', checked: true, disabled: true});
-    const wrap = element('label', '', 'check');
+    // A themed status line rather than a greyed-out checkbox, which browsers draw in their own colors.
+    const wrap = element('p', '', 'tls-note');
     const words = element('span', '');
-    words.append(element('span', 'Use TLS'), element('small', 'Always on. FluidMessages doesn’t connect to IRC without it.', 'hint'));
-    wrap.append(tls, words);
+    words.append(element('strong', '🔒 Encrypted connection (TLS)'), element('small', 'Always on. FluidMessages doesn’t connect to IRC without it.', 'hint'));
+    wrap.append(words);
     intro.append(wrap);
   }
   const form = accountForm(protocol, null, done, {add: true, preset});
@@ -653,7 +781,8 @@ function newChatChannels(sheet) {
   addServer.type = 'button';
   addServer.addEventListener('click', leave(() => openAddServer()));
   if (typeof sampleOn !== 'undefined' && sampleOn) {
-    panel.append(element('p', 'Servers aren’t part of the sample inbox. Exit it to join channels and rooms on your own servers.', 'muted'));
+    panel.append(element('p', 'The sample servers and their channels are in Messages → Communities. They’re fictional, so nothing here joins '
+      + 'or sends. Exit the sample inbox to join channels and rooms on your own servers.', 'muted'));
     return panel;
   }
   const accounts = serverAccounts();
@@ -755,9 +884,163 @@ function channelButton(route, open) {
  * it's joined. [has] says whether the inbox already has the key.
  */
 function emptyServerRows(has) {
-  if (typeof sampleOn !== 'undefined' && sampleOn) return [];
+  // In the sample inbox these are the sample servers and the rooms joined on this page (sampleJoin).
   const ids = new Set(serverAccounts().map((account) => account.id));
   const keys = routes.filter((route) => route.group && ids.has(route.account))
     .map((route) => threadKey({address: route.address, protocol: route.protocol}));
   return [...new Set(keys)].filter((key) => !has(key)).map((key) => [key, []]);
+}
+
+// The sample inbox's servers: two fictional communities with channels and rooms, drawn on this page only. They never
+// reach the API: every action above that would (Browse, Join, Server details, Add server, Spaces) checks for
+// account.sample first and comes here instead. Fictional names and example addresses only.
+
+const SAMPLE_SERVERS = [
+  {id: 'sample:irc', protocol: 'irc', name: 'you@irc.starlight.example', label: 'Starlight IRC', sample: true, source: 'sample'},
+  {id: 'sample:matrix', protocol: 'matrix', name: '@you:commons.example.org', label: 'Garden Commons', sample: true, source: 'sample'},
+];
+
+// Each server's public directory. joined: in the sample from the start, joined that many minutes ago.
+const SAMPLE_DIRECTORY = {
+  'sample:irc': [
+    {target: '#astronomy', address: 'sample-irc-astronomy', members: 214, topic: 'Clear skies and kind questions', joined: 40000},
+    {target: '#telescopes', address: 'sample-irc-telescopes', members: 88, topic: 'Mounts, eyepieces, and collimation', joined: 30000},
+    {target: '#meteor-watch', address: 'sample-irc-meteors', members: 41, topic: 'Shower dates and where to look', joined: 9000},
+    {target: '#beginners', address: 'sample-irc-beginners', members: 132, topic: 'First scope? Start here'},
+    {target: '#astrophotography', address: 'sample-irc-photos', members: 97, topic: 'Stacking, tracking, and dark frames'},
+  ],
+  'sample:matrix': [
+    {target: '#seeds:commons.example.org', name: 'Seed Swap', address: 'sample-mx-seeds', members: 63, topic: 'Trade what you saved', joined: 20000},
+    {target: '#allotments:commons.example.org', name: 'Allotment News', address: 'sample-mx-allotments', members: 120,
+      topic: 'Plots, water days, and work parties', joined: 50000},
+    {target: '#compost:commons.example.org', name: 'Compost Corner', address: 'sample-mx-compost', members: 37, topic: 'Greens, browns, and patience', joined: 15000},
+    {target: '#tools:commons.example.org', name: 'Tool Library', address: 'sample-mx-tools', members: 52, topic: 'Borrow a ladder, lend a saw'},
+    {target: '#bees:commons.example.org', name: 'Beekeeping', address: 'sample-mx-bees', members: 29, topic: 'Hives, swarms, and honey'},
+  ],
+};
+
+function sampleRoute(account, room, joined) {
+  return {address: room.address, protocol: account.protocol, account: account.id, account_name: account.name, group: true,
+    target: room.target, title: room.name || room.target, joined, sample: true};
+}
+
+/** The sample servers' joined channels and rooms, as routes, for the sample inbox (chats.js startSample). */
+function sampleServerRoutes(now = Date.now()) {
+  return SAMPLE_SERVERS.flatMap((account) => SAMPLE_DIRECTORY[account.id].filter((room) => room.joined)
+    .map((room) => sampleRoute(account, room, now - room.joined * 60000)));
+}
+
+/** Joins a sample channel or room on this page only: it shows under its server, and nothing is sent anywhere. */
+function sampleJoin(account, target, title, status) {
+  const wanted = String(target || '').trim();
+  if (!wanted) { if (status) status.textContent = 'Type a name to join.'; return false; }
+  const bare = (value) => String(value || '').toLowerCase().replace(/^[#!]/, '').split(':')[0];
+  let room = SAMPLE_DIRECTORY[account.id].find((item) => bare(item.target) === bare(wanted) || bare(item.name) === bare(wanted));
+  if (!room) {
+    const word = bare(wanted).replace(/[^a-z0-9-]/g, '-').slice(0, 40) || 'room';
+    room = account.protocol === 'irc' ? {target: '#' + word, address: 'sample-made-irc-' + word}
+      : {target: '#' + word + ':commons.example.org', name: title || wanted.replace(/^#/, '').split(':')[0], address: 'sample-made-matrix-' + word};
+  }
+  let route = routes.find((item) => item.account === account.id && item.address === room.address);
+  if (!route) {
+    route = sampleRoute(account, room, Date.now());
+    routes.push(route);
+    inbox = [{id: sampleId(), address: route.address, protocol: route.protocol, title: route.title, type: 2, date: Date.now(), read: 1, event: true,
+      body: 'You joined ' + route.title + ' · sample, nothing was sent'}, ...inbox];
+    rebuildThreads();
+    say('Sample server · joined on this page only. Nothing was sent.');
+  }
+  openRoute(route);
+  return true;
+}
+
+/** Browse, Join, Server details, and Add server for the sample servers, each saying plainly that it's a sample. */
+function sampleServerPage(account, mode) {
+  const note = (text) => element('p', text, 'notice sample-server-note');
+  if (mode === 'add') {
+    const section = element('section', '', 'settings-section');
+    const exit = element('button', 'Exit the sample inbox', 'primary');
+    exit.type = 'button';
+    exit.addEventListener('click', () => exitSample());
+    section.append(element('h3', 'Add server'), note('This is the sample inbox, so its servers are fictional. Exit it to add an IRC network, '
+      + 'Matrix homeserver, or XMPP server of your own. They show in Messages → Communities with their channels and rooms.'), exit);
+    detailsPage('Add server', [section], () => closeDetailsPage());
+    return;
+  }
+  const name = serverName(account);
+  const noun = account.protocol === 'irc' ? 'channel' : 'room';
+  const browse = () => sampleServerPage(account, 'browse');
+  const join = () => sampleServerPage(account, 'join');
+  if (mode === 'details') {
+    const section = element('section', '', 'settings-section');
+    const joined = routes.filter((route) => route.account === account.id && route.group).length;
+    const row = element('div', '', 'button-row');
+    const browseButton = element('button', 'Browse', 'primary');
+    const joinButton = element('button', 'Join by name');
+    browseButton.type = joinButton.type = 'button';
+    browseButton.addEventListener('click', browse);
+    joinButton.addEventListener('click', join);
+    row.append(browseButton, joinButton);
+    section.append(element('h3', name), element('p', 'Sample ' + SERVICE_TITLES[account.protocol] + ' · signed in as ' + account.name, 'muted'),
+      element('p', joined + ' ' + noun + 's joined.', 'muted'), row);
+    if (typeof serverMuteControls === 'function') section.append(...serverMuteControls(account.id, name));
+    const remove = element('section', '', 'settings-section');
+    remove.append(element('h3', 'Remove server'), element('p', 'A sample server: there’s nothing to sign out of. It goes away when you exit the sample inbox.', 'muted'));
+    detailsPage(name, [section, remove], () => closeDetailsPage());
+    return;
+  }
+  if (mode === 'join') {
+    const form = element('form', '', 'settings-section');
+    const target = Object.assign(element('input', ''), {required: true, placeholder: account.protocol === 'irc' ? '#beginners' : '#tools:commons.example.org',
+      autocomplete: 'off', spellcheck: false});
+    const status = element('p', '', 'muted');
+    status.setAttribute('role', 'status');
+    form.append(element('h3', 'Join a ' + noun + ' on ' + name),
+      note('Sample server: joining adds the ' + noun + ' to this page only. Nothing is sent, and no server is contacted.'),
+      field(account.protocol === 'irc' ? 'Channel' : 'Address', target), Object.assign(element('button', 'Join', 'primary'), {type: 'submit'}), status);
+    form.addEventListener('submit', (event) => { event.preventDefault(); sampleJoin(account, target.value, '', status); });
+    const find = element('button', 'Browse ' + name + ' instead', 'quiet');
+    find.type = 'button';
+    find.addEventListener('click', browse);
+    detailsPage('Join a ' + noun, [form, find], () => closeDetailsPage());
+    target.focus();
+    return;
+  }
+  const section = element('section', '', 'settings-section');
+  const search = Object.assign(element('input', ''), {type: 'search', placeholder: 'Search ' + noun + 's', autocomplete: 'off', spellcheck: false});
+  search.setAttribute('aria-label', search.placeholder);
+  const results = element('div', '', 'browse-list');
+  const status = element('p', '', 'muted');
+  status.setAttribute('role', 'status');
+  const draw = () => {
+    results.replaceChildren();
+    const query = search.value.trim().toLowerCase();
+    const list = SAMPLE_DIRECTORY[account.id].filter((room) => !query
+      || [room.name, room.target, room.topic].some((text) => (text || '').toLowerCase().includes(query)));
+    for (const room of list) {
+      const item = element('div', '', 'browse-row');
+      const words = element('span', '', 'account-words');
+      words.append(element('strong', room.name || room.target), element('span', [room.name ? room.target : '', room.members + ' people', room.topic]
+        .filter(Boolean).join(' · '), 'muted browse-detail'));
+      item.append(words);
+      const route = routes.find((other) => other.account === account.id && other.address === room.address);
+      if (route) item.append(element('span', 'Joined', 'browse-joined'));
+      const button = element('button', route ? 'Open' : 'Join', route ? '' : 'primary');
+      button.type = 'button';
+      button.setAttribute('aria-label', (route ? 'Open ' : 'Join ') + (room.name || room.target));
+      button.addEventListener('click', () => (route ? openRoute(route) : sampleJoin(account, room.target, room.name, status)));
+      item.append(button);
+      results.append(item);
+    }
+    status.textContent = list.length ? list.length + ' found' : 'Nothing matches “' + search.value.trim() + '”.';
+  };
+  search.addEventListener('input', draw);
+  section.append(element('h3', 'Browse ' + name), note('A sample directory of fictional ' + noun + 's. Joining one adds it to this page only; '
+    + 'nothing is sent, and no server is contacted.'), search, status, results);
+  draw();
+  const joinInstead = element('button', 'Join by name instead', 'quiet');
+  joinInstead.type = 'button';
+  joinInstead.addEventListener('click', join);
+  detailsPage('Browse', [section, joinInstead], () => closeDetailsPage());
+  search.focus();
 }

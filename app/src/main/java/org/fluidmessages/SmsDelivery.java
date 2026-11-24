@@ -47,7 +47,11 @@ public final class SmsDelivery extends BroadcastReceiver {
         // is already stored and shows unread.
         if (Mutes.isMuted(preferences, address)) return;
         if (HiddenChats.addressHidden(preferences, address)) { notifyHidden(context); return; }
-        String channelId = MessageFeedback.notificationChannel(context, manager, preferences);
+        // Message requests notify quietly or not at all, and automated senders can be silenced or blocked (MessageRequests).
+        var alert = MessageRequests.alertFor(context, preferences, address);
+        if (alert == MessageRequests.Alert.NONE) return;
+        String channelId = alert == MessageRequests.Alert.QUIET ? quietChannel(manager)
+            : MessageFeedback.notificationChannel(context, manager, preferences);
         Intent open = new Intent(context, MainActivity.class).putExtra("address", address);
         PendingIntent link = PendingIntent.getActivity(context, address.hashCode(), open,
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
@@ -55,6 +59,14 @@ public final class SmsDelivery extends BroadcastReceiver {
             .setSmallIcon(android.R.drawable.stat_notify_chat).setContentTitle(label)
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_PRIVATE).setContentIntent(link).setAutoCancel(true).build());
+    }
+
+    /** Message requests' channel: shown, without sound or vibration. */
+    private static String quietChannel(NotificationManager manager) {
+        var channel = new NotificationChannel("message-requests", "Message requests", NotificationManager.IMPORTANCE_LOW);
+        channel.setDescription("Chats from people you don't know");
+        manager.createNotificationChannel(channel);
+        return "message-requests";
     }
 
     static final int TEST = 0x7e57;

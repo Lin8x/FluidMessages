@@ -936,8 +936,10 @@ async function openPersonPage(person, {back} = {}) {
         .catch((error) => report(network ? error.message + ' (' + network + ')' : error.message, '', true));
     }});
   }
+  // Only the ways to call that are on in Settings → Calls.
+  const ways = (way) => typeof callWayOn !== 'function' || callWayOn(way);
   for (const account of person.accounts) {
-    if (account.protocol !== 'matrix') continue;
+    if (account.protocol !== 'matrix' || !ways('matrix')) continue;
     const run = (video) => () => {
       if (sampleOn) { report('Sample inbox · nothing was sent.'); return; }
       if (account.address) { callOnMatrix(account, video); return; }
@@ -947,7 +949,7 @@ async function openPersonPage(person, {back} = {}) {
     };
     options.push({kind: 'voice', via: 'Matrix', target: account.target, run: run(false)}, {kind: 'video', via: 'Matrix', target: account.target, run: run(true)});
   }
-  if (!options.some((option) => option.kind === 'video') && chats.length) {
+  if (!options.some((option) => option.kind === 'video') && chats.length && ways('meeting')) {
     // Anyone else gets a meeting link in their chat, which works everywhere.
     const key = chats[0];
     options.push({kind: 'video', via: 'Meeting link', target: via(key), run: () => { openChat(key); startMeeting(true).catch(showError); }});
@@ -1237,6 +1239,8 @@ function openContactEditor(contact = null, {back, prefill = {}} = {}) {
 // and the sample inbox's fictional messages never do either: while it's open, the last real counts stay.
 
 const tabCount = {calls: 0, messages: 0, shown: -1};
+// The sample inbox counts its own unread chats and missed calls on the tabs, on this page only (sampleTabCounts).
+let sampleCallsSeen = false;
 
 function callsSeen() {
   let seen = Number(localStorage.getItem('callsSeen'));
@@ -1247,7 +1251,7 @@ function callsSeen() {
 
 /** Opening Calls clears its count. */
 function markCallsSeen() {
-  if (sampleOn) return;
+  if (sampleOn) { sampleCallsSeen = true; updateTabBadges(); return; }
   localStorage.setItem('callsSeen', String(Date.now()));
   tabCount.calls = 0;
   updateTabBadges();
@@ -1265,6 +1269,8 @@ function quietChats() {
   for (const item of own.muted || []) if (typeof item === 'string' && muted(item)) quiet.add(item);
   for (const message of inbox) if (!quiet.has(message.address) && muted(message.address)) quiet.add(message.address);
   if (typeof privateFolderHas === 'function') for (const message of inbox) if (privateFolderHas(message.address)) quiet.add(message.address);
+  // Message requests, and automated chats kept out of the inbox or blocked (requests.js).
+  if (typeof requestQuietAddresses === 'function') for (const address of requestQuietAddresses()) quiet.add(address);
   return quiet;
 }
 
@@ -1304,15 +1310,25 @@ function countTabs() {
   tabCount.messages = unread.size;
 }
 
+/** The sample's counts: its unread chats by the same rule, and its fictional missed calls until Calls is opened. */
+function sampleTabCounts() {
+  const unread = unreadChats();
+  if (typeof chatsShows === 'function' && !showCommunityChats()) for (const key of unread) if (!chatsShows(key, false)) unread.delete(key);
+  const missed = sampleCallsSeen || section === 'calls' ? 0 : SAMPLE_RECENTS.filter((call) => call[2] === 'Missed').length;
+  return {calls: missed, messages: unread.size};
+}
+
 function updateTabBadges() {
   if (!sampleOn && signedIn) countTabs();
+  // Real counts stay as they were while the sample is open; the sample's never reach the title or the app icon.
+  const counts = sampleOn ? sampleTabCounts() : tabCount;
   // Following the phone's settings, its "Show counts on tabs" switch decides; otherwise this web app's own.
   const on = typeof usingPhoneLook === 'function' && usingPhoneLook() && typeof phoneLook.tabCounts === 'boolean'
     ? phoneLook.tabCounts : prefs.tabCounts !== false;
   for (const [key, name, noun] of [['calls', 'Calls', 'missed'], ['messages', 'Chats', 'unread']]) {
     const button = document.querySelector('.rail button[data-section="' + key + '"]');
     if (!button) continue;
-    const count = on ? tabCount[key] : 0;
+    const count = on ? counts[key] : 0;
     let badge = button.querySelector('.tab-badge');
     if (!count) badge?.remove();
     else {
@@ -1321,6 +1337,7 @@ function updateTabBadges() {
     }
     button.setAttribute('aria-label', name + (count ? ', ' + count + ' ' + noun : ''));
   }
+  if (sampleOn) return;
   const total = on ? tabCount.calls + tabCount.messages : 0;
   const title = document.title.replace(/^\(\d+\+?\) /, '');
   document.title = total ? '(' + (total > 99 ? '99+' : total) + ') ' + title : title;
@@ -1332,11 +1349,11 @@ function updateTabBadges() {
   } catch (error) { /* not an installed app here */ }
 }
 
-/** Settings → Messaging → Counts on tabs. Kept on the server for every browser. */
+/** Settings → Sounds and notifications → App badges. Kept on the server for every browser. */
 function tabCountsCard() {
   const card = element('section', '', 'settings-section');
   card.id = 'settings-tab-counts';
-  card.append(element('h3', 'Counts on tabs'), checkbox('Show counts on tabs', prefs.tabCounts !== false, async (value) => {
+  card.append(element('h3', 'App badges'), checkbox('Show counts on tabs', prefs.tabCounts !== false, async (value) => {
     prefs = {...prefs, tabCounts: value};
     updateTabBadges();
     try { companionSettings = await api('settings', {prefs: {tabCounts: value}}); } catch (error) { showError(error); }

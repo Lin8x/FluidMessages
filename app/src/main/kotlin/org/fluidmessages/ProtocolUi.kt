@@ -36,8 +36,12 @@ internal data class ChatRouting @JvmOverloads constructor(
     val preferredVia: MessageProtocol? = null,
     /** This conversation's encryption when it differs from the protocol's usual, such as an encrypted Matrix room. */
     val encryption: Encryption? = null,
-    /** "via alice@example.org" when the service has more than one account (AccountKeys.via). */
+    /** "from alice@example.org" when the service has more than one account (AccountKeys.via), for the header. */
     val account: String = "",
+    /** The address this chat sends from, shown as "From: …" above the composer; "" with one account (FromAccount). */
+    val from: String = "",
+    /** Opens New message, to write from another account. */
+    val newFromAnother: Runnable? = null,
 )
 
 data class GroupMember @JvmOverloads constructor(
@@ -81,7 +85,15 @@ internal fun ProtocolTags(thread: ThreadRow, appearance: Appearance, mutedColor:
         }
         // Muted: the bell with a slash, right after the tags.
         if (thread.muted.isNotEmpty()) MutedMark(thread.muted, mutedColor, Modifier.align(Alignment.CenterVertically))
+        if (thread.account.isNotEmpty()) AccountHint(thread.account, mutedColor, Modifier.align(Alignment.CenterVertically))
     }
+}
+
+/** The inbox's tiny account hint, "from alice@work.example.org", for a chat on another account than the first. */
+@Composable
+internal fun AccountHint(account: String, color: Color, modifier: Modifier = Modifier) {
+    Text("from $account", modifier.semantics { contentDescription = "On your account $account" }, color = color,
+        fontSize = 11.sp, lineHeight = 14.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
 }
 
 internal fun MessageProtocol.tint(appearance: Appearance): Color = when (this) {

@@ -436,6 +436,7 @@ button.member-row:hover { background: color-mix(in srgb, var(--action, var(--acc
 @media (max-width: 700px) {
   .workspace[data-details="true"] .thread-pane { display: flex; }
   .workspace[data-details="true"] .sidebar { display: none; }
+}
 
 
 /* Starting something new: New chat, the keypad's Address mode, and New contact or Edit (people.js, companion.js). */
@@ -478,3 +479,171 @@ button.mute-mark:hover { background: color-mix(in srgb, var(--action, var(--acce
 .mute-line .mute-mark svg { width: 18px; height: 18px; }
 .mute-status .primary { margin-top: .6rem; }
 .mute-choice .detail-words strong { font-weight: 600; }
+
+/* Which account sends: the composer's From line, New chat's From, and the inbox's tiny hint (servers.js). */
+.from-line {
+  justify-self: start; width: fit-content; display: inline-flex; align-items: center; gap: .35rem; max-width: 100%; min-height: 32px;
+  padding: .25rem .7rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink);
+  font-size: .8rem;
+}
+.from-line strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.from-line .from-label { color: var(--muted); }
+.from-line .from-caret { color: var(--action, var(--accent)); }
+.account-hint { color: var(--muted); font-size: .7rem; margin-inline-start: .35rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.from-line > * { flex: none; }
+.from-line > strong { flex: 0 1 auto; }
+.from-info { display: grid; gap: .4rem; padding: .7rem .8rem; border-radius: 14px; background: var(--surface); color: var(--ink); font-size: .88rem; line-height: 1.4; }
+.from-actions { display: flex; flex-wrap: wrap; gap: .3rem; }
+.from-actions button { padding-inline: .4rem; }
+
+/* Add server: IRC's always-on encryption, in the theme's colors. */
+.tls-note { display: flex; gap: .6rem; align-items: flex-start; margin: .4rem 0; padding: .7rem .9rem; border-radius: 14px;
+  background: color-mix(in srgb, var(--action, var(--accent)) 10%, var(--surface)); color: var(--ink); }
+.tls-note span { display: grid; gap: .15rem; }
+.tls-note small { color: var(--muted); }
+
+/* The sample inbox's servers (servers.js sampleServerPage): a plain note that they're fictional. */
+.community-bar { align-items: center; gap: .5rem; }
+.community-sample-note { flex: 1; min-width: 0; color: var(--muted); font-size: .76rem; line-height: 1.3; }
+.sample-server-note { margin: .2rem 0 .7rem; }
+
+/* ---- Setup guide: the newer showcases (welcome.js tabsShowcase, communitiesShowcase, filtersShowcase,
+   disappearingShowcase, notifyGuideCard, phoneShowcase). Drawn with the app's own classes where they exist. ---- */
+.g-scene .g-inbox { position: relative; }
+.g-scene .thread { cursor: default; grid-template-columns: 10px 38px minmax(0, 1fr) auto; min-height: 52px; padding: 6px 5px; }
+.g-scene .thread .avatar { width: 38px; height: 38px; font-size: 13px !important; }
+.g-scene .thread-copy strong { font-size: 15px; }
+.g-scene .thread-copy small { font-size: 13px; line-height: 17px; -webkit-line-clamp: 1; }
+.g-scene .thread .tags { margin: 0; }
+.g-scene .thread .tags:empty { display: none; }
+.g-scene .thread + .thread::before { inset-inline: 56px 6px; }
+.g-scene .thread.g-gone { display: none; }
+.g-scene .inbox-view { margin: 0 .7rem .4rem; }
+.g-scene .community-head { padding-inline-end: .2rem; }
+.g-scene .community-toggle { min-height: 52px; }
+.g-scene .community-body .thread { min-height: 54px; padding-block: 6px; }
+.g-scene .community-body[hidden] { display: none; }
+.g-scene .community-bar { padding: 0 .7rem .25rem; }
+.g-scene .community-actions { margin: 0 .6rem .45rem; }
+.g-scene .thread-actions { display: flex; flex-wrap: wrap; gap: .3rem; padding: .3rem .6rem .5rem 4.5rem; }
+.g-scene .thread-actions button { min-height: 30px; padding: .15rem .6rem; font-size: .8rem; }
+.g-scene .tags .mute-mark { margin-inline-start: .2rem; }
+.g-menu { position: absolute; z-index: 5; display: grid; min-width: 150px; padding: 4px; border-radius: 14px; background: var(--canvas);
+  border: 1px solid var(--line); box-shadow: 0 8px 24px rgb(0 0 0 / .18); animation: g-pop .25s cubic-bezier(.34, 1.4, .5, 1) both; }
+.g-menu span { padding: .35rem .7rem; border-radius: 10px; font-size: .85rem; }
+.g-menu span.on { background: color-mix(in srgb, var(--guide-tint) 16%, var(--canvas)); font-weight: 650; }
+.g-sheet { position: absolute; inset: 12px; z-index: 5; display: grid; align-content: start; gap: .35rem; padding: 12px 14px; border-radius: 18px;
+  background: var(--canvas); box-shadow: inset 0 0 0 1px var(--line); }
+.g-sheet::before { content: '‹ Back'; color: var(--action, var(--accent)); font-size: .85rem; font-weight: 600; }
+.g-sheet > strong { font-size: 1rem; }
+.g-sheet-row { display: flex; align-items: center; gap: .6rem; padding: .35rem .2rem; border-top: 1px solid var(--line); }
+.g-sheet-words { flex: 1; min-width: 0; display: grid; }
+.g-sheet-words small, .g-sheet .g-label { color: var(--muted); font-size: .76rem; }
+.g-field { min-height: 34px; padding: .4rem .7rem; border-radius: 10px; background: var(--surface); font-size: .9rem; }
+.g-chip { justify-self: start; display: inline-flex; align-items: center; min-height: 30px; padding: .2rem .75rem; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-size: .82rem; font-weight: 600; white-space: nowrap; }
+.g-chip.primary { border-color: transparent; background: var(--accent); color: var(--accent-ink); }
+.g-toast { position: absolute; inset-inline: 18px; bottom: 16px; z-index: 5; padding: .45rem .8rem; border-radius: 12px; text-align: center;
+  background: var(--ink); color: var(--canvas); font-size: .8rem; animation: guide-tip-in .35s cubic-bezier(.2, .8, .2, 1) both; }
+.g-tabs-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border-radius: 18px; background: var(--canvas);
+  box-shadow: inset 0 0 0 1px var(--line); }
+.g-calls { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 10px 10px 0; }
+.g-calls[hidden] { display: none; }
+.g-calls .phone-segments { flex: none; }
+.g-calls .phone-segment { display: grid; place-items: center; }
+.g-calls-body { display: grid; align-content: start; }
+.g-calls-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.g-calls-title { display: block; padding: .1rem .4rem .3rem; font-size: 1.3rem; letter-spacing: -.02em; }
+.g-calls .person-open { min-height: 50px; padding-block: .3rem; }
+.g-calls .person-open .avatar { width: 38px; height: 38px; font-size: .8rem !important; }
+.g-calls .person-words { display: grid; }
+.g-calls .person-words small { color: var(--muted); font-size: .78rem; }
+.g-star { flex: none; width: 34px; text-align: center; font-size: 1.25rem; color: var(--muted); }
+.g-star.on { color: #f5a623; }
+.g-tabbar-small { flex: none; border-radius: 0; padding: 6px 0; border-top: 1px solid var(--line); }
+.g-tabbar-small .g-tab { position: relative; }
+.g-tabbar-small .g-tab svg { width: 22px; height: 22px; }
+.g-badge { position: absolute; top: -3px; inset-inline-start: calc(50% + 6px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: #d0262b; color: #fff; font-size: .68rem; font-weight: 700; line-height: 18px; text-align: center; }
+.g-window-head .g-window-chip { margin-inline-start: auto; font-size: .74rem; padding: .15rem .55rem; white-space: nowrap; }
+.g-window-head:has(.g-window-chip) .g-tag { display: none; }
+.g-thread > .event.notice { align-self: center; width: fit-content; max-width: 92%; margin: 2px auto; padding: .2rem .7rem;
+  border: 1px solid color-mix(in srgb, var(--action, var(--accent)) 70%, transparent); border-radius: 12px; color: var(--action, var(--accent));
+  font-style: normal; font-size: .74rem; text-align: center; line-height: 1.35; }
+.g-thread .message-meta { display: flex; gap: .3rem; justify-content: flex-end; }
+.g-thread .message:not(.out) .message-meta { justify-content: flex-start; }
+.g-timer { font-size: .78rem; color: var(--muted); }
+.g-vanish { animation: g-vanish 1.3s ease-in both; }
+@keyframes g-vanish { 60% { opacity: .35; filter: blur(1px); } to { opacity: 0; transform: scale(.92); filter: blur(3px); } }
+.g-status { color: var(--muted); font-size: .76rem; }
+.g-merge-wrap { flex: 1; display: grid; align-content: center; gap: .7rem; padding: 4px; }
+.g-merge-title { font-size: 1.15rem; }
+.g-merge { background: var(--canvas); }
+.g-merge .merge-side { min-height: 62px; }
+.g-keep { justify-self: stretch; justify-content: center; min-height: 40px; white-space: normal; text-align: center; }
+.g-notify { display: grid; gap: .55rem; padding: .9rem 1rem; }
+.g-notify-state { margin: 0; }
+.g-notify .button-row { display: flex; flex-wrap: wrap; gap: .5rem; }
+.g-notify .button-row button { min-height: 40px; }
+.g-notify .hint:empty { display: none; }
+@media (prefers-reduced-motion: reduce) { .g-menu, .g-toast, .g-vanish { animation: none !important; } .g-vanish { opacity: 0; } }
+
+/* Message requests (requests.js): the bar at the top of a request chat, and its full pages. */
+#conversation > .request-banner { position: sticky; top: 0; z-index: 2; margin: 0 0 12px; padding: 14px 16px; border-radius: 18px;
+  border: 1px solid var(--outline, var(--line)); background: var(--raised, var(--surface)); display: grid; gap: 8px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / .08); }
+.request-banner strong { font-size: 1rem; }
+.request-banner p { margin: 0; }
+.request-banner .request-contact { margin: 0; }
+.request-actions, .request-page-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.request-actions button { min-height: 44px; }
+
+/* Swipe a message right to reply (app.js swipeToReply): the bubble follows the finger over a small reply arrow. */
+#conversation .message .bubble-wrap { touch-action: pan-y; }
+#conversation .message { position: relative; }
+.bubble-line.swiping { transition: none; }
+.bubble-line { transition: transform calc(var(--motion-ms, 220ms) * .8) cubic-bezier(.2, .8, .2, 1); }
+.swipe-reply { position: absolute; left: 0; top: 50%; width: 30px; height: 30px; margin-top: -15px; display: grid; place-items: center;
+  border-radius: 50%; background: var(--surface); color: var(--muted); opacity: 0; pointer-events: none; z-index: 0; }
+.swipe-reply svg { width: 18px; height: 18px; }
+.swipe-reply.ready { background: var(--accent); color: var(--accent-ink, #fff); }
+:root[data-motion="off"] .bubble-line { transition: none; }
+
+/* A message that couldn't send: the phone's red Not delivered line, which opens Try again, Edit and resend, and Delete. */
+.failed-notice { display: block; margin: .25rem 0 0 auto; padding: .1rem .2rem; min-height: 0; border: 0; border-radius: 6px; background: none;
+  color: #e9152d; font-size: .78rem; font-weight: 650; cursor: pointer; }
+:root[data-mode="dark"] .failed-notice { color: #ff6165; }
+.message:not(.out) .failed-notice { margin-inline: 0 auto; }
+.failed-notice:hover, .failed-notice:focus-visible { text-decoration: underline; }
+.failed-reason { display: block; color: var(--muted); font-size: .72rem; text-align: end; margin-inline-end: .2rem; }
+.failed-page .quote { margin-bottom: .2rem; }
+
+/* Themes and appearance: the live preview's Conversation | Inbox switch and its little inbox. */
+.look-preview-box { display: grid; gap: .55rem; }
+.look-preview-box .preview-switch { justify-self: stretch; display: grid; grid-template-columns: 1fr 1fr; }
+.look-preview-box .preview-switch button { min-height: 36px; }
+.look-preview.inbox-preview { gap: 0; padding: 0; overflow: hidden; background: var(--canvas); }
+.preview-head { display: flex; align-items: center; justify-content: space-between; padding: .7rem .9rem; }
+.preview-head strong { font-size: 1.15rem; }
+.preview-head[data-toolbar="tinted"] { background: var(--raised); }
+.preview-head[data-toolbar="floating"] { background: color-mix(in srgb, var(--raised) var(--chrome-opacity, 84%), transparent); box-shadow: 0 1px 4px rgb(0 0 0 / .12); }
+.preview-filter { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; color: var(--action, var(--accent)); background: var(--surface); }
+.preview-search { margin: .5rem .8rem; padding: .45rem .8rem; border-radius: 999px; background: var(--surface); color: var(--muted); font-size: .86rem; }
+.preview-rows { display: grid; }
+.preview-row { display: flex; align-items: center; gap: .7rem; padding: .6rem .9rem; border-top: 1px solid var(--line); }
+.preview-rows[data-density="compact"] .preview-row { padding-block: .35rem; }
+.preview-rows[data-density="roomy"] .preview-row { padding-block: .9rem; }
+.preview-row .avatar { flex: none; width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; font-size: .82rem; }
+.preview-words { flex: 1; min-width: 0; display: grid; }
+.preview-words small, .preview-side small { color: var(--muted); font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview-side { display: grid; justify-items: end; gap: .25rem; }
+.preview-unread { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+
+/* A chat's own appearance page (look.js openChatAppearance). */
+.chat-appearance .chat-preview { min-height: 120px; }
+.chat-appearance .small-button { justify-self: start; margin-top: -.3rem; }
+
+/* Privacy → Encryption: the lock colors, each with what it means. */
+.settings-section .detail-row .security-lock.large { flex: none; }
+.look-preview .message { justify-self: start; width: fit-content; }
+.look-preview .message.out { justify-self: end; }

@@ -17,8 +17,10 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import accounts
 import auth
+import chat_commands
 import cloud_backup
 import link_fetch
+import message_requests
 import privacy
 import protocol_gateway
 import sync_merge
@@ -44,21 +46,33 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/privacy.js": ("privacy.js", "text/javascript"), "/servers.js": ("servers.js", "text/javascript"),
          "/server-directory.js": ("server-directory.js", "text/javascript"),
          "/inbox-filters.js": ("inbox-filters.js", "text/javascript"),
-         "/notify.js": ("notify.js", "text/javascript"),
+         "/notify.js": ("notify.js", "text/javascript"), "/requests.js": ("requests.js", "text/javascript"),
+         "/chat-commands.js": ("chat-commands.js", "text/javascript"), "/invites.js": ("invites.js", "text/javascript"),
+         "/connections.js": ("connections.js", "text/javascript"),
+         "/chat-features.css": ("chat-features.css", "text/css"),
          # The sample inbox's fictional portraits, the phone's own (res/drawable-nodpi/sample_*.webp).
          "/samples/maya.webp": ("samples/maya.webp", "image/webp"), "/samples/jordan.webp": ("samples/jordan.webp", "image/webp"),
+         # And the photo in the sample Photo Walk group (sample_lakeside.webp).
+         "/samples/lakeside.webp": ("samples/lakeside.webp", "image/webp"),
          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/sw.js": ("sw.js", "text/javascript"),
          "/favicon.ico": ("icons/favicon.ico", "image/x-icon"), "/icons/favicon-32.png": ("icons/favicon-32.png", "image/png"),
          "/icons/icon-192.png": ("icons/icon-192.png", "image/png"), "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
          "/icons/maskable-192.png": ("icons/maskable-192.png", "image/png"),
          "/icons/maskable-512.png": ("icons/maskable-512.png", "image/png"),
          "/icons/apple-touch-icon.png": ("icons/apple-touch-icon.png", "image/png")}
-# Fun and effects, and counts on the tabs, kept for this server (every browser), never taken from the phone.
+# Fun and effects, and counts on the tabs, kept for this server (every browser). The phone's sync snapshot never
+# overwrites them; the settings merge combines them with the phone's (sync_merge.py "fun:" and "pref:" items).
 PREFS = ("effects", "reactionEffects", "games", "random", "gifs", "linkPreviews", "tabCounts", "showCommunityChats")
+# Sending GIFs and stickers (Settings → Media, GIFs, and fun), and the ways to call that work from a browser
+# (Settings → Calls): Matrix voice and video, and meeting links. Web-only switches, on unless turned off; the merge has
+# no items for them, so the phone keeps its own.
+WEB_SWITCHES = ("sendGifs", "sendStickers", "callMatrix", "callMeetings")
+PREFS += WEB_SWITCHES
 # Messages → Communities' sort order, and Settings → Messaging → Inbox filters: which filters the inbox filter menu
 # shows, in order. A hidden filter is kept with a "-" in front, so its place survives turning it back on.
 COMMUNITY_SORTS = ("recent", "name", "joined")
-INBOX_FILTERS = ("inbox", "unread", "favorites", "groups", "direct", "texts", "matrix", "xmpp", "email", "irc", "archived", "blocked")
+INBOX_FILTERS = ("inbox", "unread", "favorites", "groups", "direct", "texts", "matrix", "xmpp", "email", "irc", "requests", "automated",
+                 "archived", "blocked")
 
 
 def clean_inbox_filters(value):
@@ -73,7 +87,8 @@ def clean_inbox_filters(value):
 
 
 def default_prefs():
-    return {**{key: True for key in PREFS}, "communitySort": "recent", "inboxFilters": list(INBOX_FILTERS)}
+    return {**{key: True for key in PREFS}, "communitySort": "recent", "inboxFilters": list(INBOX_FILTERS),
+            **message_requests.defaults()}
 
 def appearance_snapshot(value):
     if not isinstance(value, dict):
@@ -126,7 +141,8 @@ def appearance_snapshot(value):
 
 
 THEMES = ("fluid", "midnight", "lavender", "evergreen", "tideline", "ember", "love", "rosewater")
-OWN_COLORS = ("sms", "rcs", "automated", "incoming", "matrix", "xmpp", "email", "irc")
+# Bubble colors, and the background, buttons, and toolbar tints (the phone's canvas, controlColor, and chromeColor).
+OWN_COLORS = ("sms", "rcs", "automated", "incoming", "matrix", "xmpp", "email", "irc", "canvas", "controls", "chrome")
 
 
 def clean_web_appearance(value):
@@ -135,7 +151,8 @@ def clean_web_appearance(value):
         raise ValueError("Invalid appearance")
     clean = {"theme": value.get("theme") if value.get("theme") in THEMES else "fluid",
              "mode": value.get("mode") if value.get("mode") in ("system", "light", "dark") else "system"}
-    for key in ("exactTimes", "combineProtocols", "announceSettings"):
+    # contrast: Palette contrast, Standard (no key) or Increased (True), as on the phone's Customize colors.
+    for key in ("exactTimes", "combineProtocols", "announceSettings", "contrast"):
         if type(value.get(key)) is bool:
             clean[key] = value[key]
     for key in ("tagMode", "encryptionMode"):
@@ -179,11 +196,28 @@ def clean_look_extras(value):
     if isinstance(chats, dict):
         clean["chatWallpapers"] = {key: item for key, item in list(chats.items())[:2000]
                                    if isinstance(key, str) and len(key) <= 300 and item in WALLPAPERS}
+    # Each chat's own theme and colors (conversation details → Theme and wallpaper), like the phone's ChatProfile:
+    # a named theme, and outgoing, incoming, and background colors. Kept on this server only; the merge has no item
+    # for them, so they never reach the phone. The chat's wallpaper is chatWallpapers, which does sync.
+    themes = value.get("chatThemes")
+    if isinstance(themes, dict):
+        kept = {}
+        for key, item in list(themes.items())[:2000]:
+            if not isinstance(key, str) or not 0 < len(key) <= 300 or not isinstance(item, dict):
+                continue
+            entry = {name: item[name] for name in ("outgoing", "incoming", "background")
+                     if isinstance(item.get(name), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", item[name])}
+            if item.get("theme") in THEMES:
+                entry["theme"] = item["theme"]
+            if entry:
+                kept[key] = entry
+        clean["chatThemes"] = kept
     palettes = value.get("palettes")
     if isinstance(palettes, dict):
         clean["palettes"] = {
             name: {"theme": item.get("theme") if item.get("theme") in THEMES else "fluid",
-                   "colors": clean_colors(item["colors"]) if isinstance(item.get("colors"), dict) else {}}
+                   "colors": clean_colors(item["colors"]) if isinstance(item.get("colors"), dict) else {},
+                   **({"contrast": True} if item.get("contrast") is True else {})}
             for name, item in list(palettes.items())[:20]
             if isinstance(name, str) and 0 < len(name.strip()) <= 40 and isinstance(item, dict)}
     if isinstance(value.get("activePalette"), str) and value["activePalette"] in clean.get("palettes", {}):
@@ -206,6 +240,9 @@ def clean_web_chats(value):
         if not isinstance(items, list) or len(items) > 2000 or any(not isinstance(item, str) or len(item) > 300 for item in items):
             raise ValueError("Invalid chat settings")
         clean[key] = list(dict.fromkeys(items))
+    if value.get("requests"):
+        # Message requests you accepted or deleted, by address (message_requests.py).
+        clean["requests"] = message_requests.clean_decisions(value["requests"])
     # When each timed mute ends (epoch milliseconds). A muted chat without one is muted forever, as every mute from
     # before was. Mutes whose time is up are dropped here, lazily: nothing has to run when they end.
     until = value.get("mute_until", {})
@@ -375,6 +412,8 @@ def web_prefs(db):
         prefs["inboxFilters"] = clean_inbox_filters(stored["inboxFilters"])
     except (KeyError, ValueError):
         prefs["inboxFilters"] = list(INBOX_FILTERS)
+    # Settings → Privacy and security → Requests and spam.
+    prefs.update(message_requests.read_prefs(stored))
     return prefs
 
 
@@ -389,6 +428,8 @@ def clean_prefs(value, current):
             clean[key] = item
         elif key == "inboxFilters":
             clean[key] = clean_inbox_filters(item)
+        elif key in message_requests.PREFS:
+            clean[key] = message_requests.clean_pref(key, item)
         else:
             raise ValueError("Invalid preferences")
     return {**current, **clean}
@@ -409,6 +450,27 @@ def delete_for_me(db, data):
     except (ValueError, OSError):
         pass
     return {"deleted": key}
+
+
+def retry_failed(db, data):
+    """Try again on an internet message that couldn't send: the same queued job runs again, with its text, reply, and
+    file, as the phone's "Try again" does. Only a failed message can be retried, so nothing is ever sent twice."""
+    key = data.get("id")
+    if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", key):
+        raise ValueError("Invalid message")
+    row = db.execute("""SELECT messages.payload FROM protocol_jobs jobs JOIN protocol_messages messages ON messages.id=jobs.id
+        WHERE jobs.id=? AND jobs.state='failed'""", (key,)).fetchone()
+    if row is None:
+        raise ValueError("This message isn’t waiting to be sent again")
+    now = int(time.time() * 1000)
+    if db.execute("SELECT count(*) FROM protocol_jobs WHERE date>=?", (now - 60_000,)).fetchone()[0] >= 30:
+        raise ValueError("Too many messages queued. Try again in a minute.")
+    message = json.loads(row[0])
+    message["status"] = "Queued"
+    db.execute("UPDATE protocol_messages SET payload=? WHERE id=?", (json.dumps(message), key))
+    db.execute("UPDATE protocol_jobs SET state='queued', date=? WHERE id=? AND state='failed'", (now, key))
+    gateway.wake.set()
+    return {"message": message}
 
 
 def welcomed(db):
@@ -449,11 +511,15 @@ def merge_hooks():
     def save_chats(db, chats):
         db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_chats', ?)", (json.dumps(clean_web_chats(chats)),))
 
+    def save_favorites(db, favorites):
+        db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_favorites', ?)", (json.dumps(clean_web_favorites(favorites[:500])),))
+
     return {"appearance": lambda db: dict(web_appearance(db)), "prefs": web_prefs,
             "chats": lambda db: {**{"pinned": [], "archived": [], "blocked": [], "muted": [], "locks": {}}, **web_chats(db)},
             "save_appearance": save_appearance, "save_prefs": save_prefs, "save_chats": save_chats,
+            "favorites": web_favorites, "save_favorites": save_favorites,
             # Chats in the web's private folder stay out of the merge, both ways.
-            "private": lambda db: privacy.matcher(privacy.private_addresses(db))}
+            "private": lambda db: privacy.matcher(private_all(db))}
 
 
 class EraseLimiter:
@@ -541,6 +607,33 @@ def erase_everything():
 # Held while an emergency erase runs. Every signed-in request waits for it, so nothing is read halfway through.
 ERASE_GATE = threading.Lock()
 DECOYS = privacy.DecoyWorld()
+
+
+def private_all(db):
+    """The chats this session can't see until it opens the private folder: the ones moved there, and every chat on
+    a service it hides whole."""
+    return list(dict.fromkeys(privacy.private_addresses(db)
+                              + privacy.service_addresses(db, privacy.hidden_services(db), gateway.routes)))
+
+
+def decoy_real_messages(db):
+    """Decoy mode → Real chats that stay visible: their messages, as the real inbox has them, without files (a
+    decoy session can't open them). Never a private chat, even if it was chosen before it became private."""
+    allowed = privacy.matcher(privacy.decoy_allowed(db))
+    if allowed is None:
+        return []
+    hide = privacy.matcher(private_all(db))
+    keep = lambda message: allowed(message.get("address")) and not (hide and hide(message.get("address")))
+    settings = gateway.settings(db)
+    row = db.execute("SELECT content FROM inbox WHERE id=1").fetchone()
+    phone = [message for message in gateway.visible(settings, json.loads(row[0]) if row else []) if keep(message)]
+    rows = db.execute("SELECT payload FROM protocol_messages ORDER BY date DESC, rowid DESC LIMIT 1500")
+    internet = [message for message in gateway.visible(settings, [json.loads(item[0]) for item in rows]) if keep(message)]
+    return [{key: value for key, value in message.items() if key not in ("attachment", "expires", "expire_seconds")}
+            for message in (phone + internet)[:600]]
+
+
+DECOYS.real = decoy_real_messages
 
 
 def wait_for_erase():
@@ -726,7 +819,7 @@ class Handler(BaseHTTPRequestHandler):
                     "https": self.https(), "here": self.here(), "local_only": LOCAL_ONLY,
                     "xmpp": protocol_gateway.xmpp_client.available()})
             elif self.command == "POST" and parts.path in ("/api/schedule", "/api/call", "/api/cancel", "/api/settings",
-                                                            "/api/protocols/read", "/api/protocols"):
+                                                            "/api/protocols/read", "/api/protocols", "/api/protocols/send"):
                 try:
                     data = self.read_json()
                 except (ValueError, TypeError) as error:
@@ -740,7 +833,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def private_check(self, db):
         """None when this request may see private chats; otherwise what hides them (privacy.scrub)."""
-        return None if self.private_open else privacy.matcher(privacy.private_addresses(db))
+        return None if self.private_open else privacy.matcher(private_all(db))
 
     def read_json(self, limit=64_000):
         size = int(self.headers.get("Content-Length", "0"))
@@ -827,10 +920,15 @@ class Handler(BaseHTTPRequestHandler):
     def privacy_status(self, db):
         open_now = self.private_open
         exists = authority.has_secret(db, "private_code")
+        hide = self.private_check(db)
         return {"password": authority.has_owner(db),
                 "private": {"set": exists, "open": open_now and exists,
-                            "count": len(privacy.private_addresses(db)) if open_now and exists else None},
-                "decoy": {"set": authority.has_secret(db, "decoy"), "chats": privacy.decoy_chats(db)},
+                            "count": len(privacy.private_addresses(db)) if open_now and exists else None,
+                            # Hide whole services: only once the folder is open, like the chats in it.
+                            "services": privacy.hidden_services(db) if open_now and exists else None,
+                            "close_code": privacy.close_needs_code(db)},
+                "decoy": {"set": authority.has_secret(db, "decoy"), "chats": privacy.decoy_chats(db),
+                          "allowed": [item for item in privacy.decoy_allowed(db) if not (hide and hide(item))]},
                 "distress": {"set": authority.has_secret(db, "distress")},
                 "quick_hide": exists and self.kind == "session"}
 
@@ -906,11 +1004,22 @@ class Handler(BaseHTTPRequestHandler):
                         raise auth.Refused(403, "Open the private folder first")
                     privacy.save_private(db, [item for item in current if item != address])
                 response = self.privacy_status(db)
+            elif path in ("private/services", "private/close-code"):
+                if not exists:
+                    raise auth.Refused(409, "Set up the private folder first, in Settings → Privacy and security")
+                if not self.private_open:
+                    raise auth.Refused(403, "Open the private folder first")
+                if path == "private/services":
+                    privacy.save_hidden_services(db, data.get("services"))
+                else:
+                    privacy.save_close_needs_code(db, data.get("on"))
+                response = self.privacy_status(db)
             elif path == "private/off":
                 if exists and not self.private_open:
                     raise auth.Refused(403, "Open the private folder first")
                 authority.set_secret(db, "private_code", None)
                 privacy.save_private(db, None)
+                privacy.save_hidden_services(db, None)
                 authority.lock_private_everywhere(db)
                 self.private_open = False
                 response = self.privacy_status(db)
@@ -935,6 +1044,10 @@ class Handler(BaseHTTPRequestHandler):
                 response = self.privacy_status(db)
             elif path == "decoy/chats":
                 privacy.save_decoys(db, data.get("chats"))
+                response = self.privacy_status(db)
+            elif path == "decoy/allowed":
+                # A locked session can't see private chats, so it can't pick one; a private one is dropped anyway.
+                privacy.save_decoy_allowed(db, data.get("addresses"), privacy.matcher(private_all(db)))
                 response = self.privacy_status(db)
             elif path in ("distress", "distress/off"):
                 authority.confirm_password(db, client, data.get("current"))
@@ -992,7 +1105,9 @@ class Handler(BaseHTTPRequestHandler):
             pick = lambda name: (query.get(name) or [""])[0][:200]
             # The key comes in a header, so it never sits in an address or a log.
             key = (self.headers.get("X-Fluid-Gif-Key") or pick("key"))[:200]
-            self.reply(200, {"results": link_fetch.gif_search(pick("provider"), pick("q"), key, pick("stickers") == "1")})
+            # Settings → Media → API address: a compatible server or proxy in place of Tenor's or GIPHY's own.
+            base = (self.headers.get("X-Fluid-Gif-Api") or "")[:300]
+            self.reply(200, {"results": link_fetch.gif_search(pick("provider"), pick("q"), key, pick("stickers") == "1", base)})
             return
         if self.path.startswith(("/api/preview?url=", "/api/picture?url=")):
             target = unquote(self.path.split("?url=", 1)[1])
@@ -1030,6 +1145,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, privacy.scrub({"messages": messages, "routes": history["routes"], "enabled": history["enabled"],
                                  # IRC channels' topics and member lists, for a group's details.
                                  "channels": history["channels"],
+                                 # Invitations and contact requests waiting on the Invitations page.
+                                 "invites": history["invites"], "connections": history["connections"],
                                  "accounts": history["accounts"],
                                  "updated": row["updated"] if row else None,
                                  "appearance": json.loads(row["appearance"]) if row and row["appearance"] else {},
@@ -1037,7 +1154,7 @@ class Handler(BaseHTTPRequestHandler):
                                  "follow_phone": settings["follow_phone"], "web_appearance": web_appearance(db),
                                  "prefs": web_prefs(db), "welcomed": welcomed(db), "web_chats": web_chats(db),
                                  # The private folder's chats, once this session opened it with its passcode.
-                                 "private_chats": privacy.private_addresses(db) if self.private_open else [],
+                                 "private_chats": private_all(db) if self.private_open else [],
                                  "web_favorites": web_favorites(db), "web_contacts": web_contacts(db), **merge_snapshot(db)},
                                  self.private_check(db)))
             elif self.path == "/api/privacy":
@@ -1052,8 +1169,12 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/merge":
                 with db:
                     # The phone keeps the full baseline; a browser that hasn't opened the private folder doesn't.
-                    # A phone that understands timed mutes says so; older phones never see their "muteuntil:" items.
-                    timed = self.headers.get("X-Fluid-Merge-Items", "") == "muteuntil"
+                    # A phone names the newer item groups it understands (timed mutes, inbox choices, favorites,
+                    # message requests); older phones never see those items (sync_merge.OPTIONAL). Phones from the
+                    # first message requests release say X-Fluid-Merge-Requests: 1 instead of listing them.
+                    timed = sync_merge.optional_groups(self.headers.get("X-Fluid-Merge-Items", "") + ","
+                                                       + self.headers.get("X-Fluid-Merge-Groups", ""),
+                                                       requests=self.headers.get("X-Fluid-Merge-Requests", "") == "1")
                     self.reply(200, merger.view(db, timed) if self.kind == "token" else privacy.scrub(merger.view(db), self.private_check(db)))
             elif self.path == "/api/contacts":
                 # The phone fetches these to show and save them; a browser that hasn't opened the private folder doesn't see its numbers.
@@ -1246,6 +1367,34 @@ class Handler(BaseHTTPRequestHandler):
         with open(path, "rb") as source:
             shutil.copyfileobj(source, self.wfile)
 
+    def request_action(self, db, data):
+        """Accept, delete, block, or block and report a message request (message_requests.py). Decoy sessions never get
+        here (authorize), and a browser that hasn't opened the private folder can't act on its chats. The phone acts
+        with its token on chats that come through this server."""
+        hide = self.private_check(db) if self.kind == "session" else None
+        if hide and hide(data.get("address")):
+            raise ValueError("Choose a chat")
+
+        def add_contact(address, route, name):
+            if route is None and not re.fullmatch(r"\+?[0-9][0-9(). -]{2,38}", address):
+                return None
+            entry = {"name": (name if isinstance(name, str) and name.strip() else route["title"] if route else address)[:100]}
+            if route is None:
+                entry["numbers"] = [address]
+            else:
+                entry["addresses"] = [{"service": route["protocol"], "address": route["target"]}]
+            try:
+                return save_contact(db, entry, hide).get("contact")
+            except (ValueError, KeyError):
+                return None
+
+        def save_chats(db, chats):
+            db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_chats', ?)", (json.dumps(clean_web_chats(chats)),))
+
+        result = message_requests.act(gateway, db, self.path.removeprefix("/api/requests/"), data, web_chats(db), save_chats,
+                                      add_contact)
+        return privacy.scrub(result, hide)
+
     def mutate(self, data):
         now = int(time.time() * 1000)
         with closing(connect()) as db, db:
@@ -1259,6 +1408,21 @@ class Handler(BaseHTTPRequestHandler):
                 return gateway.snapshot(db, data.get("enabled"))
             if self.path == "/api/protocols/send":
                 return gateway.enqueue(db, data)
+            if self.path == "/api/protocols/command":
+                # A slash command typed in an IRC, Matrix, or XMPP chat (chat_features.py).
+                return gateway.run_command(db, data)
+            if self.path == "/api/protocols/invites":
+                # Accept or decline an invitation or contact request.
+                return gateway.answer_invite(db, data)
+            if self.path == "/api/protocols/keep":
+                # An IRC channel's Keep joined setting.
+                return gateway.set_keep(db, data)
+            if self.path == "/api/protocols/open":
+                # Opening a channel that isn't kept joined rejoins it.
+                return gateway.open_chat(data)
+            if self.path == "/api/protocols/reconnect":
+                # The Disconnected · Reconnect bar.
+                return gateway.reconnect(data)
             if self.path == "/api/protocols/accounts":
                 # Saving replaces the account; a blank password keeps the saved one.
                 # "id" edits that account and "add" adds another; neither (older phones) edits the first one.
@@ -1281,6 +1445,8 @@ class Handler(BaseHTTPRequestHandler):
                 return gateway.mark_read(db, data)
             if self.path == "/api/protocols/delete":
                 return delete_for_me(db, data)
+            if self.path == "/api/protocols/retry":
+                return retry_failed(db, data)
             if self.path == "/api/protocols/routes":
                 return gateway.add_route(db, data)
             if self.path == "/api/calls/send":
@@ -1317,6 +1483,8 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute("DELETE FROM protocol_state WHERE key IN ('web_appearance', 'prefs')")
                 gateway.save_settings(db, data)
                 return privacy.scrub(settings_view(db), hide)
+            if self.path.startswith("/api/requests/"):
+                return self.request_action(db, data)
             if self.path == "/api/protocols/routes/delete":
                 return gateway.delete_route(db, data)
             if self.path == "/api/contacts":
@@ -1365,6 +1533,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Enter valid phone numbers")
                 if not isinstance(body, str) or not body.strip() or len(body.encode("utf-16-le")) > 3200:
                     raise ValueError("Enter 1–1,600 characters")
+                if data.get("literal") is not True:
+                    # Chat commands such as /me or /join never go out as a text (start with // to send one as written).
+                    chat_commands.parse(format, body)
                 if type(due) is not int or not now - 60_000 <= due <= now + 366 * 86_400_000:
                     raise ValueError("Choose a date within the next year")
                 job = db.execute("INSERT INTO jobs (address, body, due, state, protocol) VALUES (?, ?, ?, 'scheduled', ?)",

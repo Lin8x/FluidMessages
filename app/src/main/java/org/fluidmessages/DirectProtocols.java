@@ -49,6 +49,14 @@ final class DirectProtocols {
         JSONObject send(Context context, JSONObject route, JSONObject message, MediaSanitizer.Prepared file) throws Exception;
         /** Whether this protocol needs an always-open connection to receive messages. */
         boolean persistent();
+        /** Runs a slash command typed in one of this protocol's chats (ChatCommands); returns {"notice", "open"}. */
+        default JSONObject command(Context context, JSONObject route, ChatCommand command) throws Exception {
+            throw new IllegalStateException("/" + command.getName() + " works through FluidMessages Web for this service.");
+        }
+        /** The Reconnect button: tries again at once, outside the hourly limit. */
+        default void reconnectNow() {}
+        /** A chat was opened: a channel that isn't kept joined joins again. */
+        default void opened(JSONObject route) {}
         /** Invites or removes someone in a group. Needs the right permission in that room or channel. */
         default void changeMember(Context context, JSONObject route, boolean add, String member) throws Exception {
             throw new UnsupportedOperationException("This protocol can't change group members");
@@ -83,7 +91,7 @@ final class DirectProtocols {
         var prefs = prefs(context);
         var previous = account(context, protocol);
         // Leaving a password blank keeps the saved one, as on the companion.
-        if (previous != null) for (String secret : new String[]{"imap_password", "smtp_password", "password", "sasl_password", "access_token"}) {
+        if (previous != null) for (String secret : new String[]{"imap_password", "smtp_password", "password", "sasl_password", "nickserv_password", "access_token"}) {
             if (account.optString(secret).isEmpty() && !previous.optString(secret).isEmpty()) account.put(secret, previous.getString(secret));
         }
         prefs.edit().putString("direct.account." + protocol.name(), seal(account.toString()))
@@ -132,8 +140,9 @@ final class DirectProtocols {
         var items = routes(prefs(context));
         for (int i = 0; i < items.length(); i++) {
             var route = items.optJSONObject(i);
+            String service = protocol.name().toLowerCase(Locale.ROOT);
             if (route != null && protocol == MessageProtocol.parse(route.optString("protocol"))
-                    && target.equalsIgnoreCase(route.optString("target"))) return route;
+                    && AccountKeys.targetKey(service, target).equals(AccountKeys.targetKey(service, route.optString("target")))) return route;
         }
         return null;
     }
@@ -154,7 +163,9 @@ final class DirectProtocols {
         for (int i = 0; i < items.length(); i++) {
             var route = items.optJSONObject(i);
             if (route == null || address.equals(route.optString("address")) && protocol == MessageProtocol.parse(route.optString("protocol"))) continue;
-            if (protocol == MessageProtocol.parse(route.optString("protocol")) && target.equalsIgnoreCase(route.optString("target"))) {
+            String service = protocol.name().toLowerCase(Locale.ROOT);
+            if (protocol == MessageProtocol.parse(route.optString("protocol"))
+                    && AccountKeys.targetKey(service, target).equals(AccountKeys.targetKey(service, route.optString("target")))) {
                 throw new IllegalArgumentException("That address already belongs to another conversation");
             }
             kept.put(route);
@@ -165,6 +176,83 @@ final class DirectProtocols {
             .put("direct", true));
         prefs.edit().putString(ROUTES, kept.toString()).apply();
         restart(context);
+    }
+
+    /**
+     * A chat the network opened (someone new messaged you, or the server chat), added without restarting the
+     * connection. Returns its link, or the one already there.
+     */
+    static synchronized JSONObject linkQuietly(Context context, MessageProtocol protocol, String target, String title,
+                                              boolean group, JSONObject extra) throws Exception {
+        var existing = routeForTarget(context, protocol, target);
+        if (existing != null) return existing;
+        var prefs = prefs(context);
+        var items = routes(prefs);
+        var route = new JSONObject().put("address", protocol.name().toLowerCase(Locale.ROOT) + "-"
+                + Integer.toHexString(target.toLowerCase(Locale.ROOT).hashCode()) + Long.toHexString(System.nanoTime() & 0xfff))
+            .put("protocol", protocol.name().toLowerCase(Locale.ROOT)).put("target", target).put("title", title)
+            .put("group", group).put("direct", true);
+        if (extra != null) for (var keys = extra.keys(); keys.hasNext(); ) { String key = keys.next(); route.put(key, extra.get(key)); }
+        items.put(route);
+        prefs.edit().putString(ROUTES, items.toString()).apply();
+        return route;
+    }
+
+    /** "connected", "connecting", "reconnecting" (retry_at), or "disconnected" after the hourly limit, for the bar. */
+    static JSONObject status(SharedPreferences prefs, MessageProtocol protocol) {
+        try { return new JSONObject(prefs.getString("direct.status." + protocol.name(), "{}")); }
+        catch (Exception error) { return new JSONObject(); }
+    }
+
+    static void saveStatus(Context context, MessageProtocol protocol, JSONObject status) {
+        prefs(context).edit().putString("direct.status." + protocol.name(), status.toString()).apply();
+    }
+
+    /**
+     * FluidMessages Web already connects to this IRC network as the same nick: the phone uses that connection instead
+     * of a second one, which the network would rename to nick_ and could count as reconnect flooding. "Connect anyway"
+     * (direct.IRC.anyway) overrides it.
+     */
+    static boolean webHasSameAccount(SharedPreferences prefs, MessageProtocol protocol, JSONObject account) {
+        if (protocol != MessageProtocol.IRC || account == null || prefs.getString("server", "").isEmpty()) return false;
+        String id = "irc:" + account.optString("nick") + "@" + account.optString("server").toLowerCase(Locale.ROOT);
+        try {
+            var accounts = new JSONArray(prefs.getString("gatewayAccounts", "[]"));
+            for (int i = 0; i < accounts.length(); i++) if (id.equals(accounts.optJSONObject(i).optString("id"))) return true;
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    static boolean deferredToWeb(SharedPreferences prefs, MessageProtocol protocol, JSONObject account) {
+        return webHasSameAccount(prefs, protocol, account) && !prefs.getBoolean("direct." + protocol.name() + ".anyway", false);
+    }
+
+    static JSONObject command(Context context, String address, MessageProtocol format, ChatCommand command) throws Exception {
+        var route = route(prefs(context), address, format);
+        if (route == null) throw new IllegalStateException("Link this chat first");
+        DirectClient client;
+        synchronized (DirectProtocols.class) { client = clients.get(format); }
+        if (client == null) throw new IllegalStateException(format.label + " isn’t connected. Open FluidMessages and try again.");
+        return client.command(context, route, command);
+    }
+
+    static void reconnect(Context context, MessageProtocol format) {
+        DirectClient client;
+        synchronized (DirectProtocols.class) { client = clients.get(format); }
+        if (client != null) client.reconnectNow();
+        else restart(context);
+    }
+
+    static void opened(Context context, String address, MessageProtocol format) {
+        var route = route(prefs(context), address, format);
+        DirectClient client;
+        synchronized (DirectProtocols.class) { client = clients.get(format); }
+        if (route != null && client != null) client.opened(route);
+    }
+
+    /** Keep joined (default on): rejoined right after reconnecting. Off: rejoined when you open the channel. */
+    static boolean keepJoined(SharedPreferences prefs, String address) {
+        return prefs.getBoolean("keepJoined." + address, true);
     }
 
     static void unlink(Context context, String address, MessageProtocol protocol) {
@@ -208,9 +296,12 @@ final class DirectProtocols {
             var account = on(prefs, protocol) && (protocol.enabled(prefs) || Calling.keepsConnected(prefs, protocol)) ? account(app, protocol) : null;
             var existing = clients.get(protocol);
             boolean always = account != null && stayConnected(prefs, protocol);
-            boolean wanted = account != null && (foreground || always);
-            service |= always;
-            String signature = account == null ? "" : account.toString() + routes(prefs);
+            // Never a second IRC connection beside FluidMessages Web's with the same nick.
+            boolean wanted = account != null && (foreground || always) && !deferredToWeb(prefs, protocol, account);
+            service |= always && wanted;
+            // IRC follows channel changes on its open connection, so a new channel or direct chat never reconnects.
+            String signature = account == null ? "" : protocol == MessageProtocol.IRC ? account.toString() : account.toString() + routes(prefs);
+            if (existing instanceof DirectIrc irc && wanted && signature.equals(existing.toString())) irc.syncChannels();
             if (existing != null && (!wanted || !signature.equals(existing.toString()))) {
                 existing.stop();
                 clients.remove(protocol);
@@ -288,6 +379,12 @@ final class DirectProtocols {
 
     static void send(Context context, String address, MessageProtocol format, String text, String body,
                      MessageRelation relation, Attachment attachment) throws Exception {
+        send(context, address, format, text, body, relation, attachment, false);
+    }
+
+    /** [literal]: typed with a leading //, so "/me" and the like go out as written instead of as an action. */
+    static void send(Context context, String address, MessageProtocol format, String text, String body,
+                     MessageRelation relation, Attachment attachment, boolean literal) throws Exception {
         format.requireEnabled(context);
         var prefs = prefs(context);
         var route = route(prefs, address, format);
@@ -296,6 +393,7 @@ final class DirectProtocols {
         synchronized (DirectProtocols.class) { client = clients.get(format); }
         String id = "direct-" + UUID.randomUUID();
         var message = record(route, id, body, true, System.currentTimeMillis(), "").put("status", "Sending…").put("text", text);
+        if (literal) message.put("literal", true);
         int disappear = Disappearing.seconds(prefs, address);
         if (disappear > 0) message.put("expire_seconds", disappear);
         var store = ProtocolStore.get(context);
@@ -448,6 +546,15 @@ final class DirectProtocols {
 
     static String unavailable(SharedPreferences prefs, String address, MessageProtocol format) {
         if (route(prefs, address, format) == null) return "Link a " + format.label + " address to this conversation in its details.";
+        try {
+            var account = (JSONObject) null;
+            String sealed = prefs.getString("direct.account." + format.name(), "");
+            if (!sealed.isEmpty()) account = new JSONObject(open(sealed));
+            if (deferredToWeb(prefs, format, account)) {
+                return "FluidMessages Web is already connected to " + account.optString("server") + " as " + account.optString("nick")
+                    + ", so this phone doesn’t open a second connection with the same nick. Turn off Connect from this phone for IRC to use FluidMessages Web’s connection.";
+            }
+        } catch (Exception ignored) {}
         return "";
     }
 

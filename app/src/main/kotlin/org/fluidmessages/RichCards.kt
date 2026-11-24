@@ -555,10 +555,19 @@ internal object LinkPreviews {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LinkPreview?>?) = size > 120
     }
 
-    fun cachedOnly(url: String): LinkPreview? = synchronized(memory) { memory[url] }
+    /** Previews made on the phone for the sample inbox's made-up links, so nothing is fetched for them. */
+    private val samples = java.util.concurrent.ConcurrentHashMap<String, LinkPreview>()
+
+    /** Shows [preview] for its link without fetching anything. Its image may be an android.resource:// picture. */
+    @JvmStatic fun sample(preview: LinkPreview) { samples[preview.url] = preview }
+
+    fun isSample(url: String) = samples.containsKey(url)
+
+    fun cachedOnly(url: String): LinkPreview? = samples[url] ?: synchronized(memory) { memory[url] }
 
     /** Reads the page's title, summary, and picture (Open Graph tags). HTTPS only, the first 512 KB. */
     fun fetch(context: Context, url: String): LinkPreview? {
+        samples[url]?.let { return it }
         synchronized(memory) { if (memory.containsKey(url)) return memory[url] }
         val disk = File(File(context.cacheDir, "link-previews").apply { mkdirs() },
             java.security.MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }.take(40))
@@ -628,10 +637,17 @@ internal fun LinkPreviewCard(url: String, foreground: Color) {
     val item = preview ?: return
     Column(Modifier.padding(top = 6.dp, bottom = 2.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(12.dp))
         .background(foreground.copy(alpha = .1f))
-        .clickable(onClickLabel = "Open ${item.site}") { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }) {
+        .clickable(onClickLabel = "Open ${item.site}") {
+            if (LinkPreviews.isSample(url)) android.widget.Toast.makeText(context, "Sample link: nothing is opened", android.widget.Toast.LENGTH_SHORT).show()
+            else runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+        }) {
         if (item.image.isNotEmpty()) Box(contentAlignment = Alignment.Center) {
             val media by produceState<DecodedMedia?>(null, item.image) {
-                value = withContext(Dispatchers.IO) { RemoteMedia.fetch(context, item.image)?.let { MediaDecoding.decode(context, Uri.fromFile(it), 900) } }
+                value = withContext(Dispatchers.IO) {
+                    // A sample preview's picture is part of the app.
+                    if (item.image.startsWith("android.resource://")) MediaDecoding.decode(context, Uri.parse(item.image), 900)
+                    else RemoteMedia.fetch(context, item.image)?.let { MediaDecoding.decode(context, Uri.fromFile(it), 900) }
+                }
             }
             media?.let { decoded ->
                 MediaPicture(decoded, Modifier.fillMaxWidth().aspectRatio(decoded.ratio.coerceIn(1.2f, 2f)), crop = true, description = item.title)

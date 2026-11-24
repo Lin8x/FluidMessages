@@ -68,7 +68,7 @@ private val MissedRed = Color(0xFFFF3B30)
 
 /**
  * The two main tabs: Phone on the left, Messages on the right. counts adds missed calls and unread chats as
- * badges, unless "Show counts on tabs" is off in Settings → Messaging.
+ * badges, unless "Show counts on tabs" is off in Settings → Sounds and notifications → App badges.
  */
 @Composable
 internal fun MainTabBar(palette: Palette, phoneSelected: Boolean, phone: Runnable, messages: Runnable, counts: TabCounts? = null) {
@@ -375,10 +375,7 @@ private fun sampleCalls(): List<CallEntry> {
     )
 }
 
-private fun favorites(prefs: SharedPreferences, sample: Boolean): Set<String> = try {
-    val array = JSONArray(prefs.getString(if (sample) "samplePhoneFavorites" else "phoneFavorites", "[]"))
-    (0 until array.length()).map(array::getString).toSet()
-} catch (error: Exception) { emptySet() }
+private fun favorites(prefs: SharedPreferences, sample: Boolean): Set<String> = favoriteKeys(prefs, sample)
 
 /**
  * The Phone tab, laid out like the iPhone Phone app: Favorites, Recents, Contacts, and Keypad, with a contact
@@ -770,7 +767,7 @@ private fun UsernameCall(palette: Palette, actions: PhoneActions) {
                 decorationBox = { field -> if (id.isEmpty()) Text("name@example.org", color = palette.muted, fontSize = 18.sp); field() })
         }
         if (id.isNotEmpty() && !valid) Text("Addresses look like @name:server.org, name@server.org, or sip:name@provider.com",
-            color = MissedRed, fontSize = 13.sp)
+            color = if (palette.appearance.dark) MissedRed else accessibleBubbleFill(MissedRed), fontSize = 13.sp)
         // Message them, or save them as a contact, on the service the address is on.
         val typed = remember(id) { NewAddress.detect(id).firstOrNull { !it.guess && it.service != "sms" } }
         if (valid && typed != null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -783,7 +780,8 @@ private fun UsernameCall(palette: Palette, actions: PhoneActions) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             for ((label, video) in listOf("Voice call" to false, "Video call" to true)) {
-                Row(Modifier.weight(1f).clip(RoundedCornerShape(24.dp)).background(if (valid) CallGreen else palette.wash)
+                // The call green, shaded so its white label stays readable (the bubble contrast rule).
+                Row(Modifier.weight(1f).clip(RoundedCornerShape(24.dp)).background(if (valid) accessibleBubbleFill(CallGreen) else palette.wash)
                     .clickable(enabled = valid, role = Role.Button) { actions.callUsername(id.trim(), video) }.padding(vertical = 13.dp),
                     horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                     val ink = if (valid) Color.White else palette.muted

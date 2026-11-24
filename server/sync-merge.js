@@ -112,21 +112,30 @@ const MERGE_LOOK = {theme: 'Color theme', mode: 'Light or dark', radius: 'Bubble
   combineProtocols: 'Combine linked conversations', tagMode: 'Inbox protocol tags', encryptionMode: 'Encryption labels'};
 const MERGE_FUN = {effects: 'Message effects', reactions: 'Reaction effects', games: 'Games', random: 'Random picks',
   gifs: 'Pictures and GIFs from links', linkPreviews: 'Link previews'};
+const MERGE_PREF = {tabCounts: 'Counts on tabs', showCommunityChats: 'Show community chats', communitySort: 'Communities order',
+  inboxFilters: 'Inbox filters', announceSettings: 'Announce setting changes'};
+const MERGE_SORT = {recent: 'Recent activity', name: 'Name (A–Z)', joined: 'Date joined'};
 const capital = (text) => text ? text[0].toUpperCase() + text.slice(1) : text;
 
 function mergePerson(address) {
   try { return typeof threadTitle === 'function' ? threadTitle(address) : address; } catch (error) { return address; }
 }
 
+const MERGE_REQUESTS = {texts: 'Filter unknown senders (texts)', chats: 'Filter unknown senders (chat services)',
+  notify: 'Request notifications', automatedOut: 'Keep automated messages out of the inbox',
+  automatedQuiet: 'Don’t notify for automated messages', automatedBlock: 'Block automated senders'};
+
 /** [section, title] for a key, like SyncMerge.describe on the phone. */
 function mergeDescribe(key) {
   const [group, ...rest] = key.split(':');
   const name = rest.join(':');
   return {look: ['Appearance', MERGE_LOOK[name] || name], fun: ['Fun and effects', MERGE_FUN[name] || name],
+    pref: ['Messaging', MERGE_PREF[name] || name], favorite: ['Favorites', mergePerson(name)],
     folder: ['Chat folders', mergePerson(name)], muted: ['Muted chats', mergePerson(name)], muteuntil: ['How long chats are muted', mergePerson(name)], sender: ['Automated senders', mergePerson(name)],
     timer: ['Disappearing messages', name === '*' ? 'Default timer' : mergePerson(name)], wallpaper: ['Chat wallpaper', mergePerson(name)],
     gif: ['GIF sites', name], gifoff: ['GIF sites', capital(name)], pay: ['Payments', name === '*' ? 'Default way to pay' : name],
-    sticker: ['Stickers', 'Sticker'], account: ['Chat accounts', name.includes(':') ? capital(name.split(':')[0]) + ' · ' + name.split(':').slice(1).join(':') : capital(name)], protocol: ['Chat services', capital(name)]}[group]
+    sticker: ['Stickers', 'Sticker'], account: ['Chat accounts', name.includes(':') ? capital(name.split(':')[0]) + ' · ' + name.split(':').slice(1).join(':') : capital(name)], protocol: ['Chat services', capital(name)],
+    request: ['Message requests', mergePerson(name)], requests: ['Requests and spam', MERGE_REQUESTS[name] || name]}[group]
     || ['Other', key];
 }
 
@@ -153,12 +162,24 @@ function mergeValue(key, value) {
       return set.length ? ['pinned', 'archived', 'blocked'].filter((item) => set.includes(item)).map(capital).join(', ') : 'Inbox';
     }
     case 'muted': return value === 'on' ? 'Muted' : 'Alerts on';
+    case 'favorite': return value === 'on' ? 'Favorite' : 'Not a favorite';
+    case 'pref':
+      if (name === 'communitySort') return MERGE_SORT[value] || MERGE_SORT.recent;
+      if (name === 'inboxFilters') {
+        if (value == null) return 'Every filter';
+        const labels = typeof INBOX_FILTERS !== 'undefined' ? Object.fromEntries(INBOX_FILTERS.map((item) => [item.id, item.label])) : {};
+        return value.split(',').filter((item) => item && !item.startsWith('-')).map((item) => labels[item] || item).join(', ');
+      }
+      return value === 'off' ? 'Off' : 'On';
     case 'muteuntil': return value == null ? 'Until you unmute' : 'Until ' + new Date(Number(value)).toLocaleString();
     case 'sender': return value === 'automated' ? 'Automated' : value === 'person' ? 'A person' : 'Automatic';
     case 'timer': return value == null ? (name === '*' ? 'Off' : 'Follows the default') : mergeTimer(Number(value));
     case 'wallpaper': return value == null || value === 'none' ? 'Solid' : value === 'photo' ? 'A photo' : capital(value);
     case 'gif': case 'pay': return value ?? 'Not added';
     // Per-account items say where that account connects (sync_merge.py).
+    case 'request': return value === 'accepted' ? 'Accepted' : value ? 'Deleted' : 'Waiting in Requests';
+    case 'requests': return value == null ? (name === 'texts' || name.startsWith('automated') ? 'Off' : name === 'notify' ? 'Quiet' : 'On')
+      : value === 'on' ? 'On' : value === 'off' ? 'Off' : capital(value);
     case 'account': return value === 'web' ? 'Connects through FluidMessages Web' : value === 'phone' ? 'Connects from this phone' : value ?? 'None';
     default: return value ?? 'Default';
   }

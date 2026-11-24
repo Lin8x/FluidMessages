@@ -67,6 +67,8 @@ internal data class OutgoingMessage @JvmOverloads constructor(
     val attachment: Attachment? = null,
     val sim: Int = -1,
     val relation: MessageRelation? = null,
+    /** Typed with a leading //: a line that starts with / goes out as written, never as a command or action. */
+    val literal: Boolean = false,
 ) {
     val photo: Uri? get() = attachment?.takeIf { it.kind == AttachmentKind.PHOTO }?.uri
 
@@ -180,9 +182,9 @@ private class CompanionTransport(
         val text = SmsCrypto.outgoing(context, message.conversation, protocol, message.text)
         val body = SmsCrypto.outgoing(context, message.conversation, protocol, message.fallbackBody())
         if (DirectProtocols.on(DirectProtocols.prefs(context), protocol)) return DirectProtocols.send(context, message.conversation,
-            protocol, text, body, message.relation, message.attachment?.takeIf { it.isFile })
+            protocol, text, body, message.relation, message.attachment?.takeIf { it.isFile }, message.literal)
         GatewayClient.send(context, message.conversation, protocol, text, body, message.relation,
-            message.attachment?.takeIf { it.isFile }, capabilities.attachments)
+            message.attachment?.takeIf { it.isFile }, capabilities.attachments, message.literal)
     }
 }
 

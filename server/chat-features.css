@@ -1,0 +1,37 @@
+/* IRC, Matrix, and XMPP as everyday chat (chat-commands.js, invites.js): the "/" command hints above the message
+   box, actions, mention marks, compact event notes, and the Invitations chip and page. Uses style.css's palette. */
+
+.command-hints { display: grid; gap: 2px; max-height: 240px; overflow-y: auto; margin: 0 0 6px; padding: 4px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--raised, var(--surface)); }
+.command-hint { display: grid; grid-template-columns: minmax(9rem, auto) 1fr; gap: .6rem; align-items: baseline; text-align: start;
+  padding: .4rem .6rem; border: 0; border-radius: 8px; background: transparent; color: var(--ink); min-height: 36px; }
+.command-hint:hover, .command-hint:focus-visible { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.command-hint strong { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; font-weight: 600; }
+.command-hint span { color: var(--muted); font-size: .82rem; }
+
+.command-help { display: grid; grid-template-columns: minmax(10rem, auto) 1fr; gap: .35rem .9rem; margin: 0; }
+.command-help dt { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88rem; }
+.command-help dd { margin: 0; color: var(--muted); }
+
+/* "* maya waves": the bubble keeps its colors (white or black ink chosen for its fill); only the style changes. */
+.message.action .bubble .action-text { font-style: italic; }
+/* The mention mark uses the bubble's own ink (white on colored fills), so it keeps the bubble's contrast. */
+.mention-mark { display: inline-grid; place-items: center; min-width: 1.2rem; height: 1.2rem; margin-inline-end: .35rem; padding: 0 .15rem;
+  border: 1.5px solid currentColor; border-radius: 999px; font-size: .72rem; font-weight: 800; font-style: normal; line-height: 1;
+  vertical-align: .08em; }
+.message.mention .bubble { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 65%, transparent); }
+
+/* Event lines from the server: the same outlined note as chat setting notices, a little quieter for joins and parts. */
+#conversation > .event.chat-event { margin-top: 4px; }
+
+.invites-chip { margin-inline-start: .4rem; }
+.invite-card h3 { overflow-wrap: anywhere; }
+.check-row { display: flex; gap: .6rem; align-items: center; min-height: 44px; }
+.check-row input { width: 1.15rem; height: 1.15rem; }
+
+/* "Disconnected from <network> · Reconnect": in that network's chats and on its Communities header. */
+.connection-bar { display: flex; flex-wrap: wrap; gap: .5rem .8rem; align-items: center; justify-content: space-between;
+  margin: 6px 10px; padding: .45rem .75rem; border: 1px solid color-mix(in srgb, #ff9f0a 60%, var(--line)); border-radius: 12px;
+  background: color-mix(in srgb, #ff9f0a 12%, var(--raised, var(--surface))); color: var(--ink); font-size: .85rem; }
+.connection-bar button { min-height: 36px; }
+.community > .connection-bar { margin: 2px 8px 6px; }

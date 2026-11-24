@@ -170,6 +170,11 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
                     }
                     record = DirectProtocols.record(route, id, type.equals("m.emote") ? "/me " + body : body, false, date, author);
                     if (target != null) record.put("reply_target", target.getString("id"));
+                    if (type.equals("m.notice")) record.put("notice", true);
+                    var mentions = content.optJSONObject("m.mentions");
+                    String me = account.optString("user_id");
+                    if (!me.isEmpty() && (body.contains(me) || mentions != null && mentions.optJSONArray("user_ids") != null
+                            && mentions.optJSONArray("user_ids").toString().contains("\"" + me + "\""))) record.put("mention", true);
                     int disappear = content.optInt(DISAPPEAR, 0);
                     if (disappear > 0) record.put("expires", date + disappear * 1000L);
                 } else return;
@@ -247,6 +252,11 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
         } else {
             content = new JSONObject().put("msgtype", "m.text").put("body", message.getString("body"));
         }
+        // "/me waves" is an emote, as in other Matrix apps (not when typed with //).
+        String typed = content.optString("body");
+        if ("m.text".equals(content.optString("msgtype")) && typed.startsWith("/me ") && !message.optBoolean("literal")) {
+            content.put("msgtype", "m.emote").put("body", typed.substring(4));
+        }
         if (message.optInt("expire_seconds") > 0) content.put(DISAPPEAR, message.optInt("expire_seconds"));
         return new JSONObject().put("event_id", json("PUT", "rooms/" + encodedRoom + "/send/m.room.message/" + transaction,
             content, 30_000).getString("event_id"));
@@ -254,6 +264,56 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
 
     /** Lets other FluidMessages apps remove the message on the same timer; other clients ignore it. */
     static final String DISAPPEAR = "org.fluidmessages.disappear_after";
+
+    /** /join, /leave, /invite, /topic, /nick (display name), and /msg from the phone's own Matrix connection. */
+    @Override public JSONObject command(Context context, JSONObject route, ChatCommand command) throws Exception {
+        var argv = command.getArgv();
+        String args = command.getArgs(), room = URLEncoder.encode(route.optString("target"), StandardCharsets.UTF_8);
+        var result = new JSONObject().put("notice", "");
+        switch (command.getName()) {
+            case "join" -> {
+                String target = argv.get(0);
+                if (!target.matches("[!#][^\\s/]{1,250}:[A-Za-z0-9.:-]{1,255}")) throw new IllegalArgumentException("Enter a room address like #room:example.org");
+                String id = json("POST", "join/" + URLEncoder.encode(target, StandardCharsets.UTF_8), new JSONObject(), 30_000).getString("room_id");
+                var existing = DirectProtocols.routeForTarget(context, MessageProtocol.MATRIX, id);
+                if (existing == null) {
+                    DirectProtocols.link(context, "mx-" + hash(id), MessageProtocol.MATRIX, id, target.startsWith("#") ? target : id, true);
+                    existing = DirectProtocols.routeForTarget(context, MessageProtocol.MATRIX, id);
+                }
+                result.put("open", existing.getString("address"));
+            }
+            case "part" -> {
+                if (!route.optBoolean("group")) throw new IllegalArgumentException("Use /leave in a room");
+                json("POST", "rooms/" + room + "/leave", new JSONObject(), 30_000);
+                DirectProtocols.unlink(context, route.getString("address"), MessageProtocol.MATRIX);
+                result.put("notice", "Left " + route.optString("title"));
+            }
+            case "invite" -> { changeMember(context, route, true, argv.get(0)); result.put("notice", "Invited " + argv.get(0)); }
+            case "topic" -> {
+                if (args.isEmpty()) {
+                    var topic = json("GET", "rooms/" + room + "/state/m.room.topic", null, 30_000).optString("topic");
+                    result.put("notice", topic.isEmpty() ? "This room has no topic" : "Topic: " + topic);
+                } else json("PUT", "rooms/" + room + "/state/m.room.topic", new JSONObject().put("topic", args), 30_000);
+            }
+            case "nick" -> {
+                json("PUT", "profile/" + URLEncoder.encode(account.optString("user_id"), StandardCharsets.UTF_8) + "/displayname",
+                    new JSONObject().put("displayname", args), 30_000);
+                result.put("notice", "Your display name is now " + args);
+            }
+            case "msg", "query" -> {
+                String who = argv.get(0), text = args.substring(who.length()).trim();
+                if (!who.matches("@[^:\\s]+:[^\\s]+")) throw new IllegalArgumentException("Enter a Matrix ID like @maya:example.org");
+                String address = "mx-" + hash(who.toLowerCase(Locale.ROOT));
+                if (DirectProtocols.route(DirectProtocols.prefs(context), address, MessageProtocol.MATRIX) == null) {
+                    DirectProtocols.link(context, address, MessageProtocol.MATRIX, who, who, false);
+                }
+                if (!text.isEmpty()) DirectProtocols.send(context, address, MessageProtocol.MATRIX, text, text, null, null);
+                result.put("open", address);
+            }
+            default -> throw new IllegalArgumentException("/" + command.getName() + " isn’t available on Matrix.");
+        }
+        return result;
+    }
 
     @Override public void changeMember(Context context, JSONObject route, boolean add, String member) throws Exception {
         if (!member.matches("@[^:\\s]+:[^\\s]+")) throw new IllegalArgumentException("Enter a Matrix ID like @maya:example.org");

@@ -191,7 +191,17 @@ internal fun CommunitiesList(prefs: SharedPreferences, palette: Palette, servers
     val groups = remember(servers, channels, sort, search) {
         Communities.group(servers, channels, sort).filter { search.isEmpty() || it.channels.isNotEmpty() }
     }
+    // Invitations to channels, rooms, and group chats, and contact requests, wait on their own page (ChatExtras).
+    val waiting = PhoneChat.invites(prefs).size
+    var invitesOpen by remember { mutableStateOf(false) }
+    if (invitesOpen) InvitesPage(palette, { invitesOpen = false }) { address -> invitesOpen = false; actions.open(address) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 14.dp, end = 18.dp, top = 2.dp, bottom = bottom.dp)) {
+        if (waiting > 0) item(key = "invites") {
+            TextButton(onClick = { invitesOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (waiting == 1) "1 invitation waiting" else "$waiting invitations waiting", color = palette.inboxAction,
+                    fontWeight = FontWeight.SemiBold)
+            }
+        }
         item(key = "sort") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 var open by remember { mutableStateOf(false) }
@@ -217,6 +227,8 @@ internal fun CommunitiesList(prefs: SharedPreferences, palette: Palette, servers
             val open = server.id !in collapsed || search.isNotEmpty()
             item(key = "server:" + server.id) {
                 ServerHeader(palette, group, open, { collapsed = Communities.toggle(prefs, server.id) }) { action -> actions.server(action, server.id) }
+                // "Disconnected from <network> · Reconnect" while this network's connection is down (ChatExtras).
+                ConnectionBar(server.id, palette)
             }
             if (open) {
                 items(group.channels, key = { "row:" + it.id }) { thread ->

@@ -331,6 +331,8 @@ def web_details_effects_test(request):
     # The sample like is Maya's on your message, so it must not say "(my message)", which would mean her own.
     check("Liked “See you there!” (my message)".encode() not in chats_js, "The sample reaction can't fold onto its message")
     chat_notice_test(cards_js, request("/app.js", authorized=False), request("/style.css", authorized=False))
+    from_account_test(request("/servers.js", authorized=False), request("/app.js", authorized=False),
+                      request("/companion.js", authorized=False))
     # IRC channels' members reach the browser for a group's details.
     with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db, db:
         db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('channel:irc-fixture', ?)",
@@ -348,6 +350,18 @@ CHAT_NOTICES = (("⏱️ Disappearing messages are on. New messages disappear af
                 ("⏱️ Disappearing messages are off.", {"kind": "timer", "seconds": 0}),
                 ("🔒 Messages in this chat are now encrypted with FluidMessages.", {"kind": "encryption", "on": True}),
                 ("🔓 Messages in this chat are no longer encrypted with FluidMessages.", {"kind": "encryption", "on": False}),
+                ("⏱️ Disappearing messages are on. New messages disappear after 1 day.\n\nSent by FluidMessages. Your app may keep these messages. "
+                 "Install FluidMessages to have them disappear too: https://github.com/Lin8x/FluidMessages", {"kind": "timer", "seconds": 86400}),
+                ("⏱️ Disappearing messages are off.\r\n\r\nSent by FluidMessages. Install it to see this chat the way it's meant to be seen: "
+                 "https://github.com/Lin8x/FluidMessages", {"kind": "timer", "seconds": 0}),
+                ("🔒 Messages in this chat are now encrypted with FluidMessages.\n\nYou'll need FluidMessages to read encrypted messages: "
+                 "https://github.com/Lin8x/FluidMessages", {"kind": "encryption", "on": True}),
+                ("🔓 Messages in this chat are no longer encrypted with FluidMessages.\n\nSent by FluidMessages. New messages in this chat are "
+                 "readable in any app again.", {"kind": "encryption", "on": False}),
+                ("🔒 Messages in this chat are now encrypted with FluidMessages.\n\nlol ok", None),
+                ("🔒 Messages in this chat are now encrypted with FluidMessages.\n\nSent by FluidMessages. Install it to see this chat the way "
+                 "it's meant to be seen: https://github.com/Lin8x/FluidMessages", None),
+                ("Reply to “x”\n\n🔒 Messages in this chat are now encrypted with FluidMessages.", None),
                 ("Disappearing messages are off.", None), ("⏱️ Disappearing messages are off. Just kidding", None),
                 ("⏱️ Disappearing messages are on. New messages disappear after 0 days.", None))
 
@@ -370,11 +384,64 @@ for (const seconds of [0, 30, 300, 3600, 28800, 86400, 604800, 2419200]) {
   if (!back || back.seconds !== seconds) wrong.push(['timer', seconds]);
 }
 if (parseChatNotice(encryptionNoticeText(true))?.on !== true || parseChatNotice(encryptionNoticeText(false))?.on !== false) wrong.push(['encryption']);
+for (const text of [timerNoticeText(86400), timerNoticeText(0), encryptionNoticeText(true), encryptionNoticeText(false)]) {
+  // Sent with a line for other apps; FluidMessages shows only the note.
+  const label = chatNoticeLabel(parseChatNotice(text));
+  if (!text.includes('\\n\\n') || label.includes('\\n') || label.includes('github.com') || !text.startsWith(label + '\\n\\n')) wrong.push(['label', text]);
+}
+if (!encryptionNoticeText(true).includes("You'll need FluidMessages to read encrypted messages")) wrong.push(['encryption footer']);
 process.stdout.write(JSON.stringify(wrong));
 """
     result = subprocess.run([node, "-e", script, json.dumps(CHAT_NOTICES, ensure_ascii=False)], capture_output=True, text=True, timeout=30)
     check(result.returncode == 0 and result.stdout == "[]", "The browser's chat notice parser disagrees with the phone's: "
           + (result.stdout or result.stderr)[:400])
+
+
+def from_account_test(servers_js, app_js, companion_js):
+    """The web composer's "From:" line shows only with two accounts on a service, and names the chat's own account."""
+    block = re.search(rb"// from-account:start[^\n]*\n(.*?)// from-account:end", servers_js, re.S)
+    check(block, "servers.js has no From account rules")
+    check(b"updateFromLine()" in app_js and b"function updateFromLine" in servers_js and b"showModal" not in servers_js.split(b"function updateFromLine", 1)[1].split(b"\n}\n", 1)[0] and b"inboxAccountHint(routeFor(key)" in app_js,
+          "The web composer or inbox doesn't show which account sends")
+    check(b"field('From', account" in companion_js and b"preselectFrom(mine" in companion_js and b"Most recently used" not in companion_js,
+          "New chat has no From picker preselected to the most recent account")
+    # Sending names only the chat (address and protocol); the server sends through that chat's own account.
+    send = re.search(rb"async function send\(.*?\n}\n", app_js, re.S)
+    check(send and b"account" not in send.group(0), "The web composer picks an account itself instead of the chat's own")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("Skipped running the From account rules: node isn't installed (set NODE to its path)")
+        return
+    script = block.group(1).decode() + """
+const wrong = [];
+const one = [{protocol: 'email', id: 'email:alice@example.test', name: 'alice@example.test'},
+             {protocol: 'matrix', id: 'matrix:@alice:example.test', name: '@alice:example.test'}];
+const two = [...one, {protocol: 'email', id: 'email:alice@work.example.test', name: 'alice@work.example.test', recent: true}];
+const work = {address: 'web-1', protocol: 'email', target: 'maya@example.test', account: 'email:alice@work.example.test'};
+const home = {address: 'web-2', protocol: 'email', target: 'sam@example.test', account: 'email:alice@example.test'};
+const old = {address: 'web-3', protocol: 'email', target: 'lee@example.test'};
+const room = {address: 'web-4', protocol: 'matrix', target: '!r:example.test', account: 'matrix:@alice:example.test'};
+const expect = (got, want, what) => { if (got !== want) wrong.push([what, got, want]); };
+expect(fromLineText(work, one), '', 'one account shows no From');
+expect(fromLineText(old, one), '', 'one account, older link');
+expect(fromLineText(work, two), 'From: alice@work.example.test', 'the chat names its own account');
+expect(fromLineText(home, two), 'From: alice@example.test', 'the first account');
+expect(fromLineText(old, two), 'From: alice@example.test', 'an older link is the first account');
+expect(fromLineText(room, two), '', 'a service with one account stays quiet');
+expect(fromLineText({...work, account: 'email:gone@example.test'}, two), '', 'a removed account is not guessed');
+expect(preselectFrom(sendAccounts('email', two)), 'email:alice@work.example.test', 'New chat preselects the most recent');
+expect(preselectFrom(sendAccounts('email', two.map((a) => ({...a, recent: false})))), 'email:alice@work.example.test', 'else the newest');
+expect(inboxAccountHint(work, two), 'alice@work.example.test', 'the inbox hints another account');
+expect(inboxAccountHint(home, two), '', 'not the first account');
+expect(inboxAccountHint(work, one), '', 'not with one account');
+expect(targetKey('irc', '#Radio[Club]'), targetKey('irc', '#radio{club}'), 'IRC folds case by RFC 1459');
+expect(targetKey('matrix', '!AbC:Example.org'), '!AbC:example.org', 'a Matrix room ID keeps its case');
+expect(targetKey('email', 'Maya@Example.TEST'), 'maya@example.test', 'email ignores case');
+process.stdout.write(JSON.stringify(wrong));
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0 and result.stdout == "[]", "The web's From account rules are wrong: " + (result.stdout or result.stderr)[:400])
+    print("PASS  web From line: shown only with two accounts on a service, naming the chat's own account, which sends")
 
 
 def web_people_test(request):
@@ -409,7 +476,8 @@ def web_people_test(request):
     # Counts on the tabs: on by default, a server preference, and drawn white on red on both tab bars.
     for expected in (b"function updateTabBadges", b"setAppBadge", b"clearAppBadge", b"function tabCountsCard", b"markCallsSeen"):
         check(expected in people_js, f"Missing {expected.decode()} in /people.js")
-    check(b"tabCountsCard" in request("/settings.js", authorized=False), "Settings → Messaging has no Show counts on tabs")
+    check(b"tabCountsCard" not in request("/settings.js", authorized=False), "Show counts on tabs is still under Settings → Messaging")
+    check(b"tabCountsCard()" in request("/notify.js", authorized=False), "Settings → Sounds and notifications has no App badges card")
     check(re.search(rb"\.tab-badge \{[^}]*color: #fff", request("/features.css", authorized=False)), "Tab counts aren't white on their fill")
     check(request("/api/inbox")["prefs"].get("tabCounts") is True, "Counts on tabs aren't on by default")
     check(request("/api/settings", {"prefs": {"tabCounts": False}})["prefs"]["tabCounts"] is False, "Counts on tabs couldn't be turned off")
@@ -969,6 +1037,98 @@ def privacy_calls_test():
     print("PASS  hidden protocols, disappearing timers, group members, and call signaling on the companion")
 
 
+def email_ports_test():
+    """Email ports: 993 and 465 by default, 1 to 65535, STARTTLS on 143 and 587, and never plain text. No network."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import accounts
+    import protocol_gateway
+
+    base = {"address": "me@example.test", "imap_host": "imap.example.test", "smtp_host": "smtp.example.test",
+            "imap_password": "fixture-secret"}
+    check("imap_port" not in accounts.validate("email", base), "An account without ports gained ports")
+    check(accounts.validate("email", {**base, "imap_port": "143", "smtp_port": 587}) | {} == {
+        **base, "imap_port": 143, "smtp_port": 587, "smtp_password": "fixture-secret"}, "Email ports weren't read as numbers")
+    for bad in (0, 65536, -1, "abc", "5.5", True):
+        for name in ("imap_port", "smtp_port"):
+            try:
+                accounts.validate("email", {**base, name: bad})
+                raise RuntimeError(f"Accepted {name} {bad!r}")
+            except ValueError as error:
+                check("1 to 65535" in str(error), f"Unclear message for {name} {bad!r}: {error}")
+    with tempfile.TemporaryDirectory(prefix="fluid-ports-") as directory:
+        store = accounts.AccountStore(Path(directory) / "accounts.json", environ={
+            "FLUID_EMAIL_ADDRESS": "me@example.test", "FLUID_EMAIL_IMAP_HOST": "imap.example.test",
+            "FLUID_EMAIL_SMTP_HOST": "smtp.example.test", "FLUID_EMAIL_PASSWORD": "fixture-secret",
+            "FLUID_EMAIL_IMAP_PORT": "143", "FLUID_EMAIL_SMTP_PORT": "587"})
+        email = store.current()["email"]
+        check(email["imap_port"] == 143 and email["smtp_port"] == 587, "Compose email ports weren't read")
+        listed = json.dumps(store.redacted())
+        check("fixture-secret" not in listed and '"imap_port": 143' in listed and '"smtp_port": 587' in listed,
+              "Ports should show in the redacted account list, and secrets never")
+    compose = (ROOT / "compose.yaml").read_text()
+    check("FLUID_EMAIL_IMAP_PORT" in compose and "FLUID_EMAIL_SMTP_PORT" in compose, "compose.yaml leaves out the email ports")
+    docs = (ROOT / "docs/self-hosting.md").read_text()
+    check("FLUID_EMAIL_IMAP_PORT" in docs and "STARTTLS" in docs, "The self-hosting guide doesn't explain the email ports")
+
+    calls = []
+
+    class Fake:
+        def __init__(self, kind, host, port, *args, starttls=True, **kwargs):
+            self.kind, self.offers = kind, starttls
+            calls.append([kind, host, port])
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def ehlo(self): calls[-1].append("ehlo")
+        def has_extn(self, name): return self.offers and name == "starttls"
+        def starttls(self, **kwargs):
+            if not self.offers:
+                raise imap_error("STARTTLS not supported")
+            calls[-1].append("starttls")
+        def close(self): calls[-1].append("closed")
+        def shutdown(self): calls[-1].append("closed")
+
+    saved = (protocol_gateway.smtplib.SMTP_SSL, protocol_gateway.smtplib.SMTP,
+             protocol_gateway.imaplib.IMAP4_SSL, protocol_gateway.imaplib.IMAP4)
+    offers = {"value": True}
+    imap_error = protocol_gateway.imaplib.IMAP4.error
+    protocol_gateway.smtplib.SMTP_SSL = lambda host, port, **kw: Fake("smtp-tls", host, port)
+    protocol_gateway.smtplib.SMTP = lambda host, port, **kw: Fake("smtp", host, port, starttls=offers["value"])
+    protocol_gateway.imaplib.IMAP4_SSL = lambda host, port, **kw: Fake("imap-tls", host, port)
+    protocol_gateway.imaplib.IMAP4 = lambda host, port, **kw: Fake("imap", host, port, starttls=offers["value"])
+    try:
+        gateway = protocol_gateway.Gateway.__new__(protocol_gateway.Gateway)
+        gateway.tls = None
+        gateway.smtp_connection(base)
+        gateway.imap_connection(base)
+        check(calls == [["smtp-tls", "smtp.example.test", 465], ["imap-tls", "imap.example.test", 993]],
+              f"An account without ports didn't use TLS on 465 and 993: {calls}")
+        calls.clear()
+        gateway.smtp_connection({**base, "smtp_port": 587})
+        gateway.imap_connection({**base, "imap_port": 143})
+        check(calls == [["smtp", "smtp.example.test", 587, "ehlo", "starttls", "ehlo"], ["imap", "imap.example.test", 143, "starttls"]],
+              f"Ports 587 and 143 didn't upgrade with STARTTLS: {calls}")
+        gateway.imap_connection({**base, "imap_port": 1993})
+        check(calls[-1][0] == "imap-tls", "IMAP on another port should use TLS from the start")
+        offers["value"] = False
+        for connect, port in ((gateway.smtp_connection, {"smtp_port": 587}), (gateway.imap_connection, {"imap_port": 143})):
+            calls.clear()
+            try:
+                connect({**base, **port})
+                raise ValueError("Connected without STARTTLS")
+            except (RuntimeError, imap_error):
+                check(calls[-1][-1] == "closed", "A server without STARTTLS wasn't hung up on")
+    finally:
+        (protocol_gateway.smtplib.SMTP_SSL, protocol_gateway.smtplib.SMTP,
+         protocol_gateway.imaplib.IMAP4_SSL, protocol_gateway.imaplib.IMAP4) = saved
+
+    companion_js = (ROOT / "server/companion.js").read_text()
+    check("['imap_port', 'IMAP port', '993'" in companion_js and "['smtp_port', 'SMTP port', '465'" in companion_js
+          and "EMAIL_PORTS = {imap_port: 993, smtp_port: 465}" in companion_js, "The web email form has no IMAP and SMTP ports")
+    form = (ROOT / "app/src/main/kotlin/org/fluidmessages/AccountsScreen.kt").read_text()
+    check("EmailPorts.IMAP_KEY" in form and "EmailPorts.SMTP_KEY" in form, "The phone's email form has no IMAP and SMTP ports")
+    print("PASS  email ports default to 993 and 465, stay from 1 to 65535, show in account lists, and always use TLS or STARTTLS")
+
+
 def protocol_accounts_test():
     """Account storage, Compose accounts, links, and the IRC client, with fictional fixtures and no network."""
     sys.path.insert(0, str(ROOT / "server"))
@@ -1057,7 +1217,8 @@ def protocol_accounts_test():
     deadline = time.time() + 5
     while len(received) < 2 and time.time() < deadline:
         time.sleep(0.05)
-    check(states.get("#radio-club") == {"topic": "Antenna night", "members": ["fluidtest", "kestrel", "mosaic"]},
+    check(states.get("#radio-club") == {"topic": "Antenna night", "members": ["fluidtest", "kestrel", "mosaic"],
+                                        "modes": {"kestrel": "+", "mosaic": "@"}},
           "IRC channel topic and members were not tracked")
     check(received[0][:4] == ("#radio-club", "mosaic", "Bring the analyzer", {"msgid": "abc", "time": "2026-01-01T10:00:00.000Z"})
           and received[0][4] == 1767261600000, "Tagged IRC message was not parsed")
@@ -1069,6 +1230,78 @@ def protocol_accounts_test():
     client.stopped.set()
     server.close()
     print("PASS  protocol accounts stay private, Compose accounts are read-only, and IRC speaks CAP, SASL, and IRCv3 tags")
+
+
+def unique_chats_test():
+    """One chat per person, group, channel, or room on a service and account; another account gets its own. No network."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import sqlite3
+    import accounts
+    import protocol_gateway
+
+    with tempfile.TemporaryDirectory(prefix="fluid-unique-") as directory:
+        database = Path(directory) / "gateway.sqlite"
+
+        def connect():
+            return sqlite3.connect(database, timeout=10)
+
+        with closing(connect()) as db, db:
+            db.executescript(protocol_gateway.SCHEMA)
+            # A link from before multiple accounts: it names no account and belongs to the first one.
+            db.execute("INSERT INTO protocol_routes (address, protocol, payload) VALUES (?, ?, ?)", ("maya", "email", json.dumps(
+                {"address": "maya", "protocol": "email", "target": "maya@example.test", "via": "email", "group": False,
+                 "title": "Maya", "members": []})))
+        store = accounts.AccountStore(Path(directory) / "accounts.json", environ={})
+        for address in ("me@example.test", "me@work.example.test"):
+            store.save("email", {"address": address, "imap_host": "imap.example.test", "smtp_host": "smtp.example.test",
+                                 "imap_password": "fixture-secret"}, add=True)
+        store.save("irc", {"server": "irc.example.test", "nick": "riley"}, add=True)
+        store.save("irc", {"server": "irc.other.test", "nick": "riley"}, add=True)
+        gateway = protocol_gateway.Gateway(connect, {}, Path(directory) / "files", accounts=store)
+        home, work = "email:me@example.test", "email:me@work.example.test"
+        one, two = "irc:riley@irc.example.test", "irc:riley@irc.other.test"
+
+        def link(address, target, account="", protocol="email", group=False):
+            with closing(connect()) as db, db:
+                return gateway.add_route(db, {"address": address, "protocol": protocol, "target": target, "title": target,
+                                              "group": group, **({"account": account} if account else {})})
+
+        # The same person on the same account, typed differently, opens the chat that's already there.
+        again = link("web-new1", "Maya@Example.TEST", home)
+        check(again.get("existing") and again["route"]["address"] == "maya", "Starting the same email chat again made another one")
+        # Another account on the same service is a chat of its own, every time the same one.
+        other = link("web-new2", "maya@example.test", work)
+        check(not other.get("existing") and other["route"]["account"] == work and other["route"]["address"] != "maya",
+              "A different account didn't get its own chat")
+        check(link("web-new3", "MAYA@example.test", work)["route"]["address"] == other["route"]["address"],
+              "The second account's chat was made twice")
+        # Linking an address that's taken to a phone-number conversation still says so.
+        try:
+            link("12025550123", "maya@example.test", home)
+            raise RuntimeError("An address linked to a chat was linked to a second conversation on the same account")
+        except ValueError:
+            pass
+        # Channels: joining twice, in another case or with RFC 1459's capitals, is one chat; another network is another.
+        with closing(connect()) as db, db:
+            first = gateway.join(db, {"account": one, "target": "#Radio[Club]"})
+        with closing(connect()) as db, db:
+            second = gateway.join(db, {"account": one, "target": "#radio{club}"})
+        with closing(connect()) as db, db:
+            elsewhere = gateway.join(db, {"account": two, "target": "#radio{club}"})
+        check(first["joined"] and not second["joined"] and second["route"]["address"] == first["route"]["address"],
+              "Joining the same IRC channel twice made two chats")
+        check(elsewhere["joined"] and elsewhere["route"]["address"] != first["route"]["address"],
+              "The same channel on another network didn't get its own chat")
+        # A direct message to a channel member, twice and in another case, is one chat per network.
+        dm = link("web-dm1", "Kestrel", one, protocol="irc")
+        check(link("web-dm2", "kestrel", one, protocol="irc")["route"]["address"] == dm["route"]["address"],
+              "Messaging the same IRC nick twice made two chats")
+        check(protocol_gateway.target_key("matrix", "!AbC:Example.org") == "!AbC:example.org"
+              and protocol_gateway.target_key("matrix", "@Maya:Example.org") == "@maya:example.org",
+              "Matrix addresses aren't compared the way Matrix does")
+        keys = [(r["protocol"], protocol_gateway.target_key(r.get("via", r["protocol"]), r["target"]), r["account"]) for r in gateway.routes]
+        check(len(keys) == len(set(keys)), "Two chats share an address, service, and account: " + json.dumps(keys))
+    print("PASS  one chat per address, service, and account; another account or network gets its own")
 
 
 def multi_account_test():
@@ -1173,6 +1406,10 @@ def multi_account_test():
         check({a["id"] for a in snapshot["accounts"]} == {alice, bob}
               and any(r["address"] == second and r["account_name"] == "@bob:beta.test" for r in snapshot["routes"]),
               "The snapshot doesn't name each chat's account")
+        accounts_listed = {a["id"]: a for a in snapshot["accounts"]}
+        check(accounts_listed[alice]["primary"] and not accounts_listed[bob]["primary"]
+              and accounts_listed[bob]["recent"] and not accounts_listed[alice]["recent"],
+              "The snapshot doesn't mark the first account and the one used most recently (New message's From)")
         # A new chat without a choice uses the account that was active most recently (bob replied last).
         with closing(connect()) as db, db:
             fresh = gateway.add_route(db, {"address": "web-new", "protocol": "matrix", "target": "!new:beta.test", "title": "New"})
@@ -1256,6 +1493,337 @@ def multi_account_test():
           "receive apart, per-account merge items, and joining, browsing, and leaving channels and rooms")
 
 
+def chat_features_test():
+    """Daily IRC, Matrix, and XMPP use on the companion: bots and server notices, slash commands, invitations, event
+    lines, mentions, nick fallback, line splitting, and flood pacing. Fictional fixtures; no sockets leave the process."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import sqlite3
+    import accounts
+    import chat_commands
+    import irc_client
+    import protocol_gateway
+
+    class Recorder:
+        def __init__(self):
+            self.lines = []
+
+        def sendall(self, data):
+            self.lines.append(data.decode().rstrip("\r\n"))
+
+    # Flood pacing: a burst of five, then one line every two seconds, on a fake clock.
+    clock = {"now": 0.0}
+    slept = []
+    flood = irc_client.Flood(burst=5, every=2.0, clock=lambda: clock["now"],
+                             sleep=lambda seconds: (slept.append(seconds), clock.__setitem__("now", clock["now"] + seconds)))
+    for _ in range(7):
+        flood.wait()
+    check(slept == [2.0, 2.0], f"IRC flood pacing didn't wait after the burst: {slept}")
+
+    # The command table, shared with the phone (ChatCommands.kt) and the browser (chat-commands.js).
+    check(chat_commands.parse("irc", "/me waves") == {"name": "me", "args": "waves", "argv": ["waves"]}, "/me didn't parse")
+    check(chat_commands.parse("irc", "/raw PING x")["name"] == "quote", "/raw isn't /quote")
+    check(chat_commands.parse("irc", "//shrug") is None and chat_commands.parse("sms", "/shrug") is None,
+          "// and unknown words in texts should stay text")
+    for protocol, text, wanted in (("irc", "/frobnicate now", "Unknown command /frobnicate"), ("matrix", "/whois maya", "isn’t available"),
+                                   ("sms", "/me waves", "Commands work in"), ("email", "/join #x", "Commands work in"),
+                                   ("irc", "/join", "Usage: /join")):
+        try:
+            chat_commands.parse(protocol, text)
+            raise RuntimeError(f"{text!r} on {protocol} wasn't refused")
+        except chat_commands.CommandError as error:
+            check(wanted in str(error), f"Wrong error for {text!r}: {error}")
+
+    with tempfile.TemporaryDirectory(prefix="fluid-chat-") as directory:
+        database = Path(directory) / "gateway.sqlite"
+        connect = lambda: sqlite3.connect(database, timeout=10)
+        with closing(connect()) as db, db:
+            db.executescript(protocol_gateway.SCHEMA)
+        store = accounts.AccountStore(Path(directory) / "accounts.json", environ={})
+        store.save("irc", {"server": "irc.example.test", "nick": "fluidtest", "channels": "#radio-club",
+                           "nickserv_password": "fixture-nickserv"}, add=True)
+        ident = "irc:fluidtest@irc.example.test"
+        check("fixture-nickserv" not in json.dumps(store.redacted()), "The NickServ password was listed")
+        gateway = protocol_gateway.Gateway(connect, {}, Path(directory) / "files", store)
+        gateway.refresh_clients = lambda: None
+        invites = []
+        client = irc_client.IrcClient({**store.get(ident), "channels": ["#radio-club"]},
+                                      lambda *args: gateway.accept_irc(*args, account=ident),
+                                      lambda channel, state: gateway.channel_state(channel, state, ident),
+                                      on_invite=lambda channel, sender: invites.append(
+                                          gateway.add_invite(ident, "irc", "channel", channel, sender, channel)),
+                                      flood=irc_client.Flood(burst=1000))
+        client.sock = Recorder()
+        gateway.clients[ident] = ("fixture", client)
+        say = lambda line: client.handle(irc_client.parse(line))
+
+        # Nick in use while connecting: nick_, then nick__; identify to NickServ once registered (no SASL here).
+        say(":irc.example.test 433 * fluidtest :Nickname is already in use")
+        say(":irc.example.test 433 * fluidtest_ :Nickname is already in use")
+        check(client.sock.lines[-2:] == ["NICK fluidtest_", "NICK fluidtest__"], "The nick-in-use fallback didn't try nick_")
+        say(":irc.example.test 001 fluidtest__ :Welcome")
+        check("PRIVMSG NickServ :IDENTIFY fluidtest fixture-nickserv" in client.sock.lines and "JOIN #radio-club" in client.sock.lines,
+              "Identify on connect or rejoining channels failed")
+        check(client.wanted == "fluidtest" and client.nick == "fluidtest__", "The wanted nick was forgotten")
+
+        # A service bot's NOTICE and a person's PRIVMSG each open a direct chat; services are labeled automated.
+        say(":NickServ!NickServ@services.example.test NOTICE fluidtest__ :This nickname is registered.")
+        say(":maya!m@host PRIVMSG fluidtest__ :hi from a new person")
+        say(":irc.example.test NOTICE fluidtest__ :*** You are connected using TLS")
+        routes = {r["target"]: r for r in gateway.routes if r["account"] == ident}
+        check(routes.get("NickServ", {}).get("automated") and "maya" in routes and not routes["maya"].get("automated"),
+              "Bot or person direct messages didn't open their own chats")
+        bot = gateway.find(routes["NickServ"]["address"], "irc", "author", "NickServ")
+        check(bot and bot["body"] == "This nickname is registered." and bot.get("notice"), "The NickServ notice wasn't kept")
+        server = routes.get(irc_client.SERVER)
+        check(server and server.get("server_chat") and gateway.find(server["address"], "irc", "body", "*** You are connected using TLS"),
+              "Server notices didn't reach the server chat")
+
+        # Channel events with kinds, never unread; prefixes for operators and voice; mentions of your nick.
+        radio = routes["#radio-club"]
+        for line in (":irc.example.test 353 fluidtest__ = #radio-club :@mosaic +kestrel fluidtest__",
+                     ":irc.example.test 366 fluidtest__ #radio-club :End of NAMES",
+                     ":orbital!o@host JOIN #radio-club", ":orbital!o@host NICK orbit",
+                     ":mosaic!m@host MODE #radio-club +v orbit", ":orbit!o@host PART #radio-club :later",
+                     ":mosaic!m@host KICK #radio-club kestrel :too loud", ":mosaic!m@host TOPIC #radio-club :Antenna night",
+                     "@msgid=m1 :mosaic!m@host PRIVMSG #radio-club :fluidtest: bring the analyzer?",
+                     "@msgid=m2 :mosaic!m@host PRIVMSG #radio-club :fluidtesting is not a mention"):
+            say(line)
+        with closing(connect()) as db:
+            items = [json.loads(row[0]) for row in db.execute("SELECT payload FROM protocol_messages ORDER BY date, rowid")]
+        events = [(i["event_kind"], i["body"]) for i in items if i["address"] == radio["address"] and i.get("event")]
+        check([kind for kind, _ in events] == ["join", "nick", "mode", "part", "kick", "topic"],
+              f"Channel event lines were wrong: {events}")
+        check(all(i["read"] == 1 for i in items if i.get("event")), "Event lines shouldn't be unread")
+        check(dict(events)["kick"] == "mosaic removed kestrel (too loud)", "Kick line was wrong")
+        state = json.loads(gateway.state("channel:" + radio["address"]))
+        check(state["modes"] == {"mosaic": "@"} and "kestrel" not in state["members"] and state["topic"] == "Antenna night",
+              f"Channel prefixes or members were wrong: {state}")
+        check(gateway.find(radio["address"], "irc", "irc_msgid", "m1").get("mention")
+              and not gateway.find(radio["address"], "irc", "irc_msgid", "m2").get("mention"), "Mentions were wrong")
+
+        # CTCP: off by default (no reply), and a generic reply when allowed.
+        before = len(client.sock.lines)
+        say(":maya!m@host PRIVMSG fluidtest__ :\x01VERSION\x01")
+        check(len(client.sock.lines) == before, "CTCP VERSION was answered while off")
+        client.account["ctcp_replies"] = True
+        say(":maya!m@host PRIVMSG fluidtest__ :\x01VERSION\x01")
+        check(client.sock.lines[-1] == "NOTICE maya :\x01VERSION FluidMessages\x01", "CTCP VERSION wasn't answered when on")
+
+        client.ready.set()
+        def command(route, text):
+            with closing(connect()) as db, db:
+                return gateway.run_command(db, {"address": route["address"], "protocol": route["protocol"], "text": text,
+                                                "request": secrets.token_hex(8)})
+
+        def deliver():
+            while (job := gateway.claim()) is not None:
+                gateway.deliver_job(job)
+
+        # /me round trip: sent as CTCP ACTION, and received back as "/me", which the apps show as "* nick waves".
+        command(radio, "/me waves at everyone")
+        deliver()
+        check(client.sock.lines[-1] == "PRIVMSG #radio-club :\x01ACTION waves at everyone\x01", "/me wasn't sent as an ACTION")
+        say(":kestrel!k@host PRIVMSG #radio-club :\x01ACTION waves back\x01")
+        check(gateway.find(radio["address"], "irc", "body", "/me waves back"), "An incoming ACTION wasn't kept as /me")
+
+        # /join, /topic, /nick, /whois (as event lines), /msg (opens a DM), /part.
+        joined = command(radio, "/join #garden")
+        garden = gateway.route(joined["open"]["address"], "irc")
+        check(garden and garden["target"] == "#garden", "/join didn't add the channel")
+        command(garden, "/topic Seeds and soil")
+        check(client.sock.lines[-1] == "TOPIC #garden :Seeds and soil", "/topic didn't set the topic")
+        check(command(radio, "/topic")["notice"] == "Topic of #radio-club: Antenna night", "/topic didn't show the topic")
+        command(radio, "/nick fluidtest")
+        check(client.sock.lines[-1] == "NICK fluidtest", "/nick wasn't sent")
+        say(":fluidtest__!f@host NICK fluidtest")
+        command(radio, "/whois kestrel")
+        say(":irc.example.test 311 fluidtest kestrel k host.example.test * :Kestrel Fixture")
+        say(":irc.example.test 318 fluidtest kestrel :End of /WHOIS list.")
+        check(gateway.find(radio["address"], "irc", "body", "kestrel is k@host.example.test (Kestrel Fixture)").get("event_kind") == "whois",
+              "/whois results weren't event lines in the chat")
+        opened = command(radio, "/msg ChanServ HELP")
+        deliver()
+        check(gateway.route(opened["open"]["address"], "irc")["target"] == "ChanServ" and client.sock.lines[-1] == "PRIVMSG ChanServ :HELP",
+              "/msg didn't open a direct chat and send")
+        command(garden, "/part bye for now")
+        check("PART #garden :bye for now" in client.sock.lines and gateway.route(garden["address"], "irc") is None, "/part didn't leave")
+        command(radio, "/quote MODE #radio-club +m")
+        check(client.sock.lines[-1] == "MODE #radio-club +m", "/quote didn't send the raw line")
+        check(len(command(radio, "/help")["help"]) == len(chat_commands.available("irc")), "/help didn't list the commands")
+
+        # Unknown commands are refused, and commands never go out as text.
+        for text in ("/frobnicate", "/join"):
+            try:
+                command(radio, text)
+                raise RuntimeError(f"{text} wasn't refused")
+            except ValueError as error:
+                check("Unknown command" in str(error) or "Usage" in str(error), f"Unhelpful error for {text}: {error}")
+        try:
+            with closing(connect()) as db, db:
+                gateway.enqueue(db, {"address": radio["address"], "protocol": "irc", "body": "/join #x", "request": "r-join"})
+            raise RuntimeError("A command was queued as a message")
+        except ValueError as error:
+            check("is a command" in str(error), "Wrong error for a command sent as a message")
+        with closing(connect()) as db, db:
+            gateway.enqueue(db, {"address": radio["address"], "protocol": "irc", "body": "/join is literal", "request": "r-lit",
+                                 "literal": True})
+        deliver()
+        check(client.sock.lines[-1] == "PRIVMSG #radio-club :/join is literal", "// didn't send the text as written")
+        with closing(connect()) as db, db:
+            gateway.enqueue(db, {"address": server["address"], "protocol": "irc", "body": "hello", "request": "r-srv"})
+        deliver()
+        check("server chat" in gateway.find(server["address"], "irc", "id", "gateway-r-srv")["status"],
+              "Text in the server chat should explain itself")
+
+        # Line splitting: each line fits in 512 bytes once the server adds the prefix, at word breaks, and /me too.
+        long_channel = "#" + "a" * 45
+        client.sock.lines.clear()
+        client.send(long_channel, ("word " * 300).strip())
+        client.send(long_channel, "/me " + ("é" * 500))
+        sizes = [len(line.encode()) + len(":fluidtest!") + 64 + 2 for line in client.sock.lines]
+        check(len(client.sock.lines) > 4 and max(sizes) <= 512, f"Long messages weren't split to fit: {sizes}")
+        check(all(not line.endswith(" ") for line in client.sock.lines[:3]), "Splits should fall between words")
+        check(all(line.startswith("PRIVMSG " + long_channel + " :\x01ACTION ") and line.endswith("\x01")
+                  for line in client.sock.lines if "\x01" in line), "A long /me wasn't split into actions")
+
+        # An invitation waits on the Invitations page; accepting joins and adds the channel.
+        say(":kestrel!k@host INVITE fluidtest #secret-lab")
+        with closing(connect()) as db:
+            waiting = gateway.snapshot(db)["invites"]
+        check([i["target"] for i in waiting] == ["#secret-lab"] and waiting[0]["from"] == "kestrel", "The IRC invite wasn't kept")
+        with closing(connect()) as db, db:
+            answer = gateway.answer_invite(db, {"id": waiting[0]["id"], "accept": True})
+        check(answer["route"]["target"] == "#secret-lab" and not answer["invites"], "Accepting the invite didn't join")
+
+        # Reconnecting asks for your own nick again.
+        client.wanted = "fluidtest"
+        client.nick = "fluidtest_"
+        phone, far = socket.socketpair()
+        far.close()
+        client.connect_socket = lambda: phone
+        try:
+            client.session()
+        except (ConnectionError, OSError):
+            pass
+        check(client.nick == "fluidtest", "A reconnect kept the fallback nick")
+
+        # Matrix: an invitation from sync, accepted; topic and member events; /me as m.emote; edits; mentions.
+        store.save("matrix", {"homeserver": "https://matrix.example.test", "user_id": "@alice:example.test",
+                              "access_token": "fixture-token"}, add=True)
+        alice = "matrix:@alice:example.test"
+        sent = []
+
+        def fake_matrix(path, body=None, allow_missing=False, method=None):
+            sent.append((path, body, method))
+            if path.startswith("sync?"):
+                return {"next_batch": "b1", "rooms": {"invite": {"!lab:example.test": {"invite_state": {"events": [
+                    {"type": "m.room.name", "state_key": "", "sender": "@maya:example.test", "content": {"name": "Radio lab"}},
+                    {"type": "m.room.member", "state_key": "@alice:example.test", "sender": "@maya:example.test",
+                     "content": {"membership": "invite"}}]}}}}}
+            if path.startswith("join/"):
+                return {"room_id": "!lab:example.test"}
+            if "/send/" in path:
+                return {"event_id": "$sent"}
+            return None if allow_missing else {}
+        gateway.matrix_request = fake_matrix
+        gateway.receive_matrix(alice)
+        with closing(connect()) as db:
+            waiting = [i for i in gateway.snapshot(db)["invites"] if i["protocol"] == "matrix"]
+        check(waiting and waiting[0]["name"] == "Radio lab" and waiting[0]["from"] == "@maya:example.test", "The Matrix invite wasn't kept")
+        with closing(connect()) as db, db:
+            lab = gateway.answer_invite(db, {"id": waiting[0]["id"], "accept": True})["route"]
+        check(lab["target"] == "!lab:example.test" and any(p.startswith("join/") for p, _, _ in sent), "Accepting the Matrix invite failed")
+        lab = gateway.route(lab["address"], "matrix")
+        for event in ({"type": "m.room.topic", "event_id": "$t", "sender": "@maya:example.test", "content": {"topic": "Field day"}},
+                      {"type": "m.room.member", "event_id": "$j", "sender": "@sam:example.test", "state_key": "@sam:example.test",
+                       "content": {"membership": "join", "displayname": "Sam"}},
+                      {"type": "m.room.member", "event_id": "$k", "sender": "@maya:example.test", "state_key": "@sam:example.test",
+                       "content": {"membership": "leave", "reason": "spam"}, "unsigned": {"prev_content": {"membership": "join", "displayname": "Sam"}}},
+                      {"type": "m.room.message", "event_id": "$e", "sender": "@sam:example.test", "content": {"msgtype": "m.emote", "body": "waves"}},
+                      {"type": "m.room.message", "event_id": "$m", "sender": "@maya:example.test", "content": {"msgtype": "m.text", "body": "alice, ready?"}},
+                      {"type": "m.room.message", "event_id": "$m2", "sender": "@maya:example.test", "content": {
+                          "msgtype": "m.text", "body": "* alice, ready now?", "m.new_content": {"msgtype": "m.text", "body": "alice, ready now?"},
+                          "m.relates_to": {"rel_type": "m.replace", "event_id": "$m"}}}):
+            gateway.accept_matrix(lab, {"origin_server_ts": 10, **event})
+        with closing(connect()) as db:
+            rows = [json.loads(row[0]) for row in db.execute("SELECT payload FROM protocol_messages ORDER BY rowid")]
+        lab_rows = [i for i in rows if i["address"] == lab["address"]]
+        matrix_events = [(i["event_kind"], i["body"]) for i in lab_rows if i.get("event")]
+        check(matrix_events == [("topic", "@maya:example.test changed the topic to “Field day”"), ("join", "Sam joined"),
+                                ("kick", "@maya:example.test removed Sam (spam)")], f"Matrix event lines were wrong: {matrix_events}")
+        check(json.loads(gateway.state("channel:" + lab["address"]))["topic"] == "Field day", "The Matrix topic wasn't kept")
+        check(any(i["body"] == "/me waves" for i in lab_rows), "m.emote wasn't kept as /me")
+        check(any(i["body"] == "alice, ready?" and i.get("mention") for i in lab_rows), "A Matrix mention wasn't marked")
+        check(any(i["body"] == "✏️ Edited “alice, ready?” to: alice, ready now?" for i in lab_rows), "A Matrix edit wasn't shown as an edit")
+        with closing(connect()) as db, db:
+            gateway.run_command(db, {"address": lab["address"], "protocol": "matrix", "text": "/me tunes in @sam:example.test",
+                                     "request": "r-emote"})
+        deliver()
+        emote = next(body for path, body, _ in sent if "/send/m.room.message/" in path)
+        check(emote["msgtype"] == "m.emote" and emote["body"] == "tunes in @sam:example.test"
+              and emote["m.mentions"] == {"user_ids": ["@sam:example.test"]}, f"/me on Matrix wasn't an emote with a mention: {emote}")
+        with closing(connect()) as db, db:
+            gateway.run_command(db, {"address": lab["address"], "protocol": "matrix", "text": "/topic Field day at noon"})
+            gateway.run_command(db, {"address": lab["address"], "protocol": "matrix", "text": "/nick Alice Fixture"})
+        check(any(p.endswith("/state/m.room.topic") and b == {"topic": "Field day at noon"} for p, b, _ in sent)
+              and any(p.endswith("/displayname") and b == {"displayname": "Alice Fixture"} for p, b, _ in sent),
+              "Matrix /topic or /nick didn't reach the homeserver")
+        # Reconnecting: 15 s, 30 s, 1, 2, 5, then 10 minutes, ±20%, and at most five automatic reconnects an hour.
+        check([round(irc_client.backoff(n, lambda: 0.5)) for n in range(8)] == [15, 30, 60, 120, 300, 600, 600, 600]
+              and round(irc_client.backoff(0, lambda: 0.0), 6) == 12 and round(irc_client.backoff(0, lambda: 1.0), 6) == 18,
+              "The IRC backoff schedule or its jitter is wrong")
+        now = {"t": 10_000.0}
+        paced = irc_client.IrcClient({"server": "irc.example.test", "nick": "fluidtest"}, lambda *a: None, lambda *a: None,
+                                     clock=lambda: now["t"], rand=lambda: 0.5)
+        delays = []
+        for attempt in range(6):
+            delays.append(round(paced.next_delay(attempt)))
+            now["t"] += delays[-1]
+            paced.budget.record(now["t"])
+        check(delays[:5] == [15, 30, 60, 120, 300], f"Backoff delays were wrong: {delays}")
+        check(delays[5] == round(10_000 + 15 + 3600 - (10_000 + 525)), f"The sixth reconnect in an hour wasn't held back: {delays}")
+        paced.wake.set()  # Reconnect by hand doesn't wait.
+        check(paced.wait_to_reconnect(60) is True and paced.status["state"] == "reconnecting", "Reconnect didn't skip the wait")
+        check(paced.wait_to_reconnect(0.01) is False, "An ordinary wait was taken for Reconnect")
+        with closing(connect()) as db:
+            check(ident in gateway.snapshot(db)["connections"], "The connection state isn't in the snapshot")
+        gateway.reconnect({"account": ident})
+        check(client.wake.is_set(), "Reconnect didn't reach the IRC client")
+
+        # Keep joined: on by default; after a reconnect only kept channels rejoin, the others when opened or written to.
+        with closing(connect()) as db, db:
+            gateway.set_keep(db, {"address": radio["address"], "protocol": "irc", "keep": False})
+        with closing(connect()) as db:
+            shown = next(r for r in gateway.snapshot(db)["routes"] if r["address"] == radio["address"])
+        check(shown["keep_joined"] is False and gateway.keeps(ident, "#garden-new"), "Keep joined wasn't saved")
+        check(irc_client.keep_joined_channels(["#radio-club", "#other"], lambda c: gateway.keeps(ident, c)) == ["#other"],
+              "The rejoin policy kept the wrong channels")
+        rejoin = irc_client.IrcClient({"server": "irc.example.test", "nick": "fluidtest", "channels": ["#radio-club", "#other"]},
+                                      lambda *a: None, lambda *a: None, keep=lambda c: gateway.keeps(ident, c))
+        rejoin.sock = Recorder()
+        rejoin.handle(irc_client.parse(":irc.example.test 001 fluidtest :Welcome"))
+        check([l for l in rejoin.sock.lines if l.startswith("JOIN")] == ["JOIN #other"] and rejoin.status["state"] == "connected",
+              "A channel that isn't kept joined rejoined on connect")
+        gateway.clients[ident] = ("fixture", rejoin)
+        gateway.open_chat({"address": radio["address"], "protocol": "irc"})
+        check(rejoin.sock.lines[-1] == "JOIN #radio-club", "Opening the channel didn't rejoin it")
+        rejoin.handle(irc_client.parse(":fluidtest!f@host JOIN #radio-club"))
+        before = len(rejoin.sock.lines)
+        gateway.open_chat({"address": radio["address"], "protocol": "irc"})
+        check(len(rejoin.sock.lines) == before, "An open channel was joined twice")
+        gateway.clients[ident] = ("fixture", client)
+
+        # Email never takes a command as text.
+        try:
+            gateway.check_not_command({"protocol": "email", "via": "email"}, "/me waves", {})
+            raise RuntimeError("Email accepted /me")
+        except ValueError:
+            pass
+    print("PASS  chat features: bot NOTICEs and new people open DMs, server notices, /me round trip, /join /part /nick /topic "
+          "/whois /msg /quote, invites accepted (IRC and Matrix), nick-in-use fallback, line splitting, flood pacing, "
+          "unknown commands refused, mentions, CTCP off by default, event lines, the reconnect backoff and hourly cap, and Keep joined")
+
+
 def communities_test():
     """Messages → Chats | Communities and the inbox filter menu: served, sorted, filtered, and their prefs round trip."""
     with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
@@ -1285,7 +1853,7 @@ def communities_test():
               "Show community chats in Chats couldn't be turned off")
         order = ["groups", "inbox", "-unread", "irc"]
         saved = request("/api/settings", {"prefs": {"inboxFilters": order}})["prefs"]["inboxFilters"]
-        check(saved[:4] == order and len(saved) == 12 and request("/api/inbox")["prefs"]["inboxFilters"] == saved, "Inbox filters didn't round trip")
+        check(saved[:4] == order and len(saved) == 14 and request("/api/inbox")["prefs"]["inboxFilters"] == saved, "Inbox filters didn't round trip")
         for bad in ({"communitySort": "newest"}, {"inboxFilters": ["-inbox"]}, {"inboxFilters": ["inbox", "inbox"]}, {"inboxFilters": ["spam"]},
                     {"inboxFilters": "inbox"}, {"showCommunityChats": "yes"}):
             try:
@@ -1355,6 +1923,254 @@ if (wrong.length) { console.log(wrong.join('\n')); process.exit(1); }
     check(result.returncode == 0, "Communities or inbox filter rules failed in Node: " + (result.stdout + result.stderr).strip()[:600])
     print("PASS  Chats | Communities and inbox filters: the switch is served, servers and channels sort by recent activity, name, "
           "and date joined, filters keep to the inbox, private folder, and decoy scopes, and their prefs round trip")
+
+
+# The request rule's cases, shared with the phone's MessageRequestsTest.kt: [service, facts that are on, decision,
+# settings, expected]. "texts" filters unknown texts (off by default); "nochats" turns the chat services filter off.
+REQUEST_CASES = [
+    ["sms", [], "", [], False], ["sms", [], "", ["texts"], True], ["sms", ["contact"], "", ["texts"], False],
+    ["sms", ["favorite"], "", ["texts"], False], ["sms", ["sent"], "", ["texts"], False], ["sms", ["group"], "", ["texts"], False],
+    ["sms", ["automated"], "", ["texts"], False], ["sms", [], "accepted", ["texts"], False],
+    ["sms", [], "deleted:1700000000000", ["texts"], True],
+    ["irc", ["stranger"], "", [], True], ["xmpp", ["stranger"], "", [], True], ["matrix", ["stranger"], "", [], True],
+    ["email", ["stranger"], "", [], True], ["irc", ["stranger"], "", ["nochats"], False], ["irc", [], "", [], False],
+    ["xmpp", ["stranger", "sent"], "", [], False], ["email", ["stranger", "contact"], "", [], False],
+    ["matrix", ["stranger", "favorite"], "", [], False], ["irc", ["stranger"], "accepted", [], False],
+    ["matrix", ["invite", "stranger"], "", [], True], ["matrix", ["invite", "group", "stranger"], "", [], True],
+    ["matrix", ["invite"], "accepted", [], False], ["irc", ["stranger", "service"], "", [], False], ["irc", ["group"], "", [], False],
+    ["xmpp", ["group", "stranger"], "", [], False],
+]
+SERVICE_CASES = [["irc", "NickServ", True], ["irc", "ChanServ", True], ["irc", "*status", True], ["irc", "irc.example.net", True],
+                 ["irc", "kestrel", False], ["irc", "servant", False], ["xmpp", "example.org", True], ["xmpp", "amir@example.org", False],
+                 ["matrix", "@server:example.org", True], ["matrix", "@maya:example.org", False],
+                 ["email", "MAILER-DAEMON@example.org", True], ["email", "leah@example.org", False]]
+
+
+def requests_test():
+    """Message requests and automated senders on FluidMessages Web: the rules (the phone's cases), chats from strangers
+    on IRC, XMPP, and Matrix invites, the accept, delete, block, and report endpoints, the settings, the merge with the
+    phone, and decoy sessions. Fictional people and numbers only."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import sqlite3
+    import accounts
+    import message_requests
+    import protocol_gateway
+
+    # In the gateway: who gets a chat of their own.
+    with tempfile.TemporaryDirectory(prefix="fluid-requests-") as directory:
+        database = Path(directory) / "gateway.sqlite"
+        connect = lambda: sqlite3.connect(database, timeout=10)
+        with closing(connect()) as db, db:
+            db.executescript(protocol_gateway.SCHEMA)
+        store = accounts.AccountStore(Path(directory) / "accounts.json", environ={})
+        store.save("irc", {"server": "irc.harbor.test", "nick": "fluidtest", "channels": "#radio-club"})
+        store.save("xmpp", {"jid": "you@harbor.test", "password": "fixture-password"})
+        store.save("matrix", {"homeserver": "https://matrix.harbor.test", "user_id": "@you:harbor.test", "access_token": "fixture-token"})
+        gateway = protocol_gateway.Gateway(connect, {}, Path(directory) / "files", store)
+        gateway.refresh_clients = lambda: None
+        now = int(time.time() * 1000)
+        gateway.accept_irc("kestrel", "kestrel", "Are you selling the antenna?", {}, now, False)
+        gateway.accept_irc("NickServ", "NickServ", "This nickname is registered.", {"service": "1"}, now, False)
+        gateway.accept_irc("irc.harbor.test", "irc.harbor.test", "Welcome", {}, now, False)
+        gateway.accept_irc("#radio-club", "mosaic", "Antenna night is Friday", {}, now, False)
+        stranger = gateway.irc_route("kestrel")
+        check(stranger and stranger.get("request") is True and not stranger["group"], "An IRC private message didn't start a request")
+        # NickServ gets its own automated chat (chat_features.irc_fallback), never a request; the server's lines go to
+        # the network's server chat.
+        service = gateway.irc_route("NickServ")
+        check(service and service.get("automated") is True and not service.get("request") and gateway.irc_route("irc.harbor.test") is None,
+              "NickServ became a request, or the server got a chat of its own")
+        check(not gateway.irc_route("#radio-club").get("request"), "A joined channel was marked as a request")
+        with closing(connect()) as db:
+            texts = [json.loads(row[0])["body"] for row in db.execute("SELECT payload FROM protocol_messages")]
+        check("Are you selling the antenna?" in texts, "The stranger's message didn't arrive")
+        gateway.accept_xmpp("rowan@harbor.test", "rowan@harbor.test", "Hello from the garden club", "x1", now, False, {})
+        gateway.accept_xmpp("amir@harbor.test", "amir@harbor.test", "Train at six", "x2", now, False, {"roster": True})
+        gateway.accept_xmpp("harbor.test", "harbor.test", "Server notice", "x3", now, False, {})
+        check(gateway.xmpp_route("rowan@harbor.test").get("request") is True, "An XMPP chat from a stranger isn't a request")
+        check(not gateway.xmpp_route("amir@harbor.test").get("request"), "Someone in the XMPP roster was a request")
+        check(gateway.xmpp_route("harbor.test") is None, "The XMPP server got a chat")
+        message_requests.matrix_invites(gateway, "matrix:@you:harbor.test", {"rooms": {"invite": {"!lantern:harbor.test": {"invite_state": {"events": [
+            {"type": "m.room.member", "sender": "@juniper:harbor.test", "content": {"membership": "invite", "is_direct": True}}]}}}}})
+        invite = next(route for route in gateway.routes if route["target"] == "!lantern:harbor.test")
+        check(invite.get("invite") is True and invite["inviter"] == "@juniper:harbor.test", "A Matrix invite didn't show as a request")
+        calls = []
+        gateway.matrix_request = lambda path, body=None, allow_missing=False, method=None: calls.append(path) or {}
+        saved = {}
+        with closing(connect()) as db, db:
+            result = message_requests.act(gateway, db, "accept", {"address": invite["address"]}, {"blocked": []},
+                                          lambda db, chats: saved.update(chats))
+        check(calls == ["join/%21lantern%3Aharbor.test"] and saved["requests"] == {invite["address"]: "accepted"},
+              "Accepting a Matrix invite didn't join the room: " + repr(calls))
+        check(not next(route for route in gateway.routes if route["address"] == invite["address"]).get("invite"), "The invite stayed open")
+        with closing(connect()) as db, db:
+            reported = message_requests.act(gateway, db, "report", {"address": invite["address"]}, saved, lambda db, chats: saved.update(chats))
+        check(reported["reported"] is True and calls[-1] == "rooms/%21lantern%3Aharbor.test/report" and invite["address"] in saved["blocked"],
+              "Block and report didn't block and use Matrix's report endpoint")
+
+    token = secrets.token_hex(24)
+    with companion(free_port(), token) as (origin, request, _):
+        stored = request.directory / "demo.sqlite"
+        settings = request("/api/settings")["prefs"]
+        check({key: settings[key] for key in message_requests.PREFS} == message_requests.defaults()
+              and settings["requestTexts"] is False and settings["requestChats"] is True and settings["requestNotify"] == "quiet",
+              "The request settings don't start at their defaults")
+        for bad in ({"requestTexts": "yes"}, {"requestNotify": "loud"}, {"automatedBlock": 1}):
+            try:
+                request("/api/settings", {"prefs": bad})
+                raise RuntimeError("Invalid request settings were accepted: " + json.dumps(bad))
+            except HTTPError as error:
+                check(error.code == 400, "Expected HTTP 400 for " + json.dumps(bad))
+        check(request("/api/settings", {"prefs": {"inboxFilters": ["requests", "inbox", "-automated"]}})["prefs"]["inboxFilters"][:3]
+              == ["requests", "inbox", "-automated"], "The Requests and Automated filters can't be placed in the menu")
+        # A stranger on IRC, the way the gateway files one, and a new number from the phone.
+        now = int(time.time() * 1000)
+        route = {"address": "req-0123456789abcdef", "protocol": "irc", "target": "kestrel", "via": "irc", "group": False,
+                 "title": "kestrel", "members": [], "request": True}
+        with closing(sqlite3.connect(stored)) as db, db:
+            db.execute("INSERT INTO protocol_routes VALUES (?, 'irc', ?)", (route["address"], json.dumps(route)))
+            for index, body in enumerate(("Are you selling the antenna?", "It's for the club.")):
+                db.execute("INSERT INTO protocol_messages VALUES (?, ?, ?)", ("irc-ask-%d" % index, now - index, json.dumps(
+                    {"id": "irc-ask-%d" % index, "address": route["address"], "protocol": "irc", "title": "kestrel", "body": body,
+                     "date": now - index, "type": 1, "read": 0, "author": "kestrel"})))
+        request("/api/sync", {"messages": sample_messages() + [{"address": "+12025550177", "body": "Is this the bike co-op?", "type": 1,
+                                                                 "date": now, "read": 0}]})
+        snapshot = request("/api/inbox")
+        check(any(item.get("request") is True and item["address"] == route["address"] for item in snapshot["routes"]),
+              "The browser doesn't see that a chat is a request")
+        try:
+            request("/api/requests/nonsense", {"address": route["address"]})
+            raise RuntimeError("An unknown request action worked")
+        except HTTPError as error:
+            check(error.code == 400, "An unknown request action didn't fail cleanly")
+        accepted = request("/api/requests/accept", {"address": route["address"], "contact": True, "name": "Kestrel"})
+        check(accepted["web_chats"]["requests"] == {route["address"]: "accepted"}, "Accept wasn't remembered")
+        check(not next(item for item in request("/api/inbox")["routes"] if item["address"] == route["address"]).get("request"),
+              "Accept didn't move the chat to the inbox")
+        check(any(contact["name"] == "Kestrel" and contact["addresses"] == [{"service": "irc", "address": "kestrel"}]
+                  for contact in request("/api/contacts")["contacts"]), "Accept with Add to contacts didn't add the contact")
+        blocked = request("/api/requests/block", {"address": "+12025550177"})
+        check("+12025550177" in blocked["web_chats"]["blocked"], "Block didn't block the number")
+        reported = request("/api/requests/report", {"address": "+12025550199"})
+        check("+12025550199" in reported["web_chats"]["blocked"] and reported["reported"] is False, "Block and report didn't block a text")
+        deleted = request("/api/requests/delete", {"address": route["address"]})
+        check(deleted["web_chats"]["requests"][route["address"]].startswith("deleted:"), "Delete wasn't remembered")
+        check(not any(item["address"] == route["address"] for item in request("/api/inbox")["messages"]), "Delete left the messages")
+        check(not any(item["address"] == route["address"] for item in request("/api/inbox")["routes"]), "Delete left the stranger's chat")
+        request("/api/requests/accept", {"address": "+12025550188"})
+        request("/api/settings", {"prefs": {"requestTexts": True, "automatedOut": True}})
+
+        # The merge: only a phone that asks sees these items, and its changes land in the web's settings.
+        plain = request("/api/merge", extra_headers={"X-Fluid-Merge-Items": "muteuntil"})
+        check(plain["requests"] == 1 and not any(key.startswith(("request:", "requests:")) for key in plain["web"]),
+              "A phone that didn't ask got message request items")
+        asked = request("/api/merge", extra_headers={"X-Fluid-Merge-Items": "muteuntil", "X-Fluid-Merge-Requests": "1"})
+        check(asked["web"].get("request:+12025550188") == "accepted" and asked["web"].get("requests:texts") == "on"
+              and asked["web"].get("requests:automatedOut") == "on" and "requests:chats" not in asked["web"],
+              "The web's request settings or decisions didn't reach the phone: " + json.dumps(asked["web"])[:300])
+        merged = request("/api/merge", {"revision": asked["revision"], "mute_until": 1, "requests": 1, "conflicts": [],
+                                        "apply_web": {"request:+12025550166": "accepted", "requests:notify": "off", "requests:texts": None},
+                                        "baseline": {**asked["web"], "request:+12025550166": "accepted", "requests:notify": "off"}})
+        check(merged["web"].get("request:+12025550166") == "accepted" and merged["web"].get("requests:notify") == "off"
+              and "requests:texts" not in merged["web"], "The phone's request settings didn't reach the web")
+        prefs = request("/api/settings")["prefs"]
+        check(prefs["requestNotify"] == "off" and prefs["requestTexts"] is False, "The merged request settings weren't saved")
+        # The same items for a phone that lists them with the other newer groups (X-Fluid-Merge-Groups and "items").
+        grouped = request("/api/merge", extra_headers={"X-Fluid-Merge-Items": "muteuntil",
+                                                       "X-Fluid-Merge-Groups": "muteuntil,pref,favorite,request,requests"})
+        check(grouped["requests"] == 1 and "request" in grouped["items"] and "requests" in grouped["items"]
+              and grouped["web"].get("request:+12025550166") == "accepted" and grouped["web"].get("requests:notify") == "off",
+              "A phone listing request groups in X-Fluid-Merge-Groups didn't get them: " + json.dumps(grouped["web"])[:300])
+        regrouped = request("/api/merge", {"revision": grouped["revision"], "items": ["muteuntil", "pref", "favorite", "request", "requests"],
+                                           "mute_until": 1, "conflicts": [], "apply_web": {"requests:notify": None},
+                                           "baseline": {key: value for key, value in grouped["web"].items() if key != "requests:notify"}})
+        check("requests:notify" not in regrouped["web"] and regrouped["web"].get("request:+12025550166") == "accepted",
+              "A request setting posted in \"items\" style didn't reach the web")
+        # Groups the phone didn't name are left alone: a "pref"-only phone can't change request items.
+        prefs_only = request("/api/merge", extra_headers={"X-Fluid-Merge-Groups": "muteuntil,pref"})
+        request("/api/merge", {"revision": prefs_only["revision"], "items": ["muteuntil", "pref"], "mute_until": 1, "conflicts": [],
+                               "apply_web": {"request:+12025550166": None}, "baseline": prefs_only["web"]})
+        check(request("/api/merge", extra_headers={"X-Fluid-Merge-Requests": "1"})["web"].get("request:+12025550166") == "accepted",
+              "A phone that didn't name the request groups changed them")
+
+    # Decoy sessions only ever see the decoy world: no real requests, decisions, or request actions.
+    password, decoy = "harbor maple lantern", "willow candle orbit"
+    opener = build_opener(ProxyHandler({}))
+    with companion(free_port(), "") as (origin, request, _):
+        def call(path, body=None, cookie=None):
+            sent = {"X-Fluid-Request": "1", "Content-Type": "application/json", "Origin": origin}
+            if cookie:
+                sent["Cookie"] = cookie
+            try:
+                with opener.open(Request(origin + path, data=json.dumps(body).encode() if body is not None else None, headers=sent),
+                                 timeout=30) as response:
+                    return response.status, json.loads(response.read() or b"{}"), response.headers
+            except HTTPError as error:
+                return error.code, json.loads(error.read() or b"{}"), error.headers
+        status, _, headers = call("/api/auth/local", {})
+        here = headers.get("Set-Cookie").split(";")[0]
+        check(call("/api/auth/password", {"password": password}, cookie=here)[0] == 200, "Couldn't set the web password")
+        bearer = {"Authorization": "Bearer " + call("/api/auth/pairing", {}, cookie=here)[1]["token"]}
+        request("/api/sync", {"messages": [{"address": "+12025550177", "body": "Fictional request text", "type": 1,
+                                            "date": int(time.time() * 1000), "read": 0}]}, authorized=False, extra_headers=bearer)
+        check(call("/api/requests/accept", {"address": "+12025550177"}, cookie=here)[0] == 200, "The real session couldn't accept")
+        check(call("/api/privacy/decoy", {"password": decoy, "again": decoy, "current": password}, cookie=here)[0] == 200,
+              "Couldn't set the decoy password")
+        status, _, headers = call("/api/auth/login", {"password": decoy, "remember": False})
+        fake = headers.get_all("Set-Cookie")[0].split(";")[0]
+        seen = json.dumps(call("/api/inbox", cookie=fake)[1]) + json.dumps(call("/api/settings", cookie=fake)[1])
+        check("5550177" not in seen and "Fictional request text" not in seen, "A decoy session sees a real request or its decision")
+        for action in ("accept", "delete", "block", "report"):
+            check(call("/api/requests/" + action, {"address": "+12025550177"}, cookie=fake)[0] == 503,
+                  "A decoy session reached /api/requests/" + action)
+        real = call("/api/settings", cookie=here)[1] if call("/api/settings", cookie=here)[0] == 200 else {}
+        check(real.get("web_chats", {}).get("requests", {}).get("+12025550177") == "accepted", "The decoy session changed a real decision")
+
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("PASS  message requests on FluidMessages Web (the rules in Node skipped: node is missing)")
+        return
+    script = "\n".join((ROOT / "server" / name).read_text() for name in ("inbox-filters.js", "requests.js")).replace(
+        "SETTINGS_SUBPAGES.push(", "[].push(") + "\nconst CASES = " + json.dumps(REQUEST_CASES) + ";\nconst SERVICES = " \
+        + json.dumps(SERVICE_CASES) + r""";
+const wrong = [];
+for (const [service, on, decision, flags, expected] of CASES) {
+  const facts = {service, decision, ...Object.fromEntries(['group', 'invite', 'contact', 'favorite', 'sent', 'automated', 'service', 'stranger']
+    .map((name) => [name === 'service' ? 'networkService' : name, on.includes(name)]))};
+  facts.service = service;
+  const settings = {...REQUEST_DEFAULTS, requestTexts: flags.includes('texts'), requestChats: !flags.includes('nochats')};
+  if (isRequest(facts, settings) !== expected) wrong.push(JSON.stringify([service, on, decision, flags]) + ' should be ' + expected);
+}
+for (const [service, name, expected] of SERVICES) if (requestNetworkService(service, name) !== expected) wrong.push(service + ' ' + name);
+if (requestDeletedAt('deleted:1700000000000') !== 1700000000000 || requestDeletedAt('accepted') !== 0) wrong.push('deleted at');
+// Where chats go: Requests and Automated in the inbox, the private folder, and their filters.
+const place = (facts) => ({hidden: false, archived: false, blocked: false, ...facts});
+const shown = (scope, facts) => ['inbox', 'unread', 'texts', 'requests', 'automated', 'archived', 'blocked'].filter((id) => inboxFilterPlaces(scope, id, place(facts)));
+const same = (a, b, why) => { if (JSON.stringify(a) !== JSON.stringify(b)) wrong.push(why + ': ' + JSON.stringify(a)); };
+same(shown('', {request: true}), ['requests'], 'a request');
+same(shown('', {request: true, blocked: true}), ['blocked'], 'a blocked request');
+same(shown('', {automatedOut: true}), ['automated'], 'automated kept out of the inbox');
+same(shown('', {automated: true}), ['inbox', 'unread', 'texts', 'requests', 'automated'].filter((id) => id !== 'requests'), 'automated in the inbox');
+same(shown('', {request: true, dismissed: true}), [], 'a deleted request');
+same(shown('', {request: true, hidden: true}), [], 'a private request');
+same(shown('private', {request: true, hidden: true}), ['requests'], 'a request in the private folder');
+same(inboxFilterMatches('automated', {automated: true, services: new Set(['sms'])}), true, 'the Automated filter');
+same(inboxFilterMatches('automated', {automated: false, services: new Set(['sms'])}), false, 'not automated');
+same(INBOX_FILTERS.map((filter) => filter.id).filter((id) => ['requests', 'automated'].includes(id)), ['requests', 'automated'], 'the filters');
+// The settings default like the phone's, and the sample inbox filters unknown texts.
+var prefs = {}, sampleOn = false;
+same(requestSettings(), REQUEST_DEFAULTS, 'defaults');
+prefs = {requestNotify: 'loud', requestTexts: 'yes', automatedBlock: true};
+same([requestSettings().requestNotify, requestSettings().requestTexts, requestSettings().automatedBlock], ['quiet', false, true], 'cleaning');
+sampleOn = true;
+same(requestSettings().requestTexts, true, 'the sample');
+if (wrong.length) { console.log(wrong.join('\n')); process.exit(1); }
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0, "Message request rules failed in Node: " + (result.stdout + result.stderr).strip()[:900])
+    print("PASS  message requests: the rules match the phone's (contacts, accepted, services, joined channels, defaults per service), "
+          "IRC and XMPP strangers and Matrix invites become requests, accept/delete/block/report, Add to contacts, settings, "
+          "the opt-in merge both ways, and decoy sessions never see real requests")
 
 
 def server_directory_test():
@@ -1884,10 +2700,13 @@ def web_privacy_test():
                           ({"code": password, "again": password}, "the web password as its passcode")):
             check(call("/api/privacy/private/setup", body, cookie=real)[0] == 400, "The private folder accepted " + why)
         status, result, _ = call("/api/privacy/private/setup", {"code": code, "again": code}, cookie=real)
-        check(status == 200 and result["private"] == {"set": True, "open": True, "count": 0}, "Couldn't set up the private folder")
+        check(status == 200 and result["private"] == {"set": True, "open": True, "count": 0, "services": [], "close_code": True},
+              "Couldn't set up the private folder")
         check(call("/api/privacy/private/move", {"address": secret_chat, "private": True}, cookie=real)[0] == 200, "Couldn't move a chat")
         check(call("/api/settings", {"web_chats": {"pinned": [secret_chat], "archived": [], "blocked": [], "muted": [], "locks": {}}},
                    cookie=real)[0] == 200, "Couldn't pin the private chat")
+        check(call("/api/settings", {"web_favorites": ["(202) 555-0123", "+1 202 555 0146"]}, cookie=real)[0] == 200,
+              "Couldn't star the private chat")
         opened = call("/api/inbox", cookie=real)[1]
         check(any(row["address"] == secret_chat for row in opened["messages"]) and opened["private_chats"] == [secret_chat],
               "The session that set up the private folder doesn't see its chat")
@@ -1908,6 +2727,10 @@ def web_privacy_test():
         check(stored("web_chats")["pinned"] == [secret_chat], "A locked session's save dropped the private chat's pin")
         check("5550123" not in json.dumps(request("/api/merge", authorized=False, extra_headers=bearer)["web"]),
               "The private chat went into the phone↔web merge")
+        # Favorites too, for a phone that merges them; the rest of the favorites still go.
+        newer = request("/api/merge", authorized=False, extra_headers={**bearer, "X-Fluid-Merge-Groups": "muteuntil,pref,favorite"})["web"]
+        check("5550123" not in json.dumps(newer) and newer.get("favorite:+12025550146") == "on",
+              "A private chat's favorite went into the merge, or the others didn't: " + json.dumps(newer))
         check(call("/api/privacy/private/unlock", {"code": "0000"}, cookie=real)[1] == {"open": False}, "A wrong passcode opened the folder")
         hides(real, "after a wrong passcode")
         check(call("/api/privacy/private/unlock", {"code": code}, cookie=real)[1] == {"open": True}, "The right passcode didn't open the folder")
@@ -2210,6 +3033,286 @@ def merge_test():
     print("PASS  phone and web merge: auth, CSRF, a settled conflict on both sides, stickers, and timed mutes")
 
 
+MERGE_GROUPS = "muteuntil,pref,favorite"
+SETTINGS_GROUPS = ("look", "fun", "pref", "timer", "wallpaper")
+
+
+def phone_merge(phone, web, baseline, in_scope=lambda key: True):
+    """The phone's three-way merge (SyncMerge.merge in SyncMerge.kt), for items other than accounts. SyncMergeTest.kt
+    runs the same cases on the phone's own code."""
+    folder_set = lambda value: set((value or "").split("+")) & {"pinned", "archived", "blocked"}
+    apply_phone, apply_web, conflicts = {}, {}, []
+    agreed = dict(baseline or {})
+
+    def agree(key, value):
+        if value is None:
+            agreed.pop(key, None)
+        else:
+            agreed[key] = value
+    for key in sorted(set(phone) | set(web) | set(baseline or {})):
+        if not in_scope(key):
+            continue
+        p, w = phone.get(key), web.get(key)
+        if p == w:
+            agree(key, p)
+            continue
+        if baseline is not None:
+            b = baseline.get(key)
+            if p == b:
+                apply_phone[key] = w
+                agree(key, w)
+            elif w == b:
+                apply_web[key] = p
+                agree(key, p)
+            else:
+                conflicts.append(key)
+            continue
+        wider = None
+        if key.startswith("folder:"):
+            left, right = folder_set(p), folder_set(w)
+            wider = p if left >= right else w if right >= left else None
+        if p is None or w is not None and wider == w:
+            apply_phone[key] = w
+            agree(key, w)
+        elif w is None or wider == p:
+            apply_web[key] = p
+            agree(key, p)
+        else:
+            conflicts.append(key)
+    return apply_phone, apply_web, agreed, conflicts
+
+
+class FakePhone:
+    """A phone's merge items and what it remembers between merges (SyncMergeRun): the pair id and resolved choices."""
+
+    def __init__(self, call, items=None, groups=MERGE_GROUPS):
+        self.call, self.items, self.groups, self.pair, self.applied = call, dict(items or {}), groups, None, None
+
+    def look(self):
+        headers = {"X-Fluid-Merge-Items": "muteuntil"} if self.groups else {}
+        if self.groups:
+            headers["X-Fluid-Merge-Groups"] = self.groups
+        return self.call("/api/merge", bearer=True, headers=headers)[1]
+
+    def sync(self):
+        state = self.look()
+        resolved = state.get("resolved")
+        if resolved and resolved["id"] != self.applied:
+            for key, pick in resolved["picks"].items():
+                if pick == "web":
+                    self.write({key: resolved["values"][key]})
+            self.applied = resolved["id"]
+        shared = [group for group in state.get("items", ["muteuntil"] if state.get("mute_until") == 1 else [])
+                  if group in (self.groups or "").split(",")]
+        known = lambda key: key.split(":", 1)[0] not in ("muteuntil", "pref", "favorite") or key.split(":", 1)[0] in shared
+        follow = state["follow_phone"]
+        baseline = state["baseline"] if state["pair"] is not None and state["pair"] == self.pair else None
+        mine = {key: value for key, value in self.items.items() if known(key)}
+        apply_phone, apply_web, agreed, conflicts = phone_merge(
+            mine, state["web"], baseline, lambda key: known(key) and (follow or key.split(":", 1)[0] not in SETTINGS_GROUPS))
+        self.write(apply_phone)
+        body = {"revision": state["revision"], "apply_web": apply_web, "baseline": {key: value for key, value in agreed.items() if known(key)},
+                "conflicts": [{"key": key, "phone": self.items.get(key)} for key in conflicts], "items": shared}
+        if "muteuntil" in shared:
+            body["mute_until"] = 1
+        status, answer, _ = self.call("/api/merge", body, bearer=True)
+        check(status == 200, "The phone's merge wasn't accepted: " + json.dumps(answer))
+        self.pair = answer["pair"]
+        return answer
+
+    def write(self, changes):
+        for key, value in changes.items():
+            if value is None:
+                self.items.pop(key, None)
+            else:
+                self.items[key] = value
+
+
+def merge_items_test():
+    """Every item type the phone and web both keep: each one written by a merge reads back the same, newer groups
+    (inbox choices, favorites) only for phones that ask, and first pairing, reconnecting, both sides changing the same
+    thing while apart, settling on either side, an older phone, "This web app's own" settings, a reinstalled phone,
+    and an erased server. Fictional chats only."""
+    token = secrets.token_hex(24)
+
+    def caller(origin):
+        opener = build_opener(ProxyHandler({}))
+
+        def call(path, body=None, cookie=None, headers=None, bearer=False):
+            sent = {"Authorization": "Bearer " + token} if bearer else {"X-Fluid-Request": "1", "Origin": origin}
+            sent.update({"Content-Type": "application/json", **(headers or {})})
+            if cookie:
+                sent["Cookie"] = cookie
+            data = json.dumps(body).encode() if body is not None else None
+            try:
+                with opener.open(Request(origin + path, data=data, headers=sent), timeout=15) as response:
+                    return response.status, json.loads(response.read() or b"{}"), response.headers
+            except HTTPError as error:
+                return error.code, json.loads(error.read() or b"{}"), error.headers
+        status, _, headers = call("/api/auth/local", {})
+        check(status == 200, "This computer couldn't open FluidMessages Web for the merge items test")
+        return call, headers.get_all("Set-Cookie")[0].split(";")[0]
+
+    with companion(free_port(), token) as (origin, _, _):
+        call, cookie = caller(origin)
+        older = {"X-Fluid-Merge-Items": "muteuntil"}
+        newer = {**older, "X-Fluid-Merge-Groups": MERGE_GROUPS}
+
+        # Each item type written by the phone's merge reads back the same from the web's own stores.
+        soon = int(time.time() * 1000) + 7_200_000
+        every = {"look:theme": "midnight", "look:mode": "dark", "look:radius": "22", "look:size": "18", "look:padding": "14",
+                 "look:wallpaper": "aurora", "look:searchPosition": "top", "look:toolbarFinish": "tinted", "look:density": "compact",
+                 "look:tails": "true", "look:chromeOpacity": "70", "look:speed": "320", "look:exactTimes": "true",
+                 "look:combineProtocols": "true", "look:tagMode": "always", "look:encryptionMode": "off",
+                 "wallpaper:+12025550161": "orchard", "fun:effects": "off", "fun:reactions": "off", "fun:games": "off",
+                 "fun:random": "off", "fun:gifs": "off", "fun:linkPreviews": "off",
+                 "pref:tabCounts": "off", "pref:showCommunityChats": "off", "pref:communitySort": "joined",
+                 "pref:inboxFilters": "unread,inbox,-favorites,groups,direct,texts,matrix,xmpp,email,irc,requests,automated,archived,blocked",
+                 "pref:announceSettings": "off", "folder:+12025550162": "archived+pinned", "muted:+12025550163": "on",
+                 "muteuntil:+12025550163": str(soon), "favorite:+12025550164": "on", "favorite:@rowan:example.org": "on",
+                 "sender:+12025550165": "person", "timer:*": "86400", "timer:+12025550166": "3600",
+                 "gif:Otters": "https://gifs.example.net/otters/{query}", "gifoff:imgur": "off",
+                 "pay:Club dues": "https://pay.example.net/{address}", "pay:*": "Club dues", "protocol:irc": "off"}
+        state = call("/api/merge", bearer=True, headers=newer)[1]
+        check(state["items"] == ["muteuntil", "pref", "favorite", "request", "requests"] and state.get("requests") == 1
+              and state["web"] == {}, "A new server lists items or groups wrongly: " + json.dumps(state)[:400])
+        status, after, _ = call("/api/merge", {"revision": state["revision"], "apply_web": every, "baseline": every, "conflicts": [],
+                                               "items": ["muteuntil", "pref", "favorite"], "mute_until": 1}, bearer=True)
+        check(status == 200 and after["web"] == every, "Items didn't read back the same: " + json.dumps(
+            {key: [every.get(key), after["web"].get(key)] for key in set(every) | set(after["web"]) if every.get(key) != after["web"].get(key)}))
+        settings = call("/api/settings", cookie=cookie)[1]
+        check(settings["prefs"]["tabCounts"] is False and settings["prefs"]["communitySort"] == "joined"
+              and settings["prefs"]["inboxFilters"][:3] == ["unread", "inbox", "-favorites"]
+              and settings["web_appearance"]["announceSettings"] is False and settings["web_favorites"] == ["+12025550164", "@rowan:example.org"],
+              "Inbox choices or favorites didn't reach the web's own settings")
+        timers = settings["disappearing"]
+        check(timers["since"].get("+12025550166", 0) > 0 and timers.get("default_since", 0) > 0,
+              "A timer from the phone's merge would delete messages from before it")
+        # Back to the default: every item goes, and the web's settings are their defaults again.
+        status, after, _ = call("/api/merge", {"revision": after["revision"], "apply_web": {key: None for key in every}, "baseline": {},
+                                               "conflicts": [], "items": ["muteuntil", "pref", "favorite"], "mute_until": 1}, bearer=True)
+        check(status == 200 and after["web"] == {}, "Items didn't go back to the default: " + json.dumps(after["web"]))
+        prefs = call("/api/settings", cookie=cookie)[1]["prefs"]
+        check(prefs["tabCounts"] is True and prefs["communitySort"] == "recent" and prefs["inboxFilters"][0] == "inbox",
+              "The web's inbox choices didn't go back to their defaults")
+        # A filter this server doesn't know leaves the web's menu as it was.
+        call("/api/merge", {"revision": after["revision"], "apply_web": {"pref:inboxFilters": "unread,futurefilter"}, "baseline": {},
+                            "conflicts": [], "items": ["pref"]}, bearer=True)
+        check(call("/api/settings", cookie=cookie)[1]["prefs"]["inboxFilters"][0] == "inbox", "An unknown filter changed the web's menu")
+
+        # The web's own choices before any phone (fictional).
+        status, _, _ = call("/api/settings", {"prefs": {"tabCounts": False, "communitySort": "name",
+                                                        "inboxFilters": ["unread", "inbox", "-irc"]},
+                                              "web_favorites": ["+1 (202) 555-0141", "@rowan:example.org"],
+                                              "web_appearance": {"theme": "ember", "mode": "dark", "announceSettings": False}}, cookie=cookie)
+        check(status == 200, "The web's choices weren't saved")
+        web_newer = {key: value for key, value in call("/api/merge", bearer=True, headers=newer)[1]["web"].items()
+                     if key.split(":", 1)[0] in ("pref", "favorite")}
+        check(web_newer == {"pref:tabCounts": "off", "pref:communitySort": "name", "pref:announceSettings": "off",
+                            "pref:inboxFilters": "unread,inbox,-irc,favorites,groups,direct,texts,matrix,xmpp,email,requests,automated,archived,blocked",
+                            "favorite:+12025550141": "on", "favorite:@rowan:example.org": "on"}, "The web's newer items are wrong: " + json.dumps(web_newer))
+        # Older phones (and phones from before timed mutes) never see the newer groups, and can't change them.
+        for headers in (older, {}):
+            view = call("/api/merge", bearer=True, headers=headers)[1]["web"]
+            check(not any(key.split(":", 1)[0] in ("pref", "favorite") for key in view), "An older phone sees items it doesn't know")
+        view = call("/api/merge", bearer=True, headers=older)[1]
+        call("/api/merge", {"revision": view["revision"], "apply_web": {"pref:tabCounts": None, "favorite:@rowan:example.org": None},
+                            "baseline": view["web"], "conflicts": [{"key": "pref:communitySort", "phone": "joined"}], "mute_until": 1}, bearer=True)
+        state = call("/api/merge", bearer=True, headers=newer)[1]
+        check(state["web"]["pref:tabCounts"] == "off" and state["web"]["favorite:@rowan:example.org"] == "on" and state["pending"] is None,
+              "An older phone changed items it was never shown")
+        # Forget that older phone's look: this is a phone pairing for the first time.
+        phone = FakePhone(call, {"look:theme": "midnight", "pref:showCommunityChats": "off", "pref:communitySort": "joined",
+                                 "favorite:+12025550142": "on", "favorite:+12025550141": "on", "folder:+12025550143": "pinned"})
+        phone.pair = "not-this-server"
+
+        # First pairing: whatever only one side has goes to the other; different on both asks.
+        answer = phone.sync()
+        pending = sorted(item["key"] for item in answer["pending"]["conflicts"])
+        check(pending == ["look:theme", "pref:communitySort"], "First pairing asked about the wrong things: " + json.dumps(pending))
+        stored = call("/api/settings", cookie=cookie)[1]
+        check(stored["prefs"]["showCommunityChats"] is False and "+12025550142" in stored["web_favorites"]
+              and "+1 (202) 555-0141" in stored["web_favorites"] and len(stored["web_favorites"]) == 3,
+              "First pairing didn't combine: " + json.dumps([stored["web_favorites"], stored["prefs"]]))
+        check(phone.items.get("pref:tabCounts") == "off" and phone.items.get("favorite:@rowan:example.org") == "on"
+              and phone.items.get("pref:inboxFilters", "").startswith("unread,inbox,-irc"), "The phone didn't get the web's choices")
+
+        # Settled in the browser: the web's sort, the phone's theme. The phone writes the web's pick on its next look.
+        status, _, _ = call("/api/merge/resolve", {"id": answer["pending"]["id"], "choices": {"look:theme": "phone", "pref:communitySort": "web"}},
+                            cookie=cookie)
+        check(status == 200, "Couldn't settle in the browser")
+        answer = phone.sync()
+        check(answer["pending"] is None and phone.items["pref:communitySort"] == "name"
+              and {key: value for key, value in answer["web"].items()} == {key: value for key, value in phone.items.items()},
+              "After settling, the phone and the web aren't the same")
+
+        # Reconnecting after both changed things while apart: one-sided changes travel, the same one changed both ways asks.
+        call("/api/settings", {"prefs": {"communitySort": "joined"}, "web_favorites": [item for item in call("/api/settings", cookie=cookie)[1]["web_favorites"]
+                                                                                    if item != "+12025550142"]}, cookie=cookie)
+        phone.write({"pref:communitySort": None, "favorite:@sam:example.org": "on", "pref:showCommunityChats": None})
+        answer = phone.sync()
+        check([item["key"] for item in answer["pending"]["conflicts"]] == ["pref:communitySort"],
+              "Both changing the sort didn't ask, or something else did: " + json.dumps(answer["pending"]))
+        stored = call("/api/settings", cookie=cookie)[1]
+        check("favorite:+12025550142" not in phone.items and "@sam:example.org" in stored["web_favorites"]
+              and stored["prefs"]["showCommunityChats"] is True, "One-sided changes didn't travel on reconnecting")
+        # Settled on the phone this time: its choice reaches the web.
+        status, _, _ = call("/api/merge/resolve", {"id": answer["pending"]["id"], "choices": {"pref:communitySort": "phone"}}, bearer=True)
+        check(status == 200 and call("/api/settings", cookie=cookie)[1]["prefs"]["communitySort"] == "recent", "Settling on the phone didn't work")
+        answer = phone.sync()
+        check(answer["pending"] is None and answer["web"] == phone.items, "After settling on the phone, the two differ")
+
+        # An older phone in between doesn't undo anything for the newer one.
+        view = call("/api/merge", bearer=True, headers=older)[1]
+        call("/api/merge", {"revision": view["revision"], "apply_web": {}, "baseline": view["web"], "conflicts": [], "mute_until": 1}, bearer=True)
+        before = dict(phone.items)
+        answer = phone.sync()
+        check(phone.items == before and answer["web"] == before and answer["pending"] is None, "An older phone's merge changed the newer one's items")
+
+        # A timer changed on the web since the last merge: the phone's regular sync, before its next merge, keeps it.
+        call("/api/settings", {"disappearing": {"default": 0, "chats": {"+12025550144": 604800}}}, cookie=cookie)
+        call("/api/sync", {"messages": [], "privacy": {"disappearing": {"default": 0, "chats": {}}}}, bearer=True)
+        check(call("/api/settings", cookie=cookie)[1]["disappearing"]["chats"].get("+12025550144") == 604800,
+              "The phone's sync overwrote a timer the web changed since the last merge")
+        phone.sync()
+        check(phone.items.get("timer:+12025550144") == "604800", "The web's timer didn't reach the phone")
+        # Once merged, the phone's own timer changes go through its sync as before.
+        call("/api/sync", {"messages": [], "privacy": {"disappearing": {"default": 0, "chats": {"+12025550144": 3600}}}}, bearer=True)
+        check(call("/api/settings", cookie=cookie)[1]["disappearing"]["chats"].get("+12025550144") == 3600, "The phone's own timer didn't sync")
+        phone.write({"timer:+12025550144": "3600"})
+        phone.sync()
+
+        # "This web app's own" settings: look, fun, inbox choices, and timers stay on each side; chats and favorites still merge.
+        call("/api/settings", {"follow_phone": False}, cookie=cookie)
+        phone.write({"pref:tabCounts": None, "look:theme": "love", "favorite:+12025550145": "on"})
+        answer = phone.sync()
+        stored = call("/api/settings", cookie=cookie)[1]
+        check(stored["prefs"]["tabCounts"] is False and stored["web_appearance"]["theme"] != "love" and "+12025550145" in stored["web_favorites"]
+              and answer["pending"] is None, "With the web's own settings, the phone's look or inbox choices still reached the web")
+        call("/api/settings", {"follow_phone": True}, cookie=cookie)
+        phone.write({"pref:tabCounts": "off", "look:theme": answer["web"].get("look:theme")})
+        phone.sync()
+
+        # A reinstalled phone (no pair id, nothing set): it gets everything, and nothing on the web is deleted.
+        web_before = call("/api/merge", bearer=True, headers=newer)[1]["web"]
+        fresh = FakePhone(call)
+        answer = fresh.sync()
+        check(fresh.items == web_before and answer["web"] == web_before and answer["pending"] is None,
+              "A reinstalled phone didn't get the web's items, or deleted some")
+        kept = dict(phone.items)
+
+    # An erased server (a new pair id): the phone's next merge combines, it doesn't delete what the server lost.
+    with companion(free_port(), token) as (origin, _, _):
+        call, cookie = caller(origin)
+        call("/api/settings", {"web_favorites": ["@alex:example.org"]}, cookie=cookie)
+        phone.call = call
+        answer = phone.sync()
+        check(all(phone.items.get(key) == value for key, value in kept.items()) and phone.items.get("favorite:@alex:example.org") == "on"
+              and all(answer["web"].get(key) == value for key, value in kept.items()), "After the server was erased, the merge deleted things")
+    print("PASS  merge items: every item type both ways, newer groups only for phones that ask, first pairing, reconnecting, "
+          "both changed while apart, settling on either side, older phones, the web's own settings, reinstalled phone, erased server")
+
+
 # Typed addresses and what they are, shared with the phone's NewAddressTest.kt: [text, [[service, target], ...]].
 NEW_ADDRESSES = [
     ["+1 (202) 555-0143", [["sms", "+1 (202) 555-0143"]]],
@@ -2412,6 +3515,332 @@ def web_contacts_test():
     print("PASS  web contacts: new, edit, delete, checks, shown in lists, phone fetch with revision, kept out of the merge, phone names still sync")
 
 
+# The first-run guide's steps, in order: the same titles as the phone's where the content matches.
+WELCOME_STEPS = ("Welcome", "Two tabs", "One inbox", "Communities", "Stay organized", "Who can read it?", "Keep chats private",
+                 "Disappearing messages", "More than text", "Quick moves", "Pick your colors", "Sounds and notifications",
+                 "Connect your phone", "Chat services", "Calls", "You’re ready")
+
+
+def sample_onboarding_test():
+    """The sample inbox's servers, favorites, and mutes stay on the page, and the first-run guide's steps are served."""
+    with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
+        welcome_js = request("/welcome.js", authorized=False).decode()
+        steps = welcome_js.split("const steps = [", 1)[1].split("\n  ];", 1)[0]
+        titles = re.findall(r"^    \{title: '([^']+)'", steps, re.M)
+        check(tuple(titles) == WELCOME_STEPS, "The first-run guide's steps differ: " + " | ".join(titles))
+        for name in ("tabsShowcase(flow)", "communitiesShowcase(flow)", "filtersShowcase(flow)", "disappearingShowcase(flow)",
+                     "notifyGuideCard()", "phoneShowcase(flow)", "'Allow notifications'", "Choose what to keep", "muteMark(", "timerNoticeText("):
+            check(name in welcome_js, f"The first-run guide is missing {name}")
+        # Notification permission is asked only from a click in the guide too.
+        asks = list(re.finditer(r"await askNotifyPermission\(\)", welcome_js))
+        check(asks and all("addEventListener('click'" in welcome_js[max(0, m.start() - 300):m.start()] for m in asks),
+              "The guide asks for notification permission outside a click")
+        # Nothing in the guide's steps claims what only the phone can do here.
+        for phone_only in ("vibrat", "haptic", "default SMS app", "Keep a backup"):
+            check(phone_only not in steps, f"The guide's steps mention {phone_only}, which this browser can't do")
+        photo = request("/samples/lakeside.webp", authorized=False)
+        check(photo == (ROOT / "app/src/main/res/drawable-nodpi/sample_lakeside.webp").read_bytes(), "The sample photo differs from the phone's")
+        check("'/samples/lakeside.webp'" in request("/sw.js", authorized=False).decode(), "The offline cache leaves out the sample photo")
+        people_js = request("/people.js", authorized=False).decode()
+        badges = people_js.split("function updateTabBadges", 1)[1]
+        check(badges.index("if (sampleOn) return;") < badges.index("document.title"), "The sample's counts reach the title or the app icon")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("SKIP  sample servers, favorites, and mutes in Node: node is missing")
+        return
+    server = ROOT / "server"
+    chats_js, people_js = ((server / name).read_text() for name in ("chats.js", "people.js"))
+    muting = re.search(r"// Muting, for a while.*?// End of muting\.", chats_js, re.S).group(0)
+    state = re.search(r"const NO_CHATS = .*?(?=/\*\* Folders)", chats_js, re.S).group(0)
+    sample = re.search(r"let sampleOn = false;.*?(?=function sampleBanner)", chats_js, re.S).group(0)
+    favorites = re.search(r"const SAMPLE_STARRED = .*?\n", people_js).group(0) + re.search(
+        r"let webFavorites = \[\];\nlet sampleStarred = null;", people_js).group(0) + "\n" + re.search(
+        r"const digitsOf = .*?\n", people_js).group(0) + re.search(r"const sameText = .*?(?=const keyOf)", people_js, re.S).group(0) + re.search(
+        r"function starredList\(\).*?(?=function starButton)", people_js, re.S).group(0)
+    script = r"""
+const calls = [], stored = [];
+globalThis.localStorage = {getItem: () => null, setItem: (key) => stored.push(key)};
+const api = async (path, body) => { calls.push(path + ' ' + JSON.stringify(body || {}).slice(0, 80)); return {}; };
+// A stand-in page: any element takes any call, so the pages can be drawn without a browser.
+const fake = () => new Proxy(function () {}, {get: (target, key) => key in target ? target[key] : key === Symbol.iterator ? function* () {}
+  : key === Symbol.toPrimitive ? () => '' : key === 'value' ? '' : typeof key === 'symbol' || key === 'then' ? undefined : (target[key] = fake()),
+  apply: () => fake(), set: (target, key, value) => { target[key] = value; return true; }});
+const element = () => fake(), field = () => fake(), confirmButton = () => fake(), checkbox = () => fake();
+const document = fake(), get = () => fake(), labels = {irc: 'IRC', matrix: 'Matrix', xmpp: 'XMPP'};
+let pages = [], shown = 0, selected = '', said = [];
+const detailsPage = (title) => pages.push(title), closeDetailsPage = () => {}, showThreads = () => { shown++; }, showError = (e) => { throw e; };
+const say = (text) => said.push(text), select = (key) => { selected = key; }, rebuildThreads = () => {};
+const threadKey = (message) => message.address + '\u001f' + message.protocol, clock = (time) => String(time);
+let chatAccounts = [{id: 'irc:me@irc.example.test', protocol: 'irc', name: 'me@irc.example.test', fields: {}}];
+let routes = [], inbox = [], prefs = {}, phoneLook = {}, companionSettings = null;
+const SERVER_DIRECTORY = {irc: []};
+""" + state + muting + "\n" + sample + favorites + (server / "servers.js").read_text() + r"""
+const wrong = [];
+const same = (label, got, want) => { if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push(label + ': ' + JSON.stringify(got)); };
+// The sample inbox: its servers, routes, and every server action stay on the page.
+sampleOn = true;
+routes = sampleServerRoutes();
+inbox = sampleMessages();
+same('sample servers', serverAccounts().map((account) => serverName(account)), ['Starlight IRC', 'Garden Commons']);
+same('sample rooms', routes.map((route) => route.title).sort(), ['#astronomy', '#meteor-watch', '#telescopes', 'Allotment News', 'Compost Corner', 'Seed Swap']);
+for (const account of serverAccounts()) {
+  openBrowse(account); openJoin(account); openServerDetails(account); loadSpaces(account.id, true);
+}
+openAddServer();
+joinTarget(serverAccounts()[0], '#beginners', '', fake());
+joinTarget(serverAccounts()[1], 'Tool Library', '', fake());
+same('joined on the page', routes.filter((route) => /beginners|tools/.test(route.address)).map((route) => route.account), ['sample:irc', 'sample:matrix']);
+same('opened the joined room', selected, 'sample-mx-tools\u001fmatrix');
+setInboxView('communities'); toggleServer('sample:irc');
+same('sample view and collapse stay on the page', [stored, inboxViewMode(), communitySort()], [[], 'communities', 'recent']);
+// Sample mutes and favorites change only the sample's own lists.
+sampleChats = {...NO_CHATS(), muted: [SAMPLE_LEAH, SERVER_MUTE + 'sample:matrix'], mute_until: {[SAMPLE_LEAH]: Date.now() + 3600000}};
+saveChats(muteKeys(['sample-irc-astronomy'], 86400000));
+saveChats(unmuteKeys([SERVER_MUTE + 'sample:matrix']));
+same('sample mutes', sampleChats.muted, [SAMPLE_LEAH, 'sample-irc-astronomy']);
+const maya = {name: 'Maya Chen', numbers: ['+12025550123'], accounts: []}, nora = {name: 'Nora Patel', numbers: ['+12025550107'], accounts: []};
+same('sample favorites', [isFavorite(maya), toggleFavorite(nora), toggleFavorite(maya)], [true, true, false]);
+same('nothing reached the server', calls, []);
+same('real lists untouched', [webChats.muted, webFavorites], [[], []]);
+// Everything in the sample is fictional: 555-01xx numbers, example addresses, and sample rooms.
+const strange = inbox.filter((row) => !/^(\+120255501\d\d|55123|mms:\+120255501\d\d(,\+120255501\d\d)*|sample-[a-z0-9-]+|[^@\s]+@example\.org|@[a-z]+:example\.org)$/.test(row.address));
+same('fictional addresses', strange.map((row) => row.address), []);
+const kinds = {link: inbox.some((row) => row.body.includes(SAMPLE_LINK)), timed: inbox.some((row) => row.expires > Date.now()),
+  voice: inbox.some((row) => row.attachment?.kind === 'voice'), photo: inbox.some((row) => row.attachment?.kind === 'photo'),
+  poll: inbox.some((row) => row.body.startsWith('📊 Poll:')), edited: inbox.some((row) => row.body.startsWith('✏️ Edited')),
+  unread: inbox.filter((row) => row.read === 0).length >= 3, automated: inbox.some((row) => row.title === 'Trail Alerts')};
+same('sample contents', Object.values(kinds).every(Boolean), true);
+// Out of the sample, the same actions reach your own server, and the sample's servers are gone.
+sampleOn = false;
+routes = [];
+same('real servers after exit', serverAccounts().map((account) => account.id), ['irc:me@irc.example.test']);
+toggleFavorite(nora);
+saveChats(muteKeys(['+12025550107'], 3600000));
+same('real changes are saved', calls.map((call) => call.split(' ')[0]), ['settings', 'settings']);
+process.stdout.write(JSON.stringify(wrong));
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0 and result.stdout == "[]", "The sample inbox reached real data: " + (result.stdout or result.stderr)[:900])
+    print("PASS  sample inbox and first-run guide: sample servers, joins, mutes, and favorites stay on the page; fictional fixtures; "
+          "the guide's 16 steps are served, ask for notifications only from a click, and claim nothing phone-only")
+
+
+def web_parity_test():
+    """The phone features FluidMessages Web gained: Try again on a failed message, the web-only switches for sending
+    GIFs and stickers and for ways to call, palette contrast and tints, each chat's own theme, locks for every chat of
+    one kind, hiding whole services in the private folder, asking for its passcode to close it, real chats that stay
+    visible in decoy mode, and a GIF API address. Fictional people, codes, and addresses only."""
+    import sqlite3
+    sys.path.insert(0, str(ROOT / "server"))
+    import link_fetch
+    # GIF API address: https and a host name, an optional path, nothing else.
+    for good, base in (("https://gifs.example.org", "https://gifs.example.org"), ("https://gifs.example.org/tenor/", "https://gifs.example.org/tenor"),
+                       ("https://proxy.example.org:443/v1", "https://proxy.example.org:443/v1")):
+        check(link_fetch.gif_api_base(good) == base, "A GIF API address was refused: " + good)
+    for bad in ("http://gifs.example.org", "https://user@gifs.example.org", "https://gifs.example.org/?key=1", "https://gifs.example.org#x",
+                "https://localhost", "https://gifs.example.org:8443", "javascript:alert(1)", "https://gifs.example.org/a b"):
+        check(link_fetch.gif_api_base(bad) == "", "A GIF API address was allowed: " + bad)
+    password, decoy, code = "harbor maple lantern", "willow candle orbit", "4821"
+    opener = build_opener(ProxyHandler({}))
+    with companion(free_port(), "") as (origin, request, _):
+        def call(path, body=None, cookie=None):
+            sent = {"X-Fluid-Request": "1", "Content-Type": "application/json", "Origin": origin}
+            if cookie:
+                sent["Cookie"] = cookie
+            data = json.dumps(body).encode() if body is not None else None
+            try:
+                with opener.open(Request(origin + path, data=data, headers=sent), timeout=30) as response:
+                    return response.status, json.loads(response.read() or b"{}"), response.headers
+            except HTTPError as error:
+                return error.code, json.loads(error.read() or b"{}"), error.headers
+
+        def sign_in(secret):
+            status, _, headers = call("/api/auth/login", {"password": secret, "remember": True})
+            check(status == 200, "Couldn't sign in")
+            return headers.get_all("Set-Cookie")[0].split(";")[0]
+
+        status, _, headers = call("/api/auth/local", {})
+        here = headers.get("Set-Cookie").split(";")[0]
+        check(call("/api/auth/password", {"password": password}, cookie=here)[0] == 200, "Couldn't set the web password")
+        bearer = {"Authorization": "Bearer " + call("/api/auth/pairing", {}, cookie=here)[1]["token"]}
+        request("/api/sync", {"messages": sample_messages()}, authorized=False, extra_headers=bearer)
+        real = sign_in(password)
+        now = int(time.time() * 1000)
+        with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db, db:
+            route = {"address": "web-rowan", "protocol": "email", "target": "rowan@example.org", "via": "email", "group": False,
+                     "title": "Rowan Hale", "members": [], "account": ""}
+            db.execute("INSERT INTO protocol_routes (address, protocol, payload) VALUES (?, ?, ?)", ("web-rowan", "email", json.dumps(route)))
+            for key, body, status_text in (("web-failed", "Fictional note that didn't send", "Couldn’t send · The server didn’t answer"),
+                                           ("web-sent", "Fictional note that went", "Sent")):
+                db.execute("INSERT INTO protocol_messages VALUES (?, ?, ?)", (key, now, json.dumps(
+                    {"id": key, "address": "web-rowan", "protocol": "email", "title": "Rowan Hale", "body": body, "date": now, "type": 2,
+                     "read": 1, "status": status_text})))
+                db.execute("INSERT INTO protocol_jobs VALUES (?, 'email', 'rowan@example.org', ?, ?)",
+                           (key, now - 60_000, "failed" if key == "web-failed" else "sent"))
+        # Try again: the failed message's own job goes back in the queue; anything else is refused.
+        status, result, _ = call("/api/protocols/retry", {"id": "web-failed"}, cookie=real)
+        check(status == 200 and result["message"]["status"] == "Queued" and result["message"]["body"] == "Fictional note that didn't send",
+              "Try again didn't queue the failed message: " + json.dumps(result))
+        for bad in ({"id": "web-sent"}, {"id": "missing"}, {"id": "../x"}, {"id": 4}):
+            check(call("/api/protocols/retry", bad, cookie=real)[0] == 400, "Try again accepted " + json.dumps(bad))
+        for _ in range(100):
+            with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db:
+                state = db.execute("SELECT state FROM protocol_jobs WHERE id='web-failed'").fetchone()[0]
+            if state == "failed":
+                break
+            time.sleep(.05)
+        # It went out again (and, with no account here, failed again), so it can be tried again; still one copy.
+        check(state == "failed", "The retried message didn't go through the sender: " + state)
+        check(call("/api/protocols/retry", {"id": "web-failed"}, cookie=real)[0] == 200, "A message that failed twice can't be tried again")
+        rows = [row for row in call("/api/inbox", cookie=real)[1]["messages"] if row.get("id") == "web-failed"]
+        check(len(rows) == 1, "Try again made a second copy")
+        # Web-only switches: on by default, and kept when turned off; anything but true or false is refused.
+        defaults = call("/api/settings", cookie=real)[1]["prefs"]
+        check(all(defaults[key] is True for key in ("sendGifs", "sendStickers", "callMatrix", "callMeetings")), "The new switches aren't on by default")
+        changed = call("/api/settings", {"prefs": {"sendStickers": False, "callMeetings": False}}, cookie=real)[1]["prefs"]
+        check(changed["sendStickers"] is False and changed["callMeetings"] is False and changed["sendGifs"] is True, "The switches weren't saved")
+        check(call("/api/settings", {"prefs": {"callMatrix": "off"}}, cookie=real)[0] == 400, "A switch accepted a string")
+        # Palette contrast, the background, buttons, and toolbar tints, a palette's contrast, and each chat's own theme.
+        look = {"theme": "ember", "mode": "dark", "contrast": True, "sendSound": "pop",
+                "colors": {"sms": "#ffd60a", "canvas": "#101820", "controls": "#ff9500", "chrome": "#22303c"},
+                "palettes": {"Sunny": {"theme": "fluid", "colors": {"sms": "#ffd60a"}, "contrast": True}},
+                "chatThemes": {"+12025550146": {"theme": "love", "outgoing": "#ffd60a"}, "web-rowan": {"background": "#fff4f8"}}}
+        noisy = {**look, "colors": {**look["colors"], "chrome": "url(x)"},
+                 "chatThemes": {**look["chatThemes"], "x": {"theme": "neon", "incoming": "red"}, "y": "love", "": {"theme": "love"}},
+                 "palettes": {"Sunny": {**look["palettes"]["Sunny"], "contrast": "yes"}}}
+        saved = call("/api/settings", {"web_appearance": noisy}, cookie=real)[1]["web_appearance"]
+        expected = {**look, "colors": {key: value for key, value in look["colors"].items() if key != "chrome"},
+                    "palettes": {"Sunny": {"theme": "fluid", "colors": {"sms": "#ffd60a"}}}}
+        check(saved == expected, "Contrast, tints, or chat themes weren't cleaned: " + json.dumps(saved))
+        check(call("/api/settings", {"web_appearance": look}, cookie=real)[1]["web_appearance"] == look, "Contrast, tints, or chat themes weren't saved")
+        check(call("/api/settings", {"web_appearance": {**look, "contrast": "yes"}}, cookie=real)[1]["web_appearance"].get("contrast") is None,
+              "Palette contrast accepted a string")
+        # Lock every chat of one kind: kept with the chat codes, as a hash.
+        locks = {"service:email": {"salt": "ab" * 16, "hash": "cd" * 32}, "+12025550146": {"salt": "ef" * 16, "hash": "01" * 32}}
+        chats = {"pinned": [], "archived": [], "blocked": [], "muted": [], "locks": locks}
+        check(call("/api/settings", {"web_chats": chats}, cookie=real)[1]["web_chats"]["locks"] == locks, "Kind locks weren't saved")
+        # Private folder: hide whole services, and the passcode to close it.
+        check(call("/api/privacy/private/services", {"services": ["email"]}, cookie=real)[0] == 409, "Services hid without a private folder")
+        status, result, _ = call("/api/privacy/private/setup", {"code": code, "again": code}, cookie=real)
+        check(status == 200 and result["private"]["services"] == [] and result["private"]["close_code"] is True, "Couldn't set up the private folder")
+        for body in ({"services": ["fax"]}, {"services": "email"}):
+            check(call("/api/privacy/private/services", body, cookie=real)[0] == 400, "Hide whole services accepted " + json.dumps(body))
+        status, result, _ = call("/api/privacy/private/services", {"services": ["email", "sms"]}, cookie=real)
+        check(status == 200 and result["private"]["services"] == ["sms", "email"], "Hide whole services wasn't saved")
+        opened = call("/api/inbox", cookie=real)[1]
+        check({"web-rowan", "+12025550123", "+12025550146"} <= set(opened["private_chats"]), "Hidden services' chats aren't in the open folder")
+        check(call("/api/privacy/private/close-code", {"on": "no"}, cookie=real)[0] == 400, "The close passcode switch accepted a string")
+        check(call("/api/privacy/private/close-code", {"on": False}, cookie=real)[1]["private"]["close_code"] is False, "The close passcode stayed on")
+        other = sign_in(password)
+        closed = json.dumps(call("/api/inbox", cookie=other)[1]) + json.dumps(call("/api/settings", cookie=other)[1]) \
+            + json.dumps(call("/api/privacy", cookie=other)[1])
+        check("Rowan" not in closed and "rowan@example.org" not in closed and "5550146" not in closed and "Coffee at ten?" not in closed,
+              "A hidden service shows to a session that didn't open the folder")
+        check(call("/api/privacy", cookie=other)[1]["private"]["services"] is None, "A closed folder tells which services it hides")
+        check(call("/api/privacy/private/services", {"services": []}, cookie=other)[0] == 403, "A closed folder's services were changed")
+        check(call("/api/privacy/private/close-code", {"on": True}, cookie=other)[0] == 403, "A closed folder's close passcode was changed")
+        # Decoy mode → Real chats that stay visible: shown there as they are; never a private one; sends stay there.
+        call("/api/privacy/private/services", {"services": []}, cookie=real)
+        check(call("/api/privacy/private/move", {"address": "+12025550123", "private": True}, cookie=real)[0] == 200, "Couldn't move a chat")
+        check(call("/api/privacy/decoy", {"password": decoy, "again": decoy, "current": password}, cookie=real)[0] == 200, "Couldn't set decoy mode")
+        check(call("/api/privacy/decoy/allowed", {"addresses": "web-rowan"}, cookie=real)[0] == 400, "Real decoy chats accepted a string")
+        status, result, _ = call("/api/privacy/decoy/allowed", {"addresses": ["web-rowan", "+12025550123", "+12025550146"]}, cookie=real)
+        check(status == 200 and result["decoy"]["allowed"] == ["web-rowan", "+12025550146"], "A private chat stays visible in decoy mode: "
+              + json.dumps(result["decoy"].get("allowed")))
+        fake = sign_in(decoy)
+        pretend = call("/api/inbox", cookie=fake)[1]
+        text = json.dumps(pretend)
+        check("I sent the route for Saturday." in text and "Fictional note that went" in text and "Mom" in text,
+              "The real chats that stay visible don't show in decoy mode")
+        check("Coffee at ten?" not in text and "5550123" not in text, "A private chat showed in decoy mode")
+        check(call("/api/protocols/send", {"address": "web-rowan", "protocol": "email", "body": "Fictional decoy email", "text": "x",
+                                           "request": "r1"}, cookie=fake)[0] == 200, "Sending in a real chat in decoy mode wasn't sandboxed")
+        check(call("/api/protocols/send", {"address": "web-other", "protocol": "email", "body": "Fictional", "request": "r2"}, cookie=fake)[0] == 503,
+              "Decoy mode sent to a chat that isn't shown there")
+        check("Fictional decoy email" in json.dumps(call("/api/inbox", cookie=fake)[1]), "The sandboxed email didn't show in decoy mode")
+        check("Fictional decoy email" not in json.dumps(call("/api/inbox", cookie=real)[1]), "A decoy email reached the real inbox")
+        check(call("/api/protocols/retry", {"id": "web-failed"}, cookie=fake)[0] == 503, "A decoy session reached Try again")
+    sys.path.remove(str(ROOT / "server"))
+    web_parity_node_test()
+    print("PASS  web parity: Try again re-queues only failed messages, GIF and sticker and call switches, palette contrast and tints, "
+          "chat themes, kind locks, hidden services and the close passcode, real chats in decoy mode, and the GIF API address")
+
+
+def web_parity_node_test():
+    """The browser's rules for the same features, run in Node: failed messages and their choices, kind locks,
+    contrast and tints with readable fallbacks, a chat's own colors, and theme switching keeping sound and motion."""
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("SKIP  web parity rules in Node: node is missing")
+        return
+    app_js, chats_js, look_js, media_js = ((ROOT / "server" / name).read_text() for name in ("app.js", "chats.js", "look.js", "media.js"))
+    engine = re.search(r"const RCS_LIGHT = .*?(?=// Facts about the phone)", app_js, re.S).group(0)
+    failed = re.search(r"function failedMessage\(message\).*?(?=async function retryMessage)", app_js, re.S).group(0)
+    locks = re.search(r"// Lock every chat of one kind.*?(?=\n// Muting)", chats_js, re.S).group(0)
+    theme_keys = re.search(r"const THEME_KEYS = .*?(?=/\*\* The look settings)", look_js, re.S).group(0)
+    chat_colors = re.search(r"const CHAT_ROLES = .*?(?=/\*\* Sets a chat's colors)", look_js, re.S).group(0)
+    gif_address = re.search(r"const GIF_API_ADDRESS = .*?;\n", media_js).group(0)
+    script = "const window = {};\n" + engine + failed + locks + theme_keys + chat_colors + gif_address + r"""
+const labels = {email: 'Email', matrix: 'Matrix'};
+const family = (protocol) => ['rcs', 'mms', undefined, ''].includes(protocol) ? 'sms' : protocol;
+const internet = (protocol) => !['sms', 'mms', 'rcs', undefined, ''].includes(protocol);
+const parseEffect = () => null;
+let sampleOn = false, threadsByKey = {'web-rowan\u001femail': 'email', '+12025550146\u001fsms': 'sms', 'web-kit\u001fmatrix': 'matrix'};
+const threadAddress = (key) => key.split('\u001f')[0];
+const threadProtocol = (key) => threadsByKey[key];
+let state = {locks: {}};
+const chatState = () => state;
+const wrong = [];
+const say = (ok, what) => { if (!ok) wrong.push(what); };
+// Failed messages: internet ones by their status, texts by type 5; Edit and resend isn't offered for files.
+const failedEmail = {id: 'web-1', protocol: 'email', type: 2, body: 'Fictional', status: 'Couldn’t send · The server didn’t answer'};
+say(failedMessage(failedEmail) && failedMessage({type: 5, body: 'x'}) && !failedMessage({type: 1, status: 'Couldn’t send'}) && !failedMessage({type: 2, status: 'Sent'}), 'failed');
+say(failedReason(failedEmail) === 'The server didn’t answer' && failedReason({status: 'Couldn’t send'}) === '', 'reason');
+say(JSON.stringify(failedChoices(failedEmail).map(([label]) => label)) === '["Try again","Edit and resend","Delete"]', 'choices');
+say(JSON.stringify(failedChoices({...failedEmail, attachment: {name: 'a.pdf'}}).map(([label]) => label)) === '["Try again","Delete"]', 'file choices');
+say(failedOnline(failedEmail) && !failedOnline({protocol: 'sms', id: 'x'}), 'online');
+// Kind locks: a chat's own code first, then its kind's; texts include RCS and MMS.
+say(chatLockKey('web-rowan\u001femail') === '', 'unlocked');
+state = {locks: {'service:email': {}, 'service:sms': {}}};
+say(chatLockKey('web-rowan\u001femail') === 'service:email' && chatLockKey('+12025550146\u001fsms') === 'service:sms'
+  && chatLockKey('web-kit\u001fmatrix') === '', 'kind lock');
+state = {locks: {'service:email': {}, 'web-rowan': {}}};
+say(chatLockKey('web-rowan\u001femail') === 'web-rowan', 'own code first');
+say(JSON.stringify(lockCounts(state)) === '{"chats":1,"kinds":1}', 'counts');
+// Palette contrast: Fluid's increased-contrast colors, stronger muted text; the tints are your own.
+const plain = themeAppearance({theme: 'fluid', mode: 'light'}), strong = themeAppearance({theme: 'fluid', mode: 'light', contrast: true});
+say(plain.colors.sms === '#0088ff' && strong.colors.sms === '#1e6ef4' && strong.contrast === true, 'fluid contrast');
+say(contrast(strong.colors.muted, strong.colors.surface) >= 7 && contrast(plain.colors.muted, plain.colors.surface) >= 4.5, 'muted contrast');
+const tinted = themeAppearance({theme: 'ember', mode: 'dark', colors: {canvas: '#101820', controls: '#ff9500', chrome: '#d8ecff'}});
+say(tinted.colors.canvas === '#101820' && tinted.colors.ink === '#ffffff', 'canvas');
+say(contrast(tinted.colors.surface, tinted.colors.ink) >= 4.5 && contrast(tinted.colors.raised, tinted.colors.ink) >= 4.5, 'light tint on dark stays readable');
+say(contrast(bubbleFill('#ffd60a'), bubbleInk('#ffd60a')) >= 4.5 && bubbleInk('#ffd60a') === '#ffffff', 'bright fill');
+say(textOn('#f2f2f2') === '#000000' && textOn('#1c1c1e') === '#ffffff', 'neutral fills');
+// Switching or resetting a theme clears its colors and contrast, and keeps sound, haptics, and motion.
+const look = {theme: 'fluid', contrast: true, colors: {canvas: '#101820'}, sendSound: 'pop', haptics: 'soft', speed: 0, soundVolume: 40};
+const next = themeLook(look, 'love');
+say(next.theme === 'love' && next.wallpaper === 'love' && !next.colors && !next.contrast, 'theme reset');
+say(['sendSound', 'haptics', 'speed', 'soundVolume'].every((key) => next[key] === look[key]), 'sound kept');
+const kept = themeLook({...look, palettes: {Sunny: {theme: 'ember', colors: {sms: '#ffd60a'}, contrast: true}}}, 'fluid', 'Sunny');
+say(kept.contrast === true && kept.colors.sms === '#ffd60a' && kept.activePalette === 'Sunny', 'palette contrast');
+// A chat's own colors: a theme, then outgoing, incoming, and background on top; readable text for its background.
+let webLook = {chatThemes: {}}, appearance = {dark: false};
+const resolvedAppearance = () => themeAppearance({theme: 'fluid', mode: 'light'});
+say(chatColors('web-rowan') === null, 'no chat theme');
+const own = chatColors('web-rowan', {theme: 'ember', outgoing: '#ffd60a', background: '#1d1a2b'});
+say(own.sms === '#ffd60a' && own.email === '#ffd60a' && own.automated !== '#ffd60a' && own.canvas === '#1d1a2b' && own.ink === '#ffffff'
+  && contrast(own.muted, own.canvas) >= 4.5, 'chat colors');
+say(chatColors('x', {theme: 'love'}).canvas === THEMES.love.light[0], 'chat theme canvas');
+// The GIF API address check matches the server's.
+say(GIF_API_ADDRESS.test('https://gifs.example.org/tenor/') && !GIF_API_ADDRESS.test('http://gifs.example.org')
+  && !GIF_API_ADDRESS.test('https://gifs.example.org/?q=1') && !GIF_API_ADDRESS.test('https://gifs.example.org:8443'), 'gif address');
+process.stdout.write(JSON.stringify(wrong));
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0 and result.stdout == "[]", "Web parity rules are wrong: " + (result.stdout or result.stderr)[:900])
+    print("PASS  web parity rules in Node: failed message choices, kind locks, palette contrast and readable tints, chat colors, theme reset")
+
+
 def find_apk(explicit):
     if explicit:
         return explicit.resolve()
@@ -2486,12 +3915,19 @@ def main():
         email_quotes_test()
         privacy_calls_test()
         protocol_accounts_test()
+        email_ports_test()
         multi_account_test()
+        unique_chats_test()
+        chat_features_test()
         server_directory_test()
         communities_test()
+        requests_test()
         merge_test()
+        merge_items_test()
         new_conversations_test()
         web_contacts_test()
+        sample_onboarding_test()
+        web_parity_test()
         android(args)
         if args.demo:
             demo(args.no_browser)

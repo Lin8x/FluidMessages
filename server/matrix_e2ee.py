@@ -26,6 +26,9 @@ except ImportError:
 # Matrix call signaling, decrypted in encrypted rooms, for the browser and phone call screens.
 CALL_EVENTS = tuple(getattr(nio, name) for name in ("CallInviteEvent", "CallAnswerEvent", "CallCandidatesEvent", "CallHangupEvent")
                     if nio is not None and hasattr(nio, name))
+# Topic, name, and membership changes, shown as event lines.
+STATE_EVENTS = tuple(getattr(nio, name) for name in ("RoomTopicEvent", "RoomNameEvent", "RoomMemberEvent")
+                     if nio is not None and hasattr(nio, name))
 
 
 def available():
@@ -39,13 +42,14 @@ def decrypt_file(content, data):
 
 
 class MatrixE2ee:
-    def __init__(self, account, store, rooms, on_event):
+    def __init__(self, account, store, rooms, on_event, on_invite=None):
         if not available():
             raise RuntimeError("Install matrix-nio[e2e] on the companion to use encrypted Matrix rooms")
         self.account = account
         self.store = Path(store)
         self.rooms = rooms          # callable returning the set of linked room IDs
         self.on_event = on_event    # (room_id, event_source_dict)
+        self.on_invite = on_invite  # (room_id, sender, room name)
         self.loop = None
         self.client = None
         self.ready = threading.Event()
@@ -80,7 +84,9 @@ class MatrixE2ee:
         self.client = client
         client.add_event_callback(self.event, (nio.RoomMessageText, nio.RoomMessageNotice, nio.RoomMessageEmote,
                                                nio.RoomMessageMedia, nio.RoomEncryptedMedia, nio.ReactionEvent, nio.RedactionEvent,
-                                               nio.MegolmEvent, *CALL_EVENTS))
+                                               nio.MegolmEvent, *CALL_EVENTS, *STATE_EVENTS))
+        if self.on_invite is not None and hasattr(nio, "InviteMemberEvent"):
+            client.add_event_callback(self.invited, nio.InviteMemberEvent)
         if client.should_upload_keys:
             await client.keys_upload()
         self.ready.set()
@@ -110,6 +116,13 @@ class MatrixE2ee:
             source["type"] = "m.room.message"
             source["content"] = {"msgtype": "m.notice", "body": "Couldn’t decrypt this message yet. It may arrive later."}
         self.on_event(room.room_id, source)
+
+    async def invited(self, room, event):
+        """An invitation to you: waits on the Invitations page (chat_features.py)."""
+        if getattr(event, "state_key", None) != self.client.user_id or getattr(event, "membership", "") != "invite":
+            return
+        name = getattr(room, "name", None) or getattr(room, "canonical_alias", None) or ""
+        self.on_invite(room.room_id, getattr(event, "sender", ""), name)
 
     def encrypted(self, room_id):
         room = self.client.rooms.get(room_id) if self.client else None

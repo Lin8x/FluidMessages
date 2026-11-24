@@ -35,7 +35,7 @@ class AccountKeysTest {
 
     @Test fun viaOnlyWithMoreThanOneAccount() {
         assertEquals("", AccountKeys.via("matrix:@alice:alpha.example.test", "@alice:alpha.example.test", 1))
-        assertEquals("via @alice:alpha.example.test", AccountKeys.via("matrix:@alice:alpha.example.test", "", 2))
+        assertEquals("from @alice:alpha.example.test", AccountKeys.via("matrix:@alice:alpha.example.test", "", 2))
         assertEquals("", AccountKeys.via("", "", 3))
     }
 

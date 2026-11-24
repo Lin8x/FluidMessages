@@ -307,7 +307,7 @@ private fun ProfileForm(prefs: SharedPreferences, key: String) {
             if (status.isNotEmpty()) Text(status, Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
         }
-        if (reset) AlertDialog(onDismissRequest = { reset = false }, title = { Text("Reset this chat’s theme?") },
+        if (reset) FormPage(onDismissRequest = { reset = false }, title = { Text("Reset this chat’s theme?") },
             text = { Text("Restore the selected theme’s colors and wallpaper for this chat.") },
             confirmButton = { TextButton(onClick = { useTheme(profile.theme()); reset = false }) { Text("Reset") } },
             dismissButton = { TextButton(onClick = { reset = false }) { Text("Cancel") } })

@@ -33,6 +33,9 @@ internal object InboxFilters {
         Filter("xmpp", "XMPP", "XMPP chats and group chats", "XMPP"),
         Filter("email", "Email", "Email conversations", "EMAIL"),
         Filter("irc", "IRC", "IRC channels and direct messages", "IRC"),
+        // Message requests and automated senders (MessageRequests).
+        Filter("requests", "Requests", "Chats from people you don't know, waiting for you to accept them"),
+        Filter("automated", "Automated", "Short codes and sender IDs, like delivery updates and sign-in codes"),
         Filter("archived", "Archived", "Chats you archived"),
         Filter("blocked", "Blocked", "Chats you blocked"),
     )
@@ -43,7 +46,7 @@ internal object InboxFilters {
     enum class Scope { INBOX, PRIVATE, DECOY, SAMPLE }
 
     /** What a filter reads about one chat. [services] are protocol families ("SMS", "MATRIX", …). */
-    data class Chat(
+    data class Chat @JvmOverloads constructor(
         val group: Boolean,
         val favorite: Boolean = false,
         val services: Set<String> = setOf("SMS"),
@@ -54,6 +57,12 @@ internal object InboxFilters {
         val hidden: Boolean = false,
         /** A decoy chat, or one allowed in decoy mode. */
         val decoy: Boolean = false,
+        /** A message request (MessageRequests): only under Requests. */
+        val request: Boolean = false,
+        /** From an automated sender (SenderStyle, with the chat's own Sender type). */
+        val automated: Boolean = false,
+        /** Automated, with "Keep automated messages out of the inbox" on: only under Automated. */
+        val automatedOut: Boolean = false,
     )
 
     fun of(id: String): Filter? = ALL.firstOrNull { it.id == id }
@@ -118,7 +127,9 @@ internal object InboxFilters {
         val placed = when (place(id)) {
             "blocked" -> chat.blocked
             "archived" -> chat.archived && !chat.blocked
-            else -> !chat.archived && !chat.blocked
+            // Requests show only under Requests, and automated chats kept out of the inbox only under Automated.
+            else -> !chat.archived && !chat.blocked && (if (id == "requests") chat.request else !chat.request) &&
+                (!chat.automatedOut || id == "automated")
         }
         return placed && matches(scope, id, chat)
     }
@@ -132,6 +143,7 @@ internal object InboxFilters {
             "favorites" -> scope != Scope.DECOY && chat.favorite
             "groups" -> chat.group
             "direct" -> !chat.group
+            "automated" -> chat.automated
             else -> true
         }
     }
@@ -147,9 +159,14 @@ internal object InboxFilters {
 
 /** The Phone tab's favorites (PhoneTab), as their keys: "contact:<id>", "chat:<address>", or "demo:<name>" in the sample. */
 internal fun favoriteKeys(prefs: SharedPreferences, sample: Boolean): Set<String> = try {
-    val array = JSONArray(prefs.getString(if (sample) "samplePhoneFavorites" else "phoneFavorites", "[]"))
+    // The sample starts with a few people starred, until you star or unstar someone there.
+    val fallback = if (sample) JSONArray(SampleInbox.FAVORITES).toString() else "[]"
+    val array = JSONArray(prefs.getString(if (sample) SAMPLE_FAVORITES else "phoneFavorites", fallback))
     (0 until array.length()).map(array::getString).toSet()
 } catch (error: Exception) { emptySet() }
+
+/** The sample Phone tab's stars. Reset in the sample inbox removes it, so the starting favorites come back. */
+internal const val SAMPLE_FAVORITES = "samplePhoneFavorites"
 
 /** The chats favorites reach: each starred contact's phone numbers, and each starred chat's address. */
 internal fun favoriteAddresses(context: Context, keys: Set<String>): List<String> {

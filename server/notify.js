@@ -24,7 +24,7 @@ const NOTIFY_WORDS = {granted: 'Allowed', denied: 'Blocked', default: 'Not asked
 
 function notifySummary() {
   const state = notifyPermission();
-  return 'Notifications: ' + (state === 'granted' && !notifyOn() ? 'Off' : NOTIFY_WORDS[state]) + ' · send and receive sounds, volume';
+  return 'Notifications: ' + (state === 'granted' && !notifyOn() ? 'Off' : NOTIFY_WORDS[state]) + ' · sounds, volume, and tab counts';
 }
 
 /** Asks for permission. Call it only from a click: browsers ignore, or block for good, a prompt nobody asked for. */
@@ -249,5 +249,6 @@ function soundsPage() {
     + 'doesn’t send push notifications, so once every FluidMessages tab is closed nothing arrives here; your phone still notifies you '
     + 'through FluidMessages for Android. Browsers check background tabs less often, so a notification can come up to a minute late.', 'muted');
   notes.append(head, explain, toggles, test, tested, how);
-  return [sounds, notes];
+  // App badges sit with notifications, where Android and iOS keep them (people.js).
+  return [sounds, notes, ...(typeof tabCountsCard === 'function' ? [tabCountsCard()] : [])];
 }

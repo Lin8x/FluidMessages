@@ -342,6 +342,427 @@ internal fun QuickMovesShowcase(appearance: Appearance) {
     }
 }
 
+// Small pieces of the real inbox for the demos below: a chat row and a community server's header.
+
+@Composable
+private fun DemoRow(palette: Palette, name: String, preview: String, time: String, unread: Boolean = false, muted: String = "",
+                    photo: Int = 0, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth().background(palette.bg, RoundedCornerShape(14.dp)).padding(horizontal = 8.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(9.dp)) { if (unread) Box(Modifier.size(6.dp).background(palette.inboxAction, CircleShape)) }
+        Avatar(initialsOf(name), name, 34, photo)
+        Column(Modifier.weight(1f).padding(start = 9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(name, Modifier.weight(1f, fill = false), color = palette.ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+                if (muted.isNotEmpty()) MutedMark(muted, palette.muted, Modifier.padding(start = 4.dp), 12)
+                Spacer(Modifier.weight(1f))
+                Text(time, Modifier.padding(start = 6.dp), color = palette.muted, fontSize = 11.sp)
+            }
+            Text(if (muted.isNotEmpty() && preview.isEmpty()) muted else preview, color = palette.muted, fontSize = 12.sp, maxLines = 1,
+                overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun DemoServer(palette: Palette, name: String, service: MessageProtocol, detail: String, unread: Int, open: Float,
+                       muted: String = "") {
+    val tint = accessibleBubbleFill(service.tint(palette.appearance))
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        DrawGlyph(Glyph.Forward, palette.muted, Modifier.size(10.dp).graphicsLayer { rotationZ = 90f * open })
+        Spacer(Modifier.width(6.dp))
+        Box(Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(tint), contentAlignment = Alignment.Center) {
+            Text(Communities.initials(name), color = bubbleTextColor(tint), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+        Column(Modifier.weight(1f).padding(start = 9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(name, color = palette.ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1)
+                Text(service.label, Modifier.padding(start = 6.dp).border(1.dp, palette.edge, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 5.dp), color = palette.muted, fontSize = 10.sp)
+                if (muted.isNotEmpty()) MutedMark(muted, palette.muted, Modifier.padding(start = 4.dp), 12)
+            }
+            Text(detail, color = palette.muted, fontSize = 12.sp, maxLines = 1)
+        }
+        if (unread > 0) Text(unread.toString(), Modifier.clip(CircleShape).background(palette.inboxAction).widthIn(min = 20.dp)
+            .padding(horizontal = 6.dp), color = Color(MessageStyle.textOn(palette.inboxAction.toArgb())), fontSize = 11.sp,
+            fontWeight = FontWeight.Bold)
+    }
+}
+
+// "Communities": Chats | Communities, then a server folding open to its channels.
+
+private val communityCaptions = listOf(
+    "Chats | Communities · one tap apart",
+    "Each server folds open to its channels and rooms",
+)
+
+@Composable
+internal fun CommunitiesShowcase(appearance: Appearance) {
+    val palette = remember(appearance) { Palette(appearance) }
+    DemoCarousel(appearance, communityCaptions, stills = listOf(1f, 1f), height = 290.dp, millis = 3200) { index, frame ->
+        val p = frame.progress
+        Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (index == 0) {
+                val communities = frame.still || p >= .42f
+                Box {
+                    InboxSwitch(palette, communities, if (communities) 0 else 3) {}
+                    Fingertip(touch(frame, .18f, .44f), part(p, .26f, .42f), Modifier.align(Alignment.CenterEnd).offset(x = (-60).dp, y = 4.dp))
+                }
+                val reveal = if (frame.still) 1f else part(p, .44f, .56f)
+                if (!communities) {
+                    DemoRow(palette, "Maya Chen", "Coffee at ten?", "9:41", unread = true, photo = R.drawable.sample_maya)
+                    DemoRow(palette, "Jordan Ellis", "Here’s the loop we talked about", "Yesterday", photo = R.drawable.sample_jordan)
+                    DemoRow(palette, "Weekend Plans", "Avery: I booked the tables", "Today")
+                } else Column(Modifier.graphicsLayer { alpha = reveal; translationY = (1f - reveal) * 14.dp.toPx() },
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    DemoServer(palette, "Harbor Net", MessageProtocol.IRC, "2 channels · you@irc.harbor.example", 1, 1f)
+                    DemoRow(palette, "#radio-club", "kestrel: tuning starts at seven", "Today", unread = true, modifier = Modifier.padding(start = 16.dp))
+                    DemoServer(palette, "Lakeside Commons", MessageProtocol.MATRIX, "2 rooms · @you:lakeside.example", 1, 0f)
+                }
+            } else {
+                // Tapping the header folds the server open; its channels slide in one by one.
+                val open = if (frame.still) 1f else part(p, .3f, .4f)
+                Box {
+                    DemoServer(palette, "Harbor Net", MessageProtocol.IRC, "3 channels · you@irc.harbor.example", 2, open)
+                    Fingertip(touch(frame, .1f, .32f), part(p, .16f, .3f), Modifier.align(Alignment.CenterStart).offset(x = 40.dp))
+                }
+                val channels = listOf(Triple("#radio-club", "mosaic: bring the analyzer", true),
+                    Triple("#trail-maps", "switchback: new switchbacks traced", true), Triple("#night-sky", "cairn: clear skies tonight", false))
+                channels.forEachIndexed { at, (name, line, unread) ->
+                    val shown = if (frame.still) 1f else part(p, .4f + at * .1f, .5f + at * .1f)
+                    if (shown > 0f) DemoRow(palette, name, line, "Today", unread = unread, modifier = Modifier.padding(start = 16.dp)
+                        .graphicsLayer { alpha = shown; translationY = (1f - shown) * -10.dp.toPx() })
+                }
+                DemoServer(palette, "Lakeside Commons", MessageProtocol.MATRIX, "2 rooms · muted", 0, 0f, muted = "Muted until 6:00 PM")
+            }
+        }
+    }
+}
+
+// "Stay organized": the filter menu at the top corner picks Unread, and a chat is muted for a few hours.
+
+private val organizedCaptions = listOf(
+    "Filters · top corner of the inbox, like Unread",
+    "Mute for a while · the bell shows until when",
+)
+
+@Composable
+internal fun StayOrganizedShowcase(appearance: Appearance) {
+    val palette = remember(appearance) { Palette(appearance) }
+    val scheme = MaterialTheme.colorScheme
+    DemoCarousel(appearance, organizedCaptions, stills = listOf(1f, 1f), height = 300.dp, millis = 3400) { index, frame ->
+        val p = frame.progress
+        if (index == 0) {
+            val filtered = frame.still || p >= .62f
+            val menu = if (frame.still) 0f else part(p, .24f, .32f) * (1f - part(p, .6f, .66f))
+            Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    DrawGlyph(Glyph.Settings, palette.inboxAction, Modifier.size(20.dp))
+                    Spacer(Modifier.weight(1f))
+                    DrawGlyph(Glyph.Filter, palette.inboxAction, Modifier.size(20.dp))
+                }
+                Text(if (filtered) "Unread" else "Messages", color = palette.ink, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                val rows = listOf(Triple("Maya Chen", "Coffee at ten?", true), Triple("Avery Brooks", "Yes, let’s meet at the park.", false),
+                    Triple("Book Swap", "Leah: three new paperbacks", true), Triple("Leah Morgan", "I’ll update the signup form.", false))
+                val leave = if (frame.still) 1f else part(p, .62f, .74f)
+                for ((name, line, unread) in rows) {
+                    val fade = if (unread || !filtered) 1f else 1f - leave
+                    if (fade > 0f) DemoRow(palette, name, line, if (unread) "9:41" else "Mon", unread,
+                        photo = if (name == "Maya Chen") R.drawable.sample_maya else 0,
+                        modifier = Modifier.graphicsLayer { alpha = fade; scaleY = .6f + .4f * fade })
+                }
+            }
+            Box(Modifier.fillMaxSize().padding(12.dp)) {
+                Column(Modifier.align(Alignment.TopEnd).padding(top = 26.dp).width(170.dp).pop(menu)
+                    .background(scheme.surfaceContainerHigh, RoundedCornerShape(14.dp)).padding(vertical = 4.dp)) {
+                    listOf("Inbox", "Unread", "Favorites", "Groups", "Direct messages").forEachIndexed { at, label ->
+                        val picked = at == 1 && p >= .5f
+                        Row(Modifier.fillMaxWidth().background(if (picked) scheme.primary.copy(alpha = .16f) else Color.Transparent)
+                            .padding(horizontal = 14.dp, vertical = 6.dp)) {
+                            Text(label, Modifier.weight(1f), color = scheme.onSurface, fontSize = 14.sp)
+                            if (at == 0 && p < .5f || picked) Text("✓", color = palette.inboxAction, fontSize = 14.sp)
+                        }
+                    }
+                }
+                Fingertip(touch(frame, .06f, .26f), part(p, .12f, .24f), Modifier.align(Alignment.TopEnd).offset(x = 12.dp, y = (-12).dp))
+                Fingertip(touch(frame, .4f, .6f), part(p, .44f, .5f), Modifier.align(Alignment.TopEnd).offset(x = (-90).dp, y = 38.dp))
+            }
+        } else {
+            // Touch and hold → Mute… → 6 hours, and the bell lands on the row with when it ends.
+            val menu = if (frame.still) 0f else part(p, .22f, .3f) * (1f - part(p, .44f, .48f))
+            val times = if (frame.still) 0f else part(p, .48f, .55f) * (1f - part(p, .7f, .74f))
+            val muted = frame.still || p >= .74f
+            Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                DemoRow(palette, "Maya Chen", "Coffee at ten?", "9:41", true, photo = R.drawable.sample_maya)
+                Box {
+                    DemoRow(palette, "Trail Crew", "Trail Alerts: the footpath reopens at noon", "Today", unread = !muted,
+                        muted = if (muted) "Muted until 3:40 PM" else "",
+                        modifier = Modifier.pop(if (muted && !frame.still) .7f + .3f * part(p, .74f, .82f) else 1f))
+                    Fingertip(touch(frame, .04f, .24f), part(p, .06f, .22f), Modifier.align(Alignment.CenterStart).offset(x = 120.dp))
+                }
+                DemoRow(palette, "Jordan Ellis", "The parking pass is on the dash", "Yesterday", photo = R.drawable.sample_jordan)
+                if (muted) Text("Muted until 3:40 PM · it unmutes by itself", Modifier.padding(start = 8.dp)
+                    .graphicsLayer { alpha = if (frame.still) 1f else part(p, .78f, .86f) }, color = palette.muted, fontSize = 12.sp)
+            }
+            Box(Modifier.fillMaxSize().padding(12.dp)) {
+                Column(Modifier.padding(start = 80.dp, top = 96.dp).width(160.dp).pop(menu)
+                    .background(scheme.surfaceContainerHigh, RoundedCornerShape(14.dp)).padding(vertical = 4.dp)) {
+                    listOf("Pin", "Mute…", "Archive").forEachIndexed { at, label ->
+                        Text(label, Modifier.fillMaxWidth().background(if (at == 1 && p >= .36f) scheme.primary.copy(alpha = .16f) else Color.Transparent)
+                            .padding(horizontal = 14.dp, vertical = 7.dp), color = scheme.onSurface, fontSize = 14.sp)
+                    }
+                }
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().pop(times)
+                    .background(scheme.surfaceContainerHigh, RoundedCornerShape(16.dp)).padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Mute Trail Crew", color = scheme.onSurface, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        for (choice in Mutes.CHOICES.take(4)) {
+                            val picked = choice.second == 6 * Mutes.HOUR && p >= .62f
+                            Text(choice.first, Modifier.clip(RoundedCornerShape(10.dp))
+                                .background(if (picked) scheme.primary else scheme.surface)
+                                .padding(horizontal = 8.dp, vertical = 5.dp), color = if (picked) scheme.onPrimary else scheme.onSurface,
+                                fontSize = 12.sp, maxLines = 1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// "Two tabs": a contact made in the Phone tab, saved to the phone's own contacts.
+
+private val contactCaptions = listOf(
+    "New contact · from the Phone tab",
+    "Saved to your phone’s contacts, for every app",
+)
+
+@Composable
+internal fun NewContactShowcase(appearance: Appearance) {
+    val palette = remember(appearance) { Palette(appearance) }
+    val scheme = MaterialTheme.colorScheme
+    DemoCarousel(appearance, contactCaptions, stills = listOf(1f, 1f), height = 250.dp, millis = 3200) { index, frame ->
+        val p = frame.progress
+        if (index == 0) {
+            // The name and number type themselves in, then Save.
+            val name = "Riley Park"
+            val number = "(415) 555-0142"
+            val typedName = if (frame.still) name.length else (name.length * part(p, .08f, .34f)).toInt()
+            val typedNumber = if (frame.still) number.length else (number.length * part(p, .38f, .62f)).toInt()
+            val saved = frame.still || p >= .8f
+            Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("New contact", Modifier.weight(1f), color = palette.ink, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Box {
+                        Text(if (saved) "Saved ✓" else "Save", Modifier.clip(RoundedCornerShape(14.dp))
+                            .background(Color(MessageStyle.filledControl(palette.inboxAction.toArgb())))
+                            .padding(horizontal = 14.dp, vertical = 6.dp), color = Color(MessageStyle.filledControlInk(palette.inboxAction.toArgb())),
+                            fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Fingertip(touch(frame, .66f, .82f), part(p, .7f, .8f), Modifier.align(Alignment.Center))
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    Avatar(initialsOf(name.take(typedName).ifEmpty { "?" }), name, 56)
+                }
+                for ((label, value) in listOf("Name" to name.take(typedName), "Phone" to number.take(typedNumber))) {
+                    Column(Modifier.fillMaxWidth().background(palette.wash, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Text(label, color = palette.muted, fontSize = 11.sp)
+                        Text(value.ifEmpty { " " }, color = palette.ink, fontSize = 15.sp)
+                    }
+                }
+            }
+        } else {
+            // The new contact lands in Contacts, and the phone's own Contacts app has it too.
+            val landed = if (frame.still) 1f else part(p, .15f, .3f)
+            val shared = if (frame.still) 1f else part(p, .5f, .62f)
+            Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Contacts", color = palette.ink, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                DemoRow(palette, "Maya Chen", "(415) 555-0118", "★", photo = R.drawable.sample_maya)
+                DemoRow(palette, "Riley Park", "(415) 555-0142", "New", modifier = Modifier.pop(landed)
+                    .border(2.dp, palette.inboxAction.copy(alpha = .6f * (1f - shared * .6f)), RoundedCornerShape(14.dp)))
+                DemoRow(palette, "Sam Rivera", "(212) 555-0163", "")
+                Row(Modifier.fillMaxWidth().pop(shared).background(scheme.surfaceContainerHigh, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    HandsetGlyph(palette.inboxAction, Modifier.size(18.dp))
+                    Text("Also in your phone’s Contacts app", Modifier.padding(start = 8.dp), color = scheme.onSurface, fontSize = 13.sp)
+                }
+            }
+        }
+    }
+}
+
+// "Disappearing messages": changing a chat's setting posts the same outlined note a real chat shows.
+
+private val noticeCaptions = listOf(
+    "Change the timer · the chat gets a short note",
+    "Turn on encryption · they’re told too",
+)
+
+@Composable
+internal fun SettingNoticeShowcase(appearance: Appearance) {
+    val palette = remember(appearance) { Palette(appearance) }
+    val scheme = MaterialTheme.colorScheme
+    val tint = Color(appearance.accent)
+    val ink = if (appearance.dark) tint else accessibleBubbleFill(tint)
+    DemoCarousel(appearance, noticeCaptions, stills = listOf(1f, 1f), height = 230.dp, millis = 3000) { index, frame ->
+        val p = frame.progress
+        val menu = if (frame.still) 0f else part(p, .12f, .2f) * (1f - part(p, .42f, .48f))
+        val note = if (frame.still) 1f else part(p, .5f, .62f)
+        val text = if (index == 0) timerNoticeText(86_400) else encryptionNoticeText(true)
+        Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically)) {
+            DemoBubble(appearance, false) { color -> BubbleText("Did you want the window seat?", color, appearance) }
+            Box(Modifier.align(Alignment.End)) {
+                DemoBubble(appearance, true) { color -> BubbleText("That would be great.", color, appearance) }
+            }
+            Text(text, Modifier.align(Alignment.CenterHorizontally).pop(note).border(1.dp, ink.copy(alpha = .7f), RoundedCornerShape(12.dp))
+                .padding(horizontal = 10.dp, vertical = 3.dp), color = ink, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        Box(Modifier.fillMaxSize().padding(14.dp)) {
+            Row(Modifier.align(Alignment.TopEnd).pop(menu).background(scheme.surfaceContainerHigh, RoundedCornerShape(14.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (index == 0) "Disappearing messages · 1 day" else "Encryption · On", color = scheme.onSurface, fontSize = 13.sp)
+                Text("  ✓", color = palette.inboxAction, fontSize = 13.sp)
+            }
+            Fingertip(touch(frame, .22f, .44f), part(p, .28f, .4f), Modifier.align(Alignment.TopEnd).offset(x = (-40).dp, y = 2.dp))
+        }
+    }
+}
+
+// "Sounds and notifications": a new message arrives as a notification; a muted chat stays quiet.
+
+private val notificationCaptions = listOf(
+    "New messages arrive as notifications",
+    "Muted chats stay quiet until the mute ends",
+)
+
+/** A notification as it drops in from the top of the screen. */
+@Composable
+private fun DemoBanner(palette: Palette, title: String, line: String, shown: Float) {
+    val scheme = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().graphicsLayer { alpha = shown; translationY = (1f - shown) * -40.dp.toPx() }
+        .background(scheme.surfaceContainerHigh, RoundedCornerShape(18.dp)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(30.dp).background(Color(MessageStyle.filledControl(palette.inboxAction.toArgb())), RoundedCornerShape(9.dp)),
+            contentAlignment = Alignment.Center) {
+            Text("F", color = Color(MessageStyle.filledControlInk(palette.inboxAction.toArgb())), fontWeight = FontWeight.Bold)
+        }
+        Column(Modifier.weight(1f).padding(start = 10.dp)) {
+            Row {
+                Text(title, Modifier.weight(1f), color = scheme.onSurface, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1)
+                Text("now", color = scheme.onSurfaceVariant, fontSize = 11.sp)
+            }
+            Text(line, color = scheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+internal fun NotificationsShowcase(appearance: Appearance) {
+    val palette = remember(appearance) { Palette(appearance) }
+    val scheme = MaterialTheme.colorScheme
+    DemoCarousel(appearance, notificationCaptions, stills = listOf(1f, 1f), height = 236.dp, millis = 3000) { index, frame ->
+        val p = frame.progress
+        Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("9:41", Modifier.align(Alignment.CenterHorizontally), color = palette.ink, fontSize = 34.sp, fontWeight = FontWeight.Light)
+            if (index == 0) {
+                DemoBanner(palette, "Maya Chen", "Coffee at ten?", if (frame.still) 1f else part(p, .1f, .24f))
+                DemoBanner(palette, "Weekend Plans", "Avery: I booked the tables by the willow tree.", if (frame.still) 1f else part(p, .5f, .64f))
+            } else {
+                // The message still arrives in the chat; only the banner and sound wait.
+                val arrived = frame.still || p >= .35f
+                DemoRow(palette, "Trail Crew", if (arrived) "Trail Alerts: footpath reopens at noon" else "Great, I’ll bring the water.",
+                    if (arrived) "now" else "Today", unread = arrived, muted = "Muted until 3:40 PM")
+                Row(Modifier.align(Alignment.CenterHorizontally).graphicsLayer { alpha = if (frame.still) 1f else part(p, .45f, .58f) }
+                    .border(1.dp, palette.edge, RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    DrawGlyph(Glyph.Muted, palette.muted, Modifier.size(14.dp))
+                    Text("  No sound or banner until 3:40 PM", color = palette.muted, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+// "On a computer too": pairing with FluidMessages Web, then choosing what to keep when both changed a setting.
+
+private val webCaptions = listOf(
+    "Link FluidMessages Web with this phone",
+    "Both changed something? Choose what to keep",
+)
+
+@Composable
+internal fun LinkWebShowcase(appearance: Appearance) {
+    val palette = remember(appearance) { Palette(appearance) }
+    val scheme = MaterialTheme.colorScheme
+    DemoCarousel(appearance, webCaptions, stills = listOf(1f, 1f), height = 250.dp, millis = 3400) { index, frame ->
+        val p = frame.progress
+        if (index == 0) {
+            val travel = if (frame.still) 1f else part(p, .15f, .65f)
+            val linked = frame.still || p >= .68f
+            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                Canvas(Modifier.fillMaxWidth().height(110.dp)) {
+                    val stroke = 3.dp.toPx()
+                    val ink = scheme.onSurfaceVariant
+                    // The phone on the left, the laptop on the right.
+                    drawRoundRect(ink, Offset(size.width * .06f, size.height * .1f), androidx.compose.ui.geometry.Size(size.height * .45f, size.height * .8f),
+                        androidx.compose.ui.geometry.CornerRadius(8.dp.toPx()), style = Stroke(stroke))
+                    val laptop = size.width * .58f
+                    drawRoundRect(ink, Offset(laptop, size.height * .14f), androidx.compose.ui.geometry.Size(size.width * .34f, size.height * .56f),
+                        androidx.compose.ui.geometry.CornerRadius(6.dp.toPx()), style = Stroke(stroke))
+                    drawLine(ink, Offset(laptop - size.width * .04f, size.height * .82f), Offset(laptop + size.width * .38f, size.height * .82f), stroke * 1.3f)
+                    // Messages travel along the link, both ways.
+                    val from = size.width * .06f + size.height * .45f + 8.dp.toPx()
+                    val to = laptop - 8.dp.toPx()
+                    for (dot in 0 until 5) {
+                        val x = from + (to - from) * dot / 4f
+                        val lit = linked || dot / 4f <= travel
+                        drawCircle(if (lit) palette.inboxAction else scheme.outlineVariant, 4.dp.toPx(), Offset(x, size.height * .45f))
+                    }
+                    drawRoundRect(palette.inboxAction, Offset(laptop + size.width * .04f, size.height * .24f), androidx.compose.ui.geometry.Size(size.width * .14f, size.height * .1f),
+                        androidx.compose.ui.geometry.CornerRadius(6.dp.toPx()))
+                    drawRoundRect(scheme.outlineVariant, Offset(laptop + size.width * .14f, size.height * .42f), androidx.compose.ui.geometry.Size(size.width * .14f, size.height * .1f),
+                        androidx.compose.ui.geometry.CornerRadius(6.dp.toPx()))
+                }
+                Text(if (linked) "Linked ✓ · texts sync both ways" else "Linking…", Modifier.pop(if (linked && !frame.still) part(p, .68f, .8f) else 1f),
+                    color = if (linked) palette.inboxAction else palette.muted, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+            }
+        } else {
+            // One setting changed on both: tap the side to keep, then Keep these and sync.
+            val phone = frame.still || p >= .4f
+            val synced = frame.still || p >= .82f
+            Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Choose what to keep", color = palette.ink, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Column(Modifier.fillMaxWidth().background(scheme.surfaceContainer, RoundedCornerShape(16.dp)).padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Appearance · Color theme", color = scheme.onSurfaceVariant, fontSize = 12.sp)
+                    Box {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            for ((side, value) in listOf("This phone" to "Tideline", "FluidMessages Web" to "Ember")) {
+                                val chosen = (side == "This phone") == phone
+                                Column(Modifier.weight(1f).border(if (chosen) 2.dp else 1.dp, if (chosen) scheme.primary else scheme.outlineVariant,
+                                    RoundedCornerShape(12.dp)).padding(8.dp)) {
+                                    Text(side, color = scheme.onSurfaceVariant, fontSize = 11.sp, maxLines = 1)
+                                    Text(value + if (chosen) "  ✓" else "", color = scheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                        Fingertip(touch(frame, .22f, .42f), part(p, .28f, .4f), Modifier.align(Alignment.CenterStart).offset(x = 40.dp))
+                    }
+                }
+                Box(Modifier.fillMaxWidth()) {
+                    Text(if (synced) "Synced ✓" else "Keep these and sync", Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                        .background(Color(MessageStyle.filledControl(palette.inboxAction.toArgb()))).padding(vertical = 9.dp),
+                        color = Color(MessageStyle.filledControlInk(palette.inboxAction.toArgb())), fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Fingertip(touch(frame, .62f, .84f), part(p, .68f, .8f), Modifier.align(Alignment.Center))
+                }
+            }
+        }
+    }
+}
+
 // "Chat services" and "Calls": one card per service, saying what it is, who it suits, and how private it is.
 
 /** One service card's words. The same text is used by FluidMessages Web's setup guide. */

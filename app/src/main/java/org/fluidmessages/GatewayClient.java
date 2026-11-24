@@ -168,6 +168,11 @@ final class GatewayClient {
         prefs.edit().putString("gatewayAccounts", accounts == null ? "[]" : accounts.toString()).apply();
         var channels = response.optJSONObject("channels");
         prefs.edit().putString("gatewayChannels", channels == null ? "{}" : channels.toString()).apply();
+        // Invitations waiting on the Invitations page, and each IRC network's connection for the Reconnect bar.
+        var invites = response.optJSONArray("invites");
+        var connections = response.optJSONObject("connections");
+        prefs.edit().putString("gatewayInvites", invites == null ? "[]" : invites.toString())
+            .putString("gatewayConnections", connections == null ? "{}" : connections.toString()).apply();
         var endpoints = response.optJSONArray("routes");
         String value = endpoints == null ? "[]" : endpoints.toString();
         boolean changed = !value.equals(prefs.getString(ROUTES, "[]"));
@@ -184,11 +189,18 @@ final class GatewayClient {
      */
     static void send(Context context, String address, MessageProtocol format, String text, String body,
                      MessageRelation relation, Attachment attachment, boolean files) throws Exception {
+        send(context, address, format, text, body, relation, attachment, files, false);
+    }
+
+    /** [literal]: typed with a leading //, so a line starting with / is sent as written, never read as a command. */
+    static void send(Context context, String address, MessageProtocol format, String text, String body,
+                     MessageRelation relation, Attachment attachment, boolean files, boolean literal) throws Exception {
         format.requireEnabled(context);
         var prefs = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
         var payload = new JSONObject().put("address", address)
             .put("protocol", format.name().toLowerCase(Locale.ROOT)).put("body", body).put("text", text)
             .put("request", UUID.randomUUID().toString());
+        if (literal) payload.put("literal", true);
         if (relation != null) payload.put("relation", relation.toJson());
         MediaSanitizer.Prepared file = null;
         try {
@@ -337,14 +349,42 @@ final class GatewayClient {
         return "";
     }
 
-    /** "via alice@example.org" for a chat's header when its service has more than one account. */
+    /** "from alice@example.org" for a chat's header and details when its service has more than one account. */
     static String via(SharedPreferences prefs, String address, MessageProtocol format) {
+        var from = fromAccount(prefs, address, format);
+        return from == null ? "" : "from " + from.getShown();
+    }
+
+    /**
+     * The accounts New message can send from on [format], from the companion's last sync, with the one used most
+     * recently marked. Empty while this phone connects that service itself (one account).
+     */
+    static List<SendAccount> sendAccounts(SharedPreferences prefs, MessageProtocol format) {
+        var result = new ArrayList<SendAccount>();
+        if (DirectProtocols.on(prefs, format)) return result;
+        for (var account : accountsFor(prefs, format.name().toLowerCase(Locale.ROOT))) {
+            result.add(new SendAccount(account.optString("id"), account.optString("name"), account.optBoolean("recent")));
+        }
+        return result;
+    }
+
+    /**
+     * The account a chat sends from when its service has more than one (FromAccount.chatAccount): its link's, or the
+     * first account for links from before multiple accounts. Null with one account, or for a chat without a link.
+     */
+    static SendAccount fromAccount(SharedPreferences prefs, String address, MessageProtocol format) {
         for (var link : links(prefs, address)) {
             if (MessageProtocol.parse(link.optString("protocol")) != format) continue;
-            String account = link.optString("account");
-            if (account.isEmpty()) return "";
-            return AccountKeys.INSTANCE.via(account, link.optString("account_name"),
-                accountsFor(prefs, AccountKeys.INSTANCE.service(account)).size());
+            return FromAccount.INSTANCE.chatAccount(link.optString("account"), sendAccounts(prefs, format));
+        }
+        return null;
+    }
+
+    /** The inbox row's small account hint (FromAccount.inboxHint), or "". */
+    static String inboxAccountHint(SharedPreferences prefs, String address, MessageProtocol format) {
+        for (var link : links(prefs, address)) {
+            if (MessageProtocol.parse(link.optString("protocol")) != format) continue;
+            return FromAccount.INSTANCE.inboxHint(link.optString("account"), sendAccounts(prefs, format));
         }
         return "";
     }
@@ -391,6 +431,50 @@ final class GatewayClient {
             .put("title", title == null ? "" : title)).optJSONObject("route");
         nextCheck = 0;
         return route;
+    }
+
+    /** Runs a slash command typed in a chat on FluidMessages Web: {"notice", "open": {"address", "protocol"}}. */
+    static JSONObject command(SharedPreferences prefs, String address, MessageProtocol format, String text) throws Exception {
+        var result = request(prefs, "protocols/command", new JSONObject().put("address", address)
+            .put("protocol", format.name().toLowerCase(Locale.ROOT)).put("text", text).put("request", UUID.randomUUID().toString()));
+        nextCheck = 0;
+        return result;
+    }
+
+    /** Accepts or declines an invitation or contact request waiting on FluidMessages Web. */
+    static JSONObject answerInvite(SharedPreferences prefs, String id, boolean accept) throws Exception {
+        var result = request(prefs, "protocols/invites", new JSONObject().put("id", id).put("accept", accept));
+        prefs.edit().putString("gatewayInvites", result.optJSONArray("invites") == null ? "[]" : result.optJSONArray("invites").toString()).apply();
+        nextCheck = 0;
+        return result;
+    }
+
+    /** The Reconnect button for an IRC network connected from FluidMessages Web. */
+    static void reconnect(SharedPreferences prefs, String account) throws Exception {
+        request(prefs, "protocols/reconnect", new JSONObject().put("account", account));
+        nextCheck = 0;
+    }
+
+    /** An IRC channel's Keep joined setting on FluidMessages Web. */
+    static void keepJoined(SharedPreferences prefs, String address, boolean keep) throws Exception {
+        request(prefs, "protocols/keep", new JSONObject().put("address", address).put("protocol", "irc").put("keep", keep));
+        nextCheck = 0;
+    }
+
+    /** Opening a channel that isn't kept joined rejoins it. */
+    static void opened(SharedPreferences prefs, String address) {
+        try { request(prefs, "protocols/open", new JSONObject().put("address", address).put("protocol", "irc")); }
+        catch (Exception ignored) {}
+    }
+
+    /** The companion's link for a chat, or null. */
+    static JSONObject routeOf(SharedPreferences prefs, String address, MessageProtocol format) {
+        var items = routes(prefs);
+        for (int i = 0; i < items.length(); i++) {
+            var route = items.optJSONObject(i);
+            if (route != null && address.equals(route.optString("address")) && format == MessageProtocol.parse(route.optString("protocol"))) return route;
+        }
+        return null;
     }
 
     /** Leaves a channel or room on its server. Its earlier messages stay. */
@@ -481,11 +565,24 @@ final class GatewayClient {
 
     /** The conversation already linked to this address, if any. */
     static String routeForTarget(SharedPreferences prefs, MessageProtocol format, String target) {
+        return routeForTarget(prefs, format, target, "");
+    }
+
+    /** The chat with [target] through [account] ("" for any), counting older links as the first account's. */
+    static String routeForTarget(SharedPreferences prefs, MessageProtocol format, String target, String account) {
+        var accounts = account.isEmpty() ? List.<SendAccount>of() : sendAccounts(prefs, format);
         var items = routes(prefs);
         for (int i = 0; i < items.length(); i++) {
             var route = items.optJSONObject(i);
+            String service = format.name().toLowerCase(Locale.ROOT);
             if (route != null && MessageProtocol.parse(route.optString("protocol")) == format
-                    && target.equalsIgnoreCase(route.optString("target"))) return route.optString("address");
+                    && AccountKeys.targetKey(service, target).equals(AccountKeys.targetKey(service, route.optString("target")))) {
+                if (!account.isEmpty()) {
+                    var owner = FromAccount.INSTANCE.chatAccount(route.optString("account"), accounts);
+                    if (owner != null && !owner.getId().equals(account)) continue;
+                }
+                return route.optString("address");
+            }
         }
         return null;
     }
@@ -555,6 +652,11 @@ final class GatewayClient {
 
     private static JSONObject request(SharedPreferences prefs, String endpoint, JSONObject payload) throws Exception {
         return send(prefs, "POST", endpoint, payload);
+    }
+
+    /** Posts to FluidMessages Web, for actions such as answering a message request (MessageRequests). */
+    static JSONObject post(SharedPreferences prefs, String endpoint, JSONObject payload) throws Exception {
+        return request(prefs, endpoint, payload);
     }
 
     private static JSONObject send(SharedPreferences prefs, String method, String endpoint, JSONObject payload) throws Exception {

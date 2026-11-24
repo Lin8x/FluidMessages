@@ -24,7 +24,7 @@ internal data class BadgeCall(val type: Int, val date: Long, val address: String
 
 /**
  * The counts on the Phone and Messages tabs: missed calls since the Phone tab was last opened, and unread
- * conversations in the inbox. Settings → Messaging → Tabs → "Show counts on tabs" hides both.
+ * conversations in the inbox. Settings → Sounds and notifications → App badges → "Show counts on tabs" hides both.
  */
 internal object TabBadges {
     /** On by default. Mirrored to FluidMessages Web as appearance.tabCounts. */

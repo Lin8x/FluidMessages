@@ -114,6 +114,98 @@ class SyncMergeTest {
         assertTrue(next.conflicts.isEmpty() && next.applyPhone.isEmpty() && next.applyWeb.isEmpty())
     }
 
+    // The same scenario as scripts/test-local merge_items_test, on this phone's own merge.
+    private val web = mapOf("look:theme" to "ember", "look:mode" to "dark", "pref:tabCounts" to "off", "pref:communitySort" to "name",
+        "pref:announceSettings" to "off", "pref:inboxFilters" to "unread,inbox,-irc,favorites,groups,direct,texts,matrix,xmpp,email,archived,blocked",
+        "favorite:+12025550141" to "on", "favorite:@rowan:example.org" to "on")
+    private val phone = mapOf("look:theme" to "midnight", "pref:showCommunityChats" to "off", "pref:communitySort" to "joined",
+        "favorite:+12025550142" to "on", "favorite:+12025550141" to "on", "folder:+12025550143" to "pinned")
+
+    @Test fun firstPairingThenReconnectingAfterBothChangedWhileApart() {
+        // First pairing (or an erased server, whose pair id is new): combined, and the two true differences ask.
+        val first = SyncMerge.merge(phone, web, null)
+        assertEquals(listOf("look:theme", "pref:communitySort"), first.conflicts.map { it.key })
+        assertEquals(mapOf("favorite:+12025550142" to "on", "folder:+12025550143" to "pinned", "pref:showCommunityChats" to "off"), first.applyWeb)
+        assertEquals(setOf("look:mode", "pref:tabCounts", "pref:announceSettings", "pref:inboxFilters", "favorite:@rowan:example.org"),
+            first.applyPhone.keys)
+        // Settled in the browser: the phone's theme, the web's sort.
+        val choices = mapOf("look:theme" to SyncMerge.PHONE, "pref:communitySort" to SyncMerge.WEB)
+        val phoneNow = (phone + first.applyPhone.mapValues { it.value!! } + SyncMerge.phoneChanges(first.conflicts, choices).mapValues { it.value!! }).toMutableMap()
+        val webNow = (web + first.applyWeb.mapValues { it.value!! } + SyncMerge.chosen(first.conflicts, choices).mapValues { it.value!! }).toMutableMap()
+        val baseline = first.baseline + SyncMerge.chosen(first.conflicts, choices).mapValues { it.value!! }
+        assertEquals(phoneNow, webNow)
+        SyncMerge.merge(phoneNow, webNow, baseline).let { assertTrue(it.conflicts.isEmpty() && it.applyPhone.isEmpty() && it.applyWeb.isEmpty()) }
+
+        // Apart: the web changed the sort and unstarred someone; the phone changed the sort too, starred someone, and
+        // turned community chats back on. Reconnecting carries the one-sided changes and asks about the sort.
+        webNow["pref:communitySort"] = "joined"
+        webNow.remove("favorite:+12025550142")
+        phoneNow.remove("pref:communitySort")
+        phoneNow["favorite:@sam:example.org"] = "on"
+        phoneNow.remove("pref:showCommunityChats")
+        val again = SyncMerge.merge(phoneNow, webNow, baseline)
+        assertEquals(listOf(SyncConflict("pref:communitySort", null, "joined")), again.conflicts)
+        assertEquals(mapOf("favorite:+12025550142" to null), again.applyPhone)
+        assertEquals(mapOf("favorite:@sam:example.org" to "on", "pref:showCommunityChats" to null), again.applyWeb)
+        assertEquals("name", again.baseline["pref:communitySort"])
+    }
+
+    @Test fun aReinstalledPhoneGetsEverythingAndDeletesNothing() {
+        val result = SyncMerge.merge(emptyMap(), web, null)
+        assertEquals(web, result.applyPhone)
+        assertTrue(result.applyWeb.isEmpty() && result.conflicts.isEmpty())
+    }
+
+    @Test fun theWebsOwnSettingsLeaveInboxChoicesButNotFavorites() {
+        val baseline = mapOf("pref:tabCounts" to "off")
+        val result = SyncMerge.merge(mapOf("favorite:+12025550145" to "on"), mapOf("pref:tabCounts" to "off"), baseline) {
+            SyncMerge.group(it) !in SyncMerge.settingsGroups
+        }
+        assertEquals(mapOf("favorite:+12025550145" to "on"), result.applyWeb)
+        assertEquals(baseline + ("favorite:+12025550145" to "on"), result.baseline)
+    }
+
+    @Test fun newerGroupsOnlyWhenBothSidesUnderstandThem() {
+        // An older FluidMessages Web answers only "mute_until"; one from before that, nothing.
+        assertEquals(setOf("muteuntil"), SyncMerge.sharedGroups(null, true))
+        assertEquals(emptySet<String>(), SyncMerge.sharedGroups(null, false))
+        assertEquals(setOf("muteuntil", "pref", "favorite"), SyncMerge.sharedGroups(listOf("muteuntil", "pref", "favorite", "later"), true))
+        // Message requests: listed in "items", or the first FluidMessages Web with requests answering "requests": 1.
+        assertEquals(setOf("muteuntil", "request", "requests"), SyncMerge.sharedGroups(null, true, requests = true))
+        assertEquals(setOf("muteuntil", "pref", "request", "requests"),
+            SyncMerge.sharedGroups(listOf("muteuntil", "pref", "request", "requests"), true))
+        assertEquals(setOf("muteuntil", "pref", "favorite", "request", "requests"),
+            SyncMerge.sharedGroups(listOf("muteuntil", "pref", "favorite"), true, requests = true))
+        assertTrue(!SyncMerge.understood("request:+12025550101", setOf("muteuntil", "pref", "favorite")))
+        val shared = setOf("muteuntil")
+        assertTrue(SyncMerge.understood("look:theme", shared) && SyncMerge.understood("muteuntil:+12025550101", shared))
+        assertTrue(!SyncMerge.understood("pref:tabCounts", shared) && !SyncMerge.understood("favorite:+12025550101", shared))
+    }
+
+    @Test fun favoritesAreNumbersOrAddressesOnBothSides() {
+        assertEquals("+12025550141", SyncMerge.favoriteAddress("+1 (202) 555-0141"))
+        assertEquals("2025550141", SyncMerge.favoriteAddress(" (202) 555-0141 "))
+        assertEquals("@rowan:example.org", SyncMerge.favoriteAddress("@rowan:example.org"))
+        assertEquals("12", SyncMerge.favoriteAddress("12"))
+        // A starred contact is every number it has; a chat is its address.
+        val reach = mapOf("contact:7" to listOf("(202) 555-0141", "+1 202 555 0142"), "chat:@rowan:example.org" to listOf("@rowan:example.org"),
+            "demo:Maya Chen" to emptyList())
+        assertEquals(setOf("2025550141", "+12025550142", "@rowan:example.org"), FavoriteMerge.items(reach))
+        // Unstarred on the web by one of its numbers: the contact goes. Starred there: found, or the address itself.
+        val next = FavoriteMerge.apply(reach, mapOf("+12025550142" to false, "+12025550199" to true, "@rowan:example.org" to true)) { "chat:$it" }
+        assertEquals(listOf("chat:@rowan:example.org", "demo:Maya Chen", "chat:+12025550199"), next)
+    }
+
+    @Test fun messagingItemsReadAsWords() {
+        assertEquals("Messaging" to "Counts on tabs", SyncMerge.describe("pref:tabCounts") { it })
+        assertEquals("Off", SyncMerge.valueLabel("pref:tabCounts", "off"))
+        assertEquals("Date joined", SyncMerge.valueLabel("pref:communitySort", "joined"))
+        assertEquals("Recent activity", SyncMerge.valueLabel("pref:communitySort", null))
+        assertEquals("Unread, Inbox, Groups", SyncMerge.valueLabel("pref:inboxFilters", "unread,inbox,-favorites,groups"))
+        assertEquals("Favorites" to "Rowan Hale", SyncMerge.describe("favorite:@rowan:example.org") { "Rowan Hale" })
+        assertEquals("Favorite", SyncMerge.valueLabel("favorite:@rowan:example.org", "on"))
+    }
+
     @Test fun foldersAndValuesReadAsWords() {
         assertEquals("pinned", SyncMerge.folderValue(setOf("pinned")))
         assertEquals("archived+pinned", SyncMerge.folderValue(listOf("pinned", "archived")))

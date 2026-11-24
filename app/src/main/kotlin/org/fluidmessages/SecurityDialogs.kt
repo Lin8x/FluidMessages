@@ -58,6 +58,27 @@ object SecurityDialogs {
     }
 
     /**
+     * A message on its own full page, in place of a small confirm or notice pop-up. The back arrow and Android's Back
+     * close it without running anything. primary runs after the page closes (null just closes it); secondary, when
+     * secondaryLabel is given, is the left button, usually Cancel (null just closes). destructive shows primary as a
+     * filled red button, for deleting, removing, or erasing.
+     */
+    @JvmStatic @JvmOverloads
+    fun page(activity: ComponentActivity, prefs: SharedPreferences, title: String, message: String, primaryLabel: String,
+             primary: Runnable?, secondaryLabel: String? = null, secondary: Runnable? = null, destructive: Boolean = false) =
+        present(activity, prefs) { dismiss -> MessagePage(title, message, primaryLabel, primary, secondaryLabel, secondary, destructive, dismiss) }
+
+    /**
+     * A full page of choices, like the mute page: tapping one closes the page and passes its index to pick. A label
+     * with " · " shows the part after it as a detail line. The back arrow, Back, or closeLabel close it with no choice.
+     */
+    @JvmStatic @JvmOverloads
+    fun options(activity: ComponentActivity, prefs: SharedPreferences, title: String, explanation: String, labels: List<String>,
+                pick: IntConsumer, closeLabel: String = "Cancel") = present(activity, prefs) { dismiss ->
+        OptionsPage(title, explanation, labels, closeLabel, dismiss) { index -> dismiss(); pick.accept(index) }
+    }
+
+    /**
      * A form on its own full page, for settings that need typing. Each field is {label, value, hint, kind}, where kind is
      * text, password, phone, email, uri, number, or check (a checkbox; value "true" or "false"). submit gets the values
      * and returns a problem to show, or null to close the page. extra, when given, is a second button such as Remove.
@@ -646,4 +667,49 @@ object DecoyEditor {
         }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
     }
+}
+
+/** The body of [SecurityDialogs.page]: a title, scrolling text, and its buttons in the bottom bar. */
+@Composable
+internal fun MessagePage(title: String, message: String, primaryLabel: String, primary: Runnable?, secondaryLabel: String?,
+                         secondary: Runnable?, destructive: Boolean, dismiss: () -> Unit) {
+    FormPage(onDismissRequest = dismiss, title = { Text(title) }, text = {
+        if (message.isNotEmpty()) Text(message, Modifier.fillMaxWidth())
+    }, confirmButton = {
+        val run = { dismiss(); primary?.run(); Unit }
+        if (destructive) DangerButton(run, primaryLabel, Modifier.padding(start = 4.dp))
+        else TextButton(onClick = run) { Text(primaryLabel) }
+    }, dismissButton = secondaryLabel?.let { label ->
+        { TextButton(onClick = { dismiss(); secondary?.run() }) { Text(label) } }
+    })
+}
+
+/** The body of [SecurityDialogs.options]: choices in one rounded card, each a full-width row. */
+@Composable
+internal fun OptionsPage(title: String, explanation: String, labels: List<String>, closeLabel: String, dismiss: () -> Unit,
+                         choose: (Int) -> Unit) {
+    FormPage(onDismissRequest = dismiss, title = { Text(title) }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (explanation.isNotEmpty()) Text(explanation, style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (labels.isEmpty()) Text("Nothing to choose yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            else Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                labels.forEachIndexed { index, full ->
+                    val label = full.substringBefore(" · ")
+                    val detail = if (" · " in full) full.substringAfter(" · ") else ""
+                    if (index > 0) HorizontalDivider(Modifier.padding(start = 16.dp))
+                    Row(Modifier.fillMaxWidth().clickable(role = Role.Button) { choose(index) }
+                        .heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(label, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface)
+                            if (detail.isNotEmpty()) Text(detail, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        DrawGlyph(Glyph.Forward, MaterialTheme.colorScheme.onSurfaceVariant, Modifier.size(14.dp))
+                    }
+                }
+            }
+        }
+    }, confirmButton = { TextButton(onClick = dismiss) { Text(closeLabel) } })
 }

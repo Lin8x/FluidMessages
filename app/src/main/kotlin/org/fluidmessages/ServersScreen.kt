@@ -92,10 +92,13 @@ private fun plural(service: String) = when (service) { "irc" -> "networks"; "mat
 
 @Composable
 private fun ServiceBadge(service: String, text: String = MessageProtocol.parse(service).label.take(1)) {
-    val fill = when (service) { "irc" -> Color(0xFF6A4BC4); "matrix" -> Color(0xFF0B7D6E); "xmpp" -> Color(0xFFB5520F)
-        else -> Color(MessageStyle.filledControl(LocalControlTint.current)) }
+    // The theme's own protocol color, shaded so white text stays readable (the bubble contrast rule).
+    val appearance = LocalAppearance.current
+    val protocol = MessageProtocol.parse(service)
+    val tint = appearance?.let { protocol.tint(it) } ?: Color(MessageStyle.filledControl(LocalControlTint.current))
+    val fill = accessibleBubbleFill(tint)
     Box(Modifier.size(42.dp).clip(RoundedCornerShape(12.dp)).background(fill), contentAlignment = Alignment.Center) {
-        Text(text, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        Text(text, color = bubbleTextColor(fill), fontWeight = FontWeight.Bold, fontSize = 17.sp)
     }
 }
 
@@ -156,14 +159,18 @@ private fun Directory(service: String, pick: BiConsumer<String, Map<String, Stri
             }
         }
         item {
-            Surface(color = Color.Transparent, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, scheme.outline),
-                modifier = Modifier.padding(top = 8.dp)) {
+            // A themed row like the servers above it, with a dashed-looking outline: Other server… for any host.
+            Surface(color = scheme.surfaceContainerLow, contentColor = scheme.onSurface, shape = MaterialTheme.shapes.medium,
+                border = BorderStroke(1.dp, scheme.outline), modifier = Modifier.padding(top = 8.dp)) {
                 Row(Modifier.fillMaxWidth().clickable(onClickLabel = "Enter another server") { pick.accept("", emptyMap()) }
                     .padding(horizontal = 15.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("+", color = Color(MessageStyle.filledControl(LocalControlTint.current)), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Box(Modifier.size(42.dp).clip(RoundedCornerShape(12.dp)).background(scheme.primary.copy(alpha = .16f)),
+                        contentAlignment = Alignment.Center) {
+                        Text("+", color = scheme.primary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    }
                     Column(Modifier.weight(1f)) {
-                        Text("Other server…", style = MaterialTheme.typography.titleMedium)
+                        Text("Other server…", color = scheme.onSurface, style = MaterialTheme.typography.titleMedium)
                         Text(when (service) {
                             "irc" -> "Enter any network’s host and port"
                             "matrix" -> "Enter any homeserver’s address"

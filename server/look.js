@@ -4,7 +4,7 @@
 // saveWebLook, THEMES, webLook, mixColor, usingPhoneLook).
 
 // What a theme brings: picking or resetting one restores these. Light or dark, motion, sounds, and haptics stay.
-const THEME_KEYS = ['colors', 'radius', 'size', 'padding', 'wallpaper', 'searchPosition', 'toolbarFinish', 'chromeOpacity', 'density',
+const THEME_KEYS = ['colors', 'contrast', 'radius', 'size', 'padding', 'wallpaper', 'searchPosition', 'toolbarFinish', 'chromeOpacity', 'density',
   'tails', 'activePalette'];
 const WALLPAPERS = [['none', 'Solid'], ['horizon', 'Horizon'], ['aurora', 'Aurora'], ['love', 'Love'], ['orchard', 'Orchard']];
 const MOTION = [[0, 'Off'], [130, 'Quick'], [220, 'Standard'], [360, 'Relaxed']];
@@ -17,7 +17,7 @@ function themeLook(look, key, palette) {
   const saved = palette && look.palettes?.[palette];
   next.theme = saved ? saved.theme : key;
   if (next.theme === 'love') next.wallpaper = 'love';
-  if (saved) { next.colors = {...saved.colors}; next.activePalette = palette; }
+  if (saved) { next.colors = {...saved.colors}; next.activePalette = palette; if (saved.contrast) next.contrast = true; }
   return next;
 }
 
@@ -47,15 +47,150 @@ function canvasColor() {
   return /^#[0-9a-f]{6}$/i.test(value) ? value : (appearance.dark ? '#101012' : '#ffffff');
 }
 
-/** This chat's wallpaper, or the global one. Called whenever a chat is drawn. */
+/** This chat's wallpaper, or the global one, over its own background color. Called whenever a chat is drawn. */
 function applyChatWallpaper() {
   const box = document.getElementById('conversation');
   if (!box) return;
-  const own = typeof active === 'string' && active ? webLook.chatWallpapers?.[threadAddress(active)] : '';
+  const address = typeof active === 'string' && active ? threadAddress(active) : '';
+  const own = address ? webLook.chatWallpapers?.[address] : '';
+  const chat = address ? chatColors(address) : null;
+  applyChatColors(box, chat);
   const name = own || ownLook().wallpaper || 'none';
-  const background = wallpaperBackground(name, canvasColor());
+  const base = chat?.canvas || canvasColor();
+  const background = wallpaperBackground(name, base) || (chat?.canvas ? base : '');
   box.style.background = background;
   box.dataset.wallpaper = background ? name : '';
+}
+
+// A chat's own theme and colors (conversation details → Theme and wallpaper), like the phone's ChatProfile and
+// resolveChatAppearance: a named theme in place of the global one, and your own outgoing, incoming, and background
+// colors on top. Kept on FluidMessages Web only (web_appearance.chatThemes): the settings merge has no item for
+// them, so they never reach the phone, and the phone's chat themes don't come here. The wallpaper does sync.
+
+const CHAT_ROLES = ['sms', 'rcs', 'automated', 'matrix', 'xmpp', 'email', 'irc'];
+
+/** The bubble and background colors a chat uses, or null when it follows the global look. */
+function chatColors(address, profile = webLook.chatThemes?.[address]) {
+  if (!profile || !Object.keys(profile).length) return null;
+  const global = resolvedAppearance().colors || {};
+  const themed = profile.theme ? themeAppearance({mode: appearance.dark ? 'dark' : 'light', theme: profile.theme, contrast: !!webLook.contrast}).colors : null;
+  const colors = {};
+  for (const key of ['incoming', ...CHAT_ROLES]) colors[key] = (themed || global)[key];
+  colors.canvas = profile.background || themed?.canvas || global.canvas;
+  if (profile.outgoing) for (const key of CHAT_ROLES) if (key !== 'automated') colors[key] = profile.outgoing;
+  if (profile.incoming) colors.incoming = profile.incoming;
+  const ink = textOn(colors.canvas);
+  colors.ink = ink;
+  colors.muted = readable(mixColor(ink, colors.canvas, .45), colors.canvas, ink, 4.5);
+  return colors;
+}
+
+/** Sets a chat's colors on [box] (its messages), with the same white-on-color and shading rule as everywhere. */
+function applyChatColors(box, chat) {
+  for (const key of ['incoming', ...CHAT_ROLES]) {
+    if (chat?.[key]) {
+      box.style.setProperty('--' + key, bubbleFill(chat[key]));
+      box.style.setProperty('--' + key + '-ink', bubbleInk(chat[key]));
+    } else {
+      box.style.removeProperty('--' + key);
+      box.style.removeProperty('--' + key + '-ink');
+    }
+  }
+  for (const key of ['canvas', 'ink', 'muted']) {
+    if (chat?.[key]) box.style.setProperty('--' + key, chat[key]); else box.style.removeProperty('--' + key);
+  }
+}
+
+/** What the details page says under Theme and wallpaper: the chat's theme, or Global theme. */
+function chatAppearanceLabel(address) {
+  const profile = webLook.chatThemes?.[address] || {};
+  const theme = profile.theme ? THEMES[profile.theme]?.label : 'Global theme';
+  const custom = ['outgoing', 'incoming', 'background'].some((key) => profile[key]);
+  return theme + (custom ? ' · custom colors' : '') + (webLook.chatWallpapers?.[address] ? ' · own wallpaper' : '');
+}
+
+/** Conversation details → Theme and wallpaper: the phone's Chat appearance page. */
+function openChatAppearance(key, back) {
+  const address = threadAddress(key);
+  const locked = usingPhoneLook();
+  const profile = () => ({...(webLook.chatThemes?.[address] || {})});
+  const save = (next, wallpaper) => {
+    const themes = {...(webLook.chatThemes || {})};
+    const kept = Object.fromEntries(Object.entries(next).filter(([, value]) => value));
+    if (Object.keys(kept).length) themes[address] = kept; else delete themes[address];
+    const look = {...webLook, chatThemes: themes};
+    if (wallpaper !== undefined) {
+      const walls = {...(webLook.chatWallpapers || {})};
+      if (wallpaper) walls[address] = wallpaper; else delete walls[address];
+      look.chatWallpapers = walls;
+    }
+    saveWebLook(look, true);
+    applyChatWallpaper();
+    draw();
+    status.textContent = 'Appearance saved';
+  };
+  // A theme brings its own colors, and its wallpaper (Love has one); your colors for this chat start over.
+  const useTheme = (theme) => save({theme}, theme === 'love' ? 'love' : '');
+  const status = element('p', '', 'muted');
+  status.setAttribute('role', 'status');
+  const page = element('div', '', 'stack chat-appearance');
+  const draw = () => {
+    const own = profile();
+    const colors = chatColors(address, own) || resolvedAppearance().colors || {};
+    const preview = element('div', '', 'look-preview chat-preview');
+    preview.setAttribute('role', 'img');
+    preview.setAttribute('aria-label', 'Preview of this chat');
+    const canvas = colors.canvas || canvasColor();
+    preview.style.background = wallpaperBackground(webLook.chatWallpapers?.[address] || ownLook().wallpaper || 'none', canvas) || canvas;
+    const role = family(threadProtocol(key)) === 'sms' ? 'sms' : family(threadProtocol(key));
+    for (const [text, out] of [['Are we still on for Saturday?', false], ['Yes! I’ll bring the map 🗺️', true]]) {
+      const row = element('div', '', out ? 'message out' : 'message');
+      const bubble = element('div', text, 'bubble');
+      const fill = out ? colors[role] || colors.sms : colors.incoming;
+      if (fill) { bubble.style.background = bubbleFill(fill); bubble.style.color = bubbleInk(fill); }
+      row.append(bubble);
+      preview.append(row);
+    }
+    const theme = element('select', '');
+    theme.append(Object.assign(element('option', 'Use global theme'), {value: ''}));
+    // Love first, as on the phone.
+    for (const name of ['love', ...THEME_ORDER.filter((item) => item !== 'love')]) theme.append(Object.assign(element('option', THEMES[name].label), {value: name}));
+    theme.value = own.theme || '';
+    theme.addEventListener('change', () => useTheme(theme.value));
+    const colorsCard = element('section', '', 'settings-section');
+    colorsCard.append(element('h3', 'Bubble and background colors'));
+    for (const [name, label, shown] of [['outgoing', 'Outgoing bubble', colors[role] || colors.sms], ['incoming', 'Incoming bubble', colors.incoming],
+      ['background', 'Background', canvas]]) {
+      const input = Object.assign(element('input', ''), {type: 'color', value: /^#[0-9a-f]{6}$/i.test(shown || '') ? shown : '#888888'});
+      input.addEventListener('change', () => save({...profile(), [name]: input.value}));
+      colorsCard.append(field(label, input, own[name] ? 'Custom' : 'Theme'));
+      if (own[name]) {
+        const clear = element('button', 'Use theme color', 'quiet small-button');
+        clear.type = 'button';
+        clear.setAttribute('aria-label', 'Use the theme’s ' + label.toLowerCase() + ' color');
+        clear.addEventListener('click', () => save({...profile(), [name]: ''}));
+        colorsCard.append(clear);
+      }
+    }
+    colorsCard.append(element('p', 'Colored bubbles always use white text; bright colors are shaded so it stays readable.', 'muted'));
+    const wallCard = element('section', '', 'settings-section');
+    wallCard.append(wallpaperPicker('chat-wallpaper', webLook.chatWallpapers?.[address] || '',
+      (value) => save(profile(), value), true));
+    const reset = element('details', '', 'more');
+    reset.append(element('summary', 'Reset to theme'));
+    const confirm = element('button', 'Reset', 'primary');
+    confirm.type = 'button';
+    confirm.addEventListener('click', () => useTheme(profile().theme || ''));
+    reset.append(element('p', 'Restore the selected theme’s colors and wallpaper for this chat.', 'muted'), confirm);
+    const where = element('p', 'This chat’s theme and colors stay on FluidMessages Web: they aren’t synced with your phone, which keeps its own. '
+      + 'The wallpaper syncs like other chat wallpapers.', 'muted');
+    const themeCard = element('section', '', 'settings-section');
+    themeCard.append(field('Conversation theme', theme));
+    if (locked) themeCard.append(element('p', 'Your phone’s theme is used everywhere else. This chat’s own theme and colors still apply here.', 'muted'));
+    page.replaceChildren(preview, themeCard, wallCard, colorsCard, reset, where, status);
+  };
+  draw();
+  detailsPage('Chat appearance', [page], back);
 }
 
 /** Applied after every appearance change (app.js applyAppearance). */
@@ -190,10 +325,14 @@ function lookNoticeIncoming(messages) {
   if (!fresh.length || (typeof sampleOn !== 'undefined' && sampleOn)) return;
   const muted = (message) => typeof chatMuted === 'function' && chatMuted(message.address);
   const blocked = (message) => typeof inFolder === 'function' && inFolder(message.address, 'blocked');
-  const loud = fresh.filter((message) => !muted(message));
-  const chime = loud.length || (webLook.mutedSounds && fresh.some((message) => !blocked(message)));
+  // Message requests notify quietly or not at all, and automated senders can be silenced (requests.js).
+  const alert = (message) => typeof requestAlert === 'function' ? requestAlert(message) : 'loud';
+  const loud = fresh.filter((message) => !muted(message) && alert(message) === 'loud');
+  const hushed = fresh.filter((message) => !muted(message) && alert(message) === 'quiet');
+  const chime = loud.length || (webLook.mutedSounds && fresh.some((message) => !blocked(message) && alert(message) === 'loud'));
   const played = chime ? playTone(true) : false;
   if (loud.length && typeof notifyIncoming === 'function') notifyIncoming(loud, played);
+  if (hushed.length && typeof notifyIncoming === 'function') notifyIncoming(hushed, true);
 }
 
 // Settings → Themes and appearance
@@ -268,6 +407,34 @@ function wallpaperPicker(group, current, change, inherit = false) {
   return box;
 }
 
+/** The live preview's Inbox: three fictional chats with the search, density, and toolbar choices you made. */
+function inboxPreview() {
+  const look = ownLook();
+  const head = element('div', '', 'preview-head');
+  head.dataset.toolbar = look.toolbarFinish || 'plain';
+  if (head.dataset.toolbar === 'floating') head.style.setProperty('--chrome-opacity', (look.chromeOpacity ?? 84) + '%');
+  const filter = element('span', '', 'preview-filter');
+  filter.setAttribute('aria-hidden', 'true');
+  filter.textContent = '☰';
+  head.append(element('strong', 'Messages'), filter);
+  const search = element('span', 'Search', 'preview-search');
+  const list = element('div', '', 'preview-rows');
+  list.dataset.density = look.density || 'standard';
+  for (const [name, words, time, unread] of [['Maya Chen', 'See you at the trailhead at nine', '9:41', true],
+    ['Jordan Ellis', 'I sent the route for Saturday.', '8:15', false], ['Harbor Street Café', 'Your table is ready.', 'Mon', false]]) {
+    const row = element('div', '', 'preview-row');
+    const avatar = setAvatar(element('span', '', 'avatar'), name);
+    const text = element('span', '', 'preview-words');
+    text.append(element('strong', name), element('small', words));
+    const side = element('span', '', 'preview-side');
+    side.append(element('small', time));
+    if (unread) side.append(element('span', '', 'preview-unread'));
+    row.append(avatar, text, side);
+    list.append(row);
+  }
+  return (look.searchPosition || 'bottom') === 'top' ? [head, search, list] : [head, list, search];
+}
+
 /**
  * The appearance page's extra groups (companion.js appearanceSection): saved palettes in Color theme and
  * Customize colors, Wallpaper, Inbox and toolbar, bubble tails, and Motion and haptics (outside the part that
@@ -305,7 +472,7 @@ function lookExtras({themes, colorsBox, bubbles, refresh}) {
     if (!label) { name.focus(); return; }
     const palettes = {...(webLook.palettes || {})};
     if (!palettes[label] && Object.keys(palettes).length >= 20) { status.textContent = 'You can keep up to 20 palettes.'; return; }
-    palettes[label] = {theme: webLook.theme || 'fluid', colors: {...(webLook.colors || {})}};
+    palettes[label] = {theme: webLook.theme || 'fluid', colors: {...(webLook.colors || {})}, ...(webLook.contrast ? {contrast: true} : {})};
     saveWebLook({...webLook, palettes, activePalette: label}, true);
     status.textContent = 'Saved as “' + label + '”. It’s in Color theme.';
     redraw();

@@ -923,15 +923,17 @@ function openGames() {
 }
 
 function openGifs() {
-  const sheet = dialog('GIFs and stickers');
+  const gifsOn = prefs.sendGifs !== false, stickersOn = prefs.sendStickers !== false;
+  const sheet = dialog(gifsOn && stickersOn ? 'GIFs and stickers' : gifsOn ? 'GIFs' : 'Stickers');
   const box = element('div', '', 'settings-section');
   const source = element('select', '');
-  for (const [value, label] of [['tenor', 'Tenor'], ['giphy', 'GIPHY']]) source.append(Object.assign(element('option', label), {value}));
-  source.value = localStorage.getItem('gifSource') || 'tenor';
+  const searches = typeof GIF_SEARCH !== 'undefined' ? GIF_SEARCH : [['tenor', 'Tenor'], ['giphy', 'GIPHY']];
+  for (const [value, label] of searches) source.append(Object.assign(element('option', label), {value}));
+  source.value = typeof gifSearchSource === 'function' ? gifSearchSource() : localStorage.getItem('gifSource') || 'tenor';
   const key = Object.assign(element('input', ''), {type: 'password', autocomplete: 'off', value: localStorage.getItem('gifKey') || '',
     placeholder: 'Your free API key'});
   const kind = element('select', '');
-  for (const [value, label] of [['gifs', 'GIFs'], ['stickers', 'Stickers']]) kind.append(Object.assign(element('option', label), {value}));
+  for (const [value, label, on] of [['gifs', 'GIFs', gifsOn], ['stickers', 'Stickers', stickersOn]]) if (on) kind.append(Object.assign(element('option', label), {value}));
   const query = Object.assign(element('input', ''), {type: 'search', placeholder: 'Search'});
   const grid = element('div', '', 'gif-grid');
   const status = element('p', 'Searches go through FluidMessages Web to the service you pick. The key stays in this browser.', 'muted');
@@ -939,10 +941,14 @@ function openGifs() {
   const search = async () => {
     localStorage.setItem('gifSource', source.value);
     localStorage.setItem('gifKey', key.value.trim());
+    keyField.hidden = source.value === 'none';
+    // Search off: nothing is sent anywhere until you send a GIF.
+    if (source.value === 'none') { grid.replaceChildren(); status.textContent = 'Search is off. Browse a site above, copy a GIF’s link, and paste it.'; return; }
     if (!key.value.trim()) { grid.replaceChildren(); status.textContent = 'Add an API key from ' + (source.value === 'tenor' ? 'developers.google.com/tenor' : 'developers.giphy.com') + ' to search.'; return; }
     status.textContent = 'Searching…';
     const response = await fetch('/api/gifs?provider=' + source.value + '&stickers=' + (kind.value === 'stickers' ? 1 : 0) + '&q='
-      + encodeURIComponent(query.value.trim()), {headers: {...REQUEST_HEADERS, 'X-Fluid-Gif-Key': key.value.trim()}});
+      + encodeURIComponent(query.value.trim()), {headers: {...REQUEST_HEADERS, 'X-Fluid-Gif-Key': key.value.trim(),
+      ...(typeof gifApiAddress === 'function' && gifApiAddress() ? {'X-Fluid-Gif-Api': gifApiAddress()} : {})}});
     const data = response.ok ? await response.json() : {results: []};
     status.textContent = data.results.length ? '' : 'Nothing found.';
     grid.replaceChildren(...data.results.map((item) => {
@@ -983,9 +989,14 @@ function openGifs() {
   });
   const pasteRow = element('div', '', 'card-actions');
   pasteRow.append(paste, sendPaste);
-  box.append(element('small', 'Browse a GIF site', 'muted'), sites, pasteRow, field('Search here with', source), field('API key', key), field('Show', kind), query, grid, status);
+  const keyField = field('API key', key);
+  const queryRow = element('div', '', 'stack');
+  queryRow.append(query);
+  box.append(element('small', 'Browse a GIF site', 'muted'), sites, pasteRow, field('Search here with', source), keyField);
+  if (kind.options.length > 1) box.append(field('Show', kind));
+  box.append(queryRow, grid, status);
   // Your own stickers, made with Make a sticker (media.js).
-  if (typeof stickerShelf === 'function') box.prepend(stickerShelf(() => sheet.close()));
+  if (typeof stickerShelf === 'function' && stickersOn) box.prepend(stickerShelf(() => sheet.close()));
   sheet.append(box);
   sheet.showModal();
   later();
@@ -1138,8 +1149,11 @@ function openContact() {
   const groups = [['Share', [['📎', 'Photo or file', attachFile, internetOnly], ['🎙️', 'Voice message', () => startVoiceNote(), voiceReady],
     ['📍', 'Location', openLocation], ['👤', 'Contact', openContact, internetOnly], ['💸', 'Money', openMoney]]],
   ['Create', [['📊', 'Poll', openPoll], ['📅', 'Event', openEvent], ['🖌️', 'Edit a photo', () => pickPhotoToEdit(), internetOnly]]],
-  ['Fun', [['✨', 'Effect', openEffects, () => prefs.effects], ['🖼️', 'GIF or sticker', openGifs, () => prefs.gifs],
-    ['✂️', 'Make a sticker', () => makeSticker(), () => prefs.gifs], ['🎮', 'Games', openGames, () => prefs.games],
+  // GIFs and stickers each have a switch in Settings → Media, GIFs, and fun.
+  ['Fun', [['✨', 'Effect', openEffects, () => prefs.effects],
+    ['🖼️', prefs.sendStickers === false ? 'GIF' : prefs.sendGifs === false ? 'Sticker' : 'GIF or sticker', openGifs,
+      () => prefs.gifs && (prefs.sendGifs !== false || prefs.sendStickers !== false)],
+    ['✂️', 'Make a sticker', () => makeSticker(), () => prefs.gifs && prefs.sendStickers !== false], ['🎮', 'Games', openGames, () => prefs.games],
     ['🎲', 'Dice and random', openRandom, () => prefs.random]]]];
   const items = [];
   for (const [title, entries] of groups) {
@@ -1927,25 +1941,47 @@ function attachmentContact(message, bubble) {
 // Chat setting notices, the same sentences as the phone's (Extras.kt): "⏱️ Disappearing messages are on. New
 // messages disappear after 1 day." Plain text in any app; FluidMessages shows an outlined note instead of a bubble.
 // chat-notice:start (scripts/test-local runs this block on its own)
+// Like the phone's (Extras.kt): the note FluidMessages shows, then a blank line and a line for people reading in
+// another app. Older notices had only the note, and both read the same.
 const NOTICE_TIMER_ON = /^⏱️? Disappearing messages are on\. New messages disappear after (\d{1,4}) (second|minute|hour|day|week)s?\.$/u;
 const NOTICE_TIMER_OFF = /^⏱️? Disappearing messages are off\.$/u;
 const NOTICE_ENCRYPTED = '🔒 Messages in this chat are now encrypted with FluidMessages.';
 const NOTICE_UNENCRYPTED = '🔓 Messages in this chat are no longer encrypted with FluidMessages.';
 const NOTICE_UNITS = {second: 1, minute: 60, hour: 3600, day: 86400, week: 604800};
+const FLUID_LINK = 'https://github.com/Lin8x/FluidMessages';
 
-/** {kind: 'timer', seconds} (0 is off) or {kind: 'encryption', on}, or null for any other text. */
-function parseChatNotice(text) {
-  const clean = String(text || '').trim();
-  if (clean === NOTICE_ENCRYPTED) return {kind: 'encryption', on: true};
-  if (clean === NOTICE_UNENCRYPTED) return {kind: 'encryption', on: false};
-  if (NOTICE_TIMER_OFF.test(clean)) return {kind: 'timer', seconds: 0};
-  const match = NOTICE_TIMER_ON.exec(clean);
+/** The line for people who read the notice in another app. FluidMessages never shows it. */
+function chatNoticeFooter(notice) {
+  if (notice.kind === 'timer') return notice.seconds > 0
+    ? 'Sent by FluidMessages. Your app may keep these messages. Install FluidMessages to have them disappear too: ' + FLUID_LINK
+    : 'Sent by FluidMessages. Install it to see this chat the way it\'s meant to be seen: ' + FLUID_LINK;
+  return notice.on ? 'You\'ll need FluidMessages to read encrypted messages: ' + FLUID_LINK
+    : 'Sent by FluidMessages. New messages in this chat are readable in any app again.';
+}
+
+function parseNoticeLine(line) {
+  if (line === NOTICE_ENCRYPTED) return {kind: 'encryption', on: true};
+  if (line === NOTICE_UNENCRYPTED) return {kind: 'encryption', on: false};
+  if (NOTICE_TIMER_OFF.test(line)) return {kind: 'timer', seconds: 0};
+  const match = NOTICE_TIMER_ON.exec(line);
   const seconds = match ? Number(match[1]) * NOTICE_UNITS[match[2]] : 0;
   return seconds > 0 ? {kind: 'timer', seconds} : null;
 }
 
-/** The notice for a chat's new disappearing timer, labeled like Disappearing.label on the phone. */
-function timerNoticeText(seconds) {
+/** {kind: 'timer', seconds} (0 is off) or {kind: 'encryption', on}, or null for any other text. */
+function parseChatNotice(text) {
+  const clean = String(text || '').trim().replace(/\r\n/g, '\n');
+  const split = clean.indexOf('\n');
+  const notice = parseNoticeLine(split < 0 ? clean : clean.slice(0, split).trim());
+  if (!notice || split < 0) return notice;
+  // Anything after the first line must be this notice's own line for other apps.
+  return clean.slice(split).trim() === chatNoticeFooter(notice) ? notice : null;
+}
+
+/** The note FluidMessages shows for a notice: its first line, without the line for other apps. */
+function chatNoticeLabel(notice) {
+  if (notice.kind === 'encryption') return notice.on ? NOTICE_ENCRYPTED : NOTICE_UNENCRYPTED;
+  const seconds = notice.seconds;
   if (!(seconds > 0)) return '⏱️ Disappearing messages are off.';
   let label = seconds + ' second' + (seconds === 1 ? '' : 's');
   for (const [unit, size] of [['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]]) {
@@ -1954,5 +1990,10 @@ function timerNoticeText(seconds) {
   return '⏱️ Disappearing messages are on. New messages disappear after ' + label + '.';
 }
 
-const encryptionNoticeText = (on) => on ? NOTICE_ENCRYPTED : NOTICE_UNENCRYPTED;
+const chatNoticeText = (notice) => chatNoticeLabel(notice) + '\n\n' + chatNoticeFooter(notice);
+
+/** The notice for a chat's new disappearing timer, labeled like Disappearing.label on the phone. */
+const timerNoticeText = (seconds) => chatNoticeText({kind: 'timer', seconds: seconds > 0 ? seconds : 0});
+
+const encryptionNoticeText = (on) => chatNoticeText({kind: 'encryption', on: !!on});
 // chat-notice:end

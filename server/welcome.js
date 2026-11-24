@@ -176,30 +176,6 @@ function sampleConversation() {
   return card;
 }
 
-/** Calls and Messages, taking turns being selected (the phone's TabsIllustration). */
-function tabsIllustration(flow) {
-  const card = element('div', '', 'g-card g-tabs');
-  const caption = element('span', 'All your chats', 'g-caption');
-  const bar = element('div', '', 'g-tabbar');
-  const tabs = {};
-  for (const [key, label] of [['calls', 'Calls'], ['messages', 'Messages']]) {
-    const tab = element('span', '', 'g-tab');
-    tab.append(railIcon(key), element('span', label));
-    tabs[key] = tab;
-    bar.append(tab);
-  }
-  let calls = false;
-  const show = () => {
-    tabs.calls.classList.toggle('on', calls);
-    tabs.messages.classList.toggle('on', !calls);
-    caption.textContent = calls ? 'Recent calls, voice and video' : 'All your chats';
-  };
-  show();
-  flow.every(1600, () => { calls = !calls; show(); });
-  card.append(caption, bar);
-  return card;
-}
-
 /** Three chats on three services, each with its tag (WaysIllustration). */
 function waysIllustration() {
   const card = element('div', '', 'g-card g-ways');
@@ -240,17 +216,6 @@ function privacyIllustration(flow) {
   const show = () => circles[1].classList.toggle('on', locked);
   show();
   flow.every(1400, () => { locked = !locked; show(); });
-  return card;
-}
-
-/** A bubble that fades while a timer ring runs down, then comes back (DisappearingIllustration). */
-function disappearingIllustration() {
-  const card = element('div', '', 'g-card g-disappear');
-  card.append(drawing('<svg class="g-ring" viewBox="0 0 64 64" width="64" height="64" aria-hidden="true">'
-    + '<circle cx="32" cy="32" r="25" class="g-ring-track"/><circle cx="32" cy="32" r="25" class="g-ring-run" pathLength="100"/></svg>'));
-  const words = element('div', '', 'g-stack');
-  words.append(element('span', 'Meet you at 6', 'g-bubble b-sms g-fade'), element('span', 'Gone when the timer ends', 'g-caption'));
-  card.append(words);
   return card;
 }
 
@@ -849,6 +814,554 @@ function callServices() {
   return list;
 }
 
+// ---- Newer showcases: the tabs and contacts, Communities, filters and mutes, setting notices, sounds and
+// notifications, and connecting a phone. Same rules as above: fictional people, nothing clickable inside, and
+// with reduced motion each scene shows how it ends. ----
+
+/** A chat row like the inbox's (app.js threadButton): the unread dot, an avatar, name and tag, the preview, and the time. */
+function mockThread(name, line, time, {tag = '', unread = false} = {}) {
+  const row = element('div', '', 'thread');
+  row.dataset.unread = String(unread);
+  const copy = element('span', '', 'thread-copy');
+  const title = element('strong', name);
+  copy.append(title);
+  const tags = element('span', '', 'tags');
+  if (tag) tags.append(element('span', labels[tag] || tag, 'tag p-' + tag));
+  copy.append(tags, element('small', line));
+  const clockNode = element('time', time);
+  const face = typeof setAvatar === 'function' ? setAvatar(element('span', '', 'avatar'), name) : element('span', initials(name), 'avatar');
+  row.append(element('span', '', 'indicator'), face, copy, clockNode);
+  return {row, title, tags, copy, clock: clockNode};
+}
+
+/** The inbox with its filter at the upper trailing edge, as in the real sidebar. */
+function mockInbox(title = 'Messages') {
+  const box = element('div', '', 'g-inbox');
+  const head = element('div', '', 'g-inbox-head');
+  const heading = element('strong', title);
+  const filter = element('span', 'Inbox ▾', 'g-filter');
+  head.append(heading, filter);
+  const list = element('div', '', 'g-inbox-list');
+  box.append(head, list);
+  return {box, head, heading, filter, list};
+}
+
+/** A menu that opens under [anchor] in a scene, with [items]; [chosen] is lit. */
+function mockMenu(scene, anchor, items, chosen = '') {
+  const menu = element('div', '', 'g-menu');
+  const nodes = {};
+  for (const item of items) {
+    const node = element('span', item, item === chosen ? 'on' : '');
+    nodes[item] = node;
+    menu.append(node);
+  }
+  const frame = scene.getBoundingClientRect(), box = anchor.getBoundingClientRect();
+  menu.style.top = Math.round(box.bottom - frame.top + 4) + 'px';
+  menu.style.insetInlineEnd = Math.round(frame.right - box.right) + 'px';
+  scene.append(menu);
+  return {menu, nodes};
+}
+
+/** A small note at the bottom of a scene, like the app's status line. */
+function mockToast(scene, text) {
+  scene.querySelector('.g-toast')?.remove();
+  const toast = element('span', text, 'g-toast');
+  scene.append(toast);
+  return toast;
+}
+
+// Calls and Messages, and the contacts you make (the phone's PhoneTab, in this browser's Calls tab).
+
+const GUIDE_CONTACTS = [['Amir Nasser', 'XMPP'], ['Elena Vasquez', 'Matrix'], ['Maya Chen', 'Matrix · Email']];
+
+/** The Calls tab: Favorites, Recents, and Contacts, as the real one draws them (people.js showPhoneTab). */
+function mockCallsTab(view) {
+  const tab = element('div', '', 'g-calls');
+  const segments = element('div', '', 'phone-segments');
+  const buttons = {};
+  for (const label of ['Favorites', 'Recents', 'Contacts']) {
+    const button = element('span', label, 'phone-segment');
+    button.setAttribute('aria-selected', String(label === view));
+    buttons[label] = button;
+    segments.append(button);
+  }
+  const body = element('div', '', 'g-calls-body');
+  tab.append(segments, body);
+  return {tab, buttons, body};
+}
+
+function mockPersonRow(name, detail, {missed = false, star = false} = {}) {
+  const row = element('div', '', 'person-row' + (missed ? ' recent-row missed' : ''));
+  const open = element('span', '', 'person-open');
+  const words = element('span', '', 'person-words');
+  words.append(element('strong', name));
+  if (detail) words.append(element('small', detail));
+  open.append(typeof avatarFor === 'function' ? avatarFor(name) : element('span', initials(name), 'avatar'), words);
+  row.append(open);
+  let starNode = null;
+  if (star !== null) {
+    starNode = element('span', star ? '★' : '☆', 'g-star' + (star ? ' on' : ''));
+    row.append(starNode);
+  }
+  return {row, star: starNode};
+}
+
+/** Two tabs: Calls with recents and missed calls, then contacts you make here and star. */
+function tabsShowcase(flow) {
+  const tabbar = (on) => {
+    const bar = element('div', '', 'g-tabbar g-tabbar-small');
+    const tabs = {};
+    for (const [key, label] of [['calls', 'Calls'], ['messages', 'Messages']]) {
+      const tab = element('span', '', 'g-tab' + (key === on ? ' on' : ''));
+      tab.append(railIcon(key), element('span', label));
+      tabs[key] = tab;
+      bar.append(tab);
+    }
+    const badge = element('span', '2', 'g-badge');
+    tabs.calls.append(badge);
+    return {bar, tabs, badge};
+  };
+  const recents = (body) => {
+    body.append(element('strong', 'Recents', 'g-calls-title'));
+    for (const [name, detail, missed] of [['Elena Vasquez', 'Matrix · Missed', true], ['Maya Chen', 'Matrix · Video · 4 min', false],
+      ['Radio Club', 'Meeting link · 22 min', false], ['Sam Rivera', 'Matrix · Missed', true]]) body.append(mockPersonRow(name, detail, {missed, star: null}).row);
+  };
+  return showcase(flow, [
+    {caption: 'Calls: voice and video, with missed calls in red', length: 3600, build(scene, {at, still}) {
+      const stage = element('div', '', 'g-tabs-stage');
+      const chats = element('div', '', 'g-calls');
+      for (const [name, line, tag] of [['Maya Chen', 'See you at ten!', 'matrix'], ['Book club', 'Priya: Next week’s pick?', 'email']]) {
+        chats.append(mockThread(name, line, '9:41', {tag}).row);
+      }
+      const calls = mockCallsTab('Recents');
+      recents(calls.body);
+      calls.tab.hidden = true;
+      const {bar, tabs, badge} = tabbar('messages');
+      stage.append(chats, calls.tab, bar);
+      scene.append(stage);
+      const pointer = guidePointer(scene, still);
+      pointer.to(.7, .4);
+      at(300, () => pointer.to(tabs.calls));
+      at(1000, () => {
+        pointer.click();
+        tabs.calls.classList.add('on');
+        tabs.messages.classList.remove('on');
+        chats.hidden = true;
+        calls.tab.hidden = false;
+        calls.tab.classList.add('g-pop-in');
+        badge.remove();
+      });
+    }},
+    {caption: 'Contacts: make your own, and star your favorites', length: 5200, build(scene, {at, still}) {
+      const stage = element('div', '', 'g-tabs-stage');
+      const calls = mockCallsTab('Contacts');
+      const title = element('div', '', 'g-calls-head');
+      const add = element('span', '+ New contact', 'g-chip');
+      title.append(element('strong', 'Contacts', 'g-calls-title'), add);
+      calls.body.append(title);
+      const rows = GUIDE_CONTACTS.map(([name, detail]) => mockPersonRow(name, detail));
+      for (const {row} of rows) calls.body.append(row);
+      stage.append(calls.tab);
+      scene.append(stage);
+      const sheet = element('div', '', 'g-sheet');
+      const name = element('span', '', 'g-field');
+      const number = element('span', '', 'g-field');
+      const save = element('span', 'Save', 'g-chip primary');
+      sheet.append(element('strong', 'New contact'), element('small', 'Name', 'g-label'), name, element('small', 'Number', 'g-label'), number, save);
+      const pointer = guidePointer(scene, still);
+      pointer.to(.5, .8);
+      at(300, () => pointer.to(add));
+      at(900, () => { pointer.click(); scene.append(sheet); sheet.classList.add('g-pop-in'); });
+      const type = (start, node, text) => [...text].forEach((_, count) => at(start + count * 45, () => { node.textContent = text.slice(0, count + 1); }));
+      type(1200, name, 'Nora Patel');
+      type(1750, number, '(202) 555-0107');
+      at(2500, () => pointer.to(save));
+      let made = null;
+      at(3000, () => {
+        pointer.click();
+        sheet.remove();
+        made = mockPersonRow('Nora Patel', 'SMS · Saved here');
+        rows[2].row.after(made.row);
+        made.row.classList.add('g-pop-in');
+      });
+      at(3500, () => made && pointer.to(made.star));
+      at(4100, () => { if (!made) return; pointer.click(); made.star.textContent = '★'; made.star.classList.add('on', 'g-pop-in'); });
+    }},
+  ], 'Two tabs');
+}
+
+// Communities: servers with their channels and rooms, beside Chats (servers.js drawCommunities).
+
+/** The Chats | Communities switch, drawn with the real classes. */
+function mockSwitch(view, unread = 0) {
+  const holder = element('div', '', 'inbox-view');
+  const make = (value, label) => {
+    const button = element('span', '', 'segment');
+    button.append(element('span', label));
+    if (value === 'communities' && unread) button.append(element('span', String(unread), 'segment-badge'));
+    button.setAttribute('aria-pressed', String(view === value));
+    holder.append(button);
+    return button;
+  };
+  return {holder, chats: make('chats', 'Chats'), communities: make('communities', 'Communities')};
+}
+
+/** One server with its channels, as Communities draws it. */
+function mockServer(name, protocol, rooms, {unread = 0, muted = false, open = true} = {}) {
+  const section = element('section', '', 'community');
+  const head = element('div', '', 'community-head');
+  const toggle = element('span', '', 'community-toggle');
+  toggle.setAttribute('aria-expanded', String(open));
+  const face = element('span', typeof serverInitials === 'function' ? serverInitials(name) : name.slice(0, 2), 'avatar community-avatar p-' + protocol);
+  const words = element('span', '', 'community-words');
+  const title = element('span', '', 'community-title');
+  title.append(element('strong', name), element('span', labels[protocol], 'tag p-' + protocol));
+  words.append(title, element('small', rooms.length + (protocol === 'irc' ? ' channels' : ' rooms')));
+  toggle.append(element('span', '›', 'community-chevron'), face, words);
+  if (unread) toggle.append(element('span', String(unread), 'channel-unread'));
+  const more = element('span', '⋯', 'icon-button small community-more');
+  head.append(toggle);
+  if (muted && typeof muteMark === 'function') head.append(muteMark('Muted'));
+  head.append(more);
+  const body = element('div', '', 'community-body');
+  for (const [room, line, time, isUnread] of rooms) body.append(mockThread(room, line, time, {unread: isUnread}).row);
+  body.hidden = !open;
+  section.append(head, body);
+  return {section, head, toggle, body, more};
+}
+
+const GUIDE_SERVERS = () => [
+  ['Starlight IRC', 'irc', [['#astronomy', 'orion: Clear skies through Sunday!', '4:14 PM', true], ['#telescopes', 'Collimate at night', 'Sun', false]], {unread: 1}],
+  ['Garden Commons', 'matrix', [['Seed Swap', 'Fern: Extra sunflower seeds 🌻', '3:44 PM', true], ['Allotment News', 'Water days are Tuesday', 'Mon', false]], {muted: true}],
+];
+
+function communitiesShowcase(flow) {
+  const servers = (list) => GUIDE_SERVERS().map(([name, protocol, rooms, options]) => {
+    const server = mockServer(name, protocol, rooms, options);
+    list.append(server.section);
+    return server;
+  });
+  const sortBar = () => {
+    const bar = element('div', '', 'community-bar');
+    const sort = element('span', 'Recent activity ▾', 'g-filter');
+    bar.append(element('span', 'Sort', 'g-caption'), sort);
+    return {bar, sort};
+  };
+  return showcase(flow, [
+    {caption: 'Chats | Communities: servers and their rooms get a list of their own', length: 3400, build(scene, {at, still}) {
+      const inbox = mockInbox();
+      const toggle = mockSwitch('chats', 1);
+      inbox.head.after(toggle.holder);
+      for (const [name, line, tag] of [['Maya Chen', 'See you at ten!', 'sms'], ['Book club', 'Priya: Next week’s pick?', 'email'],
+        ['#astronomy', 'orion: Clear skies through Sunday!', 'irc']]) inbox.list.append(mockThread(name, line, '9:41', {tag}).row);
+      scene.append(inbox.box);
+      const pointer = guidePointer(scene, still);
+      pointer.to(.3, .9);
+      at(300, () => pointer.to(toggle.communities));
+      at(1000, () => {
+        pointer.click();
+        toggle.communities.setAttribute('aria-pressed', 'true');
+        toggle.chats.setAttribute('aria-pressed', 'false');
+        inbox.list.replaceChildren();
+        const {bar} = sortBar();
+        inbox.list.append(bar);
+        servers(inbox.list).forEach(({section}) => section.classList.add('g-pop-in'));
+      });
+    }},
+    {caption: 'Collapse a server, or sort by activity, name, or when you joined', length: 4400, build(scene, {at, still}) {
+      const inbox = mockInbox();
+      const toggle = mockSwitch('communities', 1);
+      inbox.head.after(toggle.holder);
+      const {bar, sort} = sortBar();
+      inbox.list.append(bar);
+      const [starlight, garden] = servers(inbox.list);
+      scene.append(inbox.box);
+      const pointer = guidePointer(scene, still);
+      pointer.to(.5, .95);
+      at(300, () => pointer.to(starlight.toggle, .3, .5));
+      at(1000, () => { pointer.click(); starlight.toggle.setAttribute('aria-expanded', 'false'); starlight.body.hidden = true; });
+      at(1700, () => pointer.to(sort));
+      let menu = null;
+      at(2300, () => { pointer.click(); menu = mockMenu(scene, sort, Object.values(COMMUNITY_SORTS), 'Recent activity'); });
+      at(2900, () => menu && pointer.to(menu.nodes['Name (A–Z)']));
+      at(3400, () => {
+        pointer.click();
+        menu?.menu.remove();
+        sort.textContent = 'Name (A–Z) ▾';
+        starlight.section.before(garden.section);
+        garden.section.classList.add('g-pop-in');
+      });
+    }},
+    {caption: 'Browse a server’s rooms and join one, or mute the whole server', length: 4600, build(scene, {at, still}) {
+      const inbox = mockInbox();
+      inbox.head.after(mockSwitch('communities', 1).holder);
+      const [, garden] = servers(inbox.list);
+      scene.append(inbox.box);
+      const actions = element('div', '', 'community-actions');
+      const browse = element('span', 'Browse', 'g-chip primary');
+      actions.append(browse, element('span', 'Join a room', 'g-chip'), element('span', 'Muted · change', 'g-chip'));
+      const pointer = guidePointer(scene, still);
+      pointer.to(.5, .95);
+      at(300, () => pointer.to(garden.more));
+      at(900, () => { pointer.click(); garden.head.after(actions); });
+      at(1500, () => pointer.to(browse));
+      const sheet = element('div', '', 'g-sheet');
+      const join = element('span', 'Join', 'g-chip primary');
+      at(2100, () => {
+        pointer.click();
+        actions.remove();
+        sheet.replaceChildren(element('strong', 'Browse Garden Commons'));
+        for (const [room, about, button] of [['Tool Library', '52 people · Borrow a ladder, lend a saw', join],
+          ['Beekeeping', '29 people · Hives, swarms, and honey', element('span', 'Join', 'g-chip primary')]]) {
+          const row = element('div', '', 'g-sheet-row');
+          const words = element('span', '', 'g-sheet-words');
+          words.append(element('strong', room), element('small', about));
+          row.append(words, button);
+          sheet.append(row);
+        }
+        scene.append(sheet);
+        sheet.classList.add('g-pop-in');
+      });
+      at(2800, () => pointer.to(join));
+      at(3400, () => {
+        pointer.click();
+        join.textContent = 'Joined';
+        join.classList.remove('primary');
+        join.classList.add('g-pop-in');
+      });
+    }},
+  ], 'Communities');
+}
+
+// Inbox filters, Unread, and muting for a while.
+
+const GUIDE_INBOX = [
+  ['Maya Chen', 'See you at ten!', '9:41', 'sms', {unread: true, favorite: true}],
+  ['Book club', 'Priya: Next week’s pick?', '9:30', 'email', {unread: true, group: true}],
+  ['Elena Vasquez', 'Sent the photos', '9:12', 'matrix', {}],
+  ['Weekend Plans', 'Sam: Who’s in for Saturday?', '8:50', 'sms', {group: true}],
+  ['Jordan Ellis', 'My lips are sealed 🤐', 'Mon', 'sms', {favorite: true}],
+];
+
+function filtersShowcase(flow) {
+  const filterScene = (label, keep, caption) => ({caption, length: 3700, build(scene, {at, still}) {
+    const inbox = mockInbox();
+    const rows = GUIDE_INBOX.map(([name, line, time, tag, facts]) => ({...mockThread(name, line, time, {tag, unread: !!facts.unread}), facts}));
+    for (const {row} of rows) inbox.list.append(row);
+    scene.append(inbox.box);
+    const pointer = guidePointer(scene, still);
+    pointer.to(.4, .9);
+    at(300, () => pointer.to(inbox.filter));
+    let menu = null;
+    at(1000, () => { pointer.click(); menu = mockMenu(scene, inbox.filter, ['Inbox', 'Unread', 'Favorites', 'Groups', 'Direct messages', 'Matrix', 'Archived'], 'Inbox'); });
+    at(1600, () => menu && pointer.to(menu.nodes[label]));
+    at(2200, () => {
+      pointer.click();
+      menu?.menu.remove();
+      inbox.filter.textContent = label + ' ▾';
+      inbox.heading.textContent = label;
+      for (const {row, facts} of rows) row.classList.toggle('g-gone', !keep(facts));
+    });
+  }});
+  return showcase(flow, [
+    filterScene('Unread', (facts) => facts.unread, 'The filter button, top right: Unread shows chats you haven’t read'),
+    filterScene('Favorites', (facts) => facts.favorite, 'Favorites: chats with people you starred'),
+    filterScene('Groups', (facts) => facts.group, 'Groups, Direct messages, or one service at a time'),
+    {caption: 'Mute a chat for an hour, a day, or until you unmute it', length: 5000, build(scene, {at, still}) {
+      const inbox = mockInbox();
+      const rows = GUIDE_INBOX.slice(0, 4).map(([name, line, time, tag, facts]) => mockThread(name, line, time, {tag, unread: !!facts.unread}));
+      for (const {row} of rows) inbox.list.append(row);
+      scene.append(inbox.box);
+      const book = rows[1];
+      const pointer = guidePointer(scene, still);
+      pointer.to(.8, .95);
+      const actions = element('div', '', 'thread-actions');
+      const mute = element('button', 'Mute…');
+      for (const node of [element('button', 'Pin'), element('button', 'Archive'), mute, element('button', 'Block')]) { node.type = 'button'; actions.append(node); }
+      at(300, () => pointer.to(book.row, .45, .5));
+      at(1000, () => { pointer.click(true); book.row.classList.add('g-hover'); book.row.after(actions); });
+      at(1600, () => pointer.to(mute));
+      const sheet = element('div', '', 'g-sheet');
+      const hour = element('div', '', 'g-sheet-row');
+      const until = clock(Date.now() + 3600000);
+      at(2200, () => {
+        pointer.click();
+        actions.remove();
+        book.row.classList.remove('g-hover');
+        sheet.replaceChildren(element('strong', 'Mute Book club'));
+        for (const [label, line] of [['1 hour', 'Until ' + until], ['1 day', 'Until tomorrow'], ['Forever', 'Until you unmute']]) {
+          const row = label === '1 hour' ? hour : element('div', '', 'g-sheet-row');
+          const words = element('span', '', 'g-sheet-words');
+          words.append(element('strong', label), element('small', line));
+          row.append(words, element('span', '›', 'g-caption'));
+          sheet.append(row);
+        }
+        scene.append(sheet);
+        sheet.classList.add('g-pop-in');
+      });
+      at(2900, () => pointer.to(hour, .3, .5));
+      at(3500, () => {
+        pointer.click();
+        sheet.remove();
+        const mark = typeof muteMark === 'function' ? muteMark('Muted until ' + until) : element('span', '🔕');
+        mark.classList.add('g-pop-in');
+        book.tags.append(mark);
+        mockToast(scene, 'Muted until ' + until + ' · no sounds or notifications');
+      });
+    }},
+  ], 'Stay organized');
+}
+
+// Disappearing messages and the notice everyone sees when a chat's settings change.
+
+function disappearingShowcase(flow) {
+  const notice = (text, protocol = 'matrix') => {
+    const note = element('p', text, 'event notice p-' + protocol);
+    note.classList.add('g-pop-in');
+    return note;
+  };
+  const timed = (text, options) => {
+    const message = mockMessage(text, options);
+    const meta = element('div', '', 'message-meta');
+    meta.append(element('span', '⏱', 'g-timer'));
+    message.row.append(meta);
+    return message;
+  };
+  return showcase(flow, [
+    {caption: 'Turn on a timer in a chat’s details. Everyone sees a notice.', length: 4200, build(scene, {at, still}) {
+      const {win, head, thread} = mockWindow('Maya Chen', 'matrix', 'green');
+      thread.append(mockMessage('Can you send the door code?', {author: 'Maya Chen'}).row);
+      scene.append(win);
+      const choice = element('span', '⏱ Off ▾', 'g-filter g-window-chip');
+      head.append(choice);
+      const pointer = guidePointer(scene, still);
+      pointer.to(.4, .9);
+      at(300, () => pointer.to(choice));
+      let menu = null;
+      at(1000, () => { pointer.click(); menu = mockMenu(scene, choice, ['Off', '1 hour', '1 day', '1 week'], 'Off'); });
+      at(1600, () => menu && pointer.to(menu.nodes['1 day']));
+      at(2200, () => {
+        pointer.click();
+        menu?.menu.remove();
+        choice.textContent = '⏱ 1 day ▾';
+        thread.append(notice(typeof timerNoticeText === 'function' ? timerNoticeText(86400) : 'Disappearing messages are on.'));
+      });
+      at(3000, () => thread.append(timed('4 8 1 5, see you soon!', {out: true}).row));
+    }},
+    {caption: 'New messages show ⏱ and go away when their time is up', length: 3600, build(scene, {at}) {
+      const {win, thread} = mockWindow('Maya Chen', 'matrix', 'green');
+      thread.append(notice(typeof timerNoticeText === 'function' ? timerNoticeText(86400) : 'Disappearing messages are on.'));
+      const first = timed('4 8 1 5, see you soon!', {out: true});
+      thread.append(first.row, timed('Got it, thanks!', {author: 'Maya Chen'}).row);
+      scene.append(win);
+      at(1300, () => first.row.classList.add('g-vanish'));
+    }},
+    {caption: 'Turning it off, or a change to encryption, shows a notice too', length: 3000, build(scene, {at}) {
+      const {win, thread} = mockWindow('Maya Chen', 'matrix', 'green');
+      thread.append(timed('Got it, thanks!', {author: 'Maya Chen'}).row);
+      scene.append(win);
+      at(600, () => thread.append(notice(typeof timerNoticeText === 'function' ? timerNoticeText(0) : 'Disappearing messages are off.')));
+      at(1400, () => thread.append(mockMessage('Back to normal 🙂', {author: 'Maya Chen'}).row));
+    }},
+  ], 'Disappearing messages');
+}
+
+// Sounds and notifications: the chime, and this browser's notifications, asked for only when you click.
+
+function notifyGuideCard() {
+  const card = element('div', '', 'guide-card-list g-notify');
+  const state = element('p', '', 'g-notify-state');
+  state.setAttribute('role', 'status');
+  const row = element('div', '', 'button-row wrap');
+  const allow = element('button', 'Allow notifications', 'primary');
+  const test = element('button', 'Send a test');
+  const chime = element('button', 'Play the chime', 'quiet');
+  allow.type = test.type = chime.type = 'button';
+  row.append(allow, test, chime);
+  const said = element('p', '', 'hint');
+  said.setAttribute('role', 'status');
+  const words = {granted: 'Allowed', denied: 'Blocked', default: 'Not asked yet', insecure: 'Needs HTTPS', unsupported: 'Not available in this browser'};
+  const permission = () => (typeof notifyPermission === 'function' ? notifyPermission() : 'unsupported');
+  const draw = () => {
+    const now = permission();
+    state.replaceChildren(element('span', 'Notifications in this browser: '), element('strong', words[now] || now));
+    allow.hidden = now !== 'default';
+    test.disabled = !['granted', 'default'].includes(now);
+    if (now === 'denied') said.textContent = 'This browser blocks them for FluidMessages. Allow them in the site settings (the icon beside the address), then reload.';
+    else if (now === 'insecure') said.textContent = 'Browsers only allow notifications over HTTPS, or on the computer FluidMessages runs on.';
+    else if (now === 'unsupported') said.textContent = 'This browser can’t show notifications. On iPhone and iPad, add FluidMessages to your Home Screen first.';
+  };
+  // Asked only from these clicks: browsers ignore, or block for good, a prompt nobody asked for.
+  allow.addEventListener('click', async () => {
+    if (typeof askNotifyPermission === 'function') await askNotifyPermission();
+    draw();
+    said.textContent = permission() === 'granted' ? 'Allowed. New messages notify you while FluidMessages is open.' : said.textContent;
+  });
+  test.addEventListener('click', async () => {
+    if (permission() === 'default' && typeof askNotifyPermission === 'function') await askNotifyPermission();
+    draw();
+    if (permission() !== 'granted') { said.textContent = 'Notifications aren’t allowed, so nothing was shown.'; return; }
+    const sample = {title: 'Maya Chen', author: '', body: 'Coffee at ten? ☕ This is a test from FluidMessages.', date: Date.now(), type: 1};
+    try {
+      await showChatNotification(notificationFor(sample, {test: true}), typeof playTone === 'function' ? playTone(true) : false);
+      said.textContent = 'Sent. Nothing showed up? Check that Do Not Disturb or Focus is off.';
+    } catch (error) { said.textContent = 'The browser didn’t show it: ' + error.message; }
+  });
+  chime.addEventListener('click', () => { if (typeof playTone === 'function') playTone(true); });
+  draw();
+  card.append(state, row, said);
+  return card;
+}
+
+// Connecting a phone: texts through it, and choosing what to keep when both changed the same setting.
+
+function phoneShowcase(flow) {
+  return showcase(flow, [
+    {caption: 'Texts sync from your phone, and texts you write here go out through it', length: 4200, build(scene, {at}) {
+      const {win, thread} = mockWindow('Mom', 'sms', 'red');
+      scene.append(win);
+      at(300, () => thread.append(mockMessage('Dinner at 7?', {protocol: 'sms'}).row));
+      const reply = mockMessage('On my way!', {out: true, protocol: 'sms'});
+      const status = element('small', 'Queued for your phone', 'message-time g-status');
+      const meta = element('div', '', 'message-meta');
+      meta.append(status);
+      reply.row.append(meta);
+      at(1200, () => thread.append(reply.row));
+      at(2500, () => { status.textContent = 'Sent by your phone'; status.classList.add('g-pop-in'); });
+    }},
+    {caption: 'Changed the same setting on both? Choose what to keep.', length: 4600, build(scene, {at, still}) {
+      const card = element('div', '', 'merge-card g-merge');
+      const head = element('div', '', 'merge-card-head');
+      head.append(element('small', 'Themes and appearance', 'muted'), element('strong', 'Color theme'));
+      const sides = element('div', '', 'merge-sides');
+      const side = (label, value, on) => {
+        const option = element('span', '', 'merge-side' + (on ? ' on' : ''));
+        option.append(element('span', label, 'merge-side-label'), element('span', value, 'merge-side-value'));
+        sides.append(option);
+        return option;
+      };
+      const phone = side('Your phone', 'Ocean', true);
+      const web = side('This web app', 'Ember', false);
+      card.append(head, sides);
+      const keep = element('span', 'Keep these and sync', 'g-chip primary g-keep');
+      const wrap = element('div', '', 'g-merge-wrap');
+      wrap.append(element('strong', 'Choose what to keep', 'g-merge-title'), card, keep);
+      scene.append(wrap);
+      const pointer = guidePointer(scene, still);
+      pointer.to(.5, .95);
+      at(300, () => pointer.to(web));
+      at(1000, () => { pointer.click(); web.classList.add('on'); phone.classList.remove('on'); });
+      at(1700, () => pointer.to(keep));
+      at(2300, () => {
+        pointer.click();
+        keep.textContent = '✓ Saved for your phone’s next sync';
+        keep.classList.remove('primary');
+        keep.classList.add('g-pop-in');
+      });
+    }},
+  ], 'Connect your phone');
+}
+
 // ---- First run ----
 
 /**
@@ -898,8 +1411,9 @@ function showWelcome({at = 0} = {}) {
       body: () => [sampleConversation(), element('p', 'New here? The sample inbox has fictional chats to click around in. Nothing in it is sent.', 'hint')],
       actions: (flow) => [['Get started', () => flow.next()], ['Try the sample inbox', trySample]]},
     {title: 'Two tabs', subtitle: 'Calls and Messages, along the side or at the bottom.',
-      body: (flow) => [tabsIllustration(flow), guideTips([
-        {icon: 'phone', title: 'Calls', line: 'Voice and video with Matrix contacts, and meeting links'},
+      body: (flow) => [tabsShowcase(flow), guideTips([
+        {icon: 'phone', title: 'Calls', line: 'Recents, favorites, and contacts. Voice and video with Matrix, and meeting links'},
+        {icon: 'people', title: 'Contacts you make', line: 'Calls → Contacts → New contact. Saved for every browser; a connected phone can add them too'},
         {icon: 'chat', title: 'Messages', line: 'Every chat in one place'},
         {icon: 'gear', title: 'Settings', line: 'Accounts, themes, and an optional phone, next to the tabs'}])]},
     {title: 'One inbox', subtitle: 'Chat services side by side, and texts too if you connect your phone.',
@@ -907,6 +1421,16 @@ function showWelcome({at = 0} = {}) {
         {icon: 'chat', title: 'Chat services work right away', line: 'Matrix, XMPP, Email, and IRC, straight from this browser'},
         {icon: 'tag', title: 'Tags show how', line: 'Matrix, Email, SMS, and more'},
         {icon: 'laptop', title: 'Texts, if you like', line: 'Connect FluidMessages for Android and your texts join in'}])]},
+    {title: 'Communities', subtitle: 'IRC networks, Matrix homeservers, and XMPP servers, each with its channels and rooms.',
+      body: (flow) => [communitiesShowcase(flow), guideTips([
+        {icon: 'people', title: 'Chats | Communities', line: 'The switch under Messages. Unread rooms count on Communities'},
+        {icon: 'folder', title: 'Tidy and sorted', line: 'Collapse a server, and sort by activity, name, or date joined'},
+        {icon: 'gear', title: 'In Chats too, if you like', line: 'Settings → Messaging → Show community chats in Chats'}])]},
+    {title: 'Stay organized', subtitle: 'Find the chats you want, and quiet the ones you don’t, for as long as you like.',
+      body: (flow) => [filtersShowcase(flow), guideTips([
+        {icon: 'tag', title: 'The filter button', line: 'Top right of the list: Unread, Favorites, Groups, Direct messages, and each service'},
+        {icon: 'optional', title: 'Mute for a while', line: 'Right-click a chat → Mute…, from 1 hour to forever. A small bell shows it’s quiet'},
+        {icon: 'gear', title: 'Your filters, your order', line: 'Settings → Messaging → Inbox filters'}])]},
     {title: 'Who can read it?', subtitle: 'Every chat shows a small lock.',
       body: () => [locksIllustration(), guideTips([
         {icon: 'lock', title: 'Green', line: 'Only you and them can read it'},
@@ -919,11 +1443,11 @@ function showWelcome({at = 0} = {}) {
         {icon: 'laptop', title: 'The computer it runs on', line: 'Opens there without a password, or turn that off'},
         {icon: 'lock', title: 'Chat codes', line: 'Hide a chat until its code is entered. A chat’s Details'},
         {icon: 'people', title: 'Sign out other browsers', line: 'All at once, from Settings'}])]},
-    {title: 'Disappearing messages', subtitle: 'Messages can remove themselves after a while.',
-      body: () => [disappearingIllustration(), guideTips([
+    {title: 'Disappearing messages', subtitle: 'Messages can remove themselves after a while, and the chat notes each change.',
+      body: (flow) => [disappearingShowcase(flow), guideTips([
         {icon: 'timer', title: 'For one chat', line: 'A chat’s Details → Disappearing messages'},
         {icon: 'optional', title: 'For every chat', line: 'Settings → Privacy and security'},
-        {icon: 'chat', title: 'Older messages stay', line: 'Only new messages disappear'}])]},
+        {icon: 'chat', title: 'Changes show in the chat', line: 'A small notice when the timer or encryption changes, for everyone in it'}])]},
     {title: 'More than text', subtitle: 'Polls, events, games, money, and more, right in a chat.',
       body: (flow) => [extrasShowcase(flow), guideTips([
         {icon: 'chat', title: 'The + button', line: 'Photos, polls, events, money, games, dice, GIFs, and effects'},
@@ -948,17 +1472,24 @@ function showWelcome({at = 0} = {}) {
         const fields = element('div', '', 'guide-fields');
         fields.append(field('Color theme', theme), field('Appearance mode', mode));
         if (usingPhoneLook()) fields.append(element('p', 'Your phone’s look is in use. Pick “This web app’s own” in Settings → Phone and other devices to use these here.', 'hint'));
-        return [colorsIllustration(flow), sampleConversation(), fields];
-      }},
-    {title: 'Motion and effects', subtitle: 'Decide how messages move when they arrive or send.',
-      body: (flow) => {
-        const options = element('div', '', 'guide-card-list');
-        options.append(checkbox('Message effects', prefs.effects !== false, savePref('effects'), 'Confetti, balloons, slams, and invisible ink. Off shows the words only.'),
+        // Motion, as on the phone's Pick your colors: how messages move when they arrive or send.
+        const motion = element('div', '', 'guide-card-list');
+        motion.append(checkbox('Message effects', prefs.effects !== false, savePref('effects'), 'Confetti, balloons, slams, and invisible ink. Off shows the words only.'),
           checkbox('Reaction animations', prefs.reactionEffects !== false, savePref('reactionEffects'), 'A quick animation when someone reacts to a message.'));
-        const out = [motionIllustration(flow), options];
+        const out = [colorsIllustration(flow), sampleConversation(), fields, motion];
         if (guideStill()) out.push(element('p', 'Your device asks for reduced motion, so animations stay off.', 'hint'));
         return out;
       }},
+    {title: 'Sounds and notifications', subtitle: 'A chime when a message arrives, and a notification while you’re in another tab or app.',
+      body: (flow) => [motionIllustration(flow), notifyGuideCard(), guideTips([
+        {icon: 'optional', title: 'While FluidMessages is open', line: 'In a tab or the desktop app. Muted chats stay quiet'},
+        {icon: 'gear', title: 'Sounds and volume', line: 'Settings → Sounds and notifications'}])]},
+    {title: 'Connect your phone', subtitle: 'Optional. With FluidMessages for Android, your texts join in here too.',
+      body: (flow) => [phoneShowcase(flow), guideTips([
+        {icon: 'chat', title: 'Texts here, sent by your phone', line: 'They use your phone plan, so nothing changes for the people you text'},
+        {icon: 'gear', title: 'Choose what to keep', line: 'When your phone and this web app changed the same setting, you pick which one stays'},
+        {icon: 'optional', title: 'Not needed', line: 'Chat services work here without a phone'}])],
+      actions: (flow) => [['Continue', () => flow.next()], ['Connect your phone now', phoneGuide]]},
     {title: 'Chat services', subtitle: 'Sign in to the services you chat on. Passwords stay on your FluidMessages server. You can add more later in Settings.',
       body: () => [chatServices()]},
     {title: 'Calls', subtitle: 'Voice and video from this browser. Phone calls stay on your phone.',
@@ -968,6 +1499,7 @@ function showWelcome({at = 0} = {}) {
       body: () => [readyIllustration(), guideTips([
         {icon: 'practice', title: 'Add a chat account', line: 'Matrix, XMPP, Email, or IRC', run: settingsAt('settings-accounts')},
         {icon: 'laptop', title: 'Connect your phone', line: 'For texts, step by step', run: phoneGuide},
+        {icon: 'practice', title: 'Practice first', line: 'The sample inbox: fictional chats, servers, and calls. Nothing is sent', run: trySample},
         {icon: 'optional', title: 'Come back anytime', line: 'Settings → Help → Setup guide'}])],
       actions: () => [['Start chatting', () => finish()], ['Try the sample inbox', trySample]]},
   ];
@@ -992,6 +1524,9 @@ async function showSyncGuide({fromSettings = false, connectedStep = false} = {})
   let token = '';
   let since = 0;
   let connected = connectedStep;
+  // Whether the phone sends its texts too, not only its settings (browser messaging on, with the SMS role).
+  let texting = true;
+  let merged = false;
 
   const close = () => {
     token = '';
@@ -1094,9 +1629,14 @@ async function showSyncGuide({fromSettings = false, connectedStep = false} = {})
           if (!sheet.open) { clearInterval(id); return; }
           try {
             const settings = await api('settings');
-            const last = settings.phone?.last_sync || 0;
+            // Its first text sync, or its first settings merge: a phone paired only for backups, or without the SMS
+            // role, never sends texts but still merges (sync_merge.py summary).
+            const last = Math.max(settings.phone?.last_sync || 0, settings.merge?.at || 0);
             if (last && last >= since - 1000) {
+              // A phone that texts merges first and syncs its texts right after: give it one more look.
+              if (!settings.phone?.last_sync && !merged) { merged = true; status.textContent = 'Connected. Checking for texts…'; return; }
               connected = true;
+              texting = !!settings.phone?.last_sync;
               // A first pairing with differences goes straight to choosing what to keep (sync-merge.js).
               if (settings.merge?.pending?.conflicts?.length && typeof showSyncMerge === 'function') {
                 clearInterval(id);
@@ -1121,7 +1661,10 @@ async function showSyncGuide({fromSettings = false, connectedStep = false} = {})
           {icon: 'key', title: 'Token not accepted?', line: 'Go back and make a new one'}])];
       },
       actions: () => [['Finish later', close]]},
-    {title: 'Your phone is connected', subtitle: 'Texts sync here every few minutes, and texts you send here go out through your phone.',
+    {title: 'Your phone is connected', get subtitle() {
+      return texting ? 'Texts sync here every few minutes, and texts you send here go out through your phone.'
+        : 'Its settings are combined with these. To see texts here, turn on browser messaging on the phone.';
+    },
       body: () => [connected ? readyIllustration() : linkIllustration('done'), guideTips([
         {icon: 'gear', title: 'Whose settings?', line: 'Your phone’s look and timers, or this app’s own. Settings → Phone and other devices'},
         {icon: 'phone', title: 'Calls', line: 'Call in a text chat rings your phone'},

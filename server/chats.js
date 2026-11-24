@@ -35,7 +35,27 @@ function chatFolders() {
 function inFolder(address, key) { return chatFolders()[key].includes(address); }
 /** Kept quiet: muted now (by itself or its server, and not yet run out) or blocked. */
 function chatMuted(address) { return chatMuteEnds(address) !== null || inFolder(address, 'blocked'); }
-function chatLocked(key) { return !!chatState().locks[threadAddress(key)]; }
+function chatLocked(key) { return !!chatLockKey(key); }
+
+// Lock every chat of one kind, as on the phone (Settings → Privacy and security → Chat locks): one code for all texts,
+// or all Matrix, XMPP, Email, or IRC chats, kept with the chat codes as "service:<kind>". A chat's own code comes first.
+const LOCK_KINDS = [['sms', 'All texts'], ['matrix', 'All Matrix chats'], ['xmpp', 'All XMPP chats'], ['email', 'All Email chats'], ['irc', 'All IRC chats']];
+const serviceLock = (kind) => 'service:' + kind;
+
+/** The code a chat asks for: its own, or its kind's. '' when it has none. */
+function chatLockKey(key, state = chatState()) {
+  if (!key) return '';
+  const address = threadAddress(key);
+  if (state.locks?.[address]) return address;
+  const kind = serviceLock(family(threadProtocol(key)));
+  return state.locks?.[kind] ? kind : '';
+}
+
+/** How many chats have their own code, and which kinds are locked. */
+function lockCounts(state = chatState()) {
+  const keys = Object.keys(state.locks || {});
+  return {chats: keys.filter((key) => !key.startsWith('service:')).length, kinds: keys.filter((key) => key.startsWith('service:')).length};
+}
 
 // Muting, for a while or for good: a chat, everyone's chats with one person, or every channel and room on a server.
 // Muted chats don't notify, chime, or vibrate, and don't count on the tabs; their messages still arrive and show
@@ -350,6 +370,7 @@ async function codeHash(code, salt) {
 }
 
 async function codeMatches(address, code) {
+  // [address] is a chat's address, or a kind's lock ("service:email").
   const lock = chatState().locks[address];
   return !!lock && await codeHash(code, lock.salt) === lock.hash;
 }
@@ -360,10 +381,13 @@ function chatLockGate(conversation) {
   const address = active ? threadAddress(active) : '';
   if (address !== gateLast) { gateLast = address; if (unlockedAddress !== address) unlockedAddress = ''; }
   if (sampleOn && active) get('schedule').hidden = false;
-  if (!address || !chatState().locks[address] || unlockedAddress === address) return false;
+  const lockKey = chatLockKey(active);
+  if (!address || !lockKey || unlockedAddress === address) return false;
   get('schedule').hidden = true;
   const box = element('form', '', 'empty-state lock-gate');
-  box.append(element('span', '🔒', 'lock-mark'), element('h2', 'This chat has a code'), element('p', 'Enter it to open the chat.', 'muted'));
+  const kind = LOCK_KINDS.find(([name]) => serviceLock(name) === lockKey);
+  box.append(element('span', '🔒', 'lock-mark'), element('h2', kind ? 'This chat is locked' : 'This chat has a code'),
+    element('p', kind ? kind[1] + ' ask for a passcode. Enter it to open the chat.' : 'Enter it to open the chat.', 'muted'));
   const input = Object.assign(element('input', ''), {type: 'password', autocomplete: 'off', required: true, maxLength: 64, inputMode: 'numeric'});
   input.setAttribute('aria-label', 'Chat code');
   const status = element('p', '', 'error');
@@ -374,8 +398,8 @@ function chatLockGate(conversation) {
     event.preventDefault();
     open.disabled = true;
     try {
-      if (await codeMatches(address, input.value)) { unlockedAddress = address; select(active); }
-      else { status.textContent = 'That isn’t this chat’s code.'; input.select(); }
+      if (await codeMatches(lockKey, input.value)) { unlockedAddress = address; select(active); }
+      else { status.textContent = kind ? 'That isn’t the passcode.' : 'That isn’t this chat’s code.'; input.select(); }
     } catch (error) { status.textContent = error.message; }
     finally { open.disabled = false; }
   });
@@ -384,14 +408,30 @@ function chatLockGate(conversation) {
   return true;
 }
 
-function lockSection(address) {
+function lockSection(address, key = '') {
   const section = element('section', '', 'settings-section');
+  const kind = key ? LOCK_KINDS.find(([name]) => chatState().locks[serviceLock(name)] && serviceLock(name) === serviceLock(family(threadProtocol(key)))) : null;
   section.append(element('h3', 'Chat code'));
+  lockCodeForm(section, address, {
+    title: 'Chat code',
+    on: 'This chat asks for its code before it opens, and its preview is hidden in the inbox and search.',
+    off: kind ? 'This chat is locked with ' + kind[1].toLowerCase() + ' (Settings → Privacy and security → Chat locks). '
+      + 'Add a code of its own to use that one instead.' : 'Add a code to hide this chat’s preview and ask for the code before it opens.',
+    wrong: 'That isn’t this chat’s code.',
+    saved: () => { if (address === threadAddress(active || '')) unlockedAddress = address; showMessages(true); },
+  });
+  return section;
+}
+
+/**
+ * The form that adds or removes a code: a chat's own ([lockKey] is its address) or a kind's ("service:email").
+ * Draws into [section] and redraws there after each change. Only a salted hash is saved.
+ */
+function lockCodeForm(section, lockKey, {title, on, off, wrong, saved = () => {}}) {
   const draw = () => {
-    section.replaceChildren(element('h3', 'Chat code'));
-    const locked = !!chatState().locks[address];
-    section.append(element('p', locked ? 'This chat asks for its code before it opens, and its preview is hidden in the inbox and search.'
-      : 'Add a code to hide this chat’s preview and ask for the code before it opens.', 'muted'));
+    section.replaceChildren(element('h3', title));
+    const locked = !!chatState().locks[lockKey];
+    section.append(element('p', locked ? on : off, 'muted'));
     const form = element('form', '', 'stack');
     const code = Object.assign(element('input', ''), {type: 'password', autocomplete: 'new-password', required: true, minLength: 4, maxLength: 64});
     const again = Object.assign(element('input', ''), {type: 'password', autocomplete: 'new-password', required: true, minLength: 4, maxLength: 64});
@@ -407,22 +447,21 @@ function lockSection(address) {
       try {
         const state = chatState();
         if (locked) {
-          if (!await codeMatches(address, code.value)) { status.textContent = 'That isn’t this chat’s code.'; return; }
+          if (!await codeMatches(lockKey, code.value)) { status.textContent = wrong; return; }
           const locks = {...state.locks};
-          delete locks[address];
+          delete locks[lockKey];
           saveChats({...state, locks});
         } else {
           if (code.value !== again.value) { status.textContent = 'The two codes don’t match.'; return; }
           const salt = hexOf2(crypto.getRandomValues(new Uint8Array(16)));
-          saveChats({...state, locks: {...state.locks, [address]: {salt, hash: await codeHash(code.value, salt)}}});
-          unlockedAddress = address;
+          saveChats({...state, locks: {...state.locks, [lockKey]: {salt, hash: await codeHash(code.value, salt)}}});
         }
         draw();
-        showMessages(true);
+        saved(!locked);
       } catch (error) { status.textContent = error.message; }
       finally { save.disabled = false; }
     });
-    section.append(form, element('small', 'A forgotten code can’t be recovered here, but removing the chat’s code needs it.', 'hint'));
+    section.append(form, element('small', 'A forgotten code can’t be recovered here, but removing the code needs it.', 'hint'));
   };
   draw();
   return section;
@@ -456,23 +495,44 @@ function detailsExtras(key) {
   };
   draw();
   chat.append(row, element('p', 'Muted chats don’t notify or chime, for as long as you choose; messages still arrive. Blocking hides the chat in Blocked here; it doesn’t stop delivery.', 'muted'));
-  let wall = null;
-  if (typeof wallpaperPicker === 'function') {
-    wall = element('section', '', 'settings-section');
-    wall.append(element('h3', 'Wallpaper for this chat'));
-    const drawWall = () => {
-      wall.querySelector('.stack')?.remove();
-      wall.append(wallpaperPicker('chat-wallpaper', webLook.chatWallpapers?.[address] || '', (value) => {
-        const chats = {...(webLook.chatWallpapers || {})};
-        if (value) chats[address] = value; else delete chats[address];
-        saveWebLook({...webLook, chatWallpapers: chats}, true);
-        applyChatWallpaper();
-        drawWall();
-      }, true));
-    };
-    drawWall();
+  // Sender type, for one-to-one texts as on the phone (its conversation details): merged with the phone's.
+  if (['sms', 'mms', '', undefined].includes(threadProtocol(key)) && !address.startsWith('mms:')) {
+    const select = element('select', '');
+    select.id = 'chat-sender-type';
+    for (const [value, label] of [['', 'Automatic'], ['automated', 'Automated sender'], ['person', 'A person']]) {
+      const option = element('option', label);
+      option.value = value;
+      select.append(option);
+    }
+    select.value = chatState().senders?.[address] || '';
+    select.addEventListener('change', () => {
+      const state = chatState();
+      const senders = {...(state.senders || {})};
+      if (select.value) senders[address] = select.value; else delete senders[address];
+      saveChats({...state, senders});
+      showMessages(true);
+    });
+    chat.append(field('Sender type', select, 'Automated senders, like codes and alerts, get their own bubble color. Automatic decides from the number.'));
   }
-  return {conversation: chat, code: lockSection(address), wallpaper: wall};
+  // Customize: this chat's theme, colors, and wallpaper on a page of their own, as on the phone (look.js).
+  let wall = null;
+  if (typeof openChatAppearance === 'function') {
+    wall = element('section', '', 'settings-section');
+    wall.append(element('h3', 'Customize'));
+    const row = element('button', '', 'settings-row');
+    row.type = 'button';
+    const words = element('span', '', 'settings-words');
+    words.append(element('strong', 'Theme and wallpaper'), element('small', chatAppearanceLabel(address)));
+    const icon = element('span', '', 'settings-icon');
+    if (typeof settingsIcon === 'function') icon.append(settingsIcon('palette'));
+    const chevron = element('span', '', 'settings-chevron');
+    if (typeof settingsIcon === 'function') chevron.append(settingsIcon('chevron'));
+    row.append(icon, words, chevron);
+    row.addEventListener('click', () => openChatAppearance(key, () => (typeof openDetails === 'function' && active === key
+      ? openDetails().catch(showError) : closeDetailsPage())));
+    wall.append(row);
+  }
+  return {conversation: chat, code: lockSection(address, key), wallpaper: wall};
 }
 
 // Conversation details: a full page in the chat pane, like the phone's (ConversationDetails in ProfileEditor.kt),
@@ -535,7 +595,7 @@ const protocolName = (protocol) => protocol === 'rcs' ? 'RCS preview' : labels[p
 function headerSubtitle(key) {
   const protocol = threadProtocol(key);
   if (automatedThread(key)) return 'SMS · Automated sender';
-  // "via alice@example.org" when the service has more than one account (servers.js).
+  // "from alice@example.org" when the service has more than one account (servers.js).
   const via = typeof accountVia === 'function' && typeof routeFor === 'function' ? accountVia(routeFor(key)) : '';
   if (!threadIsGroup(key)) return (sampleOn ? 'Sample ' : '') + protocolName(protocol) + via;
   const count = threadMembers(key).length + 1;
@@ -841,21 +901,99 @@ const sampleBlobs = new Map();
 let sampleRun = '';
 const sampleId = () => 'sample-' + sampleRun + '-' + (++sampleSeq);
 
+// The sample's link preview, photo, and voice message come from this page, never from another site or the server's
+// file store: the preview and its picture are filled in before they're asked for (cards.js previews and cardBlobs),
+// the photo is the phone's own sample picture (/samples/lakeside.webp), and the voice message is a few soft tones.
+const SAMPLE_LINK = 'https://cafe.example.org/harbor-street';
+const SAMPLE_PREVIEW = {site: 'cafe.example.org', title: 'Harbor Street Café', description: 'A sample page: coffee, pastries, and a quiet back room.',
+  image: 'https://cafe.example.org/sample-cover.png'};
+const SAMPLE_COVER = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90">'
+  + '<rect width="160" height="90" fill="#f3d9b1"/><rect y="62" width="160" height="28" fill="#b9825a"/>'
+  + '<path d="M58 34h40v22a14 14 0 0 1-14 14h-12a14 14 0 0 1-14-14z" fill="#fff"/><path d="M98 40h6a8 8 0 0 1 0 16h-6" fill="none" stroke="#fff" stroke-width="5"/>'
+  + '<path d="M70 26c-4-6 4-8 0-14M82 26c-4-6 4-8 0-14" fill="none" stroke="#8a5a3c" stroke-width="3" stroke-linecap="round"/></svg>');
+const SAMPLE_LEAH = 'leah.morgan@example.org';
+
+/** A short voice message made here: a few seconds of soft, speech-like tones as an 8 kHz WAV. */
+function sampleVoiceBlob(seconds = 4) {
+  const rate = 8000, count = rate * seconds;
+  const bytes = new Uint8Array(44 + count);
+  const view = new DataView(bytes.buffer);
+  const text = (offset, value) => [...value].forEach((char, index) => { bytes[offset + index] = char.charCodeAt(0); });
+  text(0, 'RIFF'); view.setUint32(4, 36 + count, true); text(8, 'WAVE'); text(12, 'fmt ');
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, rate, true);
+  view.setUint32(28, rate, true); view.setUint16(32, 1, true); view.setUint16(34, 8, true); text(36, 'data'); view.setUint32(40, count, true);
+  for (let index = 0; index < count; index++) {
+    const time = index / rate;
+    const syllable = time < seconds - .25 ? Math.max(0, Math.sin(Math.PI * time * 3.1)) ** 2 : 0;
+    const pitch = 170 + 35 * Math.sin(time * 2.3);
+    const wave = Math.sin(2 * Math.PI * pitch * time) * .55 + Math.sin(4 * Math.PI * pitch * time) * .2;
+    bytes[44 + index] = 128 + Math.round(wave * syllable * 56);
+  }
+  return new Blob([bytes], {type: 'audio/wav'});
+}
+
+/** Puts the sample's own preview, photo, and voice message where the cards look for them, so nothing is fetched for them. */
+function seedSampleMedia(rows) {
+  if (typeof previews !== 'undefined') previews.set(SAMPLE_LINK, Promise.resolve(SAMPLE_PREVIEW));
+  if (typeof cardBlobs === 'undefined') return;
+  cardBlobs.set('/api/picture?url=' + encodeURIComponent(SAMPLE_PREVIEW.image), Promise.resolve(SAMPLE_COVER));
+  for (const row of rows) {
+    if (!row.attachment) continue;
+    const path = '/api/protocols/file?id=' + encodeURIComponent(row.id);
+    if (row.attachment.kind === 'voice') cardBlobs.set(path, Promise.resolve(blobUrl(sampleVoiceBlob(Math.round(row.attachment.duration / 1000)))));
+    else cardBlobs.set(path, fetch('/samples/lakeside.webp').then((response) => (response.ok ? response.blob() : null))
+      .then((blob) => (blob ? blobUrl(blob) : null)).catch(() => null));
+  }
+}
+
+function forgetSampleMedia() {
+  if (typeof previews !== 'undefined') previews.delete(SAMPLE_LINK);
+  if (typeof cardBlobs === 'undefined') return;
+  for (const key of [...cardBlobs.keys()]) if (key.includes('id=sample-') || key.includes(encodeURIComponent(SAMPLE_PREVIEW.image))) cardBlobs.delete(key);
+}
+
+/**
+ * Everything FluidMessages does, with fictional people: one-to-one chats on every service and groups (for Favorites,
+ * Groups, Direct messages, and each service's filter), unread chats, a chat muted for a few hours and a muted server,
+ * a link preview, a disappearing message, a chat setting notice, a poll, an event with RSVPs, a game, reactions,
+ * invisible ink, an edited message, a photo, a voice message, an automated sender, and the sample servers' channels
+ * and rooms (servers.js SAMPLE_DIRECTORY). Same people as the phone's sample.
+ */
 function sampleMessages() {
   sampleRun = Date.now().toString(36);
   const now = Date.now();
   const minute = 60000;
   const rows = [];
-  const add = (address, protocol, title, body, type, ago, author = '', read = 1) => rows.push({id: sampleId(), address, protocol, title, body,
-    type, date: now - ago * minute, read, author});
+  const add = (address, protocol, title, body, type, ago, author = '', read = 1) => {
+    const row = {id: sampleId(), address, protocol, title, body, type, date: now - ago * minute, read, author};
+    rows.push(row);
+    return row;
+  };
   const maya = '+12025550123';
-  add(maya, 'sms', 'Maya Chen', 'Coffee at ten?', 1, 95);
-  // A chat setting notice, shown locally as the outlined note a real one gets (cards.js).
+  add(maya, 'sms', 'Maya Chen', 'Coffee at ten?', 1, 97);
+  add(maya, 'sms', 'Maya Chen', 'Here’s the place: ' + SAMPLE_LINK, 1, 96);
+  // A chat setting notice, shown locally as the outlined note a real one gets (cards.js). The messages after it
+  // disappear a day after they were sent, with the ⏱ beside their time.
   if (typeof timerNoticeText === 'function') add(maya, 'sms', 'Maya Chen', timerNoticeText(86400), 2, 92);
-  add(maya, 'sms', 'Maya Chen', 'See you there!', 2, 90);
-  add(maya, 'sms', 'Maya Chen', 'Bring the *good* beans this time ☕ and ||the secret recipe||', 1, 88);
+  for (const row of [add(maya, 'sms', 'Maya Chen', 'See you there!', 2, 90),
+    add(maya, 'sms', 'Maya Chen', 'Bring the *good* beans this time ☕ and ||the secret recipe||', 1, 88)]) row.expires = row.date + 86400000;
   // Maya likes your message. " (my message)" would mean she liked her own, so it wouldn't fold onto yours.
   add(maya, 'sms', 'Maya Chen', 'Liked “See you there!”', 1, 87);
+  const jordan = '+12025550142';
+  add(jordan, 'sms', 'Jordan Ellis', 'Did you get the invite?', 2, 150);
+  add(jordan, 'sms', 'Jordan Ellis', typeof effectText === 'function' ? effectText('Surprise party for Sam, Friday at Nora’s 🤫', 'Invisible ink')
+    : 'Surprise party for Sam, Friday at Nora’s 🤫', 1, 146);
+  add(jordan, 'sms', 'Jordan Ellis', 'My lips are sealed 🤐', 2, 140);
+  const elena = '@elenavasquez:example.org';
+  add(elena, 'matrix', 'Elena Vasquez', 'Can you send the directions? I’m driving later.', 2, 215);
+  const voice = add(elena, 'matrix', 'Elena Vasquez', 'Voice message.wav', 1, 205);
+  voice.attachment = {name: 'Voice message.wav', mime: 'audio/wav', size: 32044, kind: 'voice', duration: 4000};
+  add(elena, 'matrix', 'Elena Vasquez', 'Got it, thank you!', 2, 200);
+  const amir = 'amir@example.org';
+  add(amir, 'xmpp', 'Amir Nasser', 'Rematch? 😄', 1, 180);
+  if (typeof gameText === 'function') add(amir, 'xmpp', 'Amir Nasser', gameText('ttt', 'smplttt1', true, ['5'], 'I took the middle. Your move!'), 1, 178);
+  // Muted for a few hours (startSample): its bell shows in the row, and it doesn't count as unread.
+  add(SAMPLE_LEAH, 'email', 'Leah Morgan', 'The newsletter draft is ready. Notes by Thursday?', 1, 130, '', 0);
   const plans = 'mms:+12025550131,+12025550142';
   add(plans, 'mms', 'Weekend Plans', 'Who’s in for Saturday?', 1, 300, 'Sam Rivera');
   add(plans, 'mms', 'Weekend Plans', '📊 Poll: Where should we hike?\n1. Ridge loop\n2. Lake trail\n3. Pine meadow\nReply with a number to vote · poll smpl01', 2, 290);
@@ -870,8 +1008,10 @@ function sampleMessages() {
   }
   const walk = 'sample-photo-walk';
   add(walk, 'rcs', 'Photo Walk', 'Golden hour starts at six!\n(sent with Confetti 🎉)', 1, 40, 'Ana Ortiz');
+  const photo = add(walk, 'rcs', 'Photo Walk', 'The lake just before sunset.', 1, 38, 'Ana Ortiz');
+  photo.attachment = {name: 'lakeside.webp', mime: 'image/webp', size: 158998, kind: 'photo'};
   add(walk, 'rcs', 'Photo Walk', '🎲 Rolled 2d6: 3 + 5 = 8', 2, 35);
-  // Two unread chats, for the inbox filter's Unread.
+  // Unread chats, for the inbox filter's Unread.
   add(walk, 'rcs', 'Photo Walk', 'I’ll bring the tripod', 1, 30, 'Leo Park', 0);
   // An automated sender (a short code), like the phone's Trail Alerts; your reply shows in the automated color.
   add('55123', 'sms', 'Trail Alerts', 'Trail update: the south entrance is open. Reply STOP to stop receiving these messages.', 1, 600);
@@ -881,8 +1021,20 @@ function sampleMessages() {
   add(radio, 'matrix', 'Radio Club', '✏️ Edited “Antenna night is Thursday” to: Antenna night is Friday at 7', 2, 69);
   add(radio, 'matrix', 'Radio Club', 'Loved “Antenna night is Friday at 7”', 1, 60, 'Kestrel');
   add(radio, 'matrix', 'Radio Club', 'I can bring the analyzer', 1, 58, 'Kestrel', 0);
+  // The sample servers' channels and rooms (servers.js), under Messages → Communities. Garden Commons is muted.
+  add('sample-irc-astronomy', 'irc', '#astronomy', 'Saturn is high after 9 tonight', 1, 400, 'vega');
+  add('sample-irc-astronomy', 'irc', '#astronomy', 'Anyone tried the new 2x Barlow?', 1, 380, 'nightowl');
+  add('sample-irc-astronomy', 'irc', '#astronomy', 'Clear skies forecast through Sunday!', 1, 25, 'orion', 0);
+  add('sample-irc-telescopes', 'irc', '#telescopes', 'Collimate at night, once the mirror settles', 1, 3000, 'dob_dan');
+  add('sample-irc-telescopes', 'irc', '#telescopes', 'Thanks, that fixed my blurry stars', 2, 2990);
+  add('sample-irc-meteors', 'irc', '#meteor-watch', 'Peak is Thursday before dawn. Look northeast.', 1, 900, 'perseid');
+  add('sample-mx-seeds', 'matrix', 'Seed Swap', 'I have extra sunflower seeds if anyone wants some 🌻', 1, 55, 'Fern', 0);
+  add('sample-mx-allotments', 'matrix', 'Allotment News', 'Water days are Tuesday and Saturday this month', 1, 1500, 'Plot Steward');
+  add('sample-mx-compost', 'matrix', 'Compost Corner', 'Remember: browns, greens, browns 🍂', 1, 4300, 'Moss');
   add('+12025550188', 'sms', 'Old Neighbor', 'Thanks again for the ladder!', 1, 4000);
   add('+12025550199', 'sms', '', 'You won a prize! Reply YES to claim', 1, 2000);
+  // A message request from a new number (requests.js).
+  if (typeof sampleRequestRows === 'function') sampleRequestRows(add);
   return rows.sort((a, b) => b.date - a.date);
 }
 
@@ -925,8 +1077,15 @@ function startSample(options) {
   if (!sampleOn) sampleSaved = {routes: typeof routes === 'undefined' ? [] : routes};
   sampleOn = true;
   sampleSeq = 0;
-  sampleChats = {...NO_CHATS(), pinned: ['mms:+12025550131,+12025550142'], archived: ['+12025550188'], blocked: ['+12025550199']};
+  // A chat muted for 6 hours and a whole server muted until you unmute it, so the bell and Unmute can be tried.
+  sampleChats = {...NO_CHATS(), pinned: ['mms:+12025550131,+12025550142'], archived: ['+12025550188'], blocked: ['+12025550199'],
+    muted: [SAMPLE_LEAH, SERVER_MUTE + 'sample:matrix'], mute_until: {[SAMPLE_LEAH]: Date.now() + 6 * 3600000}};
+  // Only the sample's own servers and rooms while it's open: your joined channels and linked chats stay out of it.
+  if (typeof routes !== 'undefined') routes = typeof sampleServerRoutes === 'function' ? sampleServerRoutes() : [];
+  if (typeof sampleCommunity !== 'undefined') Object.assign(sampleCommunity, {view: 'chats', sort: 'recent', collapsed: new Set()});
+  if (typeof sampleCallsSeen !== 'undefined') sampleCallsSeen = false;
   inbox = sampleMessages();
+  seedSampleMedia(inbox);
   active = '';
   delete get('workspace').dataset.thread;
   get('schedule').hidden = true;
@@ -947,6 +1106,7 @@ function exitSample() {
   closeDetailsPage(false);
   sampleOn = false;
   sampleBanner();
+  forgetSampleMedia();
   inbox = [];
   threads.clear();
   active = '';
@@ -1010,13 +1170,18 @@ if (typeof uploadFile === 'function') {
 function chatCodesSection() {
   const section = element('section', '', 'settings-section');
   section.id = 'settings-chat-codes';
-  const codes = Object.keys(webChats.locks || {}).length;
+  const {chats: codes, kinds} = lockCounts(webChats);
   section.append(element('h3', 'Chat codes'),
     element('p', codes ? codes + (codes === 1 ? ' chat has a code.' : ' chats have codes.') + ' Their previews stay hidden in the inbox and search.'
       : 'Give a chat a code in its details: its preview is hidden and it asks for the code before it opens.', 'muted'));
+  // Lock every chat of one kind (settings.js chatLocksPage).
+  if (typeof settingsLink === 'function' && settingsItem('chat-locks')) {
+    section.append(settingsLink('chat-locks', kinds ? kinds + (kinds === 1 ? ' kind of chat is locked' : ' kinds of chats are locked')
+      : 'Lock a chat from its details, or every chat of one kind here'));
+  }
   const relock = element('button', 'Lock chats with codes now');
   relock.type = 'button';
-  relock.disabled = !codes;
+  relock.disabled = !codes && !kinds;
   relock.addEventListener('click', () => { unlockedAddress = ''; showMessages(); say('Chats with codes are locked.'); relock.textContent = 'Locked'; });
   section.append(relock);
   return section;

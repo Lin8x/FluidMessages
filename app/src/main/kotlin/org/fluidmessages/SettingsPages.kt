@@ -146,7 +146,6 @@ object SettingsPages {
         view.setContent {
             val appearance = remember { Appearance.read(prefs) }
             var exactTimes by remember { mutableStateOf(prefs.getBoolean("exactTimes", false)) }
-            var tabCounts by remember { mutableStateOf(prefs.getBoolean(TabBadges.PREF, true)) }
             var communityChats by remember { mutableStateOf(Communities.show(prefs)) }
             val filters = remember { InboxFilters.menu(InboxFilters.read(prefs), InboxFilters.ALL.map { it.service }.toSet()).size }
             AppTheme(appearance) {
@@ -178,15 +177,6 @@ object SettingsPages {
                                 communityChats = it
                                 prefs.edit().putBoolean(Communities.SHOW_PREF, it).apply()
                                 SyncJob.syncSoon(root.context)
-                            }
-                        }
-                    }
-                    item {
-                        PreferencesCard("Tabs") {
-                            SettingsSwitch("Show counts on tabs", "Missed calls on Phone and unread chats on Messages. Muted, archived, and blocked chats aren't counted.",
-                                tabCounts) {
-                                tabCounts = it
-                                prefs.edit().putBoolean(TabBadges.PREF, it).apply()
                             }
                         }
                     }

@@ -36,8 +36,41 @@ internal object SyncMerge {
     const val WEB = "web"
 
     /** Groups that follow the "use the phone's settings" choice; with the web's own chosen, each side keeps its own. */
-    val settingsGroups = setOf("look", "fun", "timer", "wallpaper")
+    val settingsGroups = setOf("look", "fun", "pref", "timer", "wallpaper")
     private val folders = listOf("pinned", "archived", "blocked")
+
+    /**
+     * Item groups newer than the merge, exchanged only when both sides say they understand them (server/sync_merge.py
+     * OPTIONAL): timed mutes, inbox and messaging choices ("pref:"), favorites ("favorite:<address>" = "on"), and
+     * message requests ("request:<address>" and "requests:<setting>", MessageRequests).
+     */
+    val requestGroups = listOf("request", "requests")
+    val optionalGroups = listOf("muteuntil", "pref", "favorite") + requestGroups
+
+    /**
+     * The groups both sides understand, from FluidMessages Web's answer: its "items", or "mute_until" from before; and
+     * the message request groups when it answers "requests": 1, as the first FluidMessages Web with requests did.
+     */
+    fun sharedGroups(items: List<String>?, muteUntil: Boolean, requests: Boolean = false): Set<String> =
+        ((items ?: if (muteUntil) listOf("muteuntil") else emptyList()) + (if (requests) requestGroups else emptyList()))
+            .filter { it in optionalGroups }.toSet()
+
+    /** Whether [key] takes part in a merge where both sides understand [shared]. */
+    fun understood(key: String, shared: Set<String>) = group(key) !in optionalGroups || group(key) in shared
+
+    private val phoneNumber = Regex("\\+?[0-9(][0-9 ().-]{1,38}")
+
+    /**
+     * A favorite as an item name: a phone number as its digits (and a leading +), anything else as it is, so one
+     * number is one item on both sides (server/sync_merge.py favorite_address).
+     */
+    fun favoriteAddress(text: String): String {
+        val trimmed = text.trim()
+        if (phoneNumber.matches(trimmed) && trimmed.count { it.isDigit() } >= 3) {
+            return (if (trimmed.startsWith("+")) "+" else "") + trimmed.filter { it.isDigit() }
+        }
+        return trimmed
+    }
 
     fun group(key: String) = key.substringBefore(':')
     fun name(key: String) = key.substringAfter(':')
@@ -128,8 +161,14 @@ internal object SyncMerge {
         "toolbarFinish" to "Toolbar finish", "density" to "Inbox density", "tails" to "Bubble tails",
         "chromeOpacity" to "Toolbar opacity", "speed" to "Motion", "exactTimes" to "Exact times",
         "combineProtocols" to "Combine linked conversations", "tagMode" to "Inbox protocol tags", "encryptionMode" to "Encryption labels")
+    private val prefNames = mapOf("tabCounts" to "Counts on tabs", "showCommunityChats" to "Show community chats",
+        "communitySort" to "Communities order", "inboxFilters" to "Inbox filters", "announceSettings" to "Announce setting changes")
     private val funNames = mapOf("effects" to "Message effects", "reactions" to "Reaction effects", "games" to "Games",
         "random" to "Random picks", "gifs" to "Pictures and GIFs from links", "linkPreviews" to "Link previews")
+
+    private val requestNames = mapOf("texts" to "Filter unknown senders (texts)", "chats" to "Filter unknown senders (chat services)",
+        "notify" to "Request notifications", "automatedOut" to "Keep automated messages out of the inbox",
+        "automatedQuiet" to "Don't notify for automated messages", "automatedBlock" to "Block automated senders")
 
     /** The heading for a key's group, and the item's own title. [person] names a chat by its address. */
     fun describe(key: String, person: (String) -> String): Pair<String, String> {
@@ -140,6 +179,8 @@ internal object SyncMerge {
             "folder" -> "Chat folders" to person(name)
             "muted" -> "Muted chats" to person(name)
             "muteuntil" -> "How long chats are muted" to person(name)
+            "favorite" -> "Favorites" to person(name)
+            "pref" -> "Messaging" to (prefNames[name] ?: name)
             "sender" -> "Automated senders" to person(name)
             "timer" -> "Disappearing messages" to if (name == "*") "Default timer" else person(name)
             "wallpaper" -> "Chat wallpaper" to person(name)
@@ -150,6 +191,8 @@ internal object SyncMerge {
             "account" -> "Chat accounts" to (AccountKeys.perAccount(key)?.let { (service, address) ->
                 service.replaceFirstChar { it.titlecase(Locale.ROOT) } + " · " + address } ?: name.replaceFirstChar { it.titlecase(Locale.ROOT) })
             "protocol" -> "Chat services" to name.replaceFirstChar { it.titlecase(Locale.ROOT) }
+            "request" -> "Message requests" to person(name)
+            "requests" -> "Requests and spam" to (requestNames[name] ?: name)
             else -> "Other" to key
         }
     }
@@ -171,9 +214,21 @@ internal object SyncMerge {
                 if (set.isEmpty()) "Inbox" else folders.filter { it in set }.joinToString(", ") { it.replaceFirstChar { c -> c.titlecase(Locale.ROOT) } }
             }
             "muted" -> if (value == "on") "Muted" else "Alerts on"
+            "favorite" -> if (value == "on") "Favorite" else "Not a favorite"
+            "pref" -> when (name) {
+                "communitySort" -> Communities.Sort.parse(value).label
+                "inboxFilters" -> value?.split(',')?.filter { it.isNotEmpty() && !it.startsWith("-") }
+                    ?.joinToString(", ") { InboxFilters.of(it)?.label ?: it } ?: "Every filter"
+                else -> if (value == "off") "Off" else "On"
+            }
             "muteuntil" -> value?.toLongOrNull()?.let { "Until " + java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM,
                 java.text.DateFormat.SHORT).format(java.util.Date(it)) } ?: "Until you unmute"
             "sender" -> when (value) { "automated" -> "Automated"; "person" -> "A person"; else -> "Automatic" }
+            "request" -> when { value == MessageRequests.ACCEPTED -> "Accepted"; value != null -> "Deleted"; else -> "Waiting in Requests" }
+            "requests" -> when (value) {
+                null -> if (name == "texts" || name.startsWith("automated")) "Off" else if (name == "notify") "Quiet" else "On"
+                "on" -> "On"; "off" -> "Off"; else -> value.replaceFirstChar { it.titlecase(Locale.ROOT) }
+            }
             "timer" -> value?.toIntOrNull()?.let { Disappearing.label(it) } ?: if (name == "*") "Off" else "Follows the default"
             "wallpaper" -> when (value) { null, "none" -> "Solid"; "photo" -> "A photo"; else -> value.replaceFirstChar { it.titlecase(Locale.ROOT) } }
             "gif", "pay" -> value ?: "Not added"

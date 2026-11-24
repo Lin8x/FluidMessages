@@ -34,7 +34,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -321,7 +320,7 @@ private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit, openSounds:
             }
             item { TextButton(onClick = { reset = true }) { Text("Reset to theme") } }
         }
-        if (reset) AlertDialog(onDismissRequest = { reset = false }, title = { Text("Reset to ${activePalette.ifEmpty { appearance.theme.label }}?") },
+        if (reset) FormPage(onDismissRequest = { reset = false }, title = { Text("Reset to ${activePalette.ifEmpty { appearance.theme.label }}?") },
             text = { Text("Restore this theme’s colors, wallpaper, and layout.") },
             confirmButton = { TextButton(onClick = {
                 change {
@@ -351,13 +350,13 @@ private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit, openSounds:
                     onClick = { saveColors(existing ?: name) }) { Text(if (existing == null) "Save" else "Replace") } },
                 dismissButton = { TextButton(onClick = { savePalette = false }) { Text("Cancel") } })
         }
-        if (deletePalette) AlertDialog(onDismissRequest = { deletePalette = false },
+        if (deletePalette) FormPage(onDismissRequest = { deletePalette = false },
             title = { Text("Delete ${activePalette}?") },
-            confirmButton = { TextButton(onClick = {
+            confirmButton = { DangerButton(onClick = {
                 library = readPalettes(prefs).apply { remove(activePalette) }
                 change { putString(SAVED_PALETTES, library.toString()).remove(ACTIVE_PALETTE) }
                 deletePalette = false
-            }) { Text("Delete") } },
+            }, label = "Delete", modifier = Modifier.padding(start = 4.dp)) },
             dismissButton = { TextButton(onClick = { deletePalette = false }) { Text("Cancel") } })
     }
 }

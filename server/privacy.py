@@ -6,10 +6,14 @@
   here: its messages, routes, folders, codes, timers, wallpapers, scheduled messages, and merge items. Opening lasts
   for the session or until it's locked again. The phone's own private folder never syncs here (protocol_gateway
   hides its chats), and web private chats stay out of the phone↔web merge (sync_merge.py).
+  Whole services can be hidden too (Hide whole services, "web_private_services"): every chat on them counts as
+  private. "Ask for the passcode to close it" ("web_private_close", on unless turned off) is the browser's to ask.
 - Decoy mode. Signing in with the decoy password gives a decoy session (auth.py), and Quick hide switches the
   current one. A decoy session never reaches a real endpoint: main.Handler.authorize sends every request here
   (DecoyWorld), which answers like a fresh FluidMessages Web with a phone connected and only pretend chats.
   Texts "sent" there stay in that session's memory, like the phone's decoy chats, where nothing is ever sent.
+  Real chats that stay visible ("web_decoy_allowed") show there as they are, read from the real store by main.py
+  (DecoyWorld.real); private chats never do, and what's "sent" in them stays in the session's memory as well.
 - Emergency erase passcode. Typed at sign-in, into the private folder prompt, or into Show your real inbox, it
   erases everything with Erase everything's own path (main.erase_everything) and leaves that browser in a decoy
   session, so it looks like a normal, harmless inbox.
@@ -23,6 +27,11 @@ import threading
 import time
 
 PRIVATE_KEY, DECOYS_KEY = "web_private", "web_decoys"
+SERVICES_KEY, CLOSE_KEY, ALLOWED_KEY = "web_private_services", "web_private_close", "web_decoy_allowed"
+# The services a private folder can hide whole, as on the phone's Hide whole services: texts and each internet service.
+SERVICES = ("sms", "matrix", "xmpp", "email", "irc")
+TEXTS = ("sms", "mms", "rcs", "")
+MAX_ALLOWED = 60
 MAX_PRIVATE, MAX_DECOY_CHATS, MAX_DECOY_LINES = 2000, 12, 30
 # Fictional chats for decoy mode, in the phone's decoy style: a name and a few ordinary lines, each from them or
 # from you. 555-01xx numbers are reserved for fiction.
@@ -62,6 +71,75 @@ def save_private(db, addresses):
         db.execute("DELETE FROM protocol_state WHERE key=?", (PRIVATE_KEY,))
     else:
         db.execute("INSERT OR REPLACE INTO protocol_state VALUES (?, ?)", (PRIVATE_KEY, json.dumps(list(dict.fromkeys(addresses))[:MAX_PRIVATE])))
+
+
+def _state(db, key, default):
+    row = db.execute("SELECT value FROM protocol_state WHERE key=?", (key,)).fetchone()
+    return json.loads(row[0]) if row else default
+
+
+def _put(db, key, value):
+    if value is None:
+        db.execute("DELETE FROM protocol_state WHERE key=?", (key,))
+    else:
+        db.execute("INSERT OR REPLACE INTO protocol_state VALUES (?, ?)", (key, json.dumps(value)))
+
+
+def hidden_services(db):
+    value = _state(db, SERVICES_KEY, [])
+    return [item for item in SERVICES if isinstance(value, list) and item in value]
+
+
+def save_hidden_services(db, services):
+    if services is not None and (not isinstance(services, list) or any(item not in SERVICES for item in services)):
+        raise ValueError("Choose texts, Matrix, XMPP, Email, or IRC")
+    _put(db, SERVICES_KEY, [item for item in SERVICES if item in services] if services else None)
+
+
+def service_addresses(db, services, routes):
+    """Every chat on a hidden service: its route's address, its messages' addresses, and for texts, the phone's."""
+    if not services:
+        return []
+    found = []
+    internet = {item for item in services if item != "sms"}
+    found += [route["address"] for route in routes if route.get("protocol") in internet and isinstance(route.get("address"), str)]
+    for row in db.execute("SELECT payload FROM protocol_messages"):
+        message = json.loads(row[0])
+        protocol = message.get("protocol") or ""
+        if protocol in internet or "sms" in services and protocol in TEXTS:
+            found.append(message.get("address"))
+    if "sms" in services:
+        row = db.execute("SELECT content FROM inbox WHERE id=1").fetchone()
+        for message in json.loads(row[0]) if row else []:
+            if isinstance(message, dict) and (message.get("protocol") or "") in TEXTS:
+                found.append(message.get("address"))
+    return list(dict.fromkeys(item for item in found if isinstance(item, str) and item))
+
+
+def close_needs_code(db):
+    """Leaving the open private folder for another folder asks for the passcode again (the phone's privateCloseCode)."""
+    return _state(db, CLOSE_KEY, True) is not False
+
+
+def save_close_needs_code(db, on):
+    if type(on) is not bool:
+        raise ValueError("Choose on or off")
+    _put(db, CLOSE_KEY, None if on else False)
+
+
+def decoy_allowed(db):
+    value = _state(db, ALLOWED_KEY, [])
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def save_decoy_allowed(db, addresses, is_private):
+    """Real chats that stay visible in decoy mode. A private chat is never one of them."""
+    if not isinstance(addresses, list) or len(addresses) > MAX_ALLOWED:
+        raise ValueError("Choose up to %d chats" % MAX_ALLOWED)
+    kept = [clean_address(item) for item in addresses]
+    kept = [item for item in dict.fromkeys(kept) if not (is_private and is_private(item))]
+    _put(db, ALLOWED_KEY, kept or None)
+    return kept
 
 
 def clean_address(value):
@@ -187,6 +265,8 @@ class DecoyWorld:
 
     def __init__(self, clock=time.time):
         self.clock = clock
+        # real(db): the real chats that stay visible in decoy mode, as inbox rows (main.decoy_real_messages).
+        self.real = None
         self.lock = threading.Lock()
         self.sessions = {}
 
@@ -215,10 +295,12 @@ class DecoyWorld:
                 date = last - (len(chat["lines"]) - 1 - position) * 4 * 60_000
                 rows.append({"id": "d%x%x" % (index, position), "address": address, "title": chat["name"], "body": line["text"],
                              "date": date, "type": 2 if line["me"] else 1, "read": 1, "protocol": "sms"})
-        titles = {row["address"]: row["title"] for row in rows}
+        if self.real:
+            rows += self.real(db)
+        titles = {row["address"]: row.get("title", "") for row in rows}
         for number, sent in enumerate(state["sent"]):
             rows.append({"id": "s%x" % number, "address": sent["address"], "title": titles.get(sent["address"], ""), "body": sent["body"],
-                         "date": sent["date"], "type": 2, "read": 1, "protocol": "sms"})
+                         "date": sent["date"], "type": 2, "read": 1, "protocol": sent.get("protocol", "sms")})
         rows.sort(key=lambda row: row["date"], reverse=True)
         return rows
 
@@ -305,6 +387,16 @@ class DecoyWorld:
                 state["synced"] = now
                 state["job"] += 1
                 return 200, {"id": state["job"]}
+        if path == "/api/protocols/send":
+            # Only in a real chat that stays visible; it stays in this session's memory, like the decoy texts.
+            address, protocol, body = data.get("address"), data.get("protocol"), data.get("body")
+            if not isinstance(address, str) or not isinstance(body, str) or not body.strip() or len(body) > 8000 \
+                    or protocol not in ("matrix", "xmpp", "email", "irc") or not any(
+                        row["address"] == address and row.get("protocol") == protocol for row in (self.real(db) if self.real else [])):
+                return self.REFUSED
+            with self.lock:
+                state["sent"] = (state["sent"] + [{"address": address, "body": body, "date": now, "protocol": protocol}])[-200:]
+                return 200, {"message": {"address": address, "protocol": protocol, "body": body, "date": now, "type": 2}}
         if path == "/api/call":
             with self.lock:
                 state["job"] += 1

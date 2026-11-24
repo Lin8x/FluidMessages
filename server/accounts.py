@@ -38,7 +38,11 @@ FIELDS = {
     "xmpp": {"jid": (str, False, True), "password": (str, True, True), "host": (str, False, False), "port": (int, False, False)},
     "irc": {"server": (str, False, True), "port": (int, False, False), "nick": (str, False, True),
             "sasl_user": (str, False, False), "sasl_password": (str, True, False), "channels": (list, False, False),
-            "real_name": (str, False, False)},
+            "real_name": (str, False, False),
+            # Identify on connect: NickServ IDENTIFY over the same TLS connection, for networks or setups without SASL.
+            "nickserv_password": (str, True, False),
+            # Answer CTCP VERSION and PING (with a generic reply). Off by default, for privacy.
+            "ctcp_replies": (bool, False, False)},
 }
 ENV = {
     "email": {"address": "FLUID_EMAIL_ADDRESS", "imap_host": "FLUID_EMAIL_IMAP_HOST", "imap_port": "FLUID_EMAIL_IMAP_PORT",
@@ -49,8 +53,24 @@ ENV = {
     "matrix": {"homeserver": "FLUID_MATRIX_HOMESERVER", "user_id": "FLUID_MATRIX_USER", "access_token": "FLUID_MATRIX_TOKEN"},
     "xmpp": {"jid": "FLUID_XMPP_JID", "password": "FLUID_XMPP_PASSWORD", "host": "FLUID_XMPP_HOST", "port": "FLUID_XMPP_PORT"},
     "irc": {"server": "FLUID_IRC_SERVER", "port": "FLUID_IRC_PORT", "nick": "FLUID_IRC_NICK", "sasl_user": "FLUID_IRC_SASL_USER",
-            "sasl_password": "FLUID_IRC_SASL_PASSWORD", "channels": "FLUID_IRC_CHANNELS", "real_name": "FLUID_IRC_REAL_NAME"},
+            "sasl_password": "FLUID_IRC_SASL_PASSWORD", "channels": "FLUID_IRC_CHANNELS", "real_name": "FLUID_IRC_REAL_NAME",
+            "nickserv_password": "FLUID_IRC_NICKSERV_PASSWORD", "ctcp_replies": "FLUID_IRC_CTCP_REPLIES"},
 }
+
+
+# Email ports, as the phone uses them (EmailPorts.kt). An account saved without ports uses these, so older accounts
+# connect as before. SMTP on 465 and IMAP on any port but 143 use TLS from the start; SMTP on any other port (like
+# 587) and IMAP on 143 must upgrade with STARTTLS. Nothing ever falls back to plain text.
+IMAP_PORT = 993
+SMTP_PORT = 465
+
+
+def imap_starttls(port):
+    return int(port or IMAP_PORT) == 143
+
+
+def smtp_starttls(port):
+    return int(port or SMTP_PORT) != 465
 
 
 def validate(protocol, values):
@@ -60,14 +80,27 @@ def validate(protocol, values):
     clean = {}
     for name, (kind, _, required) in FIELDS[protocol].items():
         value = values.get(name)
+        if kind is bool:
+            # Docker Compose gives text: "1", "true", "yes", or "on" turn it on.
+            value = value if isinstance(value, bool) else str(value or "").strip().lower() in ("1", "true", "yes", "on")
+            if value:
+                clean[name] = True
+            continue
         if value in (None, "", []):
             if required:
                 raise ValueError("Enter " + name.replace("_", " "))
             continue
         if kind is int:
-            value = int(value)
+            try:
+                if isinstance(value, bool) or isinstance(value, float) and not value.is_integer():
+                    raise ValueError
+                value = int(str(value).strip()) if isinstance(value, str) else int(value)
+            except (TypeError, ValueError):
+                raise ValueError("Enter a valid " + name.replace("_", " ")
+                                 + (" from 1 to 65535" if name.endswith("port") else "")) from None
             if not 1 <= value <= 65535 and name.endswith("port") or name == "poll_minutes" and not 1 <= value <= 1440:
-                raise ValueError("Enter a valid " + name.replace("_", " "))
+                raise ValueError("Enter a valid " + name.replace("_", " ")
+                                 + (" from 1 to 65535" if name.endswith("port") else ""))
         elif kind is list:
             if isinstance(value, str):
                 value = [item.strip() for item in value.split(",") if item.strip()]

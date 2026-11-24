@@ -33,7 +33,8 @@ let refreshed = false;
 let refreshNumber = 0;
 let lastLook = '';
 // Fun and effects, set in Settings for this server. Everything is on until turned off.
-let prefs = {effects: true, reactionEffects: true, games: true, random: true, gifs: true, linkPreviews: true};
+let prefs = {effects: true, reactionEffects: true, games: true, random: true, gifs: true, linkPreviews: true,
+  sendGifs: true, sendStickers: true, callMatrix: true, callMeetings: true};
 // Chat accounts on this server (Matrix, XMPP, Email, IRC), for empty states and New chat.
 let chatAccounts = [];
 // Signed in as this computer, which opens without a password, so there's nothing to sign out of.
@@ -120,23 +121,38 @@ const lift = (hex) => hexOf(rgb(hex).map((value) => value + (1 - value) * .22));
 function prefersDark() { return !!window.matchMedia?.('(prefers-color-scheme: dark)').matches; }
 
 /** The web app's own look: a named theme in light or dark, your color changes, and bubble layout. */
+// Palette contrast → Increased: Fluid's colors from the phone's increased-contrast swatches (MessageStyle.Swatch),
+// [canvas, sms, rcs, controls, chrome, automated, [matrix, xmpp, email, irc]], plus the incoming gray. Every theme also
+// gets stronger secondary text, outlines, and buttons.
+const FLUID_CONTRAST = {light: ['#ffffff', '#1e6ef4', '#564ade', '#1e6ef4', '#ebebf0', '#008932', ['#e7124d', '#e7124d', '#c55300', '#e9152d'], '#d8d8dc'],
+  dark: ['#101012', '#5cb8ff', '#a7aaff', '#5cb8ff', '#242426', '#4ad968', ['#ff8ac4', '#ff8ac4', '#ffa056', '#ff6165'], '#363638']};
+
 function themeAppearance(look) {
   const theme = THEMES[look.theme] || THEMES.fluid;
   const dark = look.mode === 'dark' || (look.mode !== 'light' && prefersDark());
-  const [canvas, sms, rcs, controls, chrome, automated, protocols] = theme[dark ? 'dark' : 'light'];
-  const protocolColors = theme[dark ? 'dark' : 'light'][6] || theme.light[6].map(dark ? lift : (value) => value);
-  const ink = textOn(canvas);
-  const surface = mixColor(canvas, chrome, .72);
+  const strong = look.contrast === true;
+  const palette = strong && theme === THEMES.fluid ? FLUID_CONTRAST[dark ? 'dark' : 'light'] : theme[dark ? 'dark' : 'light'];
   const own = look.colors || {};
-  const base = {incoming: own.incoming || (dark ? '#2c2c2e' : '#e5e5ea'), sms: own.sms || sms, automated: own.automated || automated,
+  // The background, buttons and unread indicators, and toolbar and composer tints can be your own, as on the phone.
+  const canvas = own.canvas || palette[0], controls = own.controls || palette[3];
+  const [, sms, rcs, , , automated] = palette;
+  const protocolColors = palette[6] || theme.light[6].map(dark ? lift : (value) => value);
+  const ink = textOn(canvas);
+  // A toolbar tint that's too close to the text color (a light tint on a dark background) moves toward the
+  // background until text on it reads at 4.5:1 again.
+  let chrome = own.chrome || palette[4];
+  for (let step = 0; step < 12 && (contrast(chrome, ink) < 4.5 || contrast(mixColor(canvas, chrome, .72), ink) < 4.5); step++) chrome = mixColor(chrome, canvas, .25);
+  const surface = mixColor(canvas, chrome, .72);
+  const gray = palette[7] || (dark ? '#2c2c2e' : '#e5e5ea');
+  const base = {incoming: own.incoming || gray, sms: own.sms || sms, automated: own.automated || automated,
     rcs: own.rcs || rcs, matrix: own.matrix || protocolColors[0], xmpp: own.xmpp || protocolColors[1], email: own.email || protocolColors[2],
     irc: own.irc || protocolColors[3]};
   const colors = {canvas, ink, surface, raised: chrome,
-    muted: readable(mixColor(ink, surface, .4), surface, ink, 4.5),
-    line: mixColor(surface, ink, .14), outline: readable(mixColor(surface, ink, .3), canvas, ink, 3),
-    action: readable(controls, canvas, ink, 3), accent: bubbleFill(controls), accentInk: bubbleInk(controls)};
+    muted: readable(mixColor(ink, surface, .4), surface, ink, strong ? 7 : 4.5),
+    line: mixColor(surface, ink, strong ? .24 : .14), outline: readable(mixColor(surface, ink, .3), canvas, ink, strong ? 4.5 : 3),
+    action: readable(controls, canvas, ink, strong ? 4.5 : 3), accent: bubbleFill(controls), accentInk: bubbleInk(controls)};
   for (const key of BUBBLES) colors[key] = base[key];
-  return {dark, colors, exactTimes: !!look.exactTimes, combineProtocols: !!look.combineProtocols, announceSettings: look.announceSettings !== false,
+  return {dark, contrast: strong, colors, exactTimes: !!look.exactTimes, combineProtocols: !!look.combineProtocols, announceSettings: look.announceSettings !== false,
     tagMode: look.tagMode || 'auto', encryptionMode: look.encryptionMode || 'auto',
     radius: look.radius ?? LAYOUT.radius, size: look.size ?? LAYOUT.size, padding: look.padding ?? LAYOUT.padding};
 }
@@ -406,13 +422,176 @@ function messageActions(message, row) {
   if (sendable && message.type !== 1 && !message.attachment && ![4, 5, 6].includes(message.type) && typeof openEditMessage === 'function') {
     action('Edit', () => openEditMessage(message));
   }
+  // A message that couldn't send: Try again, Edit and resend, and Delete, as under its red Not delivered line.
+  if (failedMessage(message)) for (const [label, run] of failedChoices(message)) action(label, run);
   if (message.attachment) action('Download', () => download(message).catch(showError));
   if (message.body && !message.attachment) action('Copy text', () => navigator.clipboard?.writeText(typeof plainPreview === 'function' ? plainPreview(message.body) : message.body));
   // Custom emoji, message details, share, select text, and delete for me (chats.js).
   if (typeof moreMessageActions === 'function') moreMessageActions(message, row, {action, quick, more, sendable});
   if (!quick.children.length) quick.remove();
   pressOpens(row, menu);
+  if (sendable) swipeToReply(row, message);
   return menu;
+}
+
+// Swipe a message right to reply, on touch screens, like the phone: the bubble follows your finger and a small
+// arrow shows behind it; past the mark it says so with a tick, and letting go there starts the reply. With a mouse
+// or keyboard, Reply is in the message's menu.
+const SWIPE_REPLY = 56, SWIPE_MAX = 84;
+
+function swipeToReply(row, message) {
+  let id = null, startX = 0, startY = 0, shift = 0, swiping = false, ready = false, arrow = null;
+  const line = () => row.querySelector('.bubble-line');
+  const finish = (reply) => {
+    const moved = line();
+    if (moved) {
+      moved.classList.remove('swiping');
+      moved.style.transform = '';
+    }
+    arrow?.remove();
+    arrow = null;
+    if (reply) { setReply(message.body, message.id); get('body').focus({preventScroll: true}); }
+    if (swiping) {
+      // The tap that ends a swipe isn't also a tap on a link or card in the bubble.
+      const swallow = (event) => { event.preventDefault(); event.stopImmediatePropagation(); };
+      row.addEventListener('click', swallow, {capture: true, once: true});
+      setTimeout(() => row.removeEventListener('click', swallow, {capture: true}), 400);
+    }
+    id = null;
+    swiping = ready = false;
+    shift = 0;
+  };
+  row.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'touch' || !row.querySelector('.bubble-wrap')?.contains(event.target)) return;
+    id = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+  });
+  row.addEventListener('pointermove', (event) => {
+    if (event.pointerId !== id) return;
+    const dx = event.clientX - startX, dy = event.clientY - startY;
+    if (!swiping) {
+      // Scrolling up and down, or a swipe to the left, leaves the message alone.
+      if (Math.abs(dy) > 14 && Math.abs(dy) > Math.abs(dx)) { id = null; return; }
+      if (dx < 14 || dx < Math.abs(dy) * 1.6) return;
+      swiping = true;
+      row.setPointerCapture?.(id);
+      line()?.classList.add('swiping');
+      arrow = element('span', '', 'swipe-reply');
+      arrow.setAttribute('aria-hidden', 'true');
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', 'M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z');
+      path.setAttribute('fill', 'currentColor');
+      svg.append(path);
+      arrow.append(svg);
+      // It waits just before where the bubble started, so it shows as the bubble moves away from it.
+      const start = row.querySelector('.bubble-wrap').getBoundingClientRect().left - row.getBoundingClientRect().left;
+      arrow.style.left = Math.max(0, start - 36) + 'px';
+      row.prepend(arrow);
+    }
+    event.preventDefault();
+    shift = Math.max(0, Math.min(SWIPE_MAX, dx - 14));
+    line().style.transform = 'translateX(' + shift + 'px)';
+    arrow.style.opacity = String(Math.min(1, shift / SWIPE_REPLY));
+    arrow.style.transform = 'scale(' + (.6 + .4 * Math.min(1, shift / SWIPE_REPLY)) + ')';
+    if (!ready && shift >= SWIPE_REPLY) navigator.vibrate?.(6);
+    ready = shift >= SWIPE_REPLY;
+    arrow.classList.toggle('ready', ready);
+  });
+  row.addEventListener('pointerup', (event) => { if (event.pointerId === id) finish(swiping && ready); });
+  row.addEventListener('pointercancel', (event) => { if (event.pointerId === id) finish(false); });
+}
+
+// Messages that couldn't send. Internet messages are tried again from the same queued job, with their reply and file
+// (main.py retry_failed); texts go back in the queue for your phone. Delete removes this web app's copy of an
+// internet message; a text lives on your phone, so it's deleted there.
+
+function failedMessage(message) {
+  return message.type !== 1 && (message.type === 5 || /^Couldn’t send/.test(message.status || ''));
+}
+
+/** Why it didn't send, when the service said: the part after "Couldn’t send · ". */
+function failedReason(message) {
+  return (message.status || '').replace(/^Couldn’t send/, '').replace(/^[\s·:]+/, '').trim();
+}
+
+const failedOnline = (message) => internet(message.protocol) && /^[A-Za-z0-9_-]{1,120}$/.test(message.id || '');
+
+/** [label, run] for each choice: Try again, Edit and resend (not for files), and Delete. */
+function failedChoices(message, done = () => {}) {
+  const words = typeof parseEffect === 'function' ? parseEffect(message.body || '')?.words ?? message.body : message.body;
+  const choices = [['Try again', () => retryMessage(message).then(done).catch(showError)]];
+  if (!message.attachment && message.body) choices.push(['Edit and resend', () => { done(); editAndResend(message, words).catch(showError); }]);
+  choices.push(['Delete', () => deleteFailed(message).then(done).catch(showError)]);
+  return choices;
+}
+
+async function retryMessage(message) {
+  if (typeof sampleOn !== 'undefined' && sampleOn) {
+    inbox = inbox.map((row) => row.id === message.id ? {...row, type: 2, status: 'Sample · nothing was sent'} : row);
+    rebuildThreads(); showMessages(true);
+    say('Sample inbox · nothing was sent.');
+    return;
+  }
+  if (failedOnline(message)) {
+    await api('protocols/retry', {id: message.id});
+    say('Sending again…');
+  } else {
+    // A text goes back in the queue for your phone, as a new message.
+    await queueSms(message.body, message.address, Date.now());
+  }
+  await refresh().catch(() => setSyncStatus('Sync unavailable', true));
+}
+
+/** Puts the words back in the message box to change and send again; the copy that didn't send goes away here. */
+async function editAndResend(message, words) {
+  if (failedOnline(message) || (typeof sampleOn !== 'undefined' && sampleOn)) await deleteFailed(message, true);
+  get('body').value = words;
+  drafts.set(active, words);
+  get('body').dispatchEvent(new Event('input'));
+  get('body').focus();
+  get('body').setSelectionRange?.(words.length, words.length);
+}
+
+async function deleteFailed(message, quiet = false) {
+  if (!failedOnline(message) && !(typeof sampleOn !== 'undefined' && sampleOn)) {
+    // Texts that didn't send are kept on your phone.
+    if (!quiet) say('Texts are kept on your phone. Delete this one there.', true);
+    return;
+  }
+  if (typeof sampleOn === 'undefined' || !sampleOn) await api('protocols/delete', {id: message.id});
+  inbox = inbox.filter((row) => row.id !== message.id);
+  rebuildThreads();
+  showThreads();
+  showMessages(true);
+  if (!quiet) say('Deleted.');
+}
+
+/** Tapping "Not delivered": its own page with the message, why it didn't send, and the three choices. */
+function openFailedMessage(message) {
+  const back = () => closeDetailsPage();
+  const box = element('section', '', 'settings-section failed-page');
+  const quote = element('div', '', 'quote');
+  quote.append(element('strong', message.attachment ? message.attachment.name : 'Your message'),
+    element('span', excerpt(typeof plainPreview === 'function' ? plainPreview(message.body || '') : message.body || '', 400)));
+  box.append(quote);
+  const reason = failedReason(message);
+  box.append(element('p', reason ? 'It didn’t send: ' + reason + '.' : internet(message.protocol)
+    ? 'It didn’t reach ' + (labels[message.protocol] || 'the service') + '.' : 'Your phone couldn’t send this text.', 'muted'));
+  const row = element('div', '', 'button-row wrap');
+  failedChoices(message, back).forEach(([label, run], index) => {
+    const button = element('button', label, index === 0 ? 'primary' : label === 'Delete' ? 'danger-button' : '');
+    button.type = 'button';
+    button.addEventListener('click', run);
+    row.append(button);
+  });
+  box.append(row);
+  if (!failedOnline(message) && !(typeof sampleOn !== 'undefined' && sampleOn)) {
+    box.append(element('p', 'Try again asks your phone to send it again. Texts are kept on your phone, so delete one there.', 'muted'));
+  }
+  detailsPage('Not delivered', [box], back);
 }
 
 // Touch and hold a message, or right-click it, to open its menu, like the phone's long-press. On touch screens
@@ -575,6 +754,8 @@ function showMessages(preserve = false) {
   conversation.replaceChildren();
   // A chat with a code asks for it before showing anything (chats.js).
   if (typeof chatLockGate === 'function' && chatLockGate(conversation)) return;
+  // A message request: Accept, Delete, Block, and Block and report spam at the top (requests.js).
+  if (typeof requestBanner === 'function') requestBanner(conversation, active);
   const history = threads.get(active) || [];
   let lastDay = '';
   let position = -1;
@@ -588,10 +769,16 @@ function showMessages(preserve = false) {
     if (messageDay !== lastDay) conversation.append(element('p', messageDay, 'day'));
     lastDay = messageDay;
     const outgoing = message.type !== 1;
-    if (message.event) { conversation.append(element('p', '— ' + message.body, 'event')); continue; }
+    if (message.event) {
+      // Joins, leaves, topic changes, and /whois replies: outlined notes, or hidden by choice (chat-commands.js).
+      const line = typeof chatEventLine === 'function' ? chatEventLine(message) : element('p', '— ' + message.body, 'event');
+      if (line) conversation.append(line);
+      continue;
+    }
     // Chat setting notices (disappearing messages, encryption), sent or received, are outlined notes like the phone's.
     if (notice(message)) {
-      const note = element('p', message.body + ' · ' + clock(timeOf(message)), 'event notice p-' + (message.protocol || 'sms'));
+      // Only the note: the line for people in other apps stays out of FluidMessages.
+      const note = element('p', chatNoticeLabel(parseChatNotice(message.body)) + ' · ' + clock(timeOf(message)), 'event notice p-' + (message.protocol || 'sms'));
       note.setAttribute('role', 'note');
       conversation.append(note);
       continue;
@@ -613,6 +800,8 @@ function showMessages(preserve = false) {
     else if (forwarded) bubble.append(quoteCard('Forwarded from ' + (forwarded[3] || forwarded[4]), forwarded[1] || forwarded[2]));
     else if (typeof formattedText === 'function') bubble.replaceChildren(formattedText(message.body));
     else bubble.textContent = message.body;
+    // "/me waves" as "* maya waves", and a mark on messages that mention you (chat-commands.js).
+    if (!quoted && !forwarded && typeof chatActionText === 'function') chatActionText(message, bubble, row);
     if (/^FM1:/.test(message.body || '')) {
       // FluidMessages encryption: only phones with the shared key can read it.
       bubble.textContent = '🔒 Encrypted with FluidMessages. Read it on your phone.';
@@ -649,14 +838,24 @@ function showMessages(preserve = false) {
       chips.setAttribute('aria-label', 'Reactions: ' + [...message.reactions.values()].join(' '));
       row.append(chips);
     }
-    const failed = message.type === 5 || (message.status || '').startsWith('Couldn’t send');
-    const status = failed ? ' · Not delivered' : [4, 6].includes(message.type) ? ' · Sending…' : message.status ? ' · ' + message.status : '';
+    const failed = failedMessage(message);
+    const status = failed ? '' : [4, 6].includes(message.type) ? ' · Sending…' : message.status ? ' · ' + message.status : '';
     if (failed) row.classList.add('failed');
     const meta = element('div', '', 'message-meta');
     if (message.earlier?.length) meta.append(element('small', 'Edited', 'message-time'));
     if (appearance.exactTimes || status) meta.append(element('small', clock(timeOf(message)) + status, 'message-time'));
     if (message.expires > Date.now()) meta.append(disappearTimer(message.expires));
     if (meta.children.length) row.append(meta);
+    if (failed) {
+      // Like the phone's red Not delivered notice: tap it to try again, edit and resend, or delete.
+      const notice = element('button', 'Not delivered · Tap to resend or edit', 'failed-notice');
+      notice.type = 'button';
+      notice.setAttribute('aria-label', 'Not delivered. Resend or edit this message');
+      notice.addEventListener('click', () => openFailedMessage(message));
+      row.append(notice);
+      const reason = failedReason(message);
+      if (reason) row.append(element('small', reason, 'failed-reason'));
+    }
     conversation.append(row);
     // New reactions since this chat was last drawn get a short animation: the newest one, not one per reaction.
     for (const [sender, emoji] of message.reactions) {
@@ -672,7 +871,7 @@ function showMessages(preserve = false) {
   if (!history.length && get('schedule').hidden) conversation.append(emptyThreadPane());
   // Touch screens have no ⋯ beside each bubble, so the first chat says once how to reach a message's menu.
   if (history.length && matchMedia('(hover: none)').matches && !localStorage.getItem('pressHint')) {
-    conversation.append(element('p', 'Touch and hold a message to react, reply, or copy it.', 'press-hint'));
+    conversation.append(element('p', 'Swipe a message right to reply. Touch and hold it to react or copy it.', 'press-hint'));
   }
   conversation.scrollTop = preserve && !atEnd ? scrollTop : conversation.scrollHeight;
   conversation.dataset.atEnd = String(!preserve || atEnd);
@@ -789,6 +988,8 @@ function select(key) {
   if (typeof updateCallButtons === 'function') updateCallButtons();
   // The bell with a slash beside the lock, while this chat or its server is muted (chats.js).
   if (typeof updateMuteMark === 'function') updateMuteMark();
+  // "From: alice@example.org" while this service has more than one account (servers.js).
+  if (typeof updateFromLine === 'function') updateFromLine();
 }
 
 // Opening an internet conversation reads it everywhere. Texts are marked read when you open them on the phone.
@@ -850,6 +1051,9 @@ function threadButton(key, messages, showTags) {
     }
     copy.append(tags);
   }
+  // A tiny hint of the account, for a chat on another account than the service's first (servers.js).
+  const hint = !sampleOn && typeof inboxAccountHint === 'function' && typeof routeFor === 'function' ? inboxAccountHint(routeFor(key), chatAccounts) : '';
+  if (hint) (copy.querySelector('.tags') || copy).append(element('span', 'from ' + hint, 'account-hint'));
   const meetingLine = (typeof meetingPreview === 'function' ? meetingPreview(message.body || '') : null)
     || (typeof cardPreview === 'function' ? cardPreview(message.body || '') : null);
   copy.append(element('small', /^FM1:/.test(message.body || '') ? '🔒 Encrypted with FluidMessages' : meetingLine || message.body));
@@ -889,7 +1093,10 @@ function showThreads() {
   // Channels and rooms joined on a server show straight away, before their first message (servers.js).
   const joinedEmpty = typeof emptyServerRows === 'function' ? emptyServerRows((key) => !!threads.get(key)?.length) : [];
   const rows = [...[...threads].filter(([address, messages]) => messages.length), ...joinedEmpty].filter(([address, messages]) => {
-    const place = {blocked: !!selected.blocked?.includes(threadAddress(address)), archived: !!selected.archived?.includes(threadAddress(address)),
+    // Requests and automated senders (requests.js): where each goes, and automated senders that are blocked.
+    const asks = typeof requestPlace === 'function' && messages.length ? requestPlace(address, messages) : {};
+    const place = {...asks, blocked: !!selected.blocked?.includes(threadAddress(address)) || !!asks.automatedBlocked,
+      archived: !!selected.archived?.includes(threadAddress(address)),
       // Private chats show only in the Private folder, and only once this session has opened it.
       hidden: typeof privateFolderHas === 'function' && privateFolderHas(threadAddress(address))};
     const placed = typeof inboxFilterPlaces === 'function' ? inboxFilterPlaces(scope, selection.filter, place)
@@ -973,7 +1180,7 @@ async function refresh() {
   if (currentSession !== session || request !== refreshNumber) return;
   // Redraws when anything changed: a phone sync, new or updated internet messages, or the settings.
   const look = JSON.stringify([snapshot.appearance, snapshot.follow_phone, snapshot.web_appearance, snapshot.routes, snapshot.messages,
-    snapshot.prefs, snapshot.accounts, snapshot.web_chats, snapshot.web_favorites]);
+    snapshot.prefs, snapshot.accounts, snapshot.web_chats, snapshot.web_favorites, snapshot.invites, snapshot.channels, snapshot.connections]);
   welcomed = snapshot.welcomed !== false;
   if (!refreshed || updated !== snapshot.updated || look !== lastLook) {
     lastLook = look;
@@ -998,6 +1205,7 @@ async function refresh() {
     rebuildThreads();
     showThreads();
     showMessages(true);
+    if (typeof updateFromLine === 'function') updateFromLine();
     // Favorites, and the Calls tab when it's open (people.js).
     if (typeof noticePeople === 'function') noticePeople(snapshot);
     refreshed = true;
@@ -1025,7 +1233,12 @@ function say(text, sticky = false) {
   if (!sticky && text) statusTimer = setTimeout(() => { if (line.textContent === text) line.textContent = ''; }, 4000);
 }
 
+// True while sending a line typed with a leading // (sent as written, never read as a command).
+let sendLiteral = false;
+
 async function send(body, text, relation, due = Date.now(), attachment) {
+  // Replying to a message request accepts it (requests.js).
+  if (typeof acceptOnReply === 'function') acceptOnReply(active);
   if (typeof sampleSend === 'function' && sampleSend(body, attachment)) return;
   const protocol = threadProtocol(active);
   if (!internet(protocol)) return queueSms(body, threadAddress(active), due);
@@ -1033,7 +1246,7 @@ async function send(body, text, relation, due = Date.now(), attachment) {
   const request = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
   await api('protocols/send', {address: threadAddress(active), protocol, body, text: text || body, request,
     relation: relation && relation.target ? relation : undefined, due: due > Date.now() + 30000 ? due : undefined,
-    attachment: attachment || undefined});
+    attachment: attachment || undefined, literal: sendLiteral || undefined});
   if (currentSession !== session) return;
   say(due > Date.now() + 30000 ? 'Scheduled for ' + new Date(due).toLocaleString() + '.' : 'Sending…');
   refresh().catch(() => setSyncStatus('Sync unavailable', true));
@@ -1060,7 +1273,7 @@ function saveBlob(blob, name) {
 async function queueSms(body, address, due) {
   if (typeof sampleSend === 'function' && sampleSend(body)) return;
   const currentSession = session;
-  await api('schedule', {address, body, due});
+  await api('schedule', {address, body, due, literal: sendLiteral || undefined});
   if (currentSession !== session) return;
   say(due > Date.now() + 30000 ? 'Scheduled. Your phone sends it after ' + new Date(due).toLocaleString() + '.'
     : phonePaired() ? 'Queued for your phone.' : 'Waiting for your phone. Connect it in Settings to send texts.');
@@ -1223,8 +1436,17 @@ get('schedule').addEventListener('submit', async (event) => {
   event.preventDefault();
   const currentSession = session;
   const address = get('address').value.trim();
-  const draft = get('body').value;
+  let draft = get('body').value;
   const current = active;
+  // Slash commands in IRC, Matrix, and XMPP chats; // sends a line that starts with / as written (chat-commands.js).
+  const typed = typeof chatCommandDraft === 'function' ? await chatCommandDraft(draft) : {text: draft};
+  if (currentSession !== session) return;
+  if (typed.handled) {
+    if (typed.clear && current === active) { get('body').value = ''; drafts.delete(current); }
+    return;
+  }
+  draft = typed.text;
+  sendLiteral = !!typed.literal;
   // A chosen effect rides along with the next message: "words\n(sent with Confetti 🎉)".
   const effect = typeof composerEffect === 'function' ? composerEffect() : null;
   const withEffect = (text) => effect ? effectText(text, effect) : text;
@@ -1250,6 +1472,7 @@ get('schedule').addEventListener('submit', async (event) => {
   } catch (error) {
     if (currentSession === session) showError(error);
   } finally {
+    sendLiteral = false;
     if (currentSession === session) get('send').disabled = false;
   }
 });

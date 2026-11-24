@@ -22,14 +22,19 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 private data class Field(val key: String, val label: String, val hint: String = "", val secret: Boolean = false,
-                         val number: Boolean = false, val optional: Boolean = false)
+                         val number: Boolean = false, val optional: Boolean = false, val help: String = "",
+                         val default: String = "")
 
 /** Account forms, matching the companion's account fields. Matrix asks for a password once, then keeps a token. */
 private val forms = mapOf(
     MessageProtocol.EMAIL to listOf(
         Field("address", "Email address", "you@example.org"),
         Field("imap_host", "Incoming mail (IMAP) server", "imap.example.org"),
+        Field(EmailPorts.IMAP_KEY, "IMAP port", EmailPorts.IMAP.toString(), number = true, help = EmailPorts.IMAP_HINT,
+            default = EmailPorts.IMAP.toString()),
         Field("smtp_host", "Outgoing mail (SMTP) server", "smtp.example.org"),
+        Field(EmailPorts.SMTP_KEY, "SMTP port", EmailPorts.SMTP.toString(), number = true, help = EmailPorts.SMTP_HINT,
+            default = EmailPorts.SMTP.toString()),
         Field("imap_user", "Username", "Usually your email address", optional = true),
         Field("imap_password", "Password or app password", secret = true),
         Field("poll_minutes", "Check for mail every … minutes", "1, 5, 15, 30, or 60", number = true, optional = true),
@@ -51,6 +56,7 @@ private val forms = mapOf(
         Field("nick", "Nickname"),
         Field("sasl_user", "SASL account", "Leave blank to use your nickname", optional = true),
         Field("sasl_password", "SASL password", secret = true, optional = true),
+        Field("nickserv_password", "NickServ password", "Identifies on connect when SASL isn’t used", secret = true, optional = true),
         Field("channels", "Channels", "#example, #another", optional = true),
     ),
 )
@@ -59,7 +65,7 @@ private val notes = mapOf(
     MessageProtocol.EMAIL to "Only conversations you link to a contact appear in FluidMessages. Other email stays in your mail app. Each message you send ends with “Sent with FluidMessages”.",
     MessageProtocol.MATRIX to "Rooms appear when you link them to a contact or group. Through FluidMessages Web, encrypted rooms work: it becomes one of your Matrix devices and decrypts them. From this phone, only unencrypted rooms can be read and sent to.",
     MessageProtocol.XMPP to "One-to-one chats and group chats you link appear here. OMEMO encryption isn’t supported, so XMPP shows as encrypted in transit only.",
-    MessageProtocol.IRC to "FluidMessages connects with TLS only. Channels listed here appear in your inbox; direct messages appear for nicks you link.",
+    MessageProtocol.IRC to "FluidMessages connects with TLS only. Channels listed here appear in your inbox, and anyone who messages you, including bots like NickServ, gets a chat of their own. If FluidMessages Web already connects to this network, use its connection: it stays online like a bouncer, and the phone won’t open a second one with the same nick.",
 )
 
 /** What the account form is showing: an account to edit, or a new one to add (optionally pre-filled). */
@@ -200,7 +206,8 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
                 put(field.key, when (value) {
                     is JSONArray -> (0 until value.length()).joinToString(", ") { value.optString(it) }
                     is String, is Number -> value.toString()
-                    else -> ""
+                    // Ports start filled in, for new accounts and ones saved before they could be changed.
+                    else -> field.default
                 })
             }
         }
@@ -256,6 +263,7 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
             OutlinedTextField(values[field.key].orEmpty(), { values[field.key] = it }, Modifier.fillMaxWidth(),
                 enabled = !readOnly && !busy, singleLine = true, label = { Text(field.label + if (field.optional) " (optional)" else "") },
                 placeholder = { Text(if (field.secret && isSet) "Saved · leave blank to keep" else if (field.key == "jid" && xmppDomain != null) "you" else field.hint) },
+                supportingText = if (field.help.isNotEmpty()) ({ Text(field.help) }) else null,
                 suffix = if (field.key == "jid" && xmppDomain != null && !values[field.key].orEmpty().contains('@')) ({ Text("@$xmppDomain") }) else null,
                 visualTransformation = if (field.secret) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
                 keyboardOptions = KeyboardOptions(keyboardType = when {
@@ -289,6 +297,8 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
                                 val fields = JSONObject()
                                 for ((key, value) in values) if (value.isNotBlank() && key != "password" || key == "password" && protocol != MessageProtocol.MATRIX && value.isNotBlank()) {
                                     when (key) {
+                                        EmailPorts.IMAP_KEY, EmailPorts.SMTP_KEY -> fields.put(key, EmailPorts.parse(value)
+                                            ?: throw IllegalArgumentException("Enter ${if (key == EmailPorts.IMAP_KEY) "an IMAP" else "an SMTP"} port from 1 to 65535."))
                                         "port", "poll_minutes" -> fields.put(key, value.trim().toInt())
                                         "channels" -> fields.put(key, JSONArray(value.split(",").map { it.trim() }.filter { it.isNotEmpty() }))
                                         "jid" -> fields.put(key, ServerDirectory.xmppAddress(value, xmppDomain))

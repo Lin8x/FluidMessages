@@ -26,12 +26,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.function.IntConsumer
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.delay
 
 object OnboardingScreen {
     @JvmStatic
-    fun mount(root: LinearLayout, prefs: SharedPreferences, step: Int, next: Runnable, back: Runnable,
+    fun mount(root: LinearLayout, prefs: SharedPreferences, shownStep: Int, next: Runnable, back: Runnable,
               skip: Runnable, sample: Runnable, inbox: Runnable, recolor: IntConsumer, accounts: Runnable,
-              web: Runnable, learnWeb: Runnable, backups: Runnable) {
+              web: Runnable, learnWeb: Runnable, backups: Runnable,
+              allowNotifications: Runnable) {
+        // A step saved by an older version with a different number of steps still opens a real step.
+        val step = shownStep.coerceIn(0, steps.lastIndex)
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -72,9 +78,11 @@ object OnboardingScreen {
                             "welcome" -> item { SampleConversation(appearance) }
                             "tabs" -> {
                                 item { TabsIllustration(appearance.speed) }
+                                item { NewContactShowcase(appearance) }
                                 item {
                                     Tips(listOf(
                                         Tip(TipIcon.PHONE, "Phone", "Calls, favorites, contacts, keypad"),
+                                        Tip(TipIcon.PEOPLE, "Add contacts here", "Phone → Contacts → +. They save to your phone’s contacts, so other apps see them too"),
                                         Tip(TipIcon.CHAT, "Messages", "Every chat in one place"),
                                         Tip(TipIcon.PRACTICE, "Practice first", "Settings → Help → Sample inbox")), appearance.speed)
                                 }
@@ -86,6 +94,26 @@ object OnboardingScreen {
                                         Tip(TipIcon.CHAT, "Texts work right away", "Using your phone plan"),
                                         Tip(TipIcon.TAG, "Tags show how", "SMS, Matrix, Email, and more"),
                                         Tip(TipIcon.PEOPLE, "More ways? We ask", "Pick how to reach someone each time")), appearance.speed)
+                                }
+                            }
+                            "communities" -> {
+                                item { CommunitiesShowcase(appearance) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.CHAT, "Chats | Communities", "The switch under the Messages title"),
+                                        Tip(TipIcon.FOLDER, "One section per server", "IRC networks, Matrix homeservers, and XMPP servers. Tap a server to fold it"),
+                                        Tip(TipIcon.PEOPLE, "Browse and join", "A server’s ⋯ menu, or + Add server at the bottom"),
+                                        Tip(TipIcon.OPTIONAL, "In Chats too, if you like", "Settings → Messaging → Show community chats in Chats")), appearance.speed)
+                                }
+                            }
+                            "organized" -> {
+                                item { StayOrganizedShowcase(appearance) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.TAG, "Filters", "The filter button at the top corner: Unread, Favorites, Groups, Direct messages, and each service"),
+                                        Tip(TipIcon.OPTIONAL, "Pick your filters", "Settings → Messaging → Inbox filters, in any order"),
+                                        Tip(TipIcon.TIMER, "Mute for a while", "Touch and hold a chat → Mute. The bell shows until when, then it unmutes by itself"),
+                                        Tip(TipIcon.FOLDER, "Mute a whole server", "A server’s ⋯ menu in Communities")), appearance.speed)
                                 }
                             }
                             "locks" -> {
@@ -110,11 +138,13 @@ object OnboardingScreen {
                             }
                             "disappear" -> {
                                 item { DisappearingIllustration(appearance.speed) }
+                                item { SettingNoticeShowcase(appearance) }
                                 item {
                                     Tips(listOf(
                                         Tip(TipIcon.TIMER, "For one chat", "A chat’s ⋯ menu → Disappearing messages"),
                                         Tip(TipIcon.OPTIONAL, "For every chat", "Settings → Privacy and security"),
-                                        Tip(TipIcon.CHAT, "Older messages stay", "Only new messages disappear")), appearance.speed)
+                                        Tip(TipIcon.CHAT, "Older messages stay", "Only new messages disappear"),
+                                        Tip(TipIcon.PEOPLE, "They’re told", "Changing the timer or encryption sends a short note. Turn it off with Announce chat setting changes")), appearance.speed)
                                 }
                             }
                             "calls" -> {
@@ -146,11 +176,12 @@ object OnboardingScreen {
                                 }
                             }
                             "computer" -> {
-                                item { ComputerIllustration(appearance.speed) }
+                                item { LinkWebShowcase(appearance) }
                                 item {
                                     Tips(listOf(
                                         Tip(TipIcon.LAPTOP, "Set it up", "Connect this phone to FluidMessages Web") { web.run() },
-                                        Tip(TipIcon.PRACTICE, "How it works", "Step-by-step setup guide, opens in your browser") { learnWeb.run() },
+                                        Tip(TipIcon.PRACTICE, "Choose what to keep", "If both changed a setting, pick the phone’s or the web’s, one by one or all at once"),
+                                        Tip(TipIcon.CHAT, "How it works", "Step-by-step setup guide, opens in your browser") { learnWeb.run() },
                                         Tip(TipIcon.OPTIONAL, "Not needed", "Your phone works on its own. Skip this if you like.")), appearance.speed)
                                 }
                             }
@@ -179,9 +210,7 @@ object OnboardingScreen {
                                     if (appearance.classic) Text("Automated uses purple so it stays distinct.", color = scheme.onSurfaceVariant,
                                         style = MaterialTheme.typography.bodySmall)
                                 }
-                            }
-                            "motion" -> {
-                                item { MotionIllustration(appearance.speed) }
+                                // Motion is part of the look, as in Settings → Themes and appearance. Off shows still pictures here too.
                                 item {
                                     ThemeDropdown("Motion preset", appearance.speed.toString(),
                                         listOf(Choice("0", "Off"), Choice("130", "Quick"), Choice("220", "Standard"),
@@ -191,7 +220,23 @@ object OnboardingScreen {
                                         appearance = Appearance.read(prefs)
                                     }
                                 }
-                                item { FeedbackOptions(prefs, appearance.speed) }
+                            }
+                            "sounds" -> {
+                                item { NotificationsShowcase(appearance) }
+                                item { NotificationsCard(allowNotifications) }
+                                item {
+                                    PreferencesCard("Sounds and haptics") {
+                                        Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            ToneDropdown(prefs, receive = true, appearance.speed)
+                                            FeedbackOptions(prefs, appearance.speed)
+                                        }
+                                    }
+                                }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.TIMER, "Quiet for a while", "Mute a chat or a whole server, and its notifications wait"),
+                                        Tip(TipIcon.OPTIONAL, "Change it later", "Settings → Sounds and notifications")), appearance.speed)
+                                }
                             }
                             "backup" -> {
                                 item { BackupIllustration(appearance.speed) }
@@ -239,23 +284,59 @@ object OnboardingScreen {
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
     }
 
-    private val steps = listOf(
-        Triple("welcome", "Welcome", "Your texts, calls, and chats, all in one place."),
-        Triple("tabs", "Two tabs", "Phone on the left. Messages on the right."),
-        Triple("ways", "One inbox", "Texts and other chat apps, side by side."),
-        Triple("locks", "Who can read it?", "Every chat shows a small lock."),
-        Triple("protect", "Keep chats private", "Lock the app, a chat, or tuck chats away."),
-        Triple("disappear", "Disappearing messages", "Messages can remove themselves after a while."),
-        Triple("more", "More than text", "Polls, events, games, money, and more, right in a chat."),
-        Triple("gestures", "Quick moves", "A few gestures that make chatting faster."),
-        Triple("colors", "Pick your colors", "Choose a look and preview your bubbles. You can change it any time."),
-        Triple("motion", "Motion, sound and haptics", "Decide how a message should feel when it arrives or sends."),
-        Triple("backup", "Keep a backup", "Save your messages and settings to a file, so you don’t lose them if you change phones. Backups are password-protected."),
-        Triple("computer", "On a computer too", "Optional. Set it up later if you like."),
-        Triple("services", "Chat services", "Texts work right away. Turn on the other chat services you use, and sign in when you’re ready."),
-        Triple("calls", "Calls", "Call from the Phone tab or from a chat. Turn on the ways to call you want."),
-        Triple("ready", "You’re ready", "Practice with pretend chats first, or open your real inbox. RCS (the newer texting standard) isn’t available in FluidMessages yet."),
-    )
+    private val steps get() = onboardingSteps
+}
+
+/**
+ * The setup guide's pages, in order: (key, title, subtitle). Titles match FluidMessages Web's setup guide
+ * (server/welcome.js) where both have the page, so the two read the same.
+ */
+internal val onboardingSteps: List<Triple<String, String, String>> = listOf(
+    Triple("welcome", "Welcome", "Your texts, calls, and chats, all in one place."),
+    Triple("tabs", "Two tabs", "Phone on the left. Messages on the right."),
+    Triple("ways", "One inbox", "Texts and other chat apps, side by side."),
+    Triple("communities", "Communities", "Chat networks with many rooms, each server with its channels, a tap away from your chats."),
+    Triple("organized", "Stay organized", "Filters, unread, and mutes keep a busy inbox calm."),
+    Triple("locks", "Who can read it?", "Every chat shows a small lock."),
+    Triple("protect", "Keep chats private", "Lock the app, a chat, or tuck chats away."),
+    Triple("disappear", "Disappearing messages", "Messages can remove themselves after a while."),
+    Triple("more", "More than text", "Polls, events, games, money, and more, right in a chat."),
+    Triple("gestures", "Quick moves", "A few gestures that make chatting faster."),
+    Triple("colors", "Pick your colors", "Choose a look and preview your bubbles. You can change it any time."),
+    Triple("sounds", "Sounds and notifications", "Hear and see new messages, even when FluidMessages is closed."),
+    Triple("backup", "Keep a backup", "Save your messages and settings to a file, so you don’t lose them if you change phones. Backups are password-protected."),
+    Triple("computer", "On a computer too", "Optional. Link FluidMessages Web to read and reply from a browser. Set it up later if you like."),
+    Triple("services", "Chat services", "Texts work right away. Turn on the other chat services you use, and sign in when you’re ready."),
+    Triple("calls", "Calls", "Call from the Phone tab or from a chat. Turn on the ways to call you want."),
+    Triple("ready", "You’re ready", "Practice with pretend chats first, or open your real inbox. RCS (the newer texting standard) isn’t available in FluidMessages yet."),
+)
+
+/**
+ * Notifications in the setup guide: whether Android shows them, Allow notifications (Android's prompt), and a real
+ * test notification. The status is read again every moment, so it follows Android's prompt and settings.
+ */
+@Composable
+private fun NotificationsCard(allow: Runnable) {
+    val scheme = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    var status by remember { mutableStateOf(SmsDelivery.status(context)) }
+    var sent by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { while (true) { delay(1_200); status = SmsDelivery.status(context) } }
+    PreferencesCard("Notifications") {
+        PreferenceText(status.label, status.detail)
+        Column(Modifier.padding(start = 15.dp, end = 15.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Android 13 and later ask for POST_NOTIFICATIONS; after a refusal this opens the app's notification settings.
+            if (!status.allowed) AppButton(onClick = allow::run, modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp)) {
+                Text("Allow notifications")
+            }
+            OutlinedButton(onClick = {
+                sent = if (SmsDelivery.notifyTest(context)) "Sent. Pull down the notification shade to see it."
+                    else "Not shown: notifications are blocked. Tap Allow notifications first."
+            }, modifier = Modifier.fillMaxWidth()) { Text("Send a test notification") }
+            Text(sent ?: "Posts a made-up message the way a real one arrives, with the same sound and lock screen setting.",
+                color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
+    }
 }
 
 @Composable

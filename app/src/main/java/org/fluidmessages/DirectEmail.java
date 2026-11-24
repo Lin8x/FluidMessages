@@ -59,14 +59,19 @@ final class DirectEmail implements DirectProtocols.DirectClient {
         properties.put("mail.imaps.ssl.checkserveridentity", "true");
         properties.put("mail.imaps.connectiontimeout", "15000");
         properties.put("mail.imaps.timeout", "30000");
+        // IMAP on 143 must upgrade with STARTTLS; any other port uses TLS from the start (EmailPorts).
+        properties.put("mail.imap.starttls.enable", "true");
+        properties.put("mail.imap.starttls.required", "true");
+        properties.put("mail.imap.ssl.checkserveridentity", "true");
+        properties.put("mail.imap.connectiontimeout", "15000");
+        properties.put("mail.imap.timeout", "30000");
         properties.put("mail.smtp.connectiontimeout", "15000");
         properties.put("mail.smtp.timeout", "30000");
-        int port = account.optInt("smtp_port", 465);
-        if (port == 465) {
+        if (!EmailPorts.smtpStartTls(smtpPort())) {
             properties.put("mail.smtp.ssl.enable", "true");
             properties.put("mail.smtp.ssl.checkserveridentity", "true");
         } else {
-            // Port 587 must upgrade with STARTTLS; FluidMessages never sends a password over plain text.
+            // Other ports, like 587, must upgrade with STARTTLS; FluidMessages never sends a password over plain text.
             properties.put("mail.smtp.starttls.enable", "true");
             properties.put("mail.smtp.starttls.required", "true");
             properties.put("mail.smtp.ssl.checkserveridentity", "true");
@@ -75,10 +80,16 @@ final class DirectEmail implements DirectProtocols.DirectClient {
         return Session.getInstance(properties);
     }
 
+    /** Saved ports, or the defaults for accounts saved before ports could be changed. */
+    private int imapPort() { return EmailPorts.orDefault(account.optInt(EmailPorts.IMAP_KEY, EmailPorts.IMAP), EmailPorts.IMAP); }
+
+    private int smtpPort() { return EmailPorts.orDefault(account.optInt(EmailPorts.SMTP_KEY, EmailPorts.SMTP), EmailPorts.SMTP); }
+
     @Override public synchronized void poll(Context context) throws Exception {
         var routes = DirectProtocols.routes(DirectProtocols.prefs(context));
-        var store = session().getStore("imaps");
-        store.connect(account.getString("imap_host"), account.optInt("imap_port", 993),
+        int imapPort = imapPort();
+        var store = session().getStore(EmailPorts.imapStartTls(imapPort) ? "imap" : "imaps");
+        store.connect(account.getString("imap_host"), imapPort,
             account.optString("imap_user", account.getString("address")), account.getString("imap_password"));
         try {
             Folder inbox = store.getFolder(account.optString("folder", "INBOX"));
@@ -248,7 +259,7 @@ final class DirectEmail implements DirectProtocols.DirectClient {
         String messageId = mail.getMessageID();
         var transport = session.getTransport("smtp");
         try {
-            transport.connect(account.getString("smtp_host"), account.optInt("smtp_port", 465),
+            transport.connect(account.getString("smtp_host"), smtpPort(),
                 account.optString("smtp_user", account.optString("imap_user", account.getString("address"))),
                 account.optString("smtp_password", account.getString("imap_password")));
             transport.sendMessage(mail, mail.getAllRecipients());

@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -597,8 +596,9 @@ internal fun lichessGame(white: Boolean): Pair<String, String>? = runCatching {
 }.getOrNull()
 
 // Chat setting notices: "⏱️ Disappearing messages are on. New messages disappear after 1 day." and
-// "🔒 Messages in this chat are now encrypted with FluidMessages." Plain text for any app; FluidMessages shows an
-// outlined note instead of a bubble. server/cards.js parses the same sentences.
+// "🔒 Messages in this chat are now encrypted with FluidMessages." Plain text for any app, with a short second
+// paragraph for people reading in another app; FluidMessages shows only the first line as an outlined note instead
+// of a bubble. Older notices had no second paragraph, and both read the same. server/cards.js parses the same text.
 
 internal sealed class ChatNotice {
     /** Disappearing messages; 0 means off. */
@@ -606,31 +606,52 @@ internal sealed class ChatNotice {
     data class Encryption(val on: Boolean) : ChatNotice()
 }
 
+internal const val FLUID_LINK = "https://github.com/Lin8x/FluidMessages"
 private val timerOnPattern = Regex("""^⏱️? Disappearing messages are on\. New messages disappear after (\d{1,4}) (second|minute|hour|day|week)s?\.$""")
 private val timerOffPattern = Regex("""^⏱️? Disappearing messages are off\.$""")
 private const val ENCRYPTED_NOTICE = "🔒 Messages in this chat are now encrypted with FluidMessages."
 private const val UNENCRYPTED_NOTICE = "🔓 Messages in this chat are no longer encrypted with FluidMessages."
 private val unitSeconds = mapOf("second" to 1, "minute" to 60, "hour" to 3600, "day" to 86400, "week" to 7 * 86400)
 
-internal fun chatNoticeText(notice: ChatNotice): String = when (notice) {
+/** The line for people who read the notice in another app. FluidMessages never shows it. */
+internal fun chatNoticeFooter(notice: ChatNotice): String = when (notice) {
+    is ChatNotice.Timer -> if (notice.seconds <= 0) "Sent by FluidMessages. Install it to see this chat the way it's meant to be seen: $FLUID_LINK"
+        else "Sent by FluidMessages. Your app may keep these messages. Install FluidMessages to have them disappear too: $FLUID_LINK"
+    is ChatNotice.Encryption -> if (notice.on) "You'll need FluidMessages to read encrypted messages: $FLUID_LINK"
+        else "Sent by FluidMessages. New messages in this chat are readable in any app again."
+}
+
+/** The note FluidMessages shows: the first line only. */
+internal fun chatNoticeLabel(notice: ChatNotice): String = when (notice) {
     is ChatNotice.Timer -> if (notice.seconds <= 0) "⏱️ Disappearing messages are off."
         else "⏱️ Disappearing messages are on. New messages disappear after ${Disappearing.label(notice.seconds)}."
     is ChatNotice.Encryption -> if (notice.on) ENCRYPTED_NOTICE else UNENCRYPTED_NOTICE
 }
 
+/** What is sent: the note, a blank line, and the line for other apps. */
+internal fun chatNoticeText(notice: ChatNotice): String = chatNoticeLabel(notice) + "\n\n" + chatNoticeFooter(notice)
+
 internal fun timerNoticeText(seconds: Int) = chatNoticeText(ChatNotice.Timer(seconds.coerceAtLeast(0)))
 
 internal fun encryptionNoticeText(on: Boolean) = chatNoticeText(ChatNotice.Encryption(on))
 
-internal fun parseChatNotice(text: String): ChatNotice? {
-    val clean = text.trim()
-    if (clean == ENCRYPTED_NOTICE) return ChatNotice.Encryption(true)
-    if (clean == UNENCRYPTED_NOTICE) return ChatNotice.Encryption(false)
-    if (timerOffPattern.matches(clean)) return ChatNotice.Timer(0)
-    val match = timerOnPattern.matchEntire(clean) ?: return null
+/** The first line of a notice; old notices (no second paragraph) and new ones read the same. */
+private fun parseNoticeLine(line: String): ChatNotice? {
+    if (line == ENCRYPTED_NOTICE) return ChatNotice.Encryption(true)
+    if (line == UNENCRYPTED_NOTICE) return ChatNotice.Encryption(false)
+    if (timerOffPattern.matches(line)) return ChatNotice.Timer(0)
+    val match = timerOnPattern.matchEntire(line) ?: return null
     val seconds = match.groupValues[1].toInt() * unitSeconds.getValue(match.groupValues[2])
     return if (seconds > 0) ChatNotice.Timer(seconds) else null
 }
 
-/** Whether a message is a chat setting notice, which is always sent as plain text. */
+internal fun parseChatNotice(text: String): ChatNotice? {
+    val clean = text.trim().replace("\r\n", "\n")
+    val split = clean.indexOf('\n')
+    val notice = parseNoticeLine(if (split < 0) clean else clean.substring(0, split).trim()) ?: return null
+    if (split < 0) return notice
+    // Anything after the first line must be this notice's own line for other apps, so a reply that quotes one isn't taken for it.
+    return if (clean.substring(split).trim() == chatNoticeFooter(notice)) notice else null
+}
+
 internal fun isChatNotice(text: String?) = text != null && parseChatNotice(text) != null

@@ -34,6 +34,8 @@ Open `http://localhost:8080` on the same computer. It opens straight into a shor
 
 Optional accounts and backup destinations can be set in `.env`. See the variables in [compose.yaml](../compose.yaml). Accounts set there show as read-only in the app.
 
+For an email account, `FLUID_EMAIL_IMAP_PORT` and `FLUID_EMAIL_SMTP_PORT` are optional and default to 993 and 465. Both use TLS from the start on those ports. IMAP on 143 and SMTP on any other port (such as 587) upgrade with STARTTLS, and the connection stops if the server doesn't offer it. FluidMessages never sends mail or passwords in plain text. Ports must be from 1 to 65535. The same **IMAP port** and **SMTP port** fields are in the email account form on the phone and on FluidMessages Web.
+
 ## Portainer
 
 1. In Portainer, open **Stacks → Add stack**.

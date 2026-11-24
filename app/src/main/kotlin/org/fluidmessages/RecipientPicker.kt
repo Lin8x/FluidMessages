@@ -66,6 +66,9 @@ internal class RecipientPicker(
     private val servers: List<ServerChannels>? = null,
     private val openChannel: BiConsumer<String, String>? = null,
     private val serverAction: BiConsumer<String, String>? = null,
+    /** New message's From: each service with more than one account, and the callback told the pick on Continue. */
+    private val fromAccounts: Map<MessageProtocol, List<SendAccount>> = emptyMap(),
+    private val fromPicked: BiConsumer<MessageProtocol, String>? = null,
 ) {
     var recipients by mutableStateOf(emptyList<Recipient>())
     var contactsAllowed by mutableStateOf(false)
@@ -93,6 +96,14 @@ internal class RecipientPicker(
                 val typed = typedNumbers.singleOrNull()
                 val addresses = remember(query) { addressOptions(query, available) }
                 val missing = remember(query) { addressOptions(query, needsAccount) }
+                // From follows the service of the address being messaged: the last one added, else the one typed.
+                val toAddress = selected.lastOrNull { internetAddress(it.address) != null }?.address ?: addresses.firstOrNull()?.encoded
+                val fromService = toAddress?.let(::internetAddress)
+                val fromChoices = fromService?.let { fromAccounts[it.first] }.orEmpty()
+                var fromChoice by remember { mutableStateOf(emptyMap<MessageProtocol, String>()) }
+                val fromId = fromService?.let { (protocol, network) ->
+                    fromChoice[protocol]?.takeIf { id -> fromChoices.any { it.id == id } } ?: FromAccount.preselect(fromChoices, network)
+                }.orEmpty()
                 fun toggle(recipient: Recipient) {
                     selected = if (selected.any { it.key == recipient.key }) selected.filterNot { it.key == recipient.key }
                         else selected + recipient
@@ -128,6 +139,9 @@ internal class RecipientPicker(
                                     trailingIcon = { Text("×", modifier = Modifier.padding(end = 3.dp)) })
                             }
                         }
+                    }
+                    if (fromService != null && FromAccount.shows(fromChoices)) FromRow(fromService.first, fromChoices, fromId) { id ->
+                        fromChoice = fromChoice + (fromService.first to id)
                     }
                     if (!contactsAllowed) TextButton(onClick = allowContacts::run) { Text("Allow contacts to search by name") }
                     LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -174,7 +188,10 @@ internal class RecipientPicker(
                         }
                     }
                     val recipientsToSend = selected.ifEmpty { typedNumbers }
-                    AppButton(onClick = { proceed.accept(recipientsToSend.map { it.address }) },
+                    AppButton(onClick = {
+                        if (fromService != null && fromId.isNotEmpty()) fromPicked?.accept(fromService.first, fromId)
+                        proceed.accept(recipientsToSend.map { it.address })
+                    },
                         enabled = recipientsToSend.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
                         Text(if (recipientsToSend.size > 1) "Continue with ${recipientsToSend.size} people" else "Continue")
                     }
@@ -183,6 +200,47 @@ internal class RecipientPicker(
             }
         }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+    }
+}
+
+/** An encoded internet recipient ("email:maya@example.org", "irc:riley@irc.libera.chat") as (protocol, IRC network). */
+internal fun internetAddress(encoded: String): Pair<MessageProtocol, String>? {
+    val match = Regex("^(matrix|xmpp|email|irc):(.+)$").matchEntire(encoded) ?: return null
+    val protocol = MessageProtocol.parse(match.groupValues[1])
+    val network = if (protocol == MessageProtocol.IRC) match.groupValues[2].substringAfter('@', "") else ""
+    return protocol to network
+}
+
+/**
+ * New message's From row, like a mail app's: which of your accounts on this service starts the chat. Tapping it lists
+ * every account with its service in place, under the row (no pop-up); the one used most recently is picked to begin with.
+ */
+@Composable
+private fun FromRow(protocol: MessageProtocol, accounts: List<SendAccount>, chosen: String, pick: (String) -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    var open by remember { mutableStateOf(false) }
+    val current = accounts.firstOrNull { it.id == chosen } ?: accounts.first()
+    Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(scheme.surfaceContainerLow)) {
+        Row(Modifier.fillMaxWidth()
+            .clickable(role = Role.Button, onClickLabel = "Choose the account to send from") { open = !open }
+            .padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("From", Modifier.width(52.dp), color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+            Column(Modifier.weight(1f)) {
+                Text(current.shown, color = scheme.onSurface, style = MaterialTheme.typography.bodyLarge, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+                Text(protocol.label, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(if (open) "▴" else "▾", color = scheme.primary, fontSize = 16.sp)
+        }
+        if (open) for (account in accounts) {
+            HorizontalDivider(Modifier.padding(start = 66.dp), color = scheme.outlineVariant)
+            Row(Modifier.fillMaxWidth().clickable(role = Role.RadioButton) { open = false; pick(account.id) }
+                .padding(start = 66.dp, end = 14.dp, top = 11.dp, bottom = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(FromAccount.choiceLabel(account, protocol.label), Modifier.weight(1f), color = scheme.onSurface,
+                    style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (account.id == current.id) Text("✓", color = scheme.primary)
+            }
+        }
     }
 }
 

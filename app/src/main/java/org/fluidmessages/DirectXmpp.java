@@ -256,6 +256,53 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
     /** Lets other FluidMessages apps remove the message on the same timer; other clients ignore it. */
     private static final String DISAPPEAR = "urn:fluidmessages:disappear:0";
 
+    /** /join, /part, /nick, /topic, /invite, and /msg from the phone's own XMPP connection. */
+    @Override public JSONObject command(Context context, JSONObject route, ChatCommand command) throws Exception {
+        var current = connection;
+        if (current == null || !current.isAuthenticated()) throw new IllegalStateException("XMPP isn’t connected yet");
+        var argv = command.getArgv();
+        String args = command.getArgs();
+        var result = new JSONObject().put("notice", "");
+        java.util.function.Supplier<MultiUserChat> here = () -> {
+            try { return MultiUserChatManager.getInstanceFor(current).getMultiUserChat(JidCreate.entityBareFrom(route.getString("target"))); }
+            catch (Exception error) { throw new IllegalStateException("Use this in a group chat"); }
+        };
+        switch (command.getName()) {
+            case "join", "msg", "query" -> {
+                boolean group = command.getName().equals("join");
+                String target = argv.get(0).toLowerCase(Locale.ROOT), text = group ? "" : args.substring(argv.get(0).length()).trim();
+                var existing = DirectProtocols.routeForTarget(context, MessageProtocol.XMPP, target);
+                if (existing == null) {
+                    DirectProtocols.link(context, "xmpp-" + hash(target), MessageProtocol.XMPP, target, group ? target.split("@", 2)[0] : target, group);
+                    existing = DirectProtocols.routeForTarget(context, MessageProtocol.XMPP, target);
+                }
+                if (!text.isEmpty()) DirectProtocols.send(context, existing.getString("address"), MessageProtocol.XMPP, text, text, null, null);
+                result.put("open", existing.getString("address"));
+            }
+            case "part" -> {
+                if (!route.optBoolean("group")) throw new IllegalArgumentException("Use /part in a group chat");
+                try { here.get().leave(); } catch (Exception ignored) {}
+                DirectProtocols.unlink(context, route.getString("address"), MessageProtocol.XMPP);
+                result.put("notice", "Left " + route.optString("title"));
+            }
+            case "nick" -> {
+                if (!route.optBoolean("group")) throw new IllegalArgumentException("Use /nick in a group chat");
+                here.get().changeNickname(Resourcepart.from(argv.get(0)));
+                result.put("notice", "Your nickname here is now " + argv.get(0));
+            }
+            case "topic" -> {
+                if (!route.optBoolean("group")) throw new IllegalArgumentException("Use /topic in a group chat");
+                if (args.isEmpty()) {
+                    String subject = here.get().getSubject();
+                    result.put("notice", subject == null || subject.isEmpty() ? "This group chat has no topic" : "Topic: " + subject);
+                } else here.get().changeSubject(args);
+            }
+            case "invite" -> { changeMember(context, route, true, argv.get(0)); result.put("notice", "Invited " + argv.get(0)); }
+            default -> throw new IllegalArgumentException("/" + command.getName() + " isn’t available on XMPP.");
+        }
+        return result;
+    }
+
     @Override public void changeMember(Context context, JSONObject route, boolean add, String member) throws Exception {
         var current = connection;
         if (current == null || !current.isAuthenticated()) throw new IllegalStateException("XMPP isn’t connected yet");

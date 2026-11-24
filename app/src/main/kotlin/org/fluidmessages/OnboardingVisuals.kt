@@ -303,33 +303,6 @@ internal fun ColorsIllustration(appearance: Appearance) {
     }
 }
 
-/** A message that springs in, with sound waves and a buzz, for motion, sound, and haptics. */
-@Composable
-internal fun MotionIllustration(speed: Int) {
-    val scheme = MaterialTheme.colorScheme
-    var shown by remember { mutableStateOf(true) }
-    LaunchedEffect(speed) { while (speed > 0) { delay(1800); shown = false; delay(350); shown = true } }
-    val offset by animateFloatAsState(if (shown) 0f else 60f,
-        if (speed == 0) snap() else spring(dampingRatio = .45f, stiffness = 320f), label = "Bubble spring")
-    val buzz by (if (speed == 0) remember { mutableFloatStateOf(0f) } else rememberInfiniteTransition(label = "Buzz")
-        .animateFloat(-3f, 3f, infiniteRepeatable(tween(70), RepeatMode.Reverse), label = "Buzz offset"))
-    Row(Modifier.fillMaxWidth().background(scheme.surfaceContainer, RoundedCornerShape(24.dp)).padding(18.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("New message!", Modifier.graphicsLayer { translationY = offset; alpha = 1f - offset / 80f }
-                .background(scheme.primary, RoundedCornerShape(18.dp)).padding(horizontal = 14.dp, vertical = 9.dp), color = scheme.onPrimary)
-        }
-        Canvas(Modifier.size(48.dp)) {
-            val stroke = 3.dp.toPx()
-            for (ring in 1..3) drawArc(scheme.primary.copy(alpha = if (shown) 1f / ring else .2f), -45f, 90f, false,
-                Offset(size.width * (.5f - ring * .16f), size.height * (.5f - ring * .16f)), Size(size.width * ring * .32f, size.height * ring * .32f),
-                style = Stroke(stroke))
-        }
-        Box(Modifier.padding(start = 10.dp).graphicsLayer { translationX = if (shown) buzz else 0f }.size(26.dp, 44.dp)
-            .border(3.dp, scheme.onSurfaceVariant, RoundedCornerShape(7.dp)))
-    }
-}
-
 /** Your phone, sending a locked backup file to a folder or the cloud. */
 @Composable
 internal fun BackupIllustration(speed: Int) {

@@ -293,7 +293,7 @@ advance_setup() {
 }
 
 if "$expect_onboarding"; then
-    wait_visible "Make it yours" && wait_visible "Step 1 of 6" ||
+    wait_visible "Welcome" && wait_visible "Step 1 of 17" ||
         fail "A fresh install did not start on the first onboarding page."
 fi
 first_ui="$(ui)"
@@ -382,8 +382,12 @@ else
 fi
 "${device[@]}" shell input keyevent KEYCODE_BACK
 "${device[@]}" shell input keyevent KEYCODE_BACK
-tap_label "Replay setup guide" || fail "Could not open the setup guide."
-setup_pages=("Make it yours" "Pick your colors" "Motion, sound and haptics" "Keep a backup" "Privacy and the web" "Choose your protocols" "Ready to text")
+# Settings → Help → Setup guide (older builds called it "Replay setup guide").
+tap_label "Setup guide" || tap_label "Replay setup guide" || fail "Could not open the setup guide."
+# The guide's 17 pages, in order (onboardingSteps in OnboardingScreen.kt).
+setup_pages=("Welcome" "Two tabs" "One inbox" "Communities" "Stay organized" "Who can read it?" "Keep chats private"
+    "Disappearing messages" "More than text" "Quick moves" "Pick your colors" "Sounds and notifications" "Keep a backup"
+    "On a computer too" "Chat services" "Calls" "You’re ready")
 wait_visible "${setup_pages[0]}" || fail "The first setup page did not render."
 for (( index = 1; index < ${#setup_pages[@]}; index++ )); do
     before="${setup_pages[index - 1]}"
