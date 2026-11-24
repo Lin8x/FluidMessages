@@ -162,3 +162,15 @@ footer img { border-radius: 6px; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .js .reveal { opacity: 1; transform: none; }
 }
+
+/* Texting story additions */
+.center-title { text-align: center; margin: 1rem 0 1.6rem; }
+.story h2.center-title:not(:first-child) { margin-top: 1rem; }
+.grid.problems { margin: 2rem 0 0; }
+.grid.problems .icon { background: color-mix(in srgb, #e0353f 13%, transparent); }
+.story .grid { margin-bottom: 2rem; }
+.cherry { display: flex; gap: 1rem; align-items: flex-start; text-align: left; max-width: 46rem; margin: 3rem auto 0; padding: 1.4rem 1.6rem;
+  border-radius: 22px; border: 1px dashed color-mix(in srgb, var(--green) 55%, var(--line)); background: var(--surface); }
+.cherry h3 { margin: 0 0 .3rem; }
+.cherry p { margin: 0; color: var(--muted); }
+.cherry .icon { flex: none; }

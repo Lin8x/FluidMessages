@@ -1,77 +1,49 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-label="Animated: one phone keeps buzzing with messages from five different apps: texts, a family group, a work chat, a hobby club, and email.">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-label="The problem: a plain, gray texting app. A heart arrives as the sentence Loved “See you at 7”, and around it pop up the problems: reactions as sentences, the newer text features depend on your carrier and app, every app looks the same, no idea who can read it, lose your phone and lose your texts, and no way to text from your computer.">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff4ec"/><stop offset="1" stop-color="#fdecef"/></linearGradient>
-    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity=".18"/></filter>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity=".16"/></filter>
     <style>
       text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
-      .buzz { transform-box: fill-box; transform-origin: center; animation: buzz 3s ease-in-out infinite; }
-      @keyframes buzz { 0%, 70%, 100% { transform: rotate(0); } 74% { transform: rotate(-4deg); } 78% { transform: rotate(4deg); } 82% { transform: rotate(-3deg); } 86% { transform: rotate(2deg); } }
-      .note { opacity: 0; animation: pop 10s ease-out infinite; transform-box: fill-box; transform-origin: center; }
-      .n2 { animation-delay: 1.4s; } .n3 { animation-delay: 2.8s; } .n4 { animation-delay: 4.2s; } .n5 { animation-delay: 5.6s; }
-      @keyframes pop { 0% { opacity: 0; transform: scale(.6); } 4%, 88% { opacity: 1; transform: scale(1); } 96%, 100% { opacity: 0; transform: scale(1); } }
-      .badge { animation: badge 10s steps(1) infinite; }
-      .b1 { animation-delay: 0s; }
-      @keyframes badge { 0% { opacity: 1; } }
-      .count text { opacity: 0; animation: count 10s steps(1) infinite; }
-      .c1 { animation-delay: 0s; } .c2 { animation-delay: 1.4s; } .c3 { animation-delay: 2.8s; } .c4 { animation-delay: 4.2s; } .c5 { animation-delay: 5.6s; }
-      @keyframes count { 0%, 13.9% { opacity: 1; } 14%, 100% { opacity: 0; } }
-      .c5 { animation-name: count5; }
-      @keyframes count5 { 0%, 34% { opacity: 1; } 35%, 100% { opacity: 0; } }
-      .sigh { opacity: 0; animation: sigh 10s ease-out infinite; animation-delay: 6.6s; }
-      @keyframes sigh { 0% { opacity: 0; transform: translateY(6px); } 6%, 30% { opacity: 1; transform: none; } 36%, 100% { opacity: 0; } }
-      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .note, .sigh { opacity: 1 !important; } .count text { opacity: 0 !important; } .count .c5 { opacity: 1 !important; } }
+      .m { opacity: 0; animation: in 12s ease-out infinite; }
+      .d1 { animation-delay: .2s; } .d2 { animation-delay: .9s; } .d3 { animation-delay: 1.6s; }
+      @keyframes in { 0% { opacity: 0; transform: translateY(8px); } 4%, 92% { opacity: 1; transform: none; } 98%, 100% { opacity: 0; } }
+      .p { opacity: 0; transform-box: fill-box; transform-origin: center; animation: pop 12s cubic-bezier(.34, 1.5, .5, 1) infinite; }
+      .p1 { animation-delay: 2.4s; } .p2 { animation-delay: 3.4s; } .p3 { animation-delay: 4.4s; } .p4 { animation-delay: 5.4s; } .p5 { animation-delay: 6.4s; } .p6 { animation-delay: 7.4s; }
+      @keyframes pop { 0% { opacity: 0; transform: scale(.6); } 4%, 80% { opacity: 1; transform: scale(1); } 88%, 100% { opacity: 0; transform: scale(1); } }
+      .shrug { opacity: 0; animation: in 12s ease-out infinite; animation-delay: 1.8s; }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .m, .p, .shrug { opacity: 1 !important; } }
     </style>
   </defs>
-  <rect width="1200" height="420" rx="28" fill="url(#bg)"/>
+  <rect width="1200" height="460" rx="28" fill="#f3f1ef"/>
 
-  <text x="60" y="78" fill="#7a2e3a" font-size="15" font-weight="800" letter-spacing="2">THE PROBLEM</text>
-  <text x="60" y="124" fill="#2a1a1e" font-size="38" font-weight="800">Your messages are</text>
-  <text x="60" y="168" fill="#2a1a1e" font-size="38" font-weight="800">all over the place.</text>
-  <text x="60" y="214" fill="#5a4a4e" font-size="19">Texts in one app. The family group in another.</text>
-  <text x="60" y="242" fill="#5a4a4e" font-size="19">Work in a third. Your hobby club somewhere else.</text>
-  <text x="60" y="270" fill="#5a4a4e" font-size="19">And every one of them wants your attention.</text>
-  <g class="sigh"><text x="60" y="330" fill="#7a2e3a" font-size="22" font-weight="700">😮‍💨 Five apps, five sets of notifications.</text></g>
+  <text x="56" y="70" fill="#8a3a2e" font-size="15" font-weight="800" letter-spacing="2">THE PROBLEM</text>
+  <text x="56" y="114" fill="#231a17" font-size="36" font-weight="800">Regular texting</text>
+  <text x="56" y="156" fill="#231a17" font-size="36" font-weight="800">is stuck in the past.</text>
 
-  <!-- Phone -->
-  <g class="buzz" filter="url(#shadow)">
-    <rect x="820" y="40" width="200" height="340" rx="34" fill="#1b1b1f"/>
-    <rect x="830" y="54" width="180" height="312" rx="26" fill="#f6f6f8"/>
-    <text x="920" y="96" fill="#1b1b1f" font-size="30" font-weight="300" text-anchor="middle">9:41</text>
-    <rect x="890" y="352" width="60" height="5" rx="2.5" fill="#1b1b1f" opacity=".3"/>
+  <!-- A plain, dated texting app -->
+  <g filter="url(#shadow)">
+    <rect x="470" y="40" width="250" height="390" rx="34" fill="#2a2a2e"/>
+    <rect x="481" y="54" width="228" height="362" rx="26" fill="#ececec"/>
   </g>
-  <g class="count">
-    <circle cx="1012" cy="52" r="17" fill="#e0353f"/>
-    <text class="c1" x="1012" y="58" fill="#fff" font-size="16" font-weight="800" text-anchor="middle">1</text>
-    <text class="c2" x="1012" y="58" fill="#fff" font-size="16" font-weight="800" text-anchor="middle">2</text>
-    <text class="c3" x="1012" y="58" fill="#fff" font-size="16" font-weight="800" text-anchor="middle">3</text>
-    <text class="c4" x="1012" y="58" fill="#fff" font-size="16" font-weight="800" text-anchor="middle">4</text>
-    <text class="c5" x="1012" y="58" fill="#fff" font-size="16" font-weight="800" text-anchor="middle">5</text>
+  <rect x="481" y="54" width="228" height="52" rx="0" fill="#d9d9d9"/>
+  <text x="500" y="86" fill="#444" font-size="15" font-weight="700">Sam</text>
+  <text x="702" y="86" fill="#777" font-size="12" text-anchor="end">Text message</text>
+  <g font-size="13">
+    <g class="m d1"><rect x="494" y="124" width="150" height="34" rx="6" fill="#fff" stroke="#c9c9c9"/><text x="506" y="146" fill="#333">See you at 7?</text></g>
+    <g class="m d2"><rect x="546" y="170" width="150" height="34" rx="6" fill="#b9b9b9"/><text x="558" y="192" fill="#222">See you at 7</text></g>
+    <g class="m d3"><rect x="494" y="216" width="200" height="50" rx="6" fill="#fff" stroke="#c9c9c9"/><text x="506" y="237" fill="#333">Loved “See you at 7”</text><text x="506" y="255" fill="#999" font-size="11">from Sam's iPhone</text></g>
   </g>
+  <g class="shrug"><text x="595" y="312" fill="#8b8b8b" font-size="13" text-anchor="middle">🔓 Who can read this? 🤷</text></g>
+  <rect x="494" y="372" width="202" height="30" rx="4" fill="#fff" stroke="#c9c9c9"/><text x="506" y="392" fill="#aaa" font-size="12">Type a message</text>
 
-  <!-- Notifications from different apps, landing on the lock screen and around it -->
-  <g class="note" filter="url(#shadow)">
-    <rect x="570" y="70" width="230" height="58" rx="16" fill="#fff"/>
-    <rect x="582" y="82" width="34" height="34" rx="9" fill="#2fb350"/><text x="599" y="105" font-size="18" text-anchor="middle">💬</text>
-    <text x="626" y="96" fill="#1b1b1f" font-size="13" font-weight="700">Texts · Mom</text><text x="626" y="114" fill="#555" font-size="13">Call me when you can</text>
+  <!-- The problems -->
+  <g font-size="14">
+    <g class="p p1" filter="url(#shadow)"><rect x="56" y="200" width="372" height="44" rx="14" fill="#fff"/><text x="74" y="227" fill="#231a17"><tspan font-weight="700">💬 Reactions arrive as sentences</tspan></text></g>
+    <g class="p p2" filter="url(#shadow)"><rect x="56" y="256" width="372" height="44" rx="14" fill="#fff"/><text x="74" y="283" fill="#231a17"><tspan font-weight="700">📶 Newer features depend on your carrier</tspan></text></g>
+    <g class="p p3" filter="url(#shadow)"><rect x="56" y="312" width="372" height="44" rx="14" fill="#fff"/><text x="74" y="339" fill="#231a17"><tspan font-weight="700">🎨 Plain, gray, and the same for everyone</tspan></text></g>
+    <g class="p p4" filter="url(#shadow)"><rect x="772" y="122" width="372" height="44" rx="14" fill="#fff"/><text x="790" y="149" fill="#231a17"><tspan font-weight="700">🔍 No idea who can read your messages</tspan></text></g>
+    <g class="p p5" filter="url(#shadow)"><rect x="772" y="178" width="372" height="44" rx="14" fill="#fff"/><text x="790" y="205" fill="#231a17"><tspan font-weight="700">📦 Lose your phone, lose your texts</tspan></text></g>
+    <g class="p p6" filter="url(#shadow)"><rect x="772" y="234" width="372" height="44" rx="14" fill="#fff"/><text x="790" y="261" fill="#231a17"><tspan font-weight="700">💻 No way to text from your computer</tspan></text></g>
   </g>
-  <g class="note n2" filter="url(#shadow)">
-    <rect x="1010" y="110" width="176" height="58" rx="16" fill="#fff"/>
-    <rect x="1022" y="122" width="34" height="34" rx="9" fill="#f08b2c"/><text x="1039" y="145" font-size="18" text-anchor="middle">👨‍👩‍👧</text>
-    <text x="1064" y="136" fill="#1b1b1f" font-size="13" font-weight="700">Family group</text><text x="1064" y="154" fill="#555" font-size="13">Dinner Sunday?</text>
-  </g>
-  <g class="note n3" filter="url(#shadow)">
-    <rect x="560" y="190" width="236" height="58" rx="16" fill="#fff"/>
-    <rect x="572" y="202" width="34" height="34" rx="9" fill="#6c4cdc"/><text x="589" y="225" font-size="18" text-anchor="middle">💼</text>
-    <text x="616" y="216" fill="#1b1b1f" font-size="13" font-weight="700">Work chat</text><text x="616" y="234" fill="#555" font-size="13">Meeting moved to 3</text>
-  </g>
-  <g class="note n4" filter="url(#shadow)">
-    <rect x="1010" y="230" width="176" height="58" rx="16" fill="#fff"/>
-    <rect x="1022" y="242" width="34" height="34" rx="9" fill="#1f7fd6"/><text x="1039" y="265" font-size="18" text-anchor="middle">🔭</text>
-    <text x="1064" y="256" fill="#1b1b1f" font-size="13" font-weight="700">Astronomy club</text><text x="1064" y="274" fill="#555" font-size="13">Clear skies tonight</text>
-  </g>
-  <g class="note n5" filter="url(#shadow)">
-    <rect x="580" y="300" width="220" height="58" rx="16" fill="#fff"/>
-    <rect x="592" y="312" width="34" height="34" rx="9" fill="#d13c55"/><text x="609" y="335" font-size="18" text-anchor="middle">✉️</text>
-    <text x="636" y="326" fill="#1b1b1f" font-size="13" font-weight="700">Email · Jordan</text><text x="636" y="344" fill="#555" font-size="13">Photos from the trip</text>
-  </g>
+  <text x="958" y="330" fill="#8a3a2e" font-size="17" font-weight="700" text-anchor="middle" class="shrug">iPhone has had better</text>
+  <text x="958" y="354" fill="#8a3a2e" font-size="17" font-weight="700" text-anchor="middle" class="shrug">for years. Why don't we?</text>
 </svg>

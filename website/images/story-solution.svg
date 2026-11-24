@@ -1,65 +1,70 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-label="Animated: the messages from five apps flow into one FluidMessages inbox on one phone, each with a small tag saying where it came from, then a lock appears.">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-label="The fix: the same conversation in FluidMessages. The heart shows as a real heart on the message, bubbles are in your colors, a lock shows who can read it, confetti plays, a poll fills in, a backup check appears, and the same chat shows on a laptop.">
   <defs>
-    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e9fbee"/><stop offset="1" stop-color="#e6f1ff"/></linearGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e9fbee"/><stop offset="1" stop-color="#e8f1ff"/></linearGradient>
     <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity=".16"/></filter>
     <style>
       text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
-      .fly { animation: fly 9s cubic-bezier(.5, 0, .3, 1) infinite; }
-      .f2 { animation-delay: .25s; } .f3 { animation-delay: .5s; } .f4 { animation-delay: .75s; } .f5 { animation-delay: 1s; }
-      @keyframes fly { 0%, 6% { opacity: 1; transform: translate(0, 0); } 22% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(.4); } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(.4); } }
-      .row { opacity: 0; animation: row 9s ease-out infinite; }
-      .r2 { animation-delay: .25s; } .r3 { animation-delay: .5s; } .r4 { animation-delay: .75s; } .r5 { animation-delay: 1s; }
-      @keyframes row { 0%, 20% { opacity: 0; transform: translateY(10px); } 28%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }
-      .lock { opacity: 0; transform-box: fill-box; transform-origin: center; animation: lock 9s cubic-bezier(.34, 1.5, .5, 1) infinite; }
-      @keyframes lock { 0%, 40% { opacity: 0; transform: scale(.3); } 48%, 92% { opacity: 1; transform: scale(1); } 100% { opacity: 0; } }
-      .words2 { opacity: 0; animation: words 9s ease-out infinite; }
-      @keyframes words { 0%, 44% { opacity: 0; } 52%, 92% { opacity: 1; } 100% { opacity: 0; } }
-      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .fly { opacity: 0 !important; } .row, .lock, .words2 { opacity: 1 !important; } }
+      .m { opacity: 0; animation: in 12s ease-out infinite; }
+      .d1 { animation-delay: .2s; } .d2 { animation-delay: .9s; } .d4 { animation-delay: 3.2s; } .d5 { animation-delay: 4.6s; }
+      @keyframes in { 0% { opacity: 0; transform: translateY(8px); } 4%, 92% { opacity: 1; transform: none; } 98%, 100% { opacity: 0; } }
+      .heart { opacity: 0; transform-box: fill-box; transform-origin: center; animation: heart 12s cubic-bezier(.34, 1.8, .5, 1) infinite; animation-delay: 1.8s; }
+      @keyframes heart { 0% { opacity: 0; transform: scale(0); } 3%, 90% { opacity: 1; transform: scale(1); } 96%, 100% { opacity: 0; } }
+      .floaty { opacity: 0; animation: up 12s ease-out infinite; animation-delay: 1.8s; }
+      .floaty.b { animation-delay: 2s; } .floaty.c { animation-delay: 2.2s; }
+      @keyframes up { 0% { opacity: 0; transform: translateY(0); } 2% { opacity: 1; } 12% { opacity: 0; transform: translateY(-90px); } 100% { opacity: 0; } }
+      .bit { opacity: 0; animation: fall 12s linear infinite; animation-delay: 4.6s; }
+      @keyframes fall { 0% { opacity: 1; transform: translateY(0) rotate(0); } 14% { opacity: 1; transform: translateY(330px) rotate(400deg); } 15%, 100% { opacity: 0; } }
+      .bar { transform-box: fill-box; transform-origin: left; animation: bar 12s ease-out infinite; animation-delay: 3.4s; }
+      @keyframes bar { 0%, 3% { transform: scaleX(.05); } 12%, 100% { transform: scaleX(1); } }
+      .chip { opacity: 0; transform-box: fill-box; transform-origin: center; animation: pop 12s cubic-bezier(.34, 1.5, .5, 1) infinite; }
+      .c1 { animation-delay: 1.2s; } .c2 { animation-delay: 5.6s; } .c3 { animation-delay: 6.6s; } .c4 { animation-delay: 7.6s; }
+      @keyframes pop { 0% { opacity: 0; transform: scale(.5); } 4%, 88% { opacity: 1; transform: scale(1); } 95%, 100% { opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .m, .heart, .chip { opacity: 1 !important; } .floaty, .bit { opacity: 0 !important; } }
     </style>
   </defs>
-  <rect width="1200" height="420" rx="28" fill="url(#sky)"/>
+  <rect width="1200" height="460" rx="28" fill="url(#sky)"/>
 
-  <text x="60" y="78" fill="#0f7a34" font-size="15" font-weight="800" letter-spacing="2">THE FIX</text>
-  <text x="60" y="124" fill="#14231a" font-size="38" font-weight="800">One app for all of them.</text>
-  <text x="60" y="170" fill="#3d4d43" font-size="19">FluidMessages puts your texts and your other chats</text>
-  <text x="60" y="198" fill="#3d4d43" font-size="19">in one inbox. A small tag shows where each one</text>
-  <text x="60" y="226" fill="#3d4d43" font-size="19">came from, and you reply from the same place.</text>
-  <g class="words2">
-    <text x="60" y="290" fill="#0f7a34" font-size="22" font-weight="700">🔒 Private by design.</text>
-    <text x="60" y="322" fill="#3d4d43" font-size="18">Free. No ads. Nobody reads your messages to sell you things.</text>
-  </g>
+  <text x="56" y="70" fill="#0f7a34" font-size="15" font-weight="800" letter-spacing="2">THE FIX</text>
+  <text x="56" y="114" fill="#14231a" font-size="36" font-weight="800">Texting, the way</text>
+  <text x="56" y="156" fill="#14231a" font-size="36" font-weight="800">it should feel.</text>
+  <text x="56" y="196" fill="#3d4d43" font-size="17">The same chat with Sam, in FluidMessages.</text>
 
-  <!-- Five scattered app bubbles that fly into the phone -->
-  <g font-size="13">
-    <g class="fly" style="--dx: 210px; --dy: 120px"><rect x="560" y="40" width="120" height="36" rx="18" fill="#2fb350"/><text x="620" y="63" fill="#fff" text-anchor="middle" font-weight="700">💬 Texts</text></g>
-    <g class="fly f2" style="--dx: 180px; --dy: 70px"><rect x="580" y="150" width="140" height="36" rx="18" fill="#f08b2c"/><text x="650" y="173" fill="#fff" text-anchor="middle" font-weight="700">👨‍👩‍👧 Family</text></g>
-    <g class="fly f3" style="--dx: 220px; --dy: -40px"><rect x="560" y="300" width="130" height="36" rx="18" fill="#6c4cdc"/><text x="625" y="323" fill="#fff" text-anchor="middle" font-weight="700">💼 Work</text></g>
-    <g class="fly f4" style="--dx: -160px; --dy: 90px"><rect x="1060" y="70" width="120" height="36" rx="18" fill="#1f7fd6"/><text x="1120" y="93" fill="#fff" text-anchor="middle" font-weight="700">🔭 Club</text></g>
-    <g class="fly f5" style="--dx: -150px; --dy: -50px"><rect x="1060" y="290" width="120" height="36" rx="18" fill="#d13c55"/><text x="1120" y="313" fill="#fff" text-anchor="middle" font-weight="700">✉️ Email</text></g>
-  </g>
-
-  <!-- One phone, one inbox -->
+  <!-- Phone -->
   <g filter="url(#shadow)">
-    <rect x="790" y="30" width="250" height="364" rx="38" fill="#1b1b1f"/>
-    <rect x="801" y="44" width="228" height="336" rx="29" fill="#fff"/>
+    <rect x="470" y="40" width="250" height="390" rx="34" fill="#16161a"/>
+    <rect x="481" y="54" width="228" height="362" rx="26" fill="#fff"/>
   </g>
-  <text x="818" y="90" fill="#14231a" font-size="22" font-weight="800">Messages</text>
-  <g class="lock"><circle cx="1004" cy="82" r="15" fill="#1fa84a"/><text x="1004" y="88" font-size="15" text-anchor="middle">🔒</text></g>
-  <g font-size="12">
-    <g class="row"><circle cx="830" cy="124" r="15" fill="#e0567a"/><text x="830" y="128" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">M</text>
-      <text x="852" y="121" fill="#14231a" font-weight="700">Mom</text><text x="852" y="137" fill="#666">Call me later</text>
-      <rect x="966" y="112" width="44" height="16" rx="5" fill="none" stroke="#2fb350"/><text x="988" y="124" fill="#1d7a35" font-size="9" font-weight="700" text-anchor="middle">TEXT</text></g>
-    <g class="row r2"><circle cx="830" cy="174" r="15" fill="#f08b2c"/><text x="830" y="178" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">F</text>
-      <text x="852" y="171" fill="#14231a" font-weight="700">Family group</text><text x="852" y="187" fill="#666">Dinner Sunday?</text>
-      <rect x="966" y="162" width="44" height="16" rx="5" fill="none" stroke="#2fb350"/><text x="988" y="174" fill="#1d7a35" font-size="9" font-weight="700" text-anchor="middle">GROUP</text></g>
-    <g class="row r3"><circle cx="830" cy="224" r="15" fill="#6c4cdc"/><text x="830" y="228" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">W</text>
-      <text x="852" y="221" fill="#14231a" font-weight="700">Work chat</text><text x="852" y="237" fill="#666">Meeting moved to 3</text>
-      <rect x="958" y="212" width="52" height="16" rx="5" fill="none" stroke="#6c4cdc"/><text x="984" y="224" fill="#5236b8" font-size="9" font-weight="700" text-anchor="middle">MATRIX</text></g>
-    <g class="row r4"><circle cx="830" cy="274" r="15" fill="#1f7fd6"/><text x="830" y="278" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">#</text>
-      <text x="852" y="271" fill="#14231a" font-weight="700">#astronomy</text><text x="852" y="287" fill="#666">Clear skies tonight</text>
-      <rect x="974" y="262" width="36" height="16" rx="5" fill="none" stroke="#1f7fd6"/><text x="992" y="274" fill="#1960a8" font-size="9" font-weight="700" text-anchor="middle">IRC</text></g>
-    <g class="row r5"><circle cx="830" cy="324" r="15" fill="#d13c55"/><text x="830" y="328" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">J</text>
-      <text x="852" y="321" fill="#14231a" font-weight="700">Jordan</text><text x="852" y="337" fill="#666">Photos from the trip</text>
-      <rect x="962" y="312" width="48" height="16" rx="5" fill="none" stroke="#d13c55"/><text x="986" y="324" fill="#a82a40" font-size="9" font-weight="700" text-anchor="middle">EMAIL</text></g>
+  <circle cx="508" cy="80" r="15" fill="#7b4fe0"/><text x="508" y="85" fill="#fff" font-size="12" font-weight="700" text-anchor="middle">S</text>
+  <text x="530" y="78" fill="#14231a" font-size="14" font-weight="700">Sam</text>
+  <text x="530" y="94" fill="#6b7280" font-size="11">Text message · not encrypted</text>
+  <g class="chip c1"><circle cx="690" cy="80" r="11" fill="#c4141f"/><text x="690" y="84" font-size="11" text-anchor="middle">🔓</text></g>
+  <line x1="481" y1="108" x2="709" y2="108" stroke="#eceef2"/>
+  <g font-size="13">
+    <g class="m d1"><rect x="494" y="122" width="140" height="32" rx="16" fill="#eef0f4"/><text x="508" y="143" fill="#14231a">See you at 7?</text></g>
+    <g class="m d2"><rect x="556" y="164" width="140" height="32" rx="16" fill="#7b4fe0"/><text x="570" y="185" fill="#fff">See you at 7 ✨</text></g>
+    <g class="heart"><circle cx="690" cy="160" r="12" fill="#fff" stroke="#e3e5ec"/><text x="690" y="165" font-size="12" text-anchor="middle">❤️</text></g>
+    <text class="floaty" x="680" y="190" font-size="15">❤️</text><text class="floaty b" x="660" y="196" font-size="12">💖</text><text class="floaty c" x="700" y="200" font-size="11">❤️</text>
+    <g class="m d4"><rect x="494" y="212" width="190" height="80" rx="16" fill="#eef0f4"/>
+      <text x="508" y="232" fill="#6b7280" font-size="10" font-weight="700" letter-spacing="1">POLL</text>
+      <text x="508" y="250" fill="#14231a" font-weight="700">Pizza or tacos?</text>
+      <rect x="508" y="260" width="162" height="20" rx="7" fill="#fff"/><rect class="bar" x="508" y="260" width="118" height="20" rx="7" fill="#c9b6f5"/>
+      <text x="516" y="275" fill="#14231a" font-size="11">🌮 Tacos · 2 votes</text></g>
+    <g class="m d5"><rect x="536" y="304" width="160" height="32" rx="16" fill="#7b4fe0"/><text x="550" y="325" fill="#fff">Tacos it is! 🎉</text></g>
   </g>
+  <g>
+    <rect class="bit" x="500" y="110" width="6" height="10" rx="2" fill="#ff5e7e"/><rect class="bit" x="540" y="110" width="6" height="10" rx="2" fill="#ffc531" style="animation-delay:4.7s"/>
+    <rect class="bit" x="580" y="110" width="6" height="10" rx="2" fill="#2fa8ff" style="animation-delay:4.65s"/><rect class="bit" x="620" y="110" width="6" height="10" rx="2" fill="#1fc144" style="animation-delay:4.8s"/>
+    <rect class="bit" x="660" y="110" width="6" height="10" rx="2" fill="#7b4fe0" style="animation-delay:4.75s"/><rect class="bit" x="690" y="110" width="6" height="10" rx="2" fill="#ff5e7e" style="animation-delay:4.85s"/>
+  </g>
+  <rect x="494" y="372" width="202" height="30" rx="15" fill="#f3f4f7"/><text x="508" y="392" fill="#9aa0ab" font-size="12">Text message</text>
+
+  <!-- What you get -->
+  <g font-size="14">
+    <g class="chip c2" filter="url(#shadow)"><rect x="772" y="92" width="372" height="44" rx="14" fill="#fff"/><text x="790" y="119" fill="#14231a" font-weight="700">❤️ Real reactions, effects, polls, and games</text></g>
+    <g class="chip c2" filter="url(#shadow)"><rect x="772" y="148" width="372" height="44" rx="14" fill="#fff"/><text x="790" y="175" fill="#14231a" font-weight="700">🎨 Your colors, your bubbles, your sounds</text></g>
+    <g class="chip c3" filter="url(#shadow)"><rect x="772" y="204" width="372" height="44" rx="14" fill="#fff"/><text x="790" y="231" fill="#14231a" font-weight="700">🔒 A lock that tells you who can read it</text></g>
+    <g class="chip c3" filter="url(#shadow)"><rect x="772" y="260" width="372" height="44" rx="14" fill="#fff"/><text x="790" y="287" fill="#14231a" font-weight="700">📦 Encrypted backups you control</text></g>
+    <g class="chip c4" filter="url(#shadow)"><rect x="772" y="316" width="372" height="44" rx="14" fill="#fff"/><text x="790" y="343" fill="#14231a" font-weight="700">💻 Text from your computer, too</text></g>
+  </g>
+  <g class="chip c4"><text x="56" y="252" fill="#0f7a34" font-size="16" font-weight="700">No carrier deals. No sign-up.</text><text x="56" y="276" fill="#0f7a34" font-size="16" font-weight="700">Just your number, upgraded.</text></g>
 </svg>

@@ -66,6 +66,8 @@
     selfhost: 'Self-hosting means running the app on your own computer at home instead of a company’s computers.',
     opensource: 'Open source means anyone can see, check, and improve the code that makes the app work.',
     networks: 'Matrix, XMPP, and IRC are free chat networks no single company owns, a bit like email but for chatting.',
+    rcs: 'RCS is a newer kind of texting from phone companies. It only works when your carrier, your phone, and your app all support it.',
+    backup: 'A backup is a saved copy of your messages, so you can get them back on a new phone.',
   };
   const tip = document.querySelector('.term-tip');
   let open = null;
