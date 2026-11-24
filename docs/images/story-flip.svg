@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-label="The same poll seen two ways. In FluidMessages it's a card with vote bars. A friend without the app gets a plain text listing the choices and asking them to reply with a number. Their reply still counts as a vote.">
+  <defs>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".14"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .m { opacity: 0; animation: in 12s ease-out infinite; }
+      .d1 { animation-delay: .3s; } .d2 { animation-delay: 1.4s; } .d3 { animation-delay: 3s; } .d4 { animation-delay: 4.2s; } .d5 { animation-delay: 5.4s; }
+      @keyframes in { 0% { opacity: 0; transform: translateY(10px); } 4%, 92% { opacity: 1; transform: none; } 97%, 100% { opacity: 0; } }
+      .bar { transform-box: fill-box; transform-origin: left; animation: bar 12s ease-out infinite; animation-delay: 5.4s; }
+      @keyframes bar { 0%, 3% { transform: scaleX(.5); } 10%, 100% { transform: scaleX(1); } }
+      .arrow { animation: nudge 1.4s ease-in-out infinite alternate; }
+      @keyframes nudge { to { transform: translateX(6px); } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .m { opacity: 1 !important; } }
+    </style>
+  </defs>
+  <rect width="1200" height="400" rx="28" fill="#fbf8f1"/>
+  <text x="600" y="54" fill="#141820" font-size="24" font-weight="800" text-anchor="middle">Friends without the app still get it</text>
+  <text x="600" y="82" fill="#5b6070" font-size="16" text-anchor="middle">It won't look as nice for them, but it works. Their replies still count.</text>
+
+  <!-- In FluidMessages -->
+  <text x="300" y="124" fill="#1b8f40" font-size="15" font-weight="800" text-anchor="middle">IN FLUIDMESSAGES</text>
+  <g filter="url(#shadow)"><rect x="140" y="138" width="320" height="230" rx="24" fill="#fff"/></g>
+  <g class="m d1"><rect x="160" y="158" width="250" height="122" rx="18" fill="#eef0f4"/>
+    <text x="176" y="180" fill="#6b7280" font-size="10" font-weight="700" letter-spacing="1">POLL</text>
+    <text x="176" y="200" fill="#141820" font-size="14" font-weight="700">Which day for the hike?</text>
+    <rect x="176" y="212" width="218" height="24" rx="8" fill="#fff"/><rect class="bar" x="176" y="212" width="160" height="24" rx="8" fill="#9fdcb1"/>
+    <text x="186" y="229" fill="#141820" font-size="12">Saturday</text><text x="386" y="229" fill="#141820" font-size="12" font-weight="700" text-anchor="end">3</text>
+    <rect x="176" y="242" width="218" height="24" rx="8" fill="#fff"/><rect x="176" y="242" width="60" height="24" rx="8" fill="#dde1e8"/>
+    <text x="186" y="259" fill="#141820" font-size="12">Sunday</text><text x="386" y="259" fill="#141820" font-size="12" font-weight="700" text-anchor="end">1</text></g>
+  <g class="m d5"><rect x="160" y="296" width="190" height="30" rx="15" fill="#e9e9ee"/><text x="174" y="316" fill="#141820" font-size="12">🗳️ Jess voted “Saturday”</text></g>
+
+  <!-- Arrow -->
+  <g class="arrow"><text x="600" y="262" fill="#b8bcc8" font-size="40" text-anchor="middle">⇄</text></g>
+
+  <!-- Friend without the app -->
+  <text x="900" y="124" fill="#8a5a00" font-size="15" font-weight="800" text-anchor="middle">YOUR FRIEND WITHOUT IT</text>
+  <g filter="url(#shadow)"><rect x="740" y="138" width="320" height="230" rx="24" fill="#fff"/></g>
+  <g class="m d2"><rect x="760" y="158" width="268" height="104" rx="16" fill="#e9e9ee"/>
+    <text x="776" y="182" fill="#141820" font-size="13">📊 Poll: Which day for the hike?</text>
+    <text x="776" y="204" fill="#141820" font-size="13">1. Saturday</text>
+    <text x="776" y="224" fill="#141820" font-size="13">2. Sunday</text>
+    <text x="776" y="246" fill="#5b6070" font-size="12">Reply with a number to vote · poll 4k2p9q</text></g>
+  <g class="m d3"><rect x="980" y="276" width="60" height="32" rx="16" fill="#0a84ff"/><text x="1010" y="297" fill="#fff" font-size="14" text-anchor="middle">1</text></g>
+  <g class="m d4"><text x="900" y="336" fill="#8a5a00" font-size="12.5" text-anchor="middle">Plain, the way Android users got it for years.</text>
+    <text x="900" y="358" fill="#8a5a00" font-size="12.5" text-anchor="middle">The tables have turned.</text></g>
+</svg>
