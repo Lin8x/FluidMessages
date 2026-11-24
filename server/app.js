@@ -32,6 +32,15 @@ let reply = '';
 let refreshed = false;
 let refreshNumber = 0;
 let lastLook = '';
+// Fun and effects, set in Settings for this server. Everything is on until turned off.
+let prefs = {effects: true, reactionEffects: true, games: true, random: true, gifs: true, linkPreviews: true};
+// Chat accounts on this server (Matrix, XMPP, Email, IRC), for empty states and New chat.
+let chatAccounts = [];
+// Signed in as this computer, which opens without a password, so there's nothing to sign out of.
+let localHere = false;
+let lastLocalSignIn = 0;
+let welcomed = true;
+const phonePaired = () => updated !== null && updated !== undefined;
 
 // Every request says it comes from this page; the server refuses cookie requests that don't (CSRF protection).
 const REQUEST_HEADERS = {'X-Fluid-Request': '1'};
@@ -309,14 +318,31 @@ function quoteCard(title, text) {
   return card;
 }
 
-function messageActions(message) {
+function messageActions(message, row) {
   const menu = element('details', '', 'message-tools');
-  menu.append(element('summary', 'Actions'));
-  const action = (label, callback) => {
+  const summary = element('summary', '');
+  summary.append(Object.assign(element('span', '⋯'), {ariaHidden: 'true'}), element('span', 'Message actions', 'visually-hidden'));
+  summary.title = 'React, reply, and more';
+  menu.append(summary);
+  const quick = element('div', '', 'quick-reactions');
+  const more = element('div', '', 'message-menu');
+  const popover = element('div', '', 'message-popover');
+  popover.append(quick, more);
+  menu.append(popover);
+  menu.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && menu.open) { event.stopPropagation(); menu.open = false; summary.focus(); }
+  });
+  // Only one menu open at a time.
+  menu.addEventListener('toggle', () => {
+    if (!menu.open) return;
+    for (const other of document.querySelectorAll('details.message-tools[open]')) if (other !== menu) other.open = false;
+  });
+  const action = (label, callback, place = more, aria) => {
     const button = element('button', label);
     button.type = 'button';
+    if (aria) button.setAttribute('aria-label', aria);
     button.addEventListener('click', () => { menu.open = false; callback(); });
-    menu.append(button);
+    place.append(button);
   };
   const sendable = senderAddress(threadAddress(active)) || internet(threadProtocol(active));
   if (sendable) action('Reply', () => { setReply(message.body, message.id); get('body').focus(); });
@@ -326,14 +352,13 @@ function messageActions(message) {
     const suffix = '” by “' + author + '”';
     const max = 1600 - prefix.length - suffix.length;
     const body = message.body.length <= max ? message.body : message.body.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, '') + '…';
-    select('');
-    get('body').value = prefix + body + suffix;
-    drafts.set('', get('body').value);
-    get('address').focus();
+    // Pick who gets it, on any account; the forwarded text waits in their message box.
+    openNewChat(prefix + body + suffix);
   });
   if (sendable) {
-    for (const [emoji, verb] of [['👍', 'Liked'], ['❤️', 'Loved'], ['🎉', 'Reacted 🎉 to']]) {
+    for (const [emoji, verb, name] of [['👍', 'Liked', 'Like'], ['❤️', 'Loved', 'Love'], ['😆', 'Laughed at', 'Laugh'], ['🎉', 'Reacted 🎉 to', 'Celebrate']]) {
       action(emoji, () => {
+        if (message.reactions.get('me') !== emoji) playReaction(row, emoji, reactionId(message, 'me', emoji));
         const own = message.type !== 1;
         const quote = '“' + excerpt(message.body, 700) + '”' + (own ? ' (my message)' : '');
         const current = message.reactions.get('me');
@@ -350,14 +375,48 @@ function messageActions(message) {
         } else {
           send(verb + ' ' + quote, '', {kind: 'reaction', target: message.id || '', emoji, own}).catch(showError);
         }
-      });
+      }, quick, (message.reactions.get('me') === emoji ? 'Remove ' : '') + name);
     }
   }
   if (sendable && message.type !== 1 && !message.attachment && ![4, 5, 6].includes(message.type) && typeof openEditMessage === 'function') {
     action('Edit', () => openEditMessage(message));
   }
-  if (message.attachment) action('Download ' + message.attachment.name, () => download(message).catch(showError));
+  if (message.attachment) action('Download', () => download(message).catch(showError));
+  if (message.body && !message.attachment) action('Copy text', () => navigator.clipboard?.writeText(typeof plainPreview === 'function' ? plainPreview(message.body) : message.body));
+  if (!quick.children.length) quick.remove();
   return menu;
+}
+
+// A click anywhere else closes an open message menu.
+document.addEventListener('click', (event) => {
+  for (const open of document.querySelectorAll('details.message-tools[open]')) if (!open.contains(event.target)) open.open = false;
+});
+
+// Reactions pop up from the bubble when they arrive, yours or anyone's. Each plays once, never when a chat first opens.
+const reactionsSeen = new Set();
+const threadsShown = new Set();
+const reactionId = (message, sender, emoji) => [message.id || message.date + ':' + message.type, sender, emoji].join('|');
+
+function playReaction(row, emoji, id) {
+  if (id) reactionsSeen.add(id);
+  if (!prefs.reactionEffects || matchMedia('(prefers-reduced-motion: reduce)').matches || !row?.isConnected) return;
+  const bubble = row.querySelector('.bubble-wrap');
+  if (!bubble) return;
+  // Drawn over the page at the bubble's corner, so a refresh redrawing the chat doesn't cut it short.
+  const box = bubble.getBoundingClientRect();
+  const burst = element('span', '', 'reaction-burst');
+  burst.setAttribute('aria-hidden', 'true');
+  burst.style.left = (row.classList.contains('out') ? box.left + 6 : box.right - 6) + 'px';
+  burst.style.top = (box.top + 6) + 'px';
+  burst.append(element('span', emoji, 'burst-main'));
+  for (let index = 0; index < 5; index++) {
+    const spark = element('span', emoji, 'burst-spark');
+    spark.style.setProperty('--dx', Math.round((index - 2) * 22 + (Math.random() * 10 - 5)) + 'px');
+    spark.style.setProperty('--delay', (60 + index * 45) + 'ms');
+    burst.append(spark);
+  }
+  document.body.append(burst);
+  setTimeout(() => burst.remove(), 1500);
 }
 
 function showMessages(preserve = false) {
@@ -399,25 +458,85 @@ function showMessages(preserve = false) {
     if (message.attachment) {
       if (message.body === message.attachment.name || /^(Photo|sticker\.\w+)$/.test(message.body || '')) bubble.textContent = '';
       // Pictures show inline and open full screen; other files download.
-      if (!(typeof attachmentPicture === 'function' && (attachmentPicture(message, bubble) || attachmentContact(message, bubble)))) {
+      if (!(typeof attachmentPicture === 'function' && (attachmentPicture(message, bubble) || attachmentVideo(message, bubble)
+        || attachmentContact(message, bubble)))) {
         const file = element('button', '📎 ' + message.attachment.name, 'file-card');
         file.type = 'button';
         file.addEventListener('click', () => download(message).catch(showError));
         bubble.prepend(file);
       }
     }
-    row.append(bubble);
-    if (message.reactions.size) row.append(element('span', [...message.reactions.values()].join(' '), 'reaction'));
+    // The bubble, with a small ⋯ beside it (on hover or focus) for reactions, reply, and more.
+    const wrap = element('div', '', 'bubble-wrap');
+    wrap.append(bubble);
+    const line = element('div', '', 'bubble-line');
+    line.append(wrap, messageActions(message, row));
+    row.append(line);
+    if (message.reactions.size) {
+      const chips = element('span', [...message.reactions.values()].join(' '), 'reaction');
+      chips.setAttribute('aria-label', 'Reactions: ' + [...message.reactions.values()].join(' '));
+      row.append(chips);
+    }
     const failed = message.type === 5 || (message.status || '').startsWith('Couldn’t send');
     const status = failed ? ' · Not delivered' : [4, 6].includes(message.type) ? ' · Sending…' : message.status ? ' · ' + message.status : '';
     if (failed) row.classList.add('failed');
-    if (message.earlier?.length) row.append(element('small', 'Edited', 'message-time'));
-    if (appearance.exactTimes || status) row.append(element('small', clock(timeOf(message)) + status, 'message-time'));
-    row.append(messageActions(message));
+    const meta = element('div', '', 'message-meta');
+    if (message.earlier?.length) meta.append(element('small', 'Edited', 'message-time'));
+    if (appearance.exactTimes || status) meta.append(element('small', clock(timeOf(message)) + status, 'message-time'));
+    if (meta.children.length) row.append(meta);
     conversation.append(row);
+    // New reactions since this chat was last drawn get a short animation.
+    for (const [sender, emoji] of message.reactions) {
+      const id = reactionId(message, sender, emoji);
+      if (!reactionsSeen.has(id)) {
+        reactionsSeen.add(id);
+        if (threadsShown.has(active)) setTimeout(() => playReaction(row, emoji), 30);
+      }
+    }
   }
-  if (!history.length && get('schedule').hidden) conversation.append(element('p', 'Choose a conversation or start a new SMS.', 'placeholder'));
+  threadsShown.add(active);
+  if (!history.length && get('schedule').hidden) conversation.append(emptyThreadPane());
   conversation.scrollTop = preserve && !atEnd ? scrollTop : conversation.scrollHeight;
+  conversation.dataset.atEnd = String(!preserve || atEnd);
+}
+
+// Pictures and videos load after the chat is drawn; if you were at the newest message, stay there as they grow.
+get('conversation').addEventListener('scroll', () => {
+  const box = get('conversation');
+  box.dataset.atEnd = String(box.scrollHeight - box.scrollTop - box.clientHeight < 48);
+}, {passive: true});
+function keepAtEnd() {
+  const box = get('conversation');
+  if (box.dataset.atEnd === 'true') box.scrollTop = box.scrollHeight;
+}
+get('conversation').addEventListener('load', keepAtEnd, true);
+get('conversation').addEventListener('loadedmetadata', keepAtEnd, true);
+
+/** What the message pane shows before you pick a chat: a friendly start, not an empty box. */
+function emptyThreadPane() {
+  const box = element('div', '', 'empty-state');
+  box.append(Object.assign(element('img', ''), {src: '/icons/icon-192.png', alt: '', width: 72, height: 72, className: 'empty-icon'}));
+  if (!threads.size && !chatAccounts.length) {
+    box.append(element('h2', 'Your chats will show up here'),
+      element('p', 'Add a Matrix, XMPP, Email, or IRC account to start chatting.' + (phonePaired() ? '' : ' Texts appear once you connect your phone.'), 'muted'));
+    box.append(emptyActions([['Add an account', () => openSettings('settings-accounts').catch(showError), true],
+      ...(phonePaired() ? [] : [['Connect your phone', () => openSettings('settings-devices').catch(showError)]])]));
+  } else {
+    box.append(element('h2', 'Pick a chat'), element('p', 'Or start a new one with anyone on your accounts.', 'muted'));
+    box.append(emptyActions([['New chat', () => openNewChat(), true]]));
+  }
+  return box;
+}
+
+function emptyActions(list) {
+  const row = element('div', '', 'button-row center');
+  for (const [label, run, primary] of list) {
+    const button = element('button', label, primary ? 'primary' : '');
+    button.type = 'button';
+    button.addEventListener('click', run);
+    row.append(button);
+  }
+  return row;
 }
 
 function select(key) {
@@ -426,7 +545,7 @@ function select(key) {
   const address = threadAddress(key);
   const protocol = key ? threadProtocol(key) : 'sms';
   get('workspace').dataset.thread = 'true';
-  get('recipient').textContent = key ? threadTitle(key) : 'New SMS';
+  get('recipient').textContent = key ? threadTitle(key) : 'New text message';
   get('avatar').textContent = initials(key ? threadTitle(key) : '');
   get('transport').textContent = automatedThread(key) ? 'SMS · Automated sender' : labels[protocol] || 'SMS';
   get('address').value = address;
@@ -436,14 +555,15 @@ function select(key) {
   get('readonly').hidden = !off;
   get('readonly').textContent = off ? (labels[protocol] || 'This protocol') + ' is turned off on your phone. This conversation is read-only.' : '';
   get('schedule').hidden = off || !!address && !senderAddress(address) && !internet(protocol);
-  get('send').textContent = internet(protocol) ? 'Send ' + labels[protocol] : 'Send SMS';
-  get('body').placeholder = internet(protocol) ? labels[protocol] + ' message' : 'Text message';
+  get('send').setAttribute('aria-label', internet(protocol) ? 'Send ' + labels[protocol] + ' message' : 'Send text message');
+  get('body').placeholder = internet(protocol) ? labels[protocol] + ' message' : phonePaired() ? 'Text message' : 'Text message · sends when your phone connects';
   get('later').hidden = false;  // Internet chats schedule on FluidMessages Web; texts wait on the phone.
   // Click-to-call: your phone shows a "Tap to call" notification with the number ready to dial.
-  get('call').hidden = !key || internet(protocol) || !senderAddress(address) || automatedThread(key);
+  get('call').hidden = !key || !phonePaired() || internet(protocol) || !senderAddress(address) || automatedThread(key);
   get('body').value = drafts.get(key) || '';
   get('schedule-status').textContent = '';
   setReply('');
+  if (typeof showComposerEffect === 'function') showComposerEffect();
   markRead(key);
   showMessages();
   showThreads();
@@ -527,11 +647,25 @@ function showThreads() {
     button.addEventListener('click', () => select(address));
     list.append(button);
   }
-  if (!rows.length) list.append(element('p', filter ? 'No matching conversations' : 'No conversations here yet', 'placeholder'));
+  if (!rows.length) {
+    if (filter) list.append(element('p', 'No chats match “' + excerpt(filter, 40) + '”', 'placeholder'));
+    else if (folder !== 'Inbox') list.append(element('p', 'Nothing ' + folder.toLowerCase() + '.', 'placeholder'));
+    else {
+      const empty = element('div', '', 'empty-list');
+      empty.append(element('strong', 'No chats yet'), element('p', chatAccounts.length
+        ? 'Start one with New chat below.' : 'Add a chat account to get started.', 'muted'));
+      if (!chatAccounts.length) empty.append(emptyActions([['Add an account', () => openSettings('settings-accounts').catch(showError), true]]));
+      list.append(empty);
+    }
+  }
 }
 
 function showJobs(jobs) {
   const queue = get('jobs');
+  // The Scheduled button shows only while something is waiting, so it isn't one more thing on screen.
+  const waiting = jobs.filter((job) => ['scheduled', 'claimed', 'queued'].includes(job.state) && job.protocol !== 'call').length;
+  get('open-queue').hidden = !waiting && !get('queue').open;
+  get('open-queue').textContent = 'Scheduled · ' + waiting;
   const signature = JSON.stringify(jobs);
   if (signature === queue.dataset.snapshot) return;
   queue.dataset.snapshot = signature;
@@ -561,9 +695,19 @@ async function refresh() {
   const [snapshot, jobs] = await Promise.all([api('inbox'), api('jobs')]);
   if (currentSession !== session || request !== refreshNumber) return;
   // Redraws when anything changed: a phone sync, new or updated internet messages, or the settings.
-  const look = JSON.stringify([snapshot.appearance, snapshot.follow_phone, snapshot.web_appearance, snapshot.routes, snapshot.messages]);
+  const look = JSON.stringify([snapshot.appearance, snapshot.follow_phone, snapshot.web_appearance, snapshot.routes, snapshot.messages,
+    snapshot.prefs, snapshot.accounts]);
+  welcomed = snapshot.welcomed !== false;
   if (!refreshed || updated !== snapshot.updated || look !== lastLook) {
     lastLook = look;
+    prefs = {...prefs, ...(snapshot.prefs || {})};
+    // These two used to be saved per browser; an earlier "off" moves to the server's Fun and effects settings.
+    for (const [legacy, key] of [['linkPreviews', 'linkPreviews'], ['autoPictures', 'gifs']]) {
+      if (localStorage.getItem(legacy) !== 'off') continue;
+      localStorage.removeItem(legacy);
+      if (prefs[key]) { prefs[key] = false; api('settings', {prefs: {[key]: false}}).catch(() => {}); }
+    }
+    chatAccounts = snapshot.accounts || [];
     phoneLook = snapshot.appearance || {};
     followPhone = snapshot.follow_phone !== false;
     webLook = snapshot.web_appearance || webLook;
@@ -577,12 +721,21 @@ async function refresh() {
     showMessages(true);
     refreshed = true;
   }
-  get('status').textContent = updated ? 'Phone synced ' + new Date(updated).toLocaleTimeString()
-    : 'No phone connected · internet chats work here';
+  // The phone is an add-on: its sync time shows once it's connected, and nothing is said about it before.
+  get('status').textContent = phonePaired() ? 'Phone synced ' + new Date(updated).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'}) : '';
+  get('folder').hidden = !phonePaired();
   showJobs(jobs);
 }
 
-function showError(error) { get('schedule-status').textContent = error.message; }
+let statusTimer = 0;
+function showError(error) { say(error.message, true); }
+/** A short line under the composer. Confirmations fade after a few seconds; problems stay until the next action. */
+function say(text, sticky = false) {
+  const line = get('schedule-status');
+  line.textContent = text;
+  clearTimeout(statusTimer);
+  if (!sticky && text) statusTimer = setTimeout(() => { if (line.textContent === text) line.textContent = ''; }, 4000);
+}
 
 async function send(body, text, relation, due = Date.now(), attachment) {
   const protocol = threadProtocol(active);
@@ -593,19 +746,25 @@ async function send(body, text, relation, due = Date.now(), attachment) {
     relation: relation && relation.target ? relation : undefined, due: due > Date.now() + 30000 ? due : undefined,
     attachment: attachment || undefined});
   if (currentSession !== session) return;
-  get('schedule-status').textContent = due > Date.now() + 30000 ? 'Scheduled on FluidMessages Web for ' + new Date(due).toLocaleString() + '.'
-    : 'Queued on FluidMessages Web.';
+  say(due > Date.now() + 30000 ? 'Scheduled for ' + new Date(due).toLocaleString() + '.' : 'Sending…');
   refresh().catch(() => { get('status').textContent = 'Sync unavailable'; });
 }
 
 async function download(message) {
   const response = await fetch('/api/protocols/file?id=' + encodeURIComponent(message.id), {headers: REQUEST_HEADERS});
   if (!response.ok) throw new Error('The attachment is no longer on FluidMessages Web.');
-  const url = URL.createObjectURL(await response.blob());
+  saveBlob(await response.blob(), message.attachment.name);
+}
+
+/** Saves a file the browser already has, under a safe name. */
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
   const link = element('a', '');
   link.href = url;
-  link.download = message.attachment.name;
+  link.download = (name || 'download').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').trim().slice(0, 120) || 'download';
+  document.body.append(link);
   link.click();
+  link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
@@ -613,8 +772,8 @@ async function queueSms(body, address, due) {
   const currentSession = session;
   await api('schedule', {address, body, due});
   if (currentSession !== session) return;
-  get('schedule-status').textContent = due > Date.now() + 30000 ? 'Scheduled. Your phone sends it after ' + new Date(due).toLocaleString() + '.'
-    : 'Queued for your phone.';
+  say(due > Date.now() + 30000 ? 'Scheduled. Your phone sends it after ' + new Date(due).toLocaleString() + '.'
+    : phonePaired() ? 'Queued for your phone.' : 'Waiting for your phone. Connect it in Settings to send texts.');
   refresh().catch(() => { get('status').textContent = 'Sync unavailable'; });
 }
 
@@ -627,11 +786,11 @@ function showSignIn(mode, message = '') {
   get('pair').hidden = false;
   get('workspace').hidden = true;
   for (const [id, name] of [['setup-form', 'setup'], ['login-form', 'login'], ['token-form', 'token']]) get(id).hidden = mode !== name;
-  get('sign-in-title').textContent = mode === 'setup' ? 'Welcome to FluidMessages Web' : 'Messages on the web';
+  get('sign-in-title').textContent = mode === 'setup' ? 'Set up FluidMessages' : 'Welcome back';
   get('sign-in-intro').textContent = mode === 'setup'
-    ? 'Create a password for this server. Matrix, XMPP, Email, and IRC work here on their own; texts go through your Android phone once it’s connected.'
+    ? 'You’re opening FluidMessages from another device. Enter the setup code from the server and choose a password for your other devices.'
     : mode === 'token' ? 'Sign in with an access token: the server’s FLUID_TOKEN or a phone pairing token.'
-      : 'Sign in to read and send your messages.';
+      : 'Enter your FluidMessages password to open your chats.';
   get('pair-error').textContent = message;
   get('reset-help').hidden = mode === 'setup';
   const first = {setup: 'setup-code', login: 'login-password', token: 'token'}[mode];
@@ -655,9 +814,9 @@ async function enterWorkspace() {
   for (const id of ['setup-form', 'login-form', 'token-form']) get(id).reset();
   get('pair-error').textContent = '';
   get('pair').hidden = true;
+  // First run: a short welcome (look, accounts, and the optional phone) before the inbox.
+  if (!welcomed && typeof showWelcome === 'function') { showWelcome(); return; }
   get('workspace').hidden = false;
-  get('disconnect').hidden = false;
-  get('open-queue').hidden = false;
 }
 
 function signInForm(id, run) {
@@ -724,20 +883,21 @@ function signOutHere(message = '') {
   get('transport').textContent = '';
   get('avatar').textContent = '';
   delete get('workspace').dataset.thread;
-  get('status').textContent = 'Signed out';
-  get('disconnect').hidden = true;
+  get('status').textContent = '';
   get('open-queue').hidden = true;
-  fetch('/api/auth', {headers: REQUEST_HEADERS}).then((response) => response.json())
-    .then((state) => showSignIn(state.owner ? 'login' : 'setup', message)).catch(() => showSignIn('login', message));
+  get('welcome').hidden = true;
+  // On this computer the app simply opens again; elsewhere it asks for the password.
+  start(message).catch(() => showSignIn('login', message));
 }
 
-get('disconnect').addEventListener('click', async () => {
+/** Signing out, from Settings. On this computer there's nothing to sign out of, so it isn't offered there. */
+async function signOut() {
   await authCall('logout').catch(() => {});
   signOutHere();
-});
+}
 get('folder').addEventListener('change', showThreads);
 get('search').addEventListener('input', showThreads);
-get('new').addEventListener('click', () => { select(''); get('address').focus(); });
+get('new').addEventListener('click', () => openNewChat());
 get('back').addEventListener('click', () => { delete get('workspace').dataset.thread; get('threads').querySelector('[aria-current="true"]')?.focus(); });
 get('open-queue').addEventListener('click', () => {
   get('queue-status').textContent = '';
@@ -749,7 +909,7 @@ get('call').addEventListener('click', async () => {
   get('call').disabled = true;
   try {
     await api('call', {address: threadAddress(active)});
-    get('schedule-status').textContent = 'Sent to your phone. Tap the notification there to call.';
+    say('Sent to your phone. Tap the notification there to call.');
   } catch (error) { showError(error); }
   finally { setTimeout(() => { get('call').disabled = false; }, 3000); }
 });
@@ -760,25 +920,36 @@ get('body').addEventListener('keydown', (event) => {
     get('schedule').requestSubmit();
   }
 });
+// The message box grows with what you type, up to a few lines, then scrolls.
+get('body').addEventListener('input', () => {
+  const box = get('body');
+  box.style.height = 'auto';
+  box.style.height = Math.min(box.scrollHeight + 2, 180) + 'px';
+});
 get('schedule').addEventListener('submit', async (event) => {
   event.preventDefault();
   const currentSession = session;
   const address = get('address').value.trim();
   const draft = get('body').value;
   const current = active;
-  const body = reply ? 'Reply to “' + excerpt(reply, 240) + '”\n\n' + draft : draft;
-  if (!draft.trim()) { showError(new Error('Enter a message')); return; }
+  // A chosen effect rides along with the next message: "words\n(sent with Confetti 🎉)".
+  const effect = typeof composerEffect === 'function' ? composerEffect() : null;
+  const withEffect = (text) => effect ? effectText(text, effect) : text;
+  const body = withEffect(reply ? 'Reply to “' + excerpt(reply, 240) + '”\n\n' + draft : draft);
+  if (!draft.trim()) { showError(new Error(effect ? 'Type a message to send with ' + effect + '.' : 'Type a message first.')); get('body').focus(); return; }
   get('send').disabled = true;
+  say('');
   try {
     const due = get('due').value;
     const when = due && get('later').open ? new Date(due).getTime() : Date.now();
-    if (active && internet(threadProtocol(active))) await send(body, draft, reply ? {kind: 'reply', target: replyId} : null, when);
+    if (active && internet(threadProtocol(active))) await send(body, withEffect(draft), reply ? {kind: 'reply', target: replyId} : null, when);
     else await queueSms(body, address, when);
     if (currentSession === session && current === active) {
       get('body').value = '';
       drafts.delete(current);
       setReply('');
       get('later').open = false;
+      if (effect) setComposerEffect(null);
     }
   } catch (error) {
     if (currentSession === session) showError(error);
@@ -792,8 +963,11 @@ setInterval(() => {
   });
 }, 5000);
 
-/** Opens the app: signed in already, or a token handed over by the desktop app, or the password page. */
-async function start() {
+/**
+ * Opens the app. On the computer FluidMessages runs on it simply opens, like any app. Elsewhere: signed in
+ * already, a token handed over by the desktop app, or the password page.
+ */
+async function start(message = '') {
   // The desktop app opens with its token after "#token=", which never leaves the browser. It's swapped for a
   // session cookie at once and forgotten. Browsers that kept the old token sign in the same way, once.
   let handed = '';
@@ -803,15 +977,24 @@ async function start() {
   }
   const kept = localStorage.getItem('fluidToken') || '';
   localStorage.removeItem('fluidToken');
-  for (const value of [handed, kept]) {
-    if (!/^[0-9A-Za-z_-]{32,256}$/.test(value)) continue;
-    try { await authCall('token', {token: value, remember: true}); break; } catch (error) { /* try the next one */ }
+  let state = await (await fetch('/api/auth', {headers: REQUEST_HEADERS})).json();
+  localHere = !!state.local;
+  // This computer first, so its access is remembered even when the desktop app also hands over a token.
+  // At most once every few seconds, so a server that keeps ending sessions can't make the page loop.
+  if (!state.signed_in && state.local && Date.now() - lastLocalSignIn > 5000) {
+    lastLocalSignIn = Date.now();
+    try { await authCall('local'); state = {...state, signed_in: true}; } catch (error) { localHere = false; }
   }
-  const state = await (await fetch('/api/auth', {headers: REQUEST_HEADERS})).json();
+  if (!state.signed_in) {
+    for (const value of [handed, kept]) {
+      if (!/^[0-9A-Za-z_-]{32,256}$/.test(value)) continue;
+      try { await authCall('token', {token: value, remember: true}); state = {...state, signed_in: true}; break; } catch (error) { /* try the next one */ }
+    }
+  }
   if (state.signed_in) {
     try { await enterWorkspace(); return; } catch (error) { signedIn = false; }
   }
-  showSignIn(state.owner ? 'login' : 'setup');
+  showSignIn(state.owner ? 'login' : 'setup', message);
 }
 
 applyAppearance(themeAppearance({theme: 'fluid', mode: 'system'}));

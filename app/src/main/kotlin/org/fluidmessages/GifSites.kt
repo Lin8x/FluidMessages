@@ -368,7 +368,7 @@ internal fun GifSiteBrowser(prefs: SharedPreferences, startQuery: String, dismis
                     TextButton(onClick = { tip = false; prefs.edit().putBoolean("gifSite.tipSeen", true).apply() }) { Text("Got it") }
                 }
                 if (site == null) {
-                    Text("All GIF sites are turned off. Turn one on in Settings → Media, GIFs, and links.", Modifier.padding(20.dp))
+                    Text("All GIF sites are turned off. Turn one on in Settings → Media, GIFs, and fun.", Modifier.padding(20.dp))
                 } else AndroidView(factory = { viewContext ->
                     WebView(viewContext).apply {
                         settings.javaScriptEnabled = true

@@ -145,6 +145,15 @@ internal fun parseEdit(text: String): Pair<String, String>? {
     return match.groupValues[1] to match.groupValues[2]
 }
 
+/** Switches in Settings → Media, GIFs, and fun, so people choose what plays and what shows. */
+object FunSettings {
+    @JvmStatic fun effects(prefs: android.content.SharedPreferences) = prefs.getBoolean("fun.effects", true)
+    @JvmStatic fun reactions(prefs: android.content.SharedPreferences) = prefs.getBoolean("fun.reactions", true)
+    @JvmStatic fun games(prefs: android.content.SharedPreferences) = prefs.getBoolean("fun.games", true)
+    @JvmStatic fun random(prefs: android.content.SharedPreferences) = prefs.getBoolean("fun.random", true)
+    @JvmStatic fun set(prefs: android.content.SharedPreferences, key: String, on: Boolean) { prefs.edit().putBoolean("fun.$key", on).apply() }
+}
+
 // Effects: a line at the end, "(sent with Confetti 🎉)". Other apps just show the line.
 
 internal enum class MessageEffect(val label: String, val emoji: String, val screen: Boolean, val detail: String) {

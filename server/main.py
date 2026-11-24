@@ -25,13 +25,22 @@ DB = Path(os.environ.get("FLUID_DB", "data/fluid.sqlite"))
 TOKEN = os.environ.get("FLUID_TOKEN", "").strip()
 # Optional extra origins (like https://messages.example.org) for older browsers behind a proxy that rewrites Host.
 ORIGINS = {item.strip().rstrip("/") for item in os.environ.get("FLUID_ORIGINS", "").split(",") if item.strip()}
+# Set by the default Docker Compose file together with its 127.0.0.1-only port: only this computer can reach the
+# container, which sees the Docker gateway's address instead of loopback. Remove it before exposing the port.
+LOCAL_ONLY = os.environ.get("FLUID_LOCAL_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
 FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
          "/style.css": ("style.css", "text/css"), "/icon.webp": ("icon.webp", "image/webp"),
          "/companion.js": ("companion.js", "text/javascript"), "/call.js": ("shared/call.js", "text/javascript"),
          "/cards.js": ("cards.js", "text/javascript"), "/chess.js": ("shared/chess.js", "text/javascript"),
+         "/welcome.js": ("welcome.js", "text/javascript"),
          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/sw.js": ("sw.js", "text/javascript"),
+         "/favicon.ico": ("icons/favicon.ico", "image/x-icon"), "/icons/favicon-32.png": ("icons/favicon-32.png", "image/png"),
          "/icons/icon-192.png": ("icons/icon-192.png", "image/png"), "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
+         "/icons/maskable-192.png": ("icons/maskable-192.png", "image/png"),
+         "/icons/maskable-512.png": ("icons/maskable-512.png", "image/png"),
          "/icons/apple-touch-icon.png": ("icons/apple-touch-icon.png", "image/png")}
+# Fun and effects, kept for this server (every browser), never taken from the phone.
+PREFS = ("effects", "reactionEffects", "games", "random", "gifs", "linkPreviews")
 
 def appearance_snapshot(value):
     if not isinstance(value, dict):
@@ -102,10 +111,30 @@ def web_appearance(db):
     return json.loads(row[0]) if row else {"theme": "fluid", "mode": "system"}
 
 
+def web_prefs(db):
+    row = db.execute("SELECT value FROM protocol_state WHERE key='prefs'").fetchone()
+    stored = json.loads(row[0]) if row else {}
+    return {key: stored.get(key, True) is not False for key in PREFS}
+
+
+def clean_prefs(value, current):
+    if not isinstance(value, dict) or any(key not in PREFS or type(item) is not bool for key, item in value.items()):
+        raise ValueError("Invalid preferences")
+    return {**current, **value}
+
+
+def welcomed(db):
+    """First-run welcome is done, or this install was in use before it existed."""
+    if db.execute("SELECT 1 FROM protocol_state WHERE key='welcomed'").fetchone():
+        return True
+    return (authority.has_owner(db) or db.execute("SELECT 1 FROM inbox").fetchone() is not None
+            or db.execute("SELECT 1 FROM protocol_messages LIMIT 1").fetchone() is not None or bool(gateway.accounts.redacted()))
+
+
 def settings_view(db):
     """FluidMessages Web's own settings, and whether a phone has synced, so the browser works with or without one."""
     row = db.execute("SELECT updated FROM inbox WHERE id=1").fetchone()
-    return {**gateway.settings(db), "web_appearance": web_appearance(db),
+    return {**gateway.settings(db), "web_appearance": web_appearance(db), "prefs": web_prefs(db), "welcomed": welcomed(db),
             "phone": {"paired": row is not None, "last_sync": row[0] if row else None}}
 
 
@@ -123,7 +152,9 @@ def protocol_settings(db):
 CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://lichess.org; "
        "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 COOKIE, SECURE_COOKIE = "fluid-session", "__Host-fluid-session"
-AUTH_OPEN = ("/api/auth/setup", "/api/auth/login", "/api/auth/token", "/api/auth/logout")
+AUTH_OPEN = ("/api/auth/setup", "/api/auth/login", "/api/auth/token", "/api/auth/logout", "/api/auth/local")
+STATIC_CACHE = "no-cache"
+ICON_CACHE = "public, max-age=86400"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -152,18 +183,25 @@ class Handler(BaseHTTPRequestHandler):
         if self.https():
             self.send_header("Strict-Transport-Security", "max-age=31536000")
 
-    def reply(self, status, payload, content_type="application/json", headers=()):
+    def reply(self, status, payload, content_type="application/json", headers=(), cache="no-store", body=True):
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(status)
         text = content_type.startswith(("text/", "application/json", "application/manifest"))
         self.send_header("Content-Type", content_type + ("; charset=utf-8" if text else ""))
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.security_headers()
         for name, value in headers:
             self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(data)
+        if body:
+            self.wfile.write(data)
+
+    def static(self, path, body=True):
+        """The app's own files. Icons may be cached for a day; the rest is checked each time so updates show at once."""
+        name, content_type = FILES[path]
+        cache = ICON_CACHE if content_type.startswith("image/") else STATIC_CACHE
+        self.reply(200, (ROOT / name).read_bytes(), content_type, cache=cache, body=body)
 
     # Signing in
 
@@ -173,6 +211,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def client(self):
         return auth.client_key(self.client_address[0], self.headers.get("X-Forwarded-For", ""))
+
+    def here(self, need_origin=False):
+        """The request comes from the computer FluidMessages Web runs on (see auth.from_this_computer). Browsers speak
+        HTTP/1.1; nginx passes requests on as HTTP/1.0 unless told otherwise, so those never count, even when a
+        proxy on this computer was set up without X-Forwarded-For."""
+        return self.request_version == "HTTP/1.1" and auth.from_this_computer(self.client_address[0], self.headers, LOCAL_ONLY, need_origin)
 
     def cookie(self):
         try:
@@ -245,7 +289,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "GET":
             with closing(connect()) as db, db:
                 signed_in = authority.session(db, self.cookie()) is not None
-                self.reply(200, {"owner": authority.has_owner(db), "signed_in": signed_in})
+                # "local": this browser is on the computer FluidMessages Web runs on, so it opens without a password.
+                self.reply(200, {"owner": authority.has_owner(db), "signed_in": signed_in,
+                                 "local": self.here() and authority.local_enabled(db)})
             return
         if not self.same_origin():
             self.reply(403, {"error": "This request didn't come from FluidMessages Web"})
@@ -262,6 +308,10 @@ class Handler(BaseHTTPRequestHandler):
                     value, persistent = authority.login(db, self.client(), data.get("password"), remember, label)
                 elif path == "/api/auth/token":
                     value, persistent = authority.login_with_token(db, self.client(), data.get("token"), remember, label)
+                elif path == "/api/auth/local":
+                    if not self.here(need_origin=True):
+                        raise auth.Refused(403, "Sign in to open FluidMessages Web on this device.")
+                    value, persistent = authority.local_session(db, "This computer")
                 else:
                     authority.end_session(db, self.cookie())
                     self.reply(200, {"signed_in": False}, headers=self.clear_cookies())
@@ -286,19 +336,30 @@ class Handler(BaseHTTPRequestHandler):
                 return {**self.security_view(db), "token": token}
             elif self.path == "/api/auth/pairing/delete":
                 authority.remove_pairing(db)
+            elif self.path == "/api/auth/local-access":
+                if type(data.get("enabled")) is not bool:
+                    raise ValueError("Invalid setting")
+                authority.set_local(db, data["enabled"])
             else:
                 raise ValueError("Unknown endpoint")
             return self.security_view(db)
 
     def security_view(self, db):
         return {"owner": authority.has_owner(db), "sessions": authority.session_count(db),
-                "pairing": authority.pairing_status(db), "https": self.https()}
+                "pairing": authority.pairing_status(db), "https": self.https(),
+                "local": authority.local_enabled(db), "here": self.here(), "local_only": LOCAL_ONLY}
+
+    def do_HEAD(self):
+        path = urlsplit(self.path).path
+        if path in FILES:
+            self.static(path, body=False)
+        else:
+            self.reply(404, {"error": "Unknown endpoint"}, body=False)
 
     def do_GET(self):
         path = urlsplit(self.path).path
         if path in FILES:
-            name, content_type = FILES[path]
-            self.reply(200, (ROOT / name).read_bytes(), content_type)
+            self.static(path)
             return
         if path == "/api/auth":
             self.auth_request(path)
@@ -350,10 +411,12 @@ class Handler(BaseHTTPRequestHandler):
                 messages = phone + history["messages"]
                 messages.sort(key=lambda message: message["date"], reverse=True)
                 self.reply(200, {"messages": messages, "routes": history["routes"], "enabled": history["enabled"],
+                                 "accounts": history["accounts"],
                                  "updated": row["updated"] if row else None,
                                  "appearance": json.loads(row["appearance"]) if row and row["appearance"] else {},
                                  # Which settings the browser uses: the phone's (the default) or its own.
-                                 "follow_phone": settings["follow_phone"], "web_appearance": web_appearance(db)})
+                                 "follow_phone": settings["follow_phone"], "web_appearance": web_appearance(db),
+                                 "prefs": web_prefs(db), "welcomed": welcomed(db)})
             elif self.path.startswith("/api/calls?since="):
                 since = self.path.removeprefix("/api/calls?since=")
                 self.reply(200, gateway.call_events(int(since) if since.isdigit() else 0))
@@ -485,8 +548,13 @@ class Handler(BaseHTTPRequestHandler):
                 if "web_appearance" in data:
                     db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_appearance', ?)",
                                (json.dumps(clean_web_appearance(data.pop("web_appearance"))),))
+                if "prefs" in data:
+                    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('prefs', ?)",
+                               (json.dumps(clean_prefs(data.pop("prefs"), web_prefs(db))),))
+                if data.pop("welcomed", None) is True:
+                    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('welcomed', 'true')")
                 if data.get("reset") is True:
-                    db.execute("DELETE FROM protocol_state WHERE key='web_appearance'")
+                    db.execute("DELETE FROM protocol_state WHERE key IN ('web_appearance', 'prefs')")
                 gateway.save_settings(db, data)
                 return settings_view(db)
             if self.path == "/api/protocols/routes/delete":
@@ -609,8 +677,10 @@ if __name__ == "__main__":
         code = authority.setup_code(db)
     if code:
         # Shown until a password is set, then it stops working. It's also in the data folder's setup-code file.
-        print("FluidMessages Web: open it in your browser to create your password. One-time setup code: "
-              + authority.pretty(code), flush=True)
+        # On this computer the app opens without it; the code is only for setting it up from another device.
+        print("FluidMessages Web: open http://localhost:%s on this computer to start. To set it up from another device "
+              "instead, use this one-time setup code: %s" % (os.environ.get("FLUID_PORT", "8080"), authority.pretty(code)),
+              flush=True)
     files = Path(os.environ.get("FLUID_FILES") or DB.parent / "protocol-files")
     legacy = protocol_gateway.configured()
     account_store = accounts.AccountStore(DB.parent / "protocol-accounts.json", legacy=legacy)

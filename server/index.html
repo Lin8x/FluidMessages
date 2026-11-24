@@ -2,45 +2,46 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>FluidMessages</title>
-<link rel="icon" type="image/webp" href="/icon.webp">
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#3bb85f">
-<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="FluidMessages">
 <link rel="stylesheet" href="/style.css">
 <script src="/call.js" defer></script>
 <script src="/app.js" defer></script>
 <script src="/companion.js" defer></script>
 <script src="/chess.js" defer></script>
 <script src="/cards.js" defer></script>
+<script src="/welcome.js" defer></script>
 </head>
 <body>
 <header class="topbar">
-  <span class="brand"><img class="brand-mark" src="/icon.webp" alt="" width="28" height="28">FluidMessages</span>
+  <span class="brand"><img class="brand-mark" src="/icons/icon-192.png" alt="" width="28" height="28">FluidMessages</span>
   <span id="status" class="status" role="status" aria-live="polite"></span>
-  <button id="open-queue" type="button" hidden>Scheduled</button>
-  <button id="disconnect" type="button" hidden>Sign out</button>
 </header>
 <a class="skip" href="#conversation">Skip to messages</a>
 <main>
   <section id="pair" class="pair" aria-labelledby="sign-in-title" hidden>
-    <img class="app-icon" src="/icon.webp" alt="" width="96" height="96">
-    <h1 id="sign-in-title">Messages on the web</h1>
+    <img class="app-icon" src="/icons/icon-192.png" alt="" width="96" height="96">
+    <h1 id="sign-in-title">FluidMessages</h1>
     <p id="sign-in-intro"></p>
     <form id="setup-form" class="sign-in-form" hidden>
       <label>Setup code
         <input id="setup-code" required autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" maxlength="300" aria-describedby="setup-code-help">
       </label>
-      <p id="setup-code-help" class="hint">It’s in the server’s log (Portainer: the container’s <strong>Logs</strong>; Docker: <code>docker compose logs fluidmessages</code>) and in its data folder as <code>setup-code</code>. It stops working once you’ve made a password, so nobody else can claim this server.</p>
+      <p id="setup-code-help" class="hint">It’s in the server’s log (<code>docker compose logs fluidmessages</code>, or the container’s <strong>Logs</strong> in Portainer). Or open FluidMessages on the server’s own computer, where no code is needed.</p>
       <input type="text" name="username" autocomplete="username" value="FluidMessages Web" hidden>
       <label>New password
         <span class="password-row"><input id="setup-password" type="password" required minlength="8" maxlength="1024" autocomplete="new-password" aria-describedby="setup-password-help"><button id="show-setup-password" type="button" class="quiet" aria-pressed="false" aria-label="Show password">Show</button></span>
       </label>
       <p id="setup-password-help" class="hint">At least 8 characters. A few words together is easy to remember and hard to guess.</p>
       <label>Type it again<input id="setup-confirm" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label>
-      <label class="remember"><input id="setup-remember" type="checkbox" checked> Keep me signed in on this browser for 30 days</label>
+      <label class="remember"><input id="setup-remember" type="checkbox" checked> Keep me signed in for 30 days</label>
       <button class="primary">Create password and open</button>
       <button id="setup-use-token" type="button" class="quiet">I have an access token</button>
     </form>
@@ -49,26 +50,28 @@
       <label>Password
         <span class="password-row"><input id="login-password" type="password" required maxlength="1024" autocomplete="current-password"><button id="show-login-password" type="button" class="quiet" aria-pressed="false" aria-label="Show password">Show</button></span>
       </label>
-      <label class="remember"><input id="login-remember" type="checkbox"> Keep me signed in on this browser for 30 days</label>
+      <label class="remember"><input id="login-remember" type="checkbox"> Keep me signed in for 30 days</label>
       <button class="primary">Sign in</button>
       <button id="use-token" type="button" class="quiet">Use an access token instead</button>
     </form>
     <form id="token-form" class="sign-in-form" hidden>
       <label>Access token<input id="token" type="password" required autocomplete="off" spellcheck="false"></label>
-      <label class="remember"><input id="remember" type="checkbox"> Keep me signed in on this browser for 30 days</label>
+      <label class="remember"><input id="remember" type="checkbox"> Keep me signed in for 30 days</label>
       <button class="primary">Sign in</button>
       <button id="use-password" type="button" class="quiet">Back</button>
     </form>
     <p id="pair-error" class="error" role="alert"></p>
     <details id="reset-help" class="help">
       <summary>Forgot your password?</summary>
-      <p>On the server, run <code>docker compose exec fluidmessages python main.py reset-password</code>. It signs out every browser and prints a new setup code, so you can choose a new password. Your messages and accounts stay. If your server has a <code>FLUID_TOKEN</code>, you can also sign in with it and change the password in Settings.</p>
+      <p>Open FluidMessages on the computer it runs on: it opens there without a password, and <strong>Settings → Phone and other devices</strong> sets a new one. Or, on the server, run <code>docker compose exec fluidmessages python main.py reset-password</code>. Your messages and accounts stay.</p>
     </details>
   </section>
+  <section id="welcome" class="welcome" aria-labelledby="welcome-title" hidden></section>
   <section id="workspace" class="workspace" hidden>
     <aside class="sidebar" aria-label="Inbox">
       <div class="sidebar-head">
-        <h1>Messages</h1>
+        <h1>Chats</h1>
+        <button id="open-queue" class="chip-button" type="button" hidden>Scheduled</button>
         <select id="folder" aria-label="Inbox filter">
           <option>Inbox</option><option>Archived</option><option>Blocked</option>
         </select>
@@ -76,14 +79,14 @@
       <nav id="threads" aria-label="Conversations"></nav>
       <div class="search-dock">
         <input id="search" type="search" placeholder="Search" aria-label="Search conversations">
-        <button id="new" class="icon-button" type="button" aria-label="New SMS" title="New SMS">＋</button>
+        <button id="new" class="new-chat primary" type="button" title="Start a new chat"><span aria-hidden="true">＋</span> New chat</button>
       </div>
     </aside>
     <article class="thread-pane">
       <div class="thread-head">
-        <button id="back" class="icon-button" type="button" aria-label="Back to messages">‹</button>
+        <button id="back" class="icon-button" type="button" aria-label="Back to chats">‹</button>
         <span id="avatar" class="avatar" aria-hidden="true"></span>
-        <div><h2 id="recipient">Messages</h2><span id="transport"></span></div>
+        <div class="thread-title"><h2 id="recipient">Chats</h2><span id="transport"></span></div>
         <button id="call" class="call-button" type="button" hidden title="Call from your phone">Call</button>
       </div>
       <div id="conversation" aria-label="Messages" tabindex="0"></div>
@@ -91,11 +94,15 @@
       <form id="schedule" class="composer" hidden>
         <label id="address-field">To<input id="address" type="tel" required placeholder="Phone number"></label>
         <div id="reply" class="quote composer-reply" hidden>
-          <span id="reply-text"></span><button id="cancel-reply" type="button" aria-label="Clear reply">×</button>
+          <span id="reply-text"></span><button id="cancel-reply" type="button" class="icon-button small" aria-label="Clear reply">×</button>
+        </div>
+        <div id="effect-chip" class="effect-chip" hidden>
+          <button id="switch-effect" type="button" class="effect-name" aria-label="Change the effect"></button>
+          <button id="cancel-effect" type="button" class="icon-button small" aria-label="Send without an effect">×</button>
         </div>
         <div class="compose-row">
-          <textarea id="body" maxlength="1600" required rows="2" placeholder="Text message" aria-label="Message"></textarea>
-          <button class="primary" id="send">Send SMS</button>
+          <textarea id="body" maxlength="1600" rows="1" placeholder="Message" aria-label="Message"></textarea>
+          <button class="primary send-button" id="send">Send</button>
         </div>
         <details id="later"><summary>Send later</summary>
           <label>Send after<input id="due" type="datetime-local"></label>
@@ -108,7 +115,7 @@
 <dialog id="queue" class="sheet" aria-labelledby="queue-title">
   <div class="sheet-head"><button id="close-queue" type="button" class="sheet-back" aria-label="Back"><span aria-hidden="true">‹</span> Back</button><h2 id="queue-title">Scheduled messages</h2></div>
   <div class="sheet-body">
-    <p class="muted">Texts wait here until your phone sends them; internet messages send from FluidMessages Web at their time. Cancel any that haven’t gone yet.</p>
+    <p class="muted">Internet messages send from here at their time; texts wait for your phone. Cancel any that haven’t gone yet.</p>
     <div id="jobs"></div>
     <p id="queue-status" role="status"></p>
   </div>

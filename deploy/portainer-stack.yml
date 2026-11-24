@@ -1,11 +1,15 @@
 # FluidMessages Web for Portainer: Stacks → Add stack → Web editor, and paste this. Uses the published image, so nothing
-# is built. On first visit you create a password, using the one-time setup code shown in the container's log.
+# is built. Open http://localhost:8080 on the Docker host and it starts right away, no password.
+# Running Portainer on a server you reach from another computer? Delete the FLUID_LOCAL_ONLY line, then open the
+# app from your computer and enter the one-time setup code from the container's Logs to choose a password.
 # Optional: add an environment variable FLUID_TOKEN (openssl rand -hex 32) for a fixed token for your phone or scripts.
-# Then put an HTTPS reverse proxy in front of port 8080 so your phone can connect.
+# For your phone, put an HTTPS reverse proxy in front of port 8080 (and delete FLUID_LOCAL_ONLY).
 services:
   fluidmessages:
     image: ghcr.io/lin8x/fluidmessages-web:latest
     environment:
+      # Only while the port below stays 127.0.0.1: the Docker host itself opens the app without a password.
+      FLUID_LOCAL_ONLY: "1"
       FLUID_TOKEN: ${FLUID_TOKEN:-}
       RCLONE_CONFIG: /data/rclone.conf
     ports:

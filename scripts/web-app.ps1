@@ -46,8 +46,8 @@ for ($i = 0; $i -lt 50; $i++) {
 
 Write-Host ""
 Write-Host "  FluidMessages Web is running at $url"
-Write-Host "  The window it opens signs you in automatically. From another browser, use"
-Write-Host "  'Use an access token instead' with the token saved in $tokenFile."
+Write-Host "  It opens without a password in any browser on this computer. Other devices need a"
+Write-Host "  password, which you can set in Settings -> Phone and other devices."
 Write-Host ""
 Write-Host "  To install it as an app: in Edge or Chrome, use the Install button in the address bar or the menu."
 Write-Host "  Press Ctrl+C to stop."

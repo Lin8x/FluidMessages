@@ -38,10 +38,20 @@ internal fun AttachmentSheet(sources: List<AttachmentSource>, accent: Color, not
         Column(Modifier.fillMaxWidth().verticalScroll(androidx.compose.foundation.rememberScrollState())
             .padding(horizontal = 16.dp).padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("Attach", style = MaterialTheme.typography.titleMedium)
             val fill = accessibleBubbleFill(accent)
             val ink = bubbleTextColor(accent)
-            for (row in sources.chunked(4)) {
+            // Grouped, so a long list of choices reads as three short ones.
+            val groups = listOf(
+                "Share" to listOf(AttachmentSource.GALLERY, AttachmentSource.CAMERA, AttachmentSource.DOCUMENT, AttachmentSource.AUDIO,
+                    AttachmentSource.LOCATION, AttachmentSource.CONTACT),
+                "Create" to listOf(AttachmentSource.EDIT, AttachmentSource.GIF, AttachmentSource.STICKER, AttachmentSource.POLL,
+                    AttachmentSource.EVENT, AttachmentSource.MONEY),
+                "Play" to listOf(AttachmentSource.GAMES, AttachmentSource.RANDOM, AttachmentSource.EFFECT))
+            for ((title, members) in groups) {
+            val shown = members.filter { it in sources }
+            if (shown.isEmpty()) continue
+            Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            for (row in shown.chunked(4)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     for (source in row) {
                         Column(Modifier.width(82.dp).clip(RoundedCornerShape(14.dp)).clickable(onClickLabel = source.label) {
@@ -57,6 +67,7 @@ internal fun AttachmentSheet(sources: List<AttachmentSource>, accent: Color, not
                     }
                     repeat(4 - row.size) { Spacer(Modifier.width(82.dp)) }
                 }
+            }
             }
             if (note.isNotEmpty()) Text(note, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         }

@@ -5,11 +5,20 @@
 // server (/api/picture, /api/preview), so the browser never contacts other sites.
 
 const cardBlobs = new Map();
+// The file behind each blob: address this page made. The page's security policy doesn't let it fetch blob:
+// addresses back, so saving or reading a file uses the kept Blob instead.
+const blobFiles = new Map();
+
+function blobUrl(blob) {
+  const url = URL.createObjectURL(blob);
+  blobFiles.set(url, blob);
+  return url;
+}
 
 async function authorizedBlob(path) {
   if (cardBlobs.has(path)) return cardBlobs.get(path);
   const pending = fetch(path, {headers: REQUEST_HEADERS})
-    .then((response) => (response.ok ? response.blob() : null)).then((blob) => (blob ? URL.createObjectURL(blob) : null))
+    .then((response) => (response.ok ? response.blob() : null)).then((blob) => (blob ? blobUrl(blob) : null))
     .catch(() => null);
   cardBlobs.set(path, pending);
   return pending;
@@ -25,38 +34,126 @@ function newCardId() {
   return [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('');
 }
 
-// The full-screen viewer
+// The full-screen viewer, with Download and Close at the top.
 
-function openViewer(src, alt) {
-  const overlay = element('div', '', 'viewer');
-  const picture = Object.assign(element('img', ''), {src, alt: alt || 'Picture'});
-  const close = element('button', '✕', 'viewer-close');
-  close.type = 'button';
-  close.setAttribute('aria-label', 'Close');
-  let zoomed = false;
-  picture.addEventListener('click', (event) => { event.stopPropagation(); zoomed = !zoomed; picture.classList.toggle('zoomed', zoomed); });
-  const done = () => { overlay.remove(); document.removeEventListener('keydown', key); };
-  const key = (event) => { if (event.key === 'Escape') done(); };
-  overlay.addEventListener('click', done);
-  close.addEventListener('click', done);
-  document.addEventListener('keydown', key);
-  overlay.append(picture, close);
-  document.body.append(overlay);
-  requestAnimationFrame(() => overlay.classList.add('open'));
+const DOWNLOAD_ICON = 'M12 3a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V4a1 1 0 0 1 1-1zM5 19h14a1 1 0 1 1 0 2H5a1 1 0 1 1 0-2z';
+
+function iconSvg(d) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', d);
+  path.setAttribute('fill', 'currentColor');
+  svg.append(path);
+  return svg;
 }
 
-function pictureElement(path, alt, sticker) {
+/** A sensible file name for a picture: its own name, or one from its link, with the right extension. */
+function mediaName(name, blob, fallback = 'Picture') {
+  const types = {'image/gif': 'gif', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/avif': 'avif', 'image/heic': 'heic',
+    'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov'};
+  let base = (name || '').split(/[?#]/)[0];
+  if (/^https?:/.test(base)) {
+    let parts = [];
+    try { parts = new URL(base).pathname.split('/').filter(Boolean).map(decodeURIComponent); } catch (error) { parts = []; }
+    let last = parts.pop() || '';
+    // GIF sites name every file giphy.gif or similar; the folder above it says which one it is.
+    if (/^(giphy|tenor|source|original|image|media|\d+)(\.\w+)?$/i.test(last) && parts.length) last = parts.pop() + (/\.\w+$/.exec(last)?.[0] || '');
+    base = last;
+  }
+  base = base.replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 100);
+  const extension = types[(blob?.type || '').split(';')[0]];
+  if (!base) base = fallback + ' ' + new Date().toISOString().slice(0, 10);
+  return /\.\w{2,5}$/.test(base) || !extension ? base : base + '.' + extension;
+}
+
+async function saveMedia(src, name, fallback) {
+  const blob = blobFiles.get(src);
+  if (!blob) throw new Error('That file isn’t available anymore. Reload and try again.');
+  saveBlob(blob, mediaName(name, blob, fallback));
+}
+
+function downloadButton(src, name, label, className = 'media-download') {
+  const button = element('button', '', className);
+  button.type = 'button';
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.append(iconSvg(DOWNLOAD_ICON));
+  button.addEventListener('click', (event) => { event.stopPropagation(); saveMedia(src, name).catch(showError); });
+  return button;
+}
+
+function openViewer(src, alt, name) {
+  const overlay = element('div', '', 'viewer');
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', alt || 'Picture');
+  const picture = Object.assign(element('img', ''), {src, alt: alt || 'Picture'});
+  const bar = element('div', '', 'viewer-bar');
+  const save = element('button', '', 'viewer-button');
+  save.type = 'button';
+  save.append(iconSvg(DOWNLOAD_ICON), element('span', 'Download'));
+  save.addEventListener('click', (event) => { event.stopPropagation(); saveMedia(src, name || alt, alt).catch(showError); });
+  const close = element('button', '✕', 'viewer-button viewer-close');
+  close.type = 'button';
+  close.setAttribute('aria-label', 'Close');
+  bar.append(save, close);
+  let zoomed = false;
+  picture.addEventListener('click', (event) => { event.stopPropagation(); zoomed = !zoomed; picture.classList.toggle('zoomed', zoomed); });
+  const opener = document.activeElement;
+  const done = () => { overlay.remove(); document.removeEventListener('keydown', key); opener?.focus?.(); };
+  const key = (event) => {
+    if (event.key === 'Escape') done();
+    // Keep Tab inside the viewer.
+    if (event.key === 'Tab') { event.preventDefault(); (document.activeElement === save ? close : save).focus(); }
+  };
+  overlay.addEventListener('click', done);
+  close.addEventListener('click', (event) => { event.stopPropagation(); done(); });
+  document.addEventListener('keydown', key);
+  overlay.append(picture, bar);
+  document.body.append(overlay);
+  requestAnimationFrame(() => { overlay.classList.add('open'); save.focus(); });
+}
+
+function pictureElement(path, alt, sticker, name) {
+  const holder = element('span', '', 'media' + (sticker ? ' sticker' : ''));
   const frame = element('button', '', sticker ? 'picture sticker' : 'picture');
   frame.type = 'button';
   frame.setAttribute('aria-label', 'View ' + (alt || 'picture') + ' full screen');
   const picture = Object.assign(element('img', ''), {alt: alt || '', loading: 'lazy'});
   frame.append(picture);
+  holder.append(frame);
+  // Files keep their own name; GIFs and stickers from links are named after their link.
+  let saveAs = name || '';
+  if (!saveAs && path.includes('?url=')) { try { saveAs = decodeURIComponent(path.split('?url=')[1]); } catch (error) { saveAs = ''; } }
   authorizedBlob(path).then((src) => {
-    if (!src) { frame.replaceWith(element('span', 'Picture unavailable', 'muted')); return; }
+    if (!src) { holder.replaceWith(element('span', (alt || 'Picture') + ' unavailable', 'muted')); return; }
     picture.src = src;
-    frame.addEventListener('click', () => openViewer(src, alt));
+    frame.addEventListener('click', () => openViewer(src, alt, saveAs));
+    holder.append(downloadButton(src, saveAs, 'Download ' + (alt || 'picture').toLowerCase()));
   });
-  return frame;
+  return holder;
+}
+
+/** Videos sent as files play right in the chat, with Download beside them. */
+function attachmentVideo(message, bubble) {
+  const file = message.attachment;
+  if (!file || !/^video\/(mp4|webm|ogg|quicktime)$/i.test(file.mime || '')) return false;
+  const holder = element('span', '', 'media video');
+  const video = Object.assign(document.createElement('video'), {controls: true, preload: 'metadata', playsInline: true});
+  video.setAttribute('aria-label', file.name || 'Video');
+  holder.append(video);
+  bubble.prepend(holder);
+  fetch('/api/protocols/file?id=' + encodeURIComponent(message.id), {headers: REQUEST_HEADERS})
+    .then((response) => (response.ok ? response.blob() : null)).then((blob) => {
+      if (!blob) { holder.replaceWith(element('span', 'Video unavailable', 'muted')); return; }
+      // The server sends every file as a download; give the browser the real type so it can play it.
+      const src = blobUrl(new Blob([blob], {type: file.mime}));
+      video.src = src;
+      holder.append(downloadButton(src, file.name, 'Download video'));
+    }).catch(() => holder.replaceWith(element('span', 'Video unavailable', 'muted')));
+  return true;
 }
 
 // Pictures, GIFs, and stickers sent as links
@@ -604,7 +701,7 @@ function previewableLink(text) {
 const previews = new Map();
 
 function linkPreview(link, bubble) {
-  if (localStorage.getItem('linkPreviews') === 'off') return;
+  if (!prefs.linkPreviews) return;
   if (!previews.has(link)) previews.set(link, fetch('/api/preview?url=' + encodeURIComponent(link), {headers: REQUEST_HEADERS})
     .then((response) => (response.ok ? response.json() : {})).then((data) => data.preview || null).catch(() => null));
   previews.get(link).then((preview) => {
@@ -629,7 +726,8 @@ function linkPreview(link, bubble) {
 function richCard(message, bubble, history) {
   const body = message.body || '';
   if (message.attachment) return false;
-  const picture = localStorage.getItem('autoPictures') === 'off' ? null : pictureLink(body);
+  // Fun and effects in Settings can turn GIFs, games, and dice into plain text.
+  const picture = prefs.gifs ? pictureLink(body) : null;
   if (picture) {
     bubble.replaceChildren(pictureElement('/api/picture?url=' + encodeURIComponent(picture.url), picture.sticker ? 'Sticker' : 'GIF', picture.sticker));
     if (picture.sticker) bubble.classList.add('sticker-bubble');
@@ -641,13 +739,13 @@ function richCard(message, bubble, history) {
   if (vote) { bubble.replaceChildren(element('span', '🗳️ Voted “' + vote[1] + '”', 'vote-line')); return true; }
   const event = parseEvent(body);
   if (event) { const card = eventCard(event); card.append(rsvpRow(event, message, history)); bubble.replaceChildren(card); return true; }
-  const game = trackGames(history).views.get(message);
+  const game = prefs.games && trackGames(history).views.get(message);
   if (game) { bubble.replaceChildren(gameCard(game)); return true; }
-  const rps = trackRps(history).get(message);
+  const rps = prefs.games && trackRps(history).get(message);
   if (rps) { bubble.replaceChildren(rpsCard(rps)); return true; }
-  const random = parseRandom(body);
+  const random = prefs.random && parseRandom(body);
   if (random) { bubble.replaceChildren(randomCard(random, message.type !== 1)); return true; }
-  const gameLink = parseGameLink(body);
+  const gameLink = prefs.games && parseGameLink(body);
   if (gameLink) { bubble.replaceChildren(gameLinkCard(gameLink, message.type !== 1)); return true; }
   const place = LOCATION.exec(body.trim());
   if (place) { bubble.replaceChildren(locationCard(place)); return true; }
@@ -661,7 +759,9 @@ function attachmentPicture(message, bubble) {
   const file = message.attachment;
   if (!file || !/^image\/(png|jpe?g|gif|webp|heic|avif)$/i.test(file.mime || '')) return false;
   const sticker = (file.name || '').startsWith('sticker');
-  bubble.prepend(pictureElement('/api/protocols/file?id=' + encodeURIComponent(message.id), file.name, sticker));
+  // With GIFs and stickers off, those show as a file to download instead.
+  if (!prefs.gifs && (sticker || /gif/i.test(file.mime))) return false;
+  bubble.prepend(pictureElement('/api/protocols/file?id=' + encodeURIComponent(message.id), sticker ? 'Sticker' : /gif/i.test(file.mime) ? 'GIF' : 'Photo', sticker, file.name));
   if (sticker) bubble.classList.add('sticker-bubble');
   return true;
 }
@@ -899,8 +999,7 @@ function internetChat() {
 }
 
 async function sendFile(blob, name) {
-  const status = get('schedule-status');
-  status.textContent = 'Uploading ' + name + '…';
+  say('Uploading ' + name + '…', true);
   const upload = await uploadFile(blob, name);
   const caption = get('body').value.trim();
   await send(caption || name, caption || name, null, Date.now(), {upload});
@@ -1002,10 +1101,10 @@ function openContact() {
 (() => {
   const row = document.querySelector('.compose-row');
   if (!row) return;
-  const more = element('button', '＋', 'icon-button');
+  const more = element('button', '＋', 'icon-button compose-more');
   more.type = 'button';
-  more.title = 'Money, photos and files, polls, events, games, and more';
-  more.setAttribute('aria-label', 'More: money, files, location, polls, events, games, and GIFs');
+  more.title = 'Photos, location, polls, effects, games, and more';
+  more.setAttribute('aria-label', 'Add: photos, location, money, polls, events, effects, GIFs, and games');
   more.setAttribute('aria-haspopup', 'true');
   more.setAttribute('aria-expanded', 'false');
   const menu = element('div', '', 'compose-menu');
@@ -1013,28 +1112,53 @@ function openContact() {
   more.setAttribute('aria-controls', menu.id);
   menu.hidden = true;
   const toggle = (open) => {
+    if (open) filter();
     menu.hidden = !open;
     more.setAttribute('aria-expanded', String(open));
-    if (open) menu.querySelector('button')?.focus();
+    if (open) [...menu.querySelectorAll('button')].find((button) => !button.hidden && !button.closest('[hidden]'))?.focus();
   };
-  for (const [label, run] of [['💸 Money', openMoney], ['📎 Photo or file', attachFile], ['📍 Location', openLocation], ['👤 Contact', openContact],
-    ['📊 Poll', openPoll], ['📅 Event', openEvent], ['🎮 Games', openGames], ['🎲 Dice and random', openRandom],
-    ['✨ Send with effect', openEffects], ['🖼️ GIF or sticker', openGifs]]) {
-    const item = element('button', label);
-    item.type = 'button';
-    item.addEventListener('click', () => {
-      toggle(false);
-      if (!active && !get('address').value.trim()) { showError(new Error('Choose a conversation first')); return; }
-      run();
-    });
-    menu.append(item);
+  const internetOnly = () => !!active && internet(threadProtocol(active));
+  const groups = [['Share', [['📎', 'Photo or file', attachFile, internetOnly], ['📍', 'Location', openLocation], ['👤', 'Contact', openContact, internetOnly],
+    ['💸', 'Money', openMoney]]],
+  ['Create', [['📊', 'Poll', openPoll], ['📅', 'Event', openEvent]]],
+  ['Fun', [['✨', 'Effect', openEffects, () => prefs.effects], ['🖼️', 'GIF or sticker', openGifs, () => prefs.gifs],
+    ['🎮', 'Games', openGames, () => prefs.games], ['🎲', 'Dice and random', openRandom, () => prefs.random]]]];
+  const items = [];
+  for (const [title, entries] of groups) {
+    const heading = element('small', title, 'menu-group');
+    heading.setAttribute('aria-hidden', 'true');
+    const grid = element('div', '', 'menu-grid');
+    grid.setAttribute('role', 'group');
+    grid.setAttribute('aria-label', title);
+    for (const [emoji, label, run, allowed] of entries) {
+      const item = element('button', '');
+      item.type = 'button';
+      item.append(Object.assign(element('span', emoji, 'menu-emoji'), {ariaHidden: 'true'}), element('span', label));
+      item.addEventListener('click', () => {
+        toggle(false);
+        if (!active && !get('address').value.trim()) { showError(new Error('Choose a chat first')); return; }
+        run();
+      });
+      items.push([item, allowed || (() => true)]);
+      grid.append(item);
+    }
+    menu.append(heading, grid);
   }
+  // Each time it opens: hide what doesn't apply here, and any group left empty.
+  const filter = () => {
+    for (const [item, allowed] of items) item.hidden = !allowed();
+    for (const grid of menu.querySelectorAll('.menu-grid')) {
+      const empty = ![...grid.children].some((child) => !child.hidden);
+      grid.hidden = empty;
+      grid.previousElementSibling.hidden = empty;
+    }
+  };
   menu.addEventListener('keydown', (event) => {
-    const items = [...menu.querySelectorAll('button')];
+    const items = [...menu.querySelectorAll('button')].filter((button) => !button.closest('[hidden]'));
     const index = items.indexOf(document.activeElement);
     if (event.key === 'Escape') { event.preventDefault(); toggle(false); more.focus(); }
-    else if (event.key === 'ArrowDown') { event.preventDefault(); items[(index + 1) % items.length].focus(); }
-    else if (event.key === 'ArrowUp') { event.preventDefault(); items[(index - 1 + items.length) % items.length].focus(); }
+    else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') { event.preventDefault(); items[(index + 1) % items.length].focus(); }
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') { event.preventDefault(); items[(index - 1 + items.length) % items.length].focus(); }
   });
   more.addEventListener('click', (event) => { event.stopPropagation(); toggle(menu.hidden); });
   document.addEventListener('click', (event) => { if (!menu.contains(event.target)) toggle(false); });
@@ -1168,7 +1292,7 @@ function playScreenEffect(effect) {
 
 /** Applies a message's effect to its bubble. [recent] messages play it once by themselves. */
 function messageEffect(message, bubble, recent) {
-  if (message.attachment) return;
+  if (message.attachment || !prefs.effects) return;
   const found = parseEffect(message.body);
   if (!found) return;
   const play = () => {
@@ -1184,34 +1308,71 @@ function messageEffect(message, bubble, recent) {
     bubble.title = 'Click to show';
     bubble.addEventListener('click', () => { bubble.classList.remove('fx-ink'); bubble.title = ''; }, {once: true});
   }
-  const replay = element('button', 'Replay ' + found.effect.toLowerCase(), 'replay-effect');
+  // Replay sits in the message's ⋯ menu, so effect messages don't carry an extra line.
+  const replay = element('button', 'Replay ' + found.effect.toLowerCase());
   replay.type = 'button';
-  replay.addEventListener('click', play);
-  bubble.after(replay);
+  replay.addEventListener('click', () => { replay.closest('details').open = false; play(); });
+  const menu = bubble.closest('.message')?.querySelector('.message-menu');
+  if (menu) menu.prepend(replay);
+  bubble.title = bubble.title || 'Sent with ' + found.effect;
   if (recent && message.id && !effectPlayed(String(message.id)) && found.effect !== 'Invisible ink') play();
 }
 
+// The effect waiting for each chat's next message.
+const composerEffects = new Map();
+function composerEffect() { return composerEffects.get(active) || null; }
+
+function setComposerEffect(name) {
+  if (name) composerEffects.set(active, name); else composerEffects.delete(active);
+  showComposerEffect();
+}
+
+/** The chip above the message box: "🎉 Confetti", tap to switch, × to send without it. */
+function showComposerEffect() {
+  const name = composerEffect();
+  get('effect-chip').hidden = !name;
+  if (!name) return;
+  const button = get('switch-effect');
+  button.replaceChildren(element('span', EFFECTS[name][0], 'effect-emoji'), element('span', 'Sending with ' + name), element('span', '▾', 'effect-caret'));
+  button.setAttribute('aria-label', 'Sending with ' + name + '. Change the effect');
+}
+
 function openEffects() {
-  const body = get('body');
-  const words = body.value;
   const sheet = dialog('Send with effect');
+  sheet.classList.add('effects-sheet');
   const box = element('div', '', 'settings-section');
-  if (!words.trim()) box.append(element('p', 'Type your message first, then choose an effect.', 'muted'));
-  else {
-    box.append(element('p', 'On other apps, your message arrives as normal text with a note saying which effect you picked.', 'muted'));
-    for (const [name, [emoji, , detail]] of Object.entries(EFFECTS)) {
-      const button = element('button', emoji + ' ' + name + ' · ' + detail, 'game-choice');
-      button.type = 'button';
-      button.addEventListener('click', () => {
-        sheet.close();
-        postToChat(effectText(words, name)).then(() => { body.value = ''; }).catch(showError);
-      });
-      box.append(button);
-    }
+  const current = composerEffect();
+  box.append(element('p', 'Pick one, then type and send whenever you’re ready. Other apps get your words with a note naming the effect.', 'muted'));
+  const grid = element('div', '', 'effect-grid');
+  grid.setAttribute('role', 'group');
+  grid.setAttribute('aria-label', 'Effects');
+  for (const [name, [emoji, screen, detail]] of Object.entries(EFFECTS)) {
+    const button = element('button', '', 'effect-tile');
+    button.type = 'button';
+    button.setAttribute('aria-pressed', String(current === name));
+    button.append(element('span', emoji, 'effect-emoji'), element('strong', name), element('small', detail));
+    button.addEventListener('click', () => {
+      sheet.close();
+      setComposerEffect(name);
+      get('body').focus();
+    });
+    grid.append(button);
+    if (screen) button.classList.add('screen');
+  }
+  box.append(grid);
+  if (current) {
+    const none = element('button', 'Send without an effect', 'quiet');
+    none.type = 'button';
+    none.addEventListener('click', () => { sheet.close(); setComposerEffect(null); get('body').focus(); });
+    box.append(none);
   }
   sheet.append(box);
   sheet.showModal();
+  grid.querySelector('[aria-pressed="true"]')?.focus();
 }
+
+get('switch-effect').addEventListener('click', () => openEffects());
+get('cancel-effect').addEventListener('click', () => { setComposerEffect(null); get('body').focus(); });
 
 // Edits: "✏️ Edited “old” to: new" replaces the sender's own message.
 
@@ -1538,7 +1699,7 @@ function attachmentContact(message, bubble) {
   authorizedBlob('/api/protocols/file?id=' + encodeURIComponent(message.id)).then(async (src) => {
     const actions = element('div', '', 'card-actions');
     if (src) {
-      const contact = parseVCard((await (await fetch(src)).text()).slice(0, 65536));
+      const contact = parseVCard(((await blobFiles.get(src)?.text()) || '').slice(0, 65536));
       if (contact) {
         card.replaceChildren(element('small', 'CONTACT', 'card-kind'), element('strong', contact.name));
         for (const phone of contact.phones) card.append(element('span', '📞 ' + phone));

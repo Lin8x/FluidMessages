@@ -1,9 +1,7 @@
 name: Website
-# Publishes website/ to GitHub Pages (https://lin8x.github.io/FluidMessages/) when it changes on main.
+# The website is published by Cloudflare Pages (output folder: website/). This GitHub Pages copy only runs by hand,
+# because GitHub forwards this account's github.io sites to a personal domain.
 on:
-  push:
-    branches: [main]
-    paths: ['website/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 permissions:
   contents: read

@@ -478,7 +478,9 @@ internal class ConversationScreen @JvmOverloads constructor(
             // Locations and contact cards work on every protocol; other files need a protocol that carries files.
             val filesAllowed = sample || if (via == active) routing?.attachments == true else via.transport().capabilities.attachments
             val sources = AttachmentSource.entries.filter { (filesAllowed || !it.needsFiles) &&
-                (it != AttachmentSource.GIF || GifSettings.gifsOn(prefs)) && (it != AttachmentSource.STICKER || GifSettings.stickersOn(prefs)) }
+                (it != AttachmentSource.GIF || GifSettings.gifsOn(prefs)) && (it != AttachmentSource.STICKER || GifSettings.stickersOn(prefs)) &&
+                (it != AttachmentSource.GAMES || FunSettings.games(prefs)) && (it != AttachmentSource.RANDOM || FunSettings.random(prefs)) &&
+                (it != AttachmentSource.EFFECT || FunSettings.effects(prefs)) }
             var sheet by remember { mutableStateOf(false) }
             var moneyDialog by remember { mutableStateOf(false) }
             var gifSheet by remember { mutableStateOf<Boolean?>(null) }
@@ -486,6 +488,8 @@ internal class ConversationScreen @JvmOverloads constructor(
             var eventDialog by remember { mutableStateOf(false) }
             var gamesDialog by remember { mutableStateOf(false) }
             var effectsDialog by remember { mutableStateOf(false) }
+            // An effect picked from + waits here until the next message is sent; it can be changed or removed.
+            var pendingEffect by remember { mutableStateOf<MessageEffect?>(null) }
             var randomDialog by remember { mutableStateOf(false) }
             var editing by remember { mutableStateOf<Uri?>(null) }
             val pickToEdit = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) editing = uri }
@@ -537,7 +541,7 @@ internal class ConversationScreen @JvmOverloads constructor(
                     AttachmentSource.POLL -> pollDialog = true
                     AttachmentSource.EVENT -> eventDialog = true
                     AttachmentSource.GAMES -> gamesDialog = true
-                    AttachmentSource.EFFECT -> if (draft.isBlank()) notice = "Type your message first, then choose an effect." else effectsDialog = true
+                    AttachmentSource.EFFECT -> effectsDialog = true
                     AttachmentSource.RANDOM -> randomDialog = true
                     AttachmentSource.EDIT -> pickToEdit.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     AttachmentSource.AUDIO -> document.launch(arrayOf("audio/*"))
@@ -564,7 +568,8 @@ internal class ConversationScreen @JvmOverloads constructor(
             val previewsOn = remember { GifSettings.linkPreviews(prefs) }
             val picturesOn = remember { GifSettings.autoPictures(prefs) }
             val rich = remember(lines, blocked) {
-                richContext(lines, if (blocked.isEmpty()) ({ text -> currentSubmit(text); Unit }) else null, previewsOn, picturesOn)
+                richContext(lines, if (blocked.isEmpty()) ({ text -> currentSubmit(text); Unit }) else null, previewsOn, picturesOn,
+                    FunSettings.games(prefs), FunSettings.random(prefs))
             }
             val headerMembers = remember(groupMembers, sampleMembers) {
                 groupMembers.ifEmpty { sampleMembers.map { GroupMember(it) } }
@@ -771,6 +776,16 @@ internal class ConversationScreen @JvmOverloads constructor(
                             }
                         }
                     }
+                    pendingEffect?.let { chosen ->
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)
+                            .background(palette.wash, RoundedCornerShape(12.dp)).padding(start = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text("${chosen.emoji}  Sends with ${chosen.label}", Modifier.weight(1f), color = palette.ink, fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold)
+                            TextButton(onClick = { effectsDialog = true }) { Text("Change", color = palette.toolbarAction) }
+                            ActionIcon("Remove effect", Glyph.Close, palette.toolbarAction) { pendingEffect = null }
+                        }
+                    }
                     draftAttachment?.let { item ->
                         DraftAttachment(item, palette.ink, palette.muted, { draftAttachment = null }, palette.toolbarAction,
                             item.uri?.let { uri -> { editing = uri } })
@@ -784,7 +799,8 @@ internal class ConversationScreen @JvmOverloads constructor(
                     if (randomDialog) RandomDialog({ randomDialog = false }) { text -> submit(text) }
                     if (effectsDialog) EffectsDialog({ effectsDialog = false }) { chosen ->
                         effectsDialog = false
-                        if (draft.isNotBlank() && submit(effectText(draft, chosen), replyTo?.let(MessageRelation::reply))) { draft = ""; replyTo = null }
+                        pendingEffect = chosen
+                        composerFocus.requestFocus()
                     }
                     editing?.let { uri ->
                         MediaEditor(uri, { editing = null }) { edited, sendNow ->
@@ -855,7 +871,9 @@ internal class ConversationScreen @JvmOverloads constructor(
                                 if (keyboardSticker && GifSettings.stickersOn(prefs)) submit("", null, item) else draftAttachment = item
                             }
                         } else null) {
-                        if (submit(draft, replyTo?.let(MessageRelation::reply), draftAttachment)) {
+                        val words = pendingEffect?.takeIf { draft.isNotBlank() }?.let { effectText(draft, it) } ?: draft
+                        if (submit(words, replyTo?.let(MessageRelation::reply), draftAttachment)) {
+                            if (draft.isNotBlank()) pendingEffect = null
                             sendVia = null
                             draft = ""
                             draftAttachment = null
@@ -943,7 +961,8 @@ private fun MessageBubble(
         else effectScope.launch { effectProgress.snapTo(0f); effectProgress.animateTo(1f, tween(900)) }
     }
     LaunchedEffect(line.id, effect) {
-        if (effect != null && recent && EffectMemory.firstTime(context, line.id)) playEffect()
+        if (effect != null && recent && FunSettings.effects(context.getSharedPreferences("fluid", android.content.Context.MODE_PRIVATE)) &&
+            EffectMemory.firstTime(context, line.id)) playEffect()
     }
     var editingMessage by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxWidth().padding(top = if (grouped) 3.dp else 8.dp)) {
@@ -999,7 +1018,7 @@ private fun MessageBubble(
                     game?.let { GameCard(it, foreground, rich.respond) }
                     val rps = rich?.rps?.get(line.id)
                     rps?.let { RpsCard(it, foreground, rich.respond) }
-                    val random = remember(line.text) { if (line.attachment == null) parseRandom(line.text) else null }
+                    val random = remember(line.text) { if (line.attachment == null && rich?.random != false) parseRandom(line.text) else null }
                     random?.let { RandomCard(it, line.outgoing, foreground) }
                     val gameLink = remember(line.text) { if (line.attachment == null) parseGameLink(line.text) else null }
                     gameLink?.let { GameLinkCard(it, line.outgoing, foreground) }
@@ -1084,6 +1103,17 @@ private fun MessageBubble(
                         clipboard.setText(androidx.compose.ui.text.AnnotatedString(line.text))
                         menu = false
                     })
+                    line.media?.takeIf { it.uri != null && it.kind != AttachmentKind.LOCATION }?.let { media ->
+                        DropdownMenuItem(text = { Text("Save to phone") }, onClick = {
+                            menu = false
+                            effectScope.launch {
+                                val saved = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    saveToPhone(context, media.uri!!, media.mime, media.name)
+                                }
+                                android.widget.Toast.makeText(context, saved ?: "Couldn't save it", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        })
+                    }
                     DropdownMenuItem(text = { Text("Select text") }, onClick = { menu = false; selectedAction = "Select text" })
                     DropdownMenuItem(text = { Text("Share") }, onClick = {
                         menu = false
@@ -1136,9 +1166,7 @@ private fun MessageBubble(
                     )
                 }
             }
-            if (reactions.isNotEmpty()) Text(reactions.joinToString(" "), Modifier.padding(top = 2.dp)
-                .background(palette.wash, RoundedCornerShape(14.dp)).padding(horizontal = 7.dp, vertical = 2.dp),
-                fontSize = 14.sp)
+            if (reactions.isNotEmpty()) ReactionPill(reactions, palette, line.outgoing)
             val failed = line.outgoing && line.status.startsWith("Couldn’t send")
             val shown = listOfNotNull("Edited".takeIf { earlier.isNotEmpty() }, line.time.takeIf { (showTime || exactTimes) && it.isNotEmpty() },
                 line.status.takeIf { it.isNotEmpty() && !failed }).joinToString(" · ")
@@ -1165,6 +1193,39 @@ private fun MessageBubble(
                 if (line.status.length > "Couldn’t send".length + 3) Text(line.status.removePrefix("Couldn’t send").trimStart(' ', '·', ':'),
                     Modifier.padding(end = 4.dp), color = palette.muted, fontSize = 11.sp)
             }
+        }
+    }
+}
+
+/** The reactions under a bubble. A new one pops in and floats a copy of itself up, unless turned off in Settings. */
+@Composable
+private fun ReactionPill(reactions: List<String>, palette: Palette, outgoing: Boolean) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val animate = palette.appearance.speed > 0 && remember { FunSettings.reactions(context.getSharedPreferences("fluid", android.content.Context.MODE_PRIVATE)) }
+    var seen by remember { mutableStateOf(reactions) }
+    val pop = remember { Animatable(1f) }
+    val float = remember { Animatable(1f) }
+    var floating by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(reactions) {
+        val added = reactions.lastOrNull()?.takeIf { reactions.size > seen.size || reactions.lastOrNull() != seen.lastOrNull() }
+        seen = reactions
+        if (animate && added != null) {
+            floating = added
+            launch { pop.snapTo(.4f); pop.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = .45f, stiffness = 500f)) }
+            float.snapTo(0f); float.animateTo(1f, tween(900)); floating = null
+        }
+    }
+    Box(contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart) {
+        Text(reactions.joinToString(" "), Modifier.padding(top = 2.dp)
+            .graphicsLayer { scaleX = pop.value; scaleY = pop.value }
+            .background(palette.wash, RoundedCornerShape(14.dp)).padding(horizontal = 7.dp, vertical = 2.dp),
+            fontSize = 14.sp)
+        floating?.let { emoji ->
+            Text(emoji, Modifier.graphicsLayer {
+                translationY = -float.value * 70.dp.toPx()
+                alpha = 1f - float.value
+                scaleX = 1f + float.value; scaleY = 1f + float.value
+            }, fontSize = 22.sp)
         }
     }
 }

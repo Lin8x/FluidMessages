@@ -237,7 +237,7 @@ internal fun GifSheet(startWithStickers: Boolean, filesAllowed: Boolean, dismiss
                     Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 cells.isEmpty() -> Text(when {
                     stickers && !searchable -> "Tap Make a sticker to turn any photo into a sticker: its background is removed, and you can touch it up before saving. Your keyboard's stickers work too."
-                    !searchable -> "Tap a site above to browse GIFs, or pick one from your phone or keyboard. For search results right here, add a Tenor or GIPHY key in Settings → Media, GIFs, and links."
+                    !searchable -> "Tap a site above to browse GIFs, or pick one from your phone or keyboard. For search results right here, add a Tenor or GIPHY key in Settings → Media, GIFs, and fun."
                     else -> "Nothing found."
                 }, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> LazyVerticalGrid(GridCells.Fixed(3), Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp),

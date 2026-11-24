@@ -5,9 +5,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends rclone ca-certi
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir "slixmpp==1.17.0" "aiohttp>=3.10" "matrix-nio[e2e]==0.26.0" \
     && groupadd --system fluid && useradd --system --gid fluid fluid && mkdir /data && chown fluid:fluid /data
-COPY main.py auth.py cloud_backup.py link_fetch.py protocol_gateway.py accounts.py irc_client.py matrix_e2ee.py xmpp_client.py index.html app.js companion.js cards.js style.css icon.webp ./
-COPY shared/call.js shared/chess.js ./shared/
-COPY manifest.webmanifest sw.js ./
+# Every file the web app serves (main.py's FILES), copied by pattern so a new script or icon can't be left out.
+COPY *.py *.html *.js *.css *.webp *.webmanifest ./
+COPY shared/ ./shared/
 COPY icons/ ./icons/
 USER fluid
 ENV FLUID_BIND=0.0.0.0 FLUID_DB=/data/fluid.sqlite

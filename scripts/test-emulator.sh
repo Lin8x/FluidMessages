@@ -175,6 +175,17 @@ sys.exit(1)
 PY
 }
 
+# Reuse the test emulator if it's already running on any port (for example one opened from Android Studio), so
+# the script never starts a second copy. FLUID_EMULATOR_PORT still picks the port when nothing is running.
+for running_serial in $("$adb" devices | awk '$1 ~ /^emulator-[0-9]+$/ && $2 == "device" { print $1 }'); do
+    running_name="$(running_avd "$running_serial" 2>/dev/null || true)"
+    if [[ "$running_name" == "$avd" || "$running_name" == "${avd}_local" ]]; then
+        # An earlier run moved to the _local copy because of a signing-key change; keep using it.
+        avd="$running_name"
+        port="${running_serial#emulator-}"
+        break
+    fi
+done
 boot_emulator
 if ! install_output="$("${device[@]}" install -r "$apk" 2>&1)"; then
     if [[ "$install_output" != *"INSTALL_FAILED_UPDATE_INCOMPATIBLE"* ]]; then
@@ -185,6 +196,9 @@ if ! install_output="$("${device[@]}" install -r "$apk" 2>&1)"; then
     avd="${avd}_local"
     port="$(recovery_port)" || fail "No free emulator port is available for $avd."
     printf 'Signing key differs on %s. Keeping its data and testing this APK on %s.\n' "$old_avd" "$avd"
+    # Only one emulator should stay open. Shutting the first one down keeps its data on disk for next time.
+    "${device[@]}" emu kill >/dev/null 2>&1 || true
+    if [[ -n "${pid:-}" ]]; then wait "$pid" 2>/dev/null || true; fi
     boot_emulator
     if ! install_output="$("${device[@]}" install -r "$apk" 2>&1)"; then
         printf '%s\n' "$install_output" >&2

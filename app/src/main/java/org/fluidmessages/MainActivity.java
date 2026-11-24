@@ -1030,7 +1030,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     private boolean meetingLinks() { return Calling.allowed(prefs, Calling.Method.MEETING); }
 
-    /** Settings → Chats and calls → Calls, kept short: ways to call, SIP when it's on, recording, and recent calls. */
+    /** Settings → Accounts and calls → Calls, kept short: ways to call, SIP when it's on, recording, and recent calls. */
     private void callsSettings() {
         render("calls");
         heading("Calls", "Back", this::settings);
@@ -1221,7 +1221,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         if (id.startsWith("sip:")) { startCall(id, id.substring(4), false, "SIP"); return; }
         if (id.startsWith("@")) { callMatrixUser(id, video); return; }
         if (!DirectProtocols.on(prefs, MessageProtocol.XMPP)) {
-            toast("XMPP calls need XMPP connected from this phone, in Settings → Chats and calls → Accounts");
+            toast("XMPP calls need XMPP connected from this phone, in Settings → Accounts and calls → Accounts");
             return;
         }
         new Thread(() -> {
@@ -1270,7 +1270,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void startCall(String target, String title, boolean video, String protocol) {
         if (callBlocked(Calling.method(protocol))) return;
         if ("SIP".equals(protocol)) {
-            if (!Calling.sipReady(prefs)) { toast("Add a SIP account in Settings → Chats and calls → Calls"); return; }
+            if (!Calling.sipReady(prefs)) { toast("Add a SIP account in Settings → Accounts and calls → Calls"); return; }
             startActivity(CallHub.screen(this, target, title, false, null, "SIP").putExtra("sipTarget", Calling.sipTarget(prefs, target)));
             return;
         }
@@ -2865,7 +2865,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     /** GIFs, stickers, where to search for them, and pictures and previews from links. */
     private void gifSettings() {
         render("gifs");
-        heading("Media, GIFs, and links", "Back", this::settings);
+        heading("Media, GIFs, and fun", "Back", this::settings);
         List<SettingsAction> gifs = new ArrayList<>();
         boolean gifsOn = GifSettings.gifsOn(prefs), stickersOn = GifSettings.stickersOn(prefs);
         gifs.add(toggleRow("GIFs", "Send GIFs from the + menu and your keyboard", gifsOn, () -> {
@@ -2929,7 +2929,23 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             prefs.edit().putBoolean("linkPreviews", !previews).apply(); gifSettings(); }));
         SettingsPages.mount(root, prefs, List.of(new SettingsSection("GIFs and stickers", gifs), new SettingsSection("GIF sites to browse", sites),
             new SettingsSection("Photos and videos", media),
-            new SettingsSection("Links", links)));
+            new SettingsSection("Links", links), new SettingsSection("Fun and effects", funRows())));
+    }
+
+    /** Switches for what plays and shows in chats: effects, reaction animations, games, and dice. */
+    private List<SettingsAction> funRows() {
+        List<SettingsAction> rows = new ArrayList<>();
+        boolean effects = FunSettings.effects(prefs), reactions = FunSettings.reactions(prefs),
+            games = FunSettings.games(prefs), random = FunSettings.random(prefs);
+        rows.add(toggleRow("Message effects", "Confetti, Slam, and the others play, and + offers Send with effect", effects, () -> {
+            FunSettings.set(prefs, "effects", !effects); gifSettings(); }));
+        rows.add(toggleRow("Reaction animations", "A new reaction pops in and floats up", reactions, () -> {
+            FunSettings.set(prefs, "reactions", !reactions); gifSettings(); }));
+        rows.add(toggleRow("Games", "Game boards in chats, and Games in the + menu. Off shows game messages as text", games, () -> {
+            FunSettings.set(prefs, "games", !games); gifSettings(); }));
+        rows.add(toggleRow("Dice and random", "Dice, coin flips, and random picks as cards", random, () -> {
+            FunSettings.set(prefs, "random", !random); gifSettings(); }));
+        return rows;
     }
 
     private void textSetting(String title, String message, String key, boolean secret, Runnable done) {
@@ -2995,14 +3011,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             new SettingsSection("Look and feel", List.of(
                 action("Themes and appearance", "Colors, wallpapers, bubbles, and motion", this::theme),
                 action("Messaging", "Timestamps, replies, reactions, sounds", this::messagingSettings))),
-            new SettingsSection("Chats and calls", List.of(
+            new SettingsSection("Accounts and calls", List.of(
                 action("Accounts", "Sign in to Matrix, XMPP, Email, or IRC to chat there too", this::accounts),
                 action("Ways to message", MessageProtocol.anyEnabled(prefs) ? "Turn services on or off, and combine one person's chats"
                     : "All off · read-only, nothing is sent", this::protocolSettings),
                 action("Calls", Calling.anyAllowed(prefs) ? "Recent calls and meeting links" : "All off · you can't place calls",
-                    this::callsSettings),
-                action("Media, GIFs, and links", (GifSettings.gifsOn(prefs) ? "GIFs on" : "GIFs off") + " · "
-                    + (GifSettings.stickersOn(prefs) ? "stickers on" : "stickers off") + " · photo quality", this::gifSettings),
+                    this::callsSettings))),
+            new SettingsSection("In chats", List.of(
+                action("Media, GIFs, and fun", "GIFs, stickers, photo quality, links, effects, and games", this::gifSettings),
                 action("Payments", "Default: " + MoneyKt.defaultMoney(prefs).getName(), this::paymentSettings))),
             new SettingsSection("Privacy", List.of(
                 action("Privacy and security", (locked ? "App lock on" : "App lock off") + " · encryption, the private folder, locks",

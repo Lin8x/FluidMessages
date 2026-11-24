@@ -1,8 +1,9 @@
 """FluidMessages Web as a desktop app.
 
-Starts FluidMessages Web on this computer, signs you in automatically, and opens it in its own app window (a
-Chrome, Edge, or Brave app window when one is installed, otherwise your default browser). A small window shows
-that it's running, with Open and Quit. Your data stays in a private folder for your user account.
+Starts FluidMessages Web on this computer and opens it in its own app window (a Chrome, Edge, or Brave app window
+when one is installed, otherwise your default browser). It listens only on this computer, which opens it without a
+password; the token in the window's address also signs in installs that already have a password. A small window
+shows that it's running, with Open and Quit. Your data stays in a private folder for your user account.
 """
 import os
 import platform

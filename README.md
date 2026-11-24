@@ -152,20 +152,20 @@ Use it on your phone, in any browser, or as a desktop app.
 > [!TIP]
 > On Android 15, if that's blocked, go to **App info → ⋮ → Allow restricted settings** and try again.
 
-Want Matrix, XMPP, Email, or IRC? Add them in **Settings → Chats and calls → Accounts**.
+Want Matrix, XMPP, Email, or IRC? Add them in **Settings → Accounts and calls → Accounts**.
 
 ## 🏠 Host it yourself
 
-FluidMessages Web is the web version, like WhatsApp Web, on your own server. It runs anywhere Docker does, even a Raspberry Pi.
+FluidMessages Web is FluidMessages as an app for your computer: Matrix, XMPP, Email, and IRC chats, calls, themes, effects, polls, and games. **No phone needed.** It runs anywhere Docker does, even a Raspberry Pi.
 
 ```sh
 docker compose up -d
-docker compose logs fluidmessages   # shows a one-time setup code
 ```
 
-Open <http://localhost:8080>, enter the setup code, and create a password. There's no token to make or type.
+Open <http://localhost:8080>. On that computer it opens straight into a short welcome, with no password or code. Prefer an app? Use the [desktop app](https://github.com/Lin8x/FluidMessages/releases/latest) instead.
 
-When your phone is connected, the web app follows your phone's settings, or keeps its own if you prefer.
+> [!TIP]
+> Want your texts there too, or to use it from other devices? Open **Settings → Phone and other devices**. It walks you through setting a password and connecting your Android phone.
 
 [Full self-hosting guide →](docs/self-hosting.md) (HTTPS, Portainer, connecting your phone, and installing it as an app)
 

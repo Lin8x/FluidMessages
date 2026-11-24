@@ -307,6 +307,14 @@ internal fun MediaViewer(uri: Uri, mime: String, title: String, link: String? = 
                     ViewerButton("Edit this picture", "Edit") { dismiss(); editPicture(uri) }
                     Spacer(Modifier.width(8.dp))
                 }
+                val saveScope = rememberCoroutineScope()
+                ViewerButton("Save to this phone", "Save") {
+                    saveScope.launch {
+                        val saved = withContext(Dispatchers.IO) { saveToPhone(context, uri, mime, title) }
+                        android.widget.Toast.makeText(context, saved ?: "Couldn't save it", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
                 ViewerButton("Share", "Share") { shareMedia(context, uri, mime, link) }
                 Spacer(Modifier.width(8.dp))
                 ViewerButton("Open with another app", "Open") { openMedia(context, uri, mime) }
@@ -326,6 +334,42 @@ private fun ViewerButton(label: String, text: String, click: () -> Unit) {
 /** A content:// address other apps can open; private files are passed through the app's file provider. */
 private fun shareable(context: Context, uri: Uri): Uri =
     if (uri.scheme == "file") AttachmentFiles.uri(context, File(uri.path!!)) else uri
+
+/**
+ * Copies a picture, GIF, video, or file into the phone's shared storage (Pictures, Movies, Music, or Downloads, in a
+ * FluidMessages folder), where the gallery and file apps see it. No storage permission is needed for this on Android 10+.
+ * Returns where it went, for a short message, or null if it couldn't be saved.
+ */
+internal fun saveToPhone(context: Context, uri: Uri, mime: String, title: String): String? = runCatching {
+    val resolver = context.contentResolver
+    val type = mime.ifEmpty { resolver.getType(uri) ?: "application/octet-stream" }
+    val (collection, folder, place) = when {
+        type.startsWith("image/") -> Triple(android.provider.MediaStore.Images.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            android.os.Environment.DIRECTORY_PICTURES, "Pictures")
+        type.startsWith("video/") -> Triple(android.provider.MediaStore.Video.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            android.os.Environment.DIRECTORY_MOVIES, "Movies")
+        type.startsWith("audio/") -> Triple(android.provider.MediaStore.Audio.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            android.os.Environment.DIRECTORY_MUSIC, "Music")
+        else -> Triple(android.provider.MediaStore.Downloads.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            android.os.Environment.DIRECTORY_DOWNLOADS, "Downloads")
+    }
+    val extension = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(type)
+    val base = title.replace(Regex("[^A-Za-z0-9 ._-]"), "").trim().ifEmpty { "FluidMessages" }.take(60)
+    val name = if (extension != null && !base.lowercase().endsWith(".$extension")) "$base.$extension" else base
+    val values = android.content.ContentValues().apply {
+        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, type)
+        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "$folder/FluidMessages")
+        put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+    }
+    val target = resolver.insert(collection, values) ?: return@runCatching null
+    try {
+        val copied = resolver.openInputStream(uri)?.use { input -> resolver.openOutputStream(target)?.use { input.copyTo(it); true } } == true
+        if (!copied) { resolver.delete(target, null, null); return@runCatching null }
+        resolver.update(target, android.content.ContentValues().apply { put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+    } catch (error: Exception) { resolver.delete(target, null, null); throw error }
+    "Saved to $place › FluidMessages"
+}.getOrNull()
 
 private fun shareMedia(context: Context, uri: Uri, mime: String, link: String?) {
     val intent = if (link != null) Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, link)

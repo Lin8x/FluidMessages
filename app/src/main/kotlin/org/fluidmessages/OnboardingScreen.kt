@@ -123,7 +123,7 @@ object OnboardingScreen {
                                     Tips(listOf(
                                         Tip(TipIcon.PHONE, "Phone calls", "Use your phone number, from the Phone tab"),
                                         Tip(TipIcon.PEOPLE, "Internet calls", "Voice and video with Matrix contacts"),
-                                        Tip(TipIcon.OPTIONAL, "Meeting links", "Optional: Settings → Chats and calls → Calls")), appearance.speed)
+                                        Tip(TipIcon.OPTIONAL, "Meeting links", "Optional: Settings → Accounts and calls → Calls")), appearance.speed)
                                 }
                             }
                             "more" -> {

@@ -4,9 +4,12 @@ services:
     image: ghcr.io/lin8x/fluidmessages-web:latest
     build: ./server
     environment:
-      # Optional. You sign in to the web app with a password you create on first visit (the one-time setup code is
-      # in this container's log). Set FLUID_TOKEN only if you want a fixed token for your phone or scripts:
-      # openssl rand -hex 32
+      # Opens without a password at http://localhost:8080 on this computer. It goes with the 127.0.0.1-only port
+      # below: only this computer can reach the container, which sees Docker's gateway instead of 127.0.0.1.
+      # REMOVE THIS LINE before publishing the port to your network (like "8080:8080") or when anything else
+      # reaches the container directly; other devices then sign in with the password you set in Settings.
+      FLUID_LOCAL_ONLY: "1"
+      # Optional: a fixed token for your phone or scripts (openssl rand -hex 32). Settings can make a pairing token instead.
       FLUID_TOKEN: ${FLUID_TOKEN:-}
       # Optional: your public address, like https://messages.example.org, for older browsers behind a proxy that rewrites Host.
       FLUID_ORIGINS: ${FLUID_ORIGINS:-}
@@ -34,6 +37,7 @@ services:
       FLUID_IRC_SASL_PASSWORD: ${FLUID_IRC_SASL_PASSWORD:-}
       FLUID_IRC_CHANNELS: ${FLUID_IRC_CHANNELS:-}
     ports:
+      # This computer only. Keep FLUID_LOCAL_ONLY above only while this stays 127.0.0.1.
       - "127.0.0.1:8080:8080"
     volumes:
       - fluid-data:/data

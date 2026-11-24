@@ -31,11 +31,12 @@ def check(condition, message):
 
 
 @contextmanager
-def companion(port, token, cloud_fixtures=False):
+def companion(port, token, cloud_fixtures=False, extra_env=None):
     with tempfile.TemporaryDirectory(prefix="fluid-test-") as directory:
         env = dict(os.environ, FLUID_DB=str(Path(directory) / "demo.sqlite"),
                    FLUID_TOKEN=token, FLUID_BIND="127.0.0.1", FLUID_PORT=str(port),
                    RCLONE_CONFIG=str(Path(directory) / "rclone.conf"))
+        env.update({"FLUID_LOCAL_ONLY": "", **(extra_env or {})})
         # FLUID_TOKEN is optional: an empty one means browsers sign in with a password only.
         for key in CLOUD_TARGETS:
             folder = Path(directory) / key
@@ -745,7 +746,9 @@ def sign_in_test():
             except HTTPError as error:
                 return error.code, json.loads(error.read() or b"{}"), error.headers.get_all("Set-Cookie") or []
 
-        check(call("/api/auth")[1] == {"owner": False, "signed_in": False}, "A new server should ask for setup")
+        check(call("/api/auth")[1] == {"owner": False, "signed_in": False, "local": True}, "A new server should open on this computer")
+        check(call("/api/auth", headers={"X-Forwarded-For": "198.51.100.77"})[1] == {"owner": False, "signed_in": False, "local": False},
+              "A proxied request should be asked to set up, not opened as this computer")
         check(call("/api/inbox")[0] == 401, "The inbox answered before anyone signed in")
         code_file = request.directory / "setup-code"
         check(code_file.is_file() and oct(code_file.stat().st_mode & 0o777) == "0o600", "The setup code file must exist and be private")
@@ -771,7 +774,10 @@ def sign_in_test():
         cookie = flags[0]
         check(not code_file.exists(), "The setup code should stop existing once a password is set")
         check(call("/api/auth/setup", setup)[0] == 409, "Setup ran twice")
-        check(call("/api/auth", cookie=cookie)[1] == {"owner": True, "signed_in": True}, "The new session isn't signed in")
+        # Set up with a password before this computer ever opened it: like an install from before local access,
+        # it keeps asking for the password everywhere until the owner turns local access on.
+        check(call("/api/auth", cookie=cookie)[1] == {"owner": True, "signed_in": True, "local": False}, "The new session isn't signed in")
+        check(call("/api/auth/local", {}, headers={"Origin": origin})[0] == 403, "A password install opened without its password")
         check(call("/api/inbox", cookie=cookie)[0] == 200, "The session cookie didn't open the inbox")
         with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db:
             stored = json.dumps(db.execute("SELECT * FROM auth_state").fetchall() + db.execute("SELECT * FROM auth_sessions").fetchall())
@@ -864,6 +870,118 @@ def sign_in_test():
     print("PASS  sign-in without a token: setup code, hashed password and sessions, cookie flags, CSRF, rate limits, pairing tokens, and FLUID_TOKEN")
 
 
+def local_access_test():
+    """On the computer it runs on, the web app opens without a password. Anything else signs in."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import auth
+    import sqlite3
+    # Who counts as this computer, as auth.from_this_computer decides it.
+    here = {"Host": "localhost:8080", "Origin": "http://localhost:8080"}
+    check(auth.from_this_computer("127.0.0.1", here, need_origin=True), "Loopback with a localhost origin should count")
+    check(auth.from_this_computer("::1", {"Host": "[::1]:8080", "Origin": "http://[::1]:8080"}, need_origin=True), "IPv6 loopback should count")
+    check(auth.from_this_computer("::ffff:127.0.0.1", here), "IPv4-mapped loopback should count")
+    check(auth.from_this_computer("127.0.0.1", {"Host": "app.localhost:8080"}), "A .localhost name should count")
+    check(not auth.from_this_computer("127.0.0.1", {"Host": "localhost:8080"}, need_origin=True), "A request with no origin was opened")
+    for name in ("X-Forwarded-For", "Forwarded", "X-Real-IP", "X-Forwarded-Host", "X-Forwarded-Proto", "Via", "CF-Connecting-IP"):
+        check(not auth.from_this_computer("127.0.0.1", {**here, name: "198.51.100.4"}), f"A request through a proxy ({name}) was opened")
+    check(not auth.from_this_computer("127.0.0.1", {"Host": "evil.example:8080", "Origin": "http://evil.example:8080"}),
+          "A DNS-rebinding host name was opened")
+    check(not auth.from_this_computer("127.0.0.1", {**here, "Origin": "http://evil.example"}), "Another site's origin was opened")
+    check(not auth.from_this_computer("127.0.0.1", {**here, "Origin": "null"}), "An opaque origin was opened")
+    check(not auth.from_this_computer("192.168.1.20", here), "A LAN address counted as this computer")
+    # Docker: the default Compose file publishes 127.0.0.1:8080 only and sets FLUID_LOCAL_ONLY=1, so the gateway counts.
+    check(not auth.from_this_computer("172.18.0.1", here), "The Docker gateway counted without FLUID_LOCAL_ONLY")
+    check(auth.from_this_computer("172.18.0.1", here, local_only=True), "The Docker gateway didn't count with FLUID_LOCAL_ONLY")
+    check(auth.from_this_computer("fd00::1", here, local_only=True), "A private IPv6 gateway didn't count with FLUID_LOCAL_ONLY")
+    check(not auth.from_this_computer("203.0.113.9", here, local_only=True), "A public address counted with FLUID_LOCAL_ONLY")
+    check(not auth.from_this_computer("172.18.0.1", {**here, "X-Forwarded-For": "203.0.113.9"}, local_only=True),
+          "A proxy in front of a local-only container was opened")
+    check(not auth.from_this_computer("172.18.0.1", {"Host": "messages.example.org", "Origin": "https://messages.example.org"}, local_only=True),
+          "A public host name was opened with FLUID_LOCAL_ONLY")
+
+    with companion(free_port(), "") as (origin, request, _):
+        opener = build_opener(ProxyHandler({}))
+
+        def call(path, body=None, cookie=None, headers=None):
+            sent = {"X-Fluid-Request": "1", "Content-Type": "application/json", "Origin": origin, **(headers or {})}
+            sent = {key: value for key, value in sent.items() if value is not None}
+            if cookie:
+                sent["Cookie"] = cookie
+            data = json.dumps(body).encode() if body is not None else None
+            try:
+                with opener.open(Request(origin + path, data=data, headers=sent), timeout=15) as response:
+                    return response.status, json.loads(response.read() or b"{}"), response.headers.get_all("Set-Cookie") or []
+            except HTTPError as error:
+                return error.code, json.loads(error.read() or b"{}"), error.headers.get_all("Set-Cookie") or []
+
+        check(call("/api/auth", headers={"Origin": None})[1]["local"] is True, "A new install should open on this computer")
+        for refused, why in (({"X-Forwarded-For": "198.51.100.7"}, "through a proxy"), ({"Forwarded": "for=198.51.100.7"}, "with Forwarded"),
+                             ({"X-Real-IP": "198.51.100.7"}, "with X-Real-IP"), ({"Origin": None}, "without an origin"),
+                             ({"Origin": "http://evil.example"}, "from another site"), ({"Sec-Fetch-Site": "cross-site"}, "cross-site"),
+                             ({"X-Fluid-Request": None}, "without the page's header"),
+                             ({"Host": "evil.example", "Origin": "http://evil.example"}, "under a rebound host name")):
+            check(call("/api/auth/local", {}, headers=refused)[0] == 403, "This computer's sign-in worked " + why)
+        check(call("/api/inbox")[0] == 401, "The inbox answered without a session")
+        # nginx's default proxying (HTTP/1.0, Host rewritten to 127.0.0.1, no X-Forwarded-For) doesn't count either.
+        with socket.create_connection(("127.0.0.1", int(origin.rsplit(":", 1)[1])), timeout=10) as raw:
+            raw.sendall(("POST /api/auth/local HTTP/1.0\r\nHost: " + origin[7:] + "\r\nOrigin: " + origin
+                         + "\r\nX-Fluid-Request: 1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}").encode())
+            check(raw.recv(64).split(b" ")[1] == b"403", "An HTTP/1.0 request, as nginx forwards by default, was opened as this computer")
+        status, _, cookies = call("/api/auth/local", {})
+        check(status == 200 and cookies and "HttpOnly" in cookies[0], "This computer couldn't open the app")
+        cookie = cookies[0].split(";")[0]
+        check(call("/api/inbox", cookie=cookie)[0] == 200, "This computer's session didn't open the inbox")
+        check(call("/api/auth/security", cookie=cookie)[1]["owner"] is False, "Opening on this computer made a password")
+        # Turning on other devices: a password, set from this computer's session without a setup code.
+        check(call("/api/auth/password", {"password": "harbor lantern morning"}, cookie=cookie)[0] == 200, "Couldn't set a password here")
+        state = call("/api/auth/security", cookie=cookie)[1]
+        check(state["owner"] and state["local"] and state["here"], "A password made later took this computer's access away")
+        check(call("/api/auth/local", {})[0] == 200, "This computer stopped opening once a password existed")
+        remote = {"X-Forwarded-For": "198.51.100.30", "Origin": None}
+        check(call("/api/auth", headers=remote)[1] == {"owner": True, "signed_in": False, "local": False}, "Other devices weren't asked to sign in")
+        check(call("/api/auth/login", {"password": "harbor lantern morning"}, headers=remote)[0] == 200, "Another device couldn't sign in")
+        check(call("/api/auth/setup", {"code": "", "password": "another password here"}, headers=remote)[0] == 409, "Setup reopened")
+        # The owner can switch it off; then this computer signs in like any other device.
+        check(call("/api/auth/local-access", {"enabled": False}, cookie=cookie)[0] == 200, "Couldn't turn local access off")
+        check(call("/api/auth/local", {})[0] == 403 and call("/api/auth")[1]["local"] is False, "Local access stayed on")
+        check(call("/api/auth/local-access", {"enabled": True}, cookie=cookie, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403,
+              "Another site could turn local access on")
+        call("/api/auth/local-access", {"enabled": True}, cookie=cookie)
+        check(call("/api/auth/local", {})[0] == 200, "Couldn't turn local access back on")
+        with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db:
+            stored = json.dumps(db.execute("SELECT * FROM auth_state").fetchall() + db.execute("SELECT * FROM auth_sessions").fetchall())
+        check("harbor lantern morning" not in stored and cookie.split("=", 1)[1] not in stored, "Secrets must only be stored as hashes")
+        # Fun and effects, and the first-run welcome, are saved for every browser.
+        status, settings, _ = call("/api/settings", {"prefs": {"games": False}, "welcomed": True}, cookie=cookie)
+        check(status == 200 and settings["prefs"]["games"] is False and settings["prefs"]["effects"] is True and settings["welcomed"],
+              "Fun and effects settings weren't saved")
+        check(call("/api/settings", {"prefs": {"games": "no"}}, cookie=cookie)[0] == 400, "An invalid preference was accepted")
+        check(call("/api/inbox", cookie=cookie)[1]["prefs"]["games"] is False, "The inbox doesn't carry Fun and effects settings")
+
+    # FLUID_LOCAL_ONLY reaches the server, and a server without it still only trusts loopback.
+    with companion(free_port(), "", extra_env={"FLUID_LOCAL_ONLY": "1"}) as (origin, request, _):
+        opener = build_opener(ProxyHandler({}))
+        login = Request(origin + "/api/auth/local", data=b"{}", headers={"X-Fluid-Request": "1", "Content-Type": "application/json", "Origin": origin})
+        with opener.open(login, timeout=10) as response:
+            cookie = response.headers.get("Set-Cookie").split(";")[0]
+        with opener.open(Request(origin + "/api/auth/security", headers={"Cookie": cookie}), timeout=10) as response:
+            check(json.loads(response.read())["local_only"] is True, "FLUID_LOCAL_ONLY wasn't read")
+    # The icon set and the files the Docker image serves.
+    with companion(free_port(), "") as (origin, request, _):
+        for path, kind in (("/favicon.ico", "image/x-icon"), ("/icons/favicon-32.png", "image/png"), ("/icons/maskable-512.png", "image/png"),
+                           ("/icons/icon-192.png", "image/png"), ("/welcome.js", "text/javascript")):
+            with build_opener(ProxyHandler({})).open(Request(origin + path, method="HEAD"), timeout=10) as response:
+                check(response.status == 200 and response.headers.get_content_type() == kind, f"{path} isn't served as {kind}")
+        manifest = json.loads(request("/manifest.webmanifest", authorized=False))
+        purposes = {icon["purpose"] for icon in manifest["icons"]}
+        check(purposes == {"any", "maskable"} and all((ROOT / "server" / icon["src"].lstrip("/")).is_file() for icon in manifest["icons"]),
+              "The manifest's icons are missing or lack a maskable version")
+    dockerfile = (ROOT / "server/Dockerfile").read_text()
+    check("COPY *.py *.html *.js *.css *.webp *.webmanifest ./" in dockerfile and "COPY icons/ ./icons/" in dockerfile,
+          "The Dockerfile no longer copies every file the web app serves")
+    print("PASS  this computer opens without a password; proxies, other hosts, other sites, and other devices sign in; FLUID_LOCAL_ONLY; icons")
+
+
 def find_apk(explicit):
     if explicit:
         return explicit.resolve()
@@ -929,6 +1047,7 @@ def main():
     try:
         smoke_test()
         sign_in_test()
+        local_access_test()
         cloud_smoke_test()
         gateway_relations_test()
         reaction_revisions_test()

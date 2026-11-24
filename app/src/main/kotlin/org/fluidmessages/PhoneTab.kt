@@ -231,7 +231,7 @@ private fun readCalls(context: Context, phoneCalls: Boolean): List<CallEntry> {
         CallEntry(it.optString("title").ifEmpty { it.optString("address") }, "", it.optInt("type"), it.optLong("date"), it.optLong("seconds"),
             it.optString("protocol", "Matrix"), it.optString("address"), it.optBoolean("video"))
     }
-    // Android's phone calls can be left out in Settings → Chats and calls.
+    // Android's phone calls can be left out in Settings → Accounts and calls.
     if (!phoneCalls || context.checkSelfPermission(Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) return internet
     val contacts = ContactDirectory(context)
     val rows = internet.toMutableList()

@@ -660,12 +660,17 @@ internal class RichContext(
     val previews: Boolean,
     /** Show pictures and GIFs from links; off means they stay plain links. */
     val pictures: Boolean = true,
+    /** Dice, coin flips, and random picks as cards. */
+    val random: Boolean = true,
 )
 
-internal fun richContext(lines: List<ChatLine>, respond: ((String) -> Unit)?, previews: Boolean, pictures: Boolean = true): RichContext {
+internal fun richContext(lines: List<ChatLine>, respond: ((String) -> Unit)?, previews: Boolean, pictures: Boolean = true,
+                         games: Boolean = true, random: Boolean = true): RichContext {
     val moves = mutableSetOf<String>()
-    val games = trackGames(lines, moves)
-    return RichContext(tallyPolls(lines, moves), games, trackRps(lines), tallyRsvps(lines), respond, previews, pictures)
+    val tracked = if (games) trackGames(lines, moves) else emptyMap()
+    // With games turned off in Settings, game messages show as their plain text.
+    return RichContext(tallyPolls(lines, moves), if (games) tracked else emptyMap(), if (games) trackRps(lines) else emptyMap(), tallyRsvps(lines),
+        respond, previews, pictures, random)
 }
 
 /** A short inbox line for a card message, so the inbox never shows the raw text behind it. */

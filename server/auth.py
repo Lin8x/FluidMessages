@@ -1,9 +1,14 @@
 """Signing in to FluidMessages Web without typing an access token.
 
-- The owner creates a password on first visit. Only a salted scrypt hash is stored (PBKDF2-SHA256 where
-  scrypt isn't available), never the password.
-- First-run setup needs the one-time setup code the server prints in its log and keeps in its data folder, or the
-  server's access token (FLUID_TOKEN, or a pairing token). A stranger who finds the page can't claim it.
+- On the computer that runs it, FluidMessages Web opens like any app: no password and no code. Only a request that
+  really comes from this computer counts (see from_this_computer below): a loopback connection, or the Docker
+  gateway when the server is marked local-only, addressed to localhost, sent by FluidMessages Web's own page, and
+  not passed along by a reverse proxy.
+- Every other device signs in with a password, which you set the moment you turn on other devices or connect a
+  phone. Only a salted scrypt hash is stored (PBKDF2-SHA256 where scrypt isn't available), never the password.
+- Reached from another device before any password exists, first-run setup needs the one-time setup code the server
+  prints in its log and keeps in its data folder, or the server's access token (FLUID_TOKEN, or a pairing token).
+  A stranger who finds the page can't claim it.
 - Browsers get a random session cookie: HttpOnly, SameSite=Strict, and Secure over HTTPS. The server keeps only
   a SHA-256 of each session, so a copy of the database can't be used to sign in.
 - Wrong passwords and setup codes are rate-limited per address and overall.
@@ -148,6 +153,25 @@ class Auth:
 
     def has_owner(self, db):
         return self._get(db, "owner") is not None
+
+    # This computer: opening without a password
+
+    def local_enabled(self, db):
+        """On for new installs. Installs that already had a password before this existed keep asking for it, until
+        the owner turns it on in Settings."""
+        value = self._get(db, "local_access")
+        return (not self.has_owner(db)) if value is None else bool(value.get("enabled"))
+
+    def set_local(self, db, enabled):
+        self._set(db, "local_access", {"enabled": bool(enabled)})
+
+    def local_session(self, db, label=""):
+        """A session for a request already checked to come from this computer."""
+        if not self.local_enabled(db):
+            raise Refused(403, "Sign in to open FluidMessages Web.")
+        # Remembered, so a password made later for other devices doesn't take this computer's access away.
+        self.set_local(db, True)
+        return self._new_session(db, True, label or "This computer")
 
     @property
     def code_file(self):
@@ -298,6 +322,67 @@ class Auth:
         validate_password(password)
         self._set(db, "owner", {"password": hash_password(password), "created": int(self.clock() * 1000)})
         self.code_file.unlink(missing_ok=True)
+
+
+# A request carrying any of these was passed along by a reverse proxy, load balancer, or tunnel, so whoever sent it
+# may be anywhere. Such a request never counts as this computer, even when the proxy itself runs here.
+PROXY_HEADERS = ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Port",
+                 "X-Forwarded-Server", "X-Forwarded-Prefix", "X-Real-IP", "X-Client-IP", "X-Cluster-Client-IP",
+                 "True-Client-IP", "CF-Connecting-IP", "Fastly-Client-IP", "X-ProxyUser-Ip", "Via")
+
+
+def loopback_name(netloc):
+    """localhost, a name under .localhost, 127.x.y.z, or [::1], with or without a port. Browsers resolve these
+    names only to this computer, so a page from another site can't reach the server under them (DNS rebinding)."""
+    host = (netloc or "").strip().lower()
+    if host.startswith("["):
+        host = host[1:host.find("]")] if "]" in host else ""
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    host = host.rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+# Where a container's gateway can be: private IPv4 ranges (Docker, Podman, Docker Desktop), link-local, and IPv6
+# unique-local and link-local. Python's is_private also covers documentation ranges, so they're listed exactly.
+CONTAINER_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"))
+
+
+def local_peer(peer, local_only=False):
+    """The connection comes from this computer. With local_only (Docker's 127.0.0.1-only published port), the
+    container sees the Docker network's gateway or another private address instead of loopback, so those count."""
+    try:
+        address = ipaddress.ip_address(str(peer).split("%", 1)[0])
+    except ValueError:
+        return False
+    if address.version == 6 and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if address.is_loopback:
+        return True
+    return bool(local_only) and any(address in network for network in CONTAINER_NETWORKS)
+
+
+def from_this_computer(peer, headers, local_only=False, need_origin=False):
+    """Every condition must hold: a local connection, no proxy headers, a localhost Host (which also blocks DNS
+    rebinding), and, when the browser says where the request came from, the same localhost origin."""
+    if not local_peer(peer, local_only):
+        return False
+    if any(headers.get(name) is not None for name in PROXY_HEADERS):
+        return False
+    host = (headers.get("Host") or "").strip().lower()
+    if not loopback_name(host):
+        return False
+    origin = headers.get("Origin")
+    if origin is None:
+        return not need_origin
+    scheme, _, rest = origin.strip().lower().partition("://")
+    return scheme in ("http", "https") and rest.rstrip("/") == host
 
 
 def client_key(peer, forwarded):

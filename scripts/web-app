@@ -37,7 +37,8 @@ if ((FULL)); then
   PYTHON="$DATA/venv/bin/python"
 elif [[ -x "$DATA/venv/bin/python" ]]; then PYTHON="$DATA/venv/bin/python"; fi
 
-# The access token is made once and kept in the private folder.
+# The access token is made once and kept in the private folder. This computer opens without it; the window below
+# still passes it along, so installs that already have a password sign in as before.
 if [[ ! -s "$DATA/token" ]]; then
   (umask 077; python3 -c 'import secrets; print(secrets.token_hex(32))' > "$DATA/token")
 fi
@@ -55,8 +56,8 @@ done
 cat <<INFO
 
   FluidMessages Web is running at $URL
-  The browser window it opens signs you in automatically. To sign in from another browser on this
-  computer, use "Use an access token instead" with the token saved in $DATA/token.
+  It opens without a password in any browser on this computer. Other devices need a password, which you
+  can set in Settings → Phone and other devices.
 
   To install it as an app: in Chrome, Edge, or Brave, use the Install button in the address bar or the menu.
   Press Ctrl+C to stop.

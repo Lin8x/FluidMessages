@@ -55,9 +55,6 @@ function timerSelect(value, includeDefault) {
 
 async function loadSettings() {
   companionSettings = await api('settings');
-  const phone = companionSettings.phone;
-  get('status').textContent = phone.paired ? 'Phone synced ' + new Date(phone.last_sync).toLocaleTimeString()
-    : 'No phone connected · internet chats work here';
   return companionSettings;
 }
 
@@ -177,10 +174,11 @@ function appearanceSection(settings) {
   const section = element('section', '', 'settings-section');
   section.id = 'settings-appearance';
   section.append(element('h3', 'Themes and appearance'));
+  section.dataset.short = 'Appearance';
   const locked = settings.follow_phone && settings.phone.paired && usingPhoneLook();
   if (locked) {
-    section.append(element('p', 'Following your phone’s theme, colors, and bubbles. Change them on the phone, or choose '
-      + '“This web app’s own settings” above to set them here.', 'notice'));
+    section.append(element('p', 'Following your phone’s theme, colors, and bubbles. To set them here instead, choose '
+      + '“This web app’s own” under Phone and other devices.', 'notice'));
   }
   const controls = element('fieldset', '', 'plain');
   controls.disabled = locked;
@@ -274,214 +272,287 @@ function appearanceSection(settings) {
   return section;
 }
 
-async function openSettings() {
+/**
+ * Settings, in the order people reach for them: the chat accounts this app runs on, how it looks, chats, fun and
+ * effects, payments, then the phone and other devices, which are optional add-ons. [target] scrolls to a section.
+ */
+async function openSettings(target) {
   const settings = await loadSettings();
+  document.querySelector('dialog.settings-sheet')?.close();
   const sheet = dialog('Settings');
   sheet.classList.add('settings-sheet');
   const sections = [];
-  const add = (id, title) => {
+  const add = (id, title, intro) => {
     const node = element('section', '', 'settings-section');
     node.id = id;
     node.append(element('h3', title));
+    if (intro) node.append(element('p', intro, 'muted'));
     sections.push(node);
     return node;
   };
+  const rebuild = async (where) => { const open = sheet.scrollTop; sheet.close(); await openSettings(where); if (!where) document.querySelector('dialog.settings-sheet')?.scrollTo(0, open); };
 
-  // Your phone: which settings to use, and pairing.
-  const phone = add('settings-phone', 'Your phone');
-  phone.append(element('p', settings.phone.paired
-    ? 'Your phone last synced ' + new Date(settings.phone.last_sync).toLocaleString() + '. Texts, MMS, and RCS go through it.'
-    : 'No phone has synced yet. Matrix, XMPP, Email, and IRC work here on their own; texting needs the phone.', 'muted'));
-  const rebuild = async () => { const open = sheet.scrollTop; sheet.close(); await openSettings(); document.querySelector('dialog.settings-sheet')?.scrollTo(0, open); };
-  phone.append(choiceGroup('When your phone is connected, use', 'follow-phone', [
-    ['phone', 'My phone’s settings (recommended)', 'Theme, colors, bubbles, times, tags, and disappearing timers follow the phone each time it syncs.'],
-    ['web', 'This web app’s own settings', 'Keep a separate look and timers here. Blocked, archived, and pinned chats, and which protocols are on, still come from the phone.'],
-  ], settings.follow_phone ? 'phone' : 'web', async (value) => {
-    try {
-      await api('settings', {follow_phone: value === 'phone'});
-      followPhone = value === 'phone';
-      applyAppearance(resolvedAppearance());
-      showThreads();
-      showMessages(true);
-      await rebuild();
-    } catch (error) { showError(error); }
-  }));
-  phone.append(pairingBox());
+  // Chat accounts: what FluidMessages Web runs on by itself.
+  const accounts = add('settings-accounts', 'Chat accounts', 'FluidMessages stays connected to these, even when this page is closed.');
+  const list = element('div', '', 'account-list');
+  accounts.append(list);
+  const showAccounts = () => accountRows(list, showAccounts).then(() => refresh().catch(() => {}));
 
-  const appearanceNode = appearanceSection(settings);
-  sections.push(appearanceNode);
+  sections.push(appearanceSection(settings));
 
-  const timers = add('settings-timers', 'Disappearing messages');
+  const chats = add('settings-chats', 'Chats');
+  const local = (key, fallback = 'on') => (localStorage.getItem(key) || fallback) !== 'off';
   const timer = timerSelect(settings.disappearing.default, false);
   timer.addEventListener('change', () => api('settings', {disappearing: {...settings.disappearing, default: Number(timer.value)}})
     .then(loadSettings).catch(showError));
-  timers.append(field('Default timer for every chat', timer),
-    element('p', 'Removes messages from FluidMessages Web once the timer runs out. Your own Matrix and XMPP messages are also taken back '
-      + 'for everyone; texts, email, and IRC stay on the other person’s device. The phone removes its own copies with its own timers.'
-      + (settings.follow_phone ? ' While you use your phone’s settings, its timers replace these when it syncs.' : ''), 'muted'));
+  chats.append(checkbox('Enter sends', local('enterSends'), (value) => localStorage.setItem('enterSends', value ? 'on' : 'off'),
+    'Shift+Enter starts a new line. Saved in this browser.'),
+  field('Disappearing messages', timer, 'The default for every chat. Your own Matrix and XMPP messages are taken back for everyone; '
+    + 'texts, email, and IRC stay on the other person’s device.'
+    + (settings.follow_phone && settings.phone.paired ? ' Your phone’s timers replace this when it syncs.' : '')));
 
-  const media = add('settings-media', 'Messages, media, and links');
-  const local = (key, fallback = 'on') => (localStorage.getItem(key) || fallback) !== 'off';
-  const toggle = (key) => (value) => localStorage.setItem(key, value ? 'on' : 'off');
-  media.append(checkbox('Enter sends', local('enterSends'), toggle('enterSends'), 'Shift+Enter starts a new line.'),
-    checkbox('Show link previews', local('linkPreviews'), (value) => { toggle('linkPreviews')(value); showMessages(true); },
-      'FluidMessages Web fetches the page, so your browser never contacts the site.'),
-    checkbox('Show pictures and GIFs from links', local('autoPictures'), (value) => { toggle('autoPictures')(value); showMessages(true); }),
-    element('p', 'These are saved in this browser.', 'muted'));
+  sections.push(funSection(settings));
 
   const payments = add('settings-payments', 'Payments');
   const usual = element('select', '');
   for (const [name] of Object.entries(allAssets())) usual.append(Object.assign(element('option', moneyLook(name).title + ' · ' + moneyLook(name).detail), {value: name}));
   usual.value = defaultAsset();
   usual.addEventListener('change', () => localStorage.setItem('money.default', usual.value));
-  payments.append(field('Your usual way to pay', usual, 'It sits on top in Money as one big button. The last one you use becomes the new usual.'),
-    element('p', 'FluidMessages never holds money, keys, or card numbers. Payment links open the payer’s own app.', 'muted'));
+  payments.append(field('Your usual way to pay', usual, 'It sits on top in Money. FluidMessages never holds money, keys, or card numbers.'));
 
-  const accounts = add('settings-accounts', 'Accounts');
-  const list = element('div', '');
-  accounts.append(list);
-  const showAccounts = async () => {
-    const result = await api('protocols/accounts');
-    list.replaceChildren();
-    for (const protocol of Object.keys(ACCOUNT_FIELDS)) {
-      const account = result.accounts.find((item) => item.protocol === protocol);
-      const row = element('div', '', 'account-row');
-      const summary = account ? (account.fields.user_id || account.fields.jid || account.fields.address || account.fields.nick || 'Set up')
-        + (account.source === 'compose' ? ' · set in Docker Compose' : '') : 'Not set up';
-      const words = element('span', '', 'account-words');
-      words.append(element('strong', labels[protocol]), element('span', summary, 'muted'));
-      row.append(words);
-      if (!account || account.source !== 'compose') {
-        const edit = element('button', account ? 'Edit' : 'Add');
-        edit.type = 'button';
-        edit.setAttribute('aria-label', (account ? 'Edit ' : 'Add ') + labels[protocol] + ' account');
-        edit.addEventListener('click', () => editAccount(protocol, account, showAccounts));
-        row.append(edit);
-      }
-      if (account && account.source !== 'compose') {
-        row.append(confirmButton('Remove', 'Tap again to remove', async () => {
-          await api('protocols/accounts/delete', {protocol}).catch(showError);
-          showAccounts();
-        }));
-      }
-      list.append(row);
-    }
-  };
-
-  sections.push(securitySection());
+  sections.push(devicesSection(settings, rebuild));
 
   const reset = add('settings-reset', 'Reset');
-  reset.append(confirmButton('Reset FluidMessages Web settings', 'Tap again to reset', async () => {
+  reset.append(confirmButton('Reset settings', 'Tap again to reset', async () => {
     await api('settings', {reset: true}).catch(showError);
     sheet.close();
     loadSettings().catch(() => {});
     refresh().catch(() => {});
-  }), element('p', 'Puts settings back to their defaults. Accounts, chats, messages, and your password stay. To erase everything, '
-    + 'stop the server and remove its data volume: docker compose down -v', 'muted'));
+  }), element('p', 'Puts settings back to their defaults. Accounts, chats, and passwords stay.', 'muted'));
 
-  // A short table of contents, so the long page is quick to move around in.
+  // A short table of contents, so the page is quick to move around in.
   const nav = element('nav', '', 'settings-nav');
   nav.setAttribute('aria-label', 'Settings sections');
+  const jump = (node) => { node.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'}); node.querySelector('h3').focus?.({preventScroll: true}); };
   for (const node of sections) {
-    const link = element('a', node.querySelector('h3').textContent);
+    const link = element('a', node.dataset.short || node.querySelector('h3').textContent);
     link.href = '#' + node.id;
-    link.addEventListener('click', (event) => { event.preventDefault(); node.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'}); node.querySelector('h3').focus?.(); });
+    link.addEventListener('click', (event) => { event.preventDefault(); jump(node); });
     nav.append(link);
   }
   for (const node of sections) node.querySelector('h3').tabIndex = -1;
   sheet.append(nav, ...sections);
   sheet.showModal();
   showAccounts().catch((error) => list.append(element('p', error.message, 'muted')));
+  const goal = target && sections.find((node) => node.id === target);
+  if (goal) requestAnimationFrame(() => { goal.scrollIntoView(); goal.querySelector('h3').focus?.({preventScroll: true}); });
 }
 
-/** Pairing your phone: FLUID_TOKEN if the server has one, or a pairing token made here. */
-function pairingBox() {
-  const box = element('div', '', 'subsection');
-  box.append(element('h4', 'Connect your phone'));
-  const words = element('p', 'Loading…', 'muted');
-  const shown = element('div', '', 'token-box');
-  shown.hidden = true;
-  const actions = element('div', '', 'button-row');
-  box.append(words, shown, actions);
-  const draw = (state, token) => {
-    const pairing = state.pairing;
-    words.textContent = 'On Android, open Settings → Web companion, enter this server’s HTTPS address and a pairing token, and save. '
-      + (pairing.compose ? 'Your server’s FLUID_TOKEN works as one. ' : '')
-      + (pairing.web ? 'A pairing token made here is active (since ' + new Date(pairing.created).toLocaleDateString() + ').' : '');
-    actions.replaceChildren();
-    if (token) {
-      const input = Object.assign(element('input', ''), {value: token, readOnly: true, spellcheck: false});
-      input.setAttribute('aria-label', 'Pairing token');
-      const copy = element('button', 'Copy', 'primary');
-      copy.type = 'button';
-      copy.addEventListener('click', () => navigator.clipboard?.writeText(token).then(() => { copy.textContent = 'Copied'; }).catch(() => input.select()));
-      shown.replaceChildren(input, copy, element('p', 'Shown only now. Keep it private: it lets the phone read and send your messages.', 'hint'));
-      shown.hidden = false;
-      input.addEventListener('focus', () => input.select());
+/** One row per protocol: who you're signed in as, with Add, Edit, and Remove. Shared by Settings and the welcome. */
+async function accountRows(list, again) {
+  const result = await api('protocols/accounts');
+  list.replaceChildren();
+  const blurbs = {matrix: 'Chat, groups, and calls', xmpp: 'Jabber and XMPP chat', email: 'Any IMAP and SMTP mailbox', irc: 'Channels and private messages'};
+  for (const protocol of Object.keys(ACCOUNT_FIELDS)) {
+    const account = result.accounts.find((item) => item.protocol === protocol);
+    const row = element('div', '', 'account-row');
+    const badge = element('span', labels[protocol][0], 'account-badge p-' + protocol);
+    badge.setAttribute('aria-hidden', 'true');
+    const words = element('span', '', 'account-words');
+    const who = account ? (account.fields.user_id || account.fields.jid || account.fields.address || account.fields.nick || 'Connected') : '';
+    words.append(element('strong', labels[protocol]), element('span', account ? who + (account.source === 'compose' ? ' · set by the server' : '') : blurbs[protocol], 'muted'));
+    row.append(badge, words);
+    if (!account || account.source !== 'compose') {
+      const edit = element('button', account ? 'Edit' : 'Add', account ? '' : 'primary');
+      edit.type = 'button';
+      edit.setAttribute('aria-label', (account ? 'Edit ' : 'Add ') + labels[protocol] + ' account');
+      edit.addEventListener('click', () => editAccount(protocol, account, again));
+      row.append(edit);
     }
-    const make = pairing.web
-      ? confirmButton('Make a new pairing token', 'Tap again: the old one stops working', () => api('auth/pairing', {}).then((result) => draw(result, result.token)).catch(showError))
-      : element('button', 'Make a pairing token', 'primary');
-    if (!pairing.web) {
-      make.type = 'button';
-      make.addEventListener('click', () => api('auth/pairing', {}).then((result) => draw(result, result.token)).catch(showError));
+    if (account && account.source !== 'compose') {
+      row.append(confirmButton('Remove', 'Tap again to remove', async () => {
+        await api('protocols/accounts/delete', {protocol}).catch(showError);
+        again();
+      }, 'quiet'));
     }
-    actions.append(make);
-    if (pairing.web) {
-      actions.append(confirmButton('Remove pairing token', 'Tap again to unpair', () => api('auth/pairing/delete', {})
-        .then((result) => { shown.hidden = true; draw(result); }).catch(showError)));
+    list.append(row);
+  }
+  return result;
+}
+
+/** Fun and effects: switch off anything you'd rather not see, for every browser on this server. */
+function funSection(settings) {
+  const section = element('section', '', 'settings-section');
+  section.id = 'settings-fun';
+  section.dataset.short = 'Fun';
+  section.append(element('h3', 'Fun and effects'), element('p', 'Turn off anything you’d rather not see. Applies to every browser on this server.', 'muted'));
+  const current = {...prefs, ...(settings.prefs || {})};
+  const save = (key) => async (value) => {
+    prefs = {...prefs, [key]: value};
+    showMessages(true);
+    try { companionSettings = await api('settings', {prefs: {[key]: value}}); } catch (error) { showError(error); }
+  };
+  const motion = matchMedia('(prefers-reduced-motion: reduce)').matches ? ' Your device asks for reduced motion, so animations stay off.' : '';
+  section.append(
+    checkbox('Message effects', current.effects, save('effects'), 'Confetti, balloons, slams, and invisible ink. Off shows the words only.' + motion),
+    checkbox('Reaction animations', current.reactionEffects, save('reactionEffects'), 'A quick pop when someone reacts to a message.'),
+    checkbox('Games', current.games, save('games'), 'Chess, tic-tac-toe, four in a row, and rock paper scissors. Off shows moves as plain text.'),
+    checkbox('Dice and random picks', current.random, save('random'), 'Dice, coin flips, and random choices.'),
+    checkbox('GIFs and stickers', current.gifs, save('gifs'), 'Shows GIFs, stickers, and pictures from links. Off shows the link instead.'),
+    checkbox('Link previews', current.linkPreviews, save('linkPreviews'), 'A card with the page’s title and picture. Your server fetches it, so the site never sees your browser.'));
+  return section;
+}
+
+/** Your phone, this computer, and other devices. The password appears here, when you first let another device in. */
+function devicesSection(settings, rebuild) {
+  const section = element('section', '', 'settings-section');
+  section.id = 'settings-devices';
+  section.dataset.short = 'Devices';
+  section.append(element('h3', 'Phone and other devices'));
+  const phone = element('div', '', 'subsection');
+  const computer = element('div', '', 'subsection');
+  const others = element('div', '', 'subsection');
+  section.append(phone, computer, others);
+  const draw = (state, keepPhone = false) => {
+    // Your phone: optional. It adds texts, and can share its look and timers.
+    if (!keepPhone) drawPhone(state);
+    drawDevices(state);
+  };
+  const drawPhone = (state) => {
+    phone.replaceChildren(element('h4', 'Your phone'));
+    phone.append(element('p', settings.phone.paired
+      ? 'Last synced ' + new Date(settings.phone.last_sync).toLocaleString() + '. Texts go through it.'
+      : 'Optional. FluidMessages for Android adds your texts here and sends texts for you.', 'muted'));
+    // Setting the password from the phone steps updates the other devices below, leaving these steps in place.
+    phone.append(phoneConnect(state, () => api('auth/security').then((next) => draw(next, true))));
+    if (settings.phone.paired) {
+      phone.append(choiceGroup('Settings to use', 'follow-phone', [
+        ['phone', 'My phone’s (recommended)', 'Theme, colors, bubbles, times, tags, and timers follow the phone each time it syncs.'],
+        ['web', 'This web app’s own', 'Keep a separate look and timers here.'],
+      ], settings.follow_phone ? 'phone' : 'web', async (value) => {
+        try {
+          await api('settings', {follow_phone: value === 'phone'});
+          followPhone = value === 'phone';
+          applyAppearance(resolvedAppearance());
+          showThreads();
+          showMessages(true);
+          await rebuild('settings-devices');
+        } catch (error) { showError(error); }
+      }));
     }
   };
-  api('auth/security').then((state) => draw(state)).catch((error) => { words.textContent = error.message; });
-  return box;
+  const drawDevices = (state) => {
+    // This computer: opens without a password.
+    computer.replaceChildren(element('h4', 'This computer'));
+    computer.hidden = !state.here && !state.local;
+    computer.append(checkbox('Open without a password on this computer', state.local, async (value) => {
+      try { draw(await api('auth/local-access', {enabled: value})); } catch (error) { showError(error); }
+    }, state.here ? 'You’re on it now. Other devices always need the password.' : 'Applies when FluidMessages is opened on the computer it runs on.'));
+    // Other devices: a password, set the moment you want one.
+    others.replaceChildren(element('h4', 'Other devices'));
+    const plain = !state.https && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    if (!state.owner) {
+      others.append(element('p', 'Only this computer can open FluidMessages right now. To use it from a laptop, tablet, or your phone’s browser, set a password.', 'muted'));
+      const begin = element('button', 'Set up a password', 'primary');
+      begin.type = 'button';
+      begin.addEventListener('click', () => begin.replaceWith(passwordForm(false, (result) => draw(result))));
+      others.append(begin);
+    } else {
+      others.append(element('p', state.sessions + (state.sessions === 1 ? ' browser is' : ' browsers are') + ' signed in. Other devices sign in with your password.', 'muted'));
+      const change = element('details', '', 'more');
+      change.append(element('summary', 'Change password'), passwordForm(true, (result) => { change.open = false; draw(result); }));
+      const row = element('div', '', 'button-row');
+      row.append(confirmButton('Sign out other browsers', 'Tap again to sign them out', async () => draw(await api('auth/sessions/end-others', {}))));
+      if (!(state.here && state.local)) {
+        const out = element('button', 'Sign out', 'quiet');
+        out.type = 'button';
+        out.addEventListener('click', () => { document.querySelector('dialog.settings-sheet')?.close(); signOut(); });
+        row.append(out);
+      }
+      others.append(change, row);
+    }
+    if (plain) others.append(element('p', 'This page isn’t using HTTPS, so passwords and messages cross the network unencrypted. Put an HTTPS reverse proxy in front of it.', 'notice'));
+  };
+  phone.append(element('p', 'Loading…', 'muted'));
+  api('auth/security').then(draw).catch((error) => { phone.replaceChildren(element('p', error.message, 'muted')); });
+  return section;
 }
 
-/** Your password and the browsers signed in. */
-function securitySection() {
-  const section = element('section', '', 'settings-section');
-  section.id = 'settings-security';
-  section.append(element('h3', 'Sign-in and security'));
-  const summary = element('p', '', 'muted');
-  const form = element('form', '', 'stack');
-  const current = Object.assign(element('input', ''), {type: 'password', autocomplete: 'current-password', maxLength: 1024});
+/** Set or change the password, inline. [done] gets the new security state. */
+function passwordForm(changing, done) {
+  const form = element('form', '', 'stack password-form');
+  const current = Object.assign(element('input', ''), {type: 'password', autocomplete: 'current-password', maxLength: 1024, required: changing});
   const next = Object.assign(element('input', ''), {type: 'password', autocomplete: 'new-password', required: true, minLength: 8, maxLength: 1024});
   const again = Object.assign(element('input', ''), {type: 'password', autocomplete: 'new-password', required: true, minLength: 8, maxLength: 1024});
-  const currentLabel = field('Current password', current);
-  const status = element('p', '', 'muted');
-  status.setAttribute('role', 'status');
-  const save = element('button', 'Change password', 'primary');
-  form.append(Object.assign(element('input', ''), {type: 'text', name: 'username', autocomplete: 'username', value: 'FluidMessages Web', hidden: true}),
-    currentLabel, field('New password', next, 'At least 8 characters.'), field('Type it again', again), save, status);
+  const status = element('p', '', 'error');
+  status.setAttribute('role', 'alert');
+  const save = element('button', changing ? 'Change password' : 'Save password', 'primary');
+  form.append(Object.assign(element('input', ''), {type: 'text', name: 'username', autocomplete: 'username', value: 'FluidMessages Web', hidden: true}));
+  if (changing) form.append(field('Current password', current));
+  form.append(field(changing ? 'New password' : 'Password', next, 'At least 8 characters. A few words together is easy to remember and hard to guess.'),
+    field('Type it again', again), status, save);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (next.value !== again.value) { status.textContent = 'The two passwords don’t match.'; return; }
     save.disabled = true;
+    status.textContent = '';
     try {
       const result = await api('auth/password', {current: current.value, password: next.value});
       form.reset();
-      status.textContent = 'Password changed. Other browsers were signed out.';
-      draw(result);
+      done(result);
     } catch (error) { status.textContent = error.message; }
     finally { save.disabled = false; }
   });
-  const others = confirmButton('Sign out other browsers', 'Tap again to sign them out', async () => {
-    const result = await api('auth/sessions/end-others', {});
-    status.textContent = 'Other browsers were signed out.';
-    draw(result);
-  });
-  const draw = (state) => {
-    currentLabel.hidden = !state.owner;
-    current.required = state.owner;
-    save.textContent = state.owner ? 'Change password' : 'Set a password';
-    const plain = !state.https && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
-    summary.textContent = (state.owner ? 'You sign in with a password.' : 'No password yet: this browser signed in with an access token. Set a password to sign in without one.')
-      + ' ' + state.sessions + (state.sessions === 1 ? ' browser is' : ' browsers are') + ' signed in.'
-      + (plain ? ' This page isn’t using HTTPS, so your password and messages cross the network unencrypted. Put an HTTPS reverse proxy in front of it.' : '');
-    summary.className = plain ? 'notice' : 'muted';
+  requestAnimationFrame(() => (changing ? current : next).focus());
+  return form;
+}
+
+/**
+ * Connecting the phone, step by step: a password first (the phone reaches this server over the network, and
+ * your other devices will sign in with it), then a pairing token to type into the Android app.
+ */
+function phoneConnect(state, changed) {
+  const box = element('div', '', 'stack');
+  const token = element('div', '', 'token-box');
+  token.hidden = true;
+  const actions = element('div', '', 'button-row');
+  const draw = (current, value) => {
+    actions.replaceChildren();
+    box.replaceChildren();
+    if (value) {
+      const input = Object.assign(element('input', ''), {value, readOnly: true, spellcheck: false});
+      input.setAttribute('aria-label', 'Pairing token');
+      input.addEventListener('focus', () => input.select());
+      const copy = element('button', 'Copy', 'primary');
+      copy.type = 'button';
+      copy.addEventListener('click', () => navigator.clipboard?.writeText(value).then(() => { copy.textContent = 'Copied'; }).catch(() => input.select()));
+      token.replaceChildren(input, copy, element('p', 'Shown only now. Keep it private: it lets the phone read and send your messages.', 'hint'));
+      token.hidden = false;
+    }
+    const steps = element('ol', '', 'steps');
+    steps.append(element('li', 'Make FluidMessages reachable from your phone over HTTPS (a reverse proxy such as Caddy). See the self-hosting guide.'),
+      element('li', 'On Android, open Settings → Web companion, enter this server’s HTTPS address and the pairing token, and save.'));
+    if (current.pairing.web || current.pairing.compose || value) box.append(steps);
+    box.append(token, actions);
+    if (current.pairing.web && !value) box.append(element('p', 'A pairing token is active (made ' + new Date(current.pairing.created).toLocaleDateString() + ').', 'hint'));
+    const make = () => api('auth/pairing', {}).then((result) => draw(result, result.token)).catch(showError);
+    if (current.pairing.web) {
+      actions.append(confirmButton('Make a new pairing token', 'Tap again: the old one stops working', make),
+        confirmButton('Disconnect phone', 'Tap again to disconnect', () => api('auth/pairing/delete', {}).then((result) => { token.hidden = true; draw(result); }).catch(showError)));
+    } else {
+      const connect = element('button', 'Connect your phone', 'primary');
+      connect.type = 'button';
+      connect.addEventListener('click', () => {
+        if (current.owner) { make(); return; }
+        // Step 1 of 2, right here: a password, since the phone (and any other device) reaches this server over the network.
+        const intro = element('p', 'Step 1 of 2: set a password. Your phone connects over your network, so FluidMessages needs one before other devices can reach it.', 'notice');
+        box.replaceChildren(intro, passwordForm(false, () => { changed(); make(); }));
+      });
+      actions.append(connect);
+    }
   };
-  section.append(summary, form, others);
-  api('auth/security').then(draw).catch((error) => { summary.textContent = error.message; });
-  return section;
+  draw(state);
+  return box;
 }
 
 function editAccount(protocol, account, done) {
@@ -520,40 +591,55 @@ function editAccount(protocol, account, done) {
 
 // Starting internet chats from the browser
 
-function openNewChat() {
+/** New chat on any account you have, or a text through your phone. [prefill] waits in the new chat's message box. */
+function openNewChat(prefill = '') {
   const sheet = dialog('New chat');
   const form = element('form', '', 'settings-section');
+  const have = new Set(chatAccounts.map((account) => account.protocol));
+  const choices = ['matrix', 'xmpp', 'email', 'irc'].filter((value) => have.has(value)).concat('sms');
   const protocol = element('select', '');
-  for (const value of ['sms', 'matrix', 'xmpp', 'email', 'irc']) {
-    const option = element('option', value === 'sms' ? 'Text message (through your phone)' : labels[value]);
+  for (const value of choices) {
+    const option = element('option', value === 'sms' ? (phonePaired() ? 'Text message (through your phone)' : 'Text message (needs your phone)') : labels[value]);
     option.value = value;
     protocol.append(option);
   }
-  const target = Object.assign(element('input', ''), {required: true, autocomplete: 'off'});
-  const name = Object.assign(element('input', ''), {placeholder: 'Shown in your inbox', autocomplete: 'off'});
+  const target = Object.assign(element('input', ''), {required: true, autocomplete: 'off', spellcheck: false});
+  const name = Object.assign(element('input', ''), {placeholder: 'Shown in your chat list', autocomplete: 'off'});
   const group = Object.assign(element('input', ''), {type: 'checkbox'});
   const groupLabel = element('label', '', 'check');
   groupLabel.append(group, element('span', 'This is a group chat'));
   const hints = {sms: 'Phone number', matrix: '@maya:example.org or !room:example.org', xmpp: 'maya@example.org or room@conference.example.org',
     email: 'maya@example.org', irc: '#channel or nickname'};
+  const note = element('p', '', 'hint');
+  const nameField = field('Name (optional)', name);
   const update = () => {
     target.placeholder = hints[protocol.value];
     target.type = protocol.value === 'sms' ? 'tel' : 'text';
     groupLabel.hidden = protocol.value !== 'xmpp';
-    name.parentElement && (name.parentElement.hidden = protocol.value === 'sms');
+    nameField.hidden = protocol.value === 'sms';
+    note.textContent = protocol.value === 'sms' && !phonePaired()
+      ? 'Texts wait here until you connect your phone in Settings → Phone and other devices.' : '';
   };
   protocol.addEventListener('change', update);
-  const status = element('p', '', 'muted');
-  form.append(field('Protocol', protocol), field('Address', target), field('Name', name), groupLabel,
-    element('button', 'Start chat', 'primary'), status);
+  const status = element('p', '', 'error');
+  status.setAttribute('role', 'alert');
+  if (!have.size) {
+    const add = element('button', 'Add a chat account', 'wide');
+    add.type = 'button';
+    add.addEventListener('click', () => { sheet.close(); openSettings('settings-accounts').catch(showError); });
+    form.append(element('p', 'Add a Matrix, XMPP, Email, or IRC account to chat with anyone on it.', 'notice'), add);
+  }
+  form.append(field('Chat on', protocol), note, field('To', target), nameField, groupLabel, status,
+    element('button', 'Start chat', 'primary'));
   update();
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
+    const fill = () => { if (prefill) { get('body').value = prefill; drafts.set(active, prefill); } get('body').focus(); };
     if (protocol.value === 'sms') {
       sheet.close();
       select('');
       get('address').value = target.value.trim();
-      get('body').focus();
+      fill();
       return;
     }
     const address = 'web-' + fluidCallId().slice(0, 16);
@@ -563,10 +649,12 @@ function openNewChat() {
       routes.push(result.route);
       sheet.close();
       select(address + '\u001f' + protocol.value);
+      fill();
     } catch (error) { status.textContent = error.message; }
   });
   sheet.append(form);
   sheet.showModal();
+  target.focus();
 }
 
 function routeFor(key) {
@@ -594,7 +682,7 @@ async function openDetails() {
   timers.append(element('h3', 'Disappearing messages'), field('Remove messages in this chat after', timer));
   if (settings.follow_phone && settings.phone.paired) {
     timers.append(element('p', 'Your phone’s timers replace this when it syncs. Change it on the phone, or choose '
-      + '“This web app’s own settings” in Settings → Your phone.', 'muted'));
+      + '“This web app’s own” in Settings → Phone and other devices.', 'muted'));
   }
   sheet.append(timers);
   const route = routeFor(active);
@@ -1108,40 +1196,49 @@ function openMoney() {
 
 // Wiring into the existing page
 
+const HEAD_ICONS = {
+  voice: 'M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z',
+  video: 'M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z',
+  meeting: 'M16 11a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm-8 0a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05A4.22 4.22 0 0 1 17 16.5V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z',
+  details: 'M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 15h-2v-6h2zm0-8h-2V7h2z',
+};
+
+/** A round icon button for the chat header; its name shows on hover and is read by screen readers. */
+function headButton(icon, label) {
+  const button = element('button', '', 'head-button');
+  button.type = 'button';
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', HEAD_ICONS[icon]);
+  path.setAttribute('fill', 'currentColor');
+  svg.append(path);
+  button.append(svg);
+  return button;
+}
+
 (() => {
   const head = document.querySelector('.thread-head');
-  for (const [key, label, video] of [['voice', 'Voice', false], ['video', 'Video', true]]) {
-    const button = element('button', label, 'call-button');
-    button.type = 'button';
+  for (const [key, label, video] of [['voice', 'Voice call (Matrix)', false], ['video', 'Video call (Matrix)', true]]) {
+    const button = headButton(key, label);
     button.hidden = true;
-    button.title = (video ? 'Video' : 'Voice') + ' call over Matrix';
     button.addEventListener('click', () => startCall(video).catch(showError));
     callButtons[key] = button;
     head.append(button);
   }
-  const details = element('button', 'Details', 'call-button');
+  const details = headButton('details', 'Chat details');
   details.id = 'details';
-  details.type = 'button';
   details.hidden = true;
   details.addEventListener('click', () => openDetails().catch(showError));
   head.append(details);
-  const settings = element('button', 'Settings');
-  settings.id = 'open-settings';
-  settings.type = 'button';
-  settings.hidden = true;
-  settings.addEventListener('click', () => openSettings().catch(showError));
-  get('disconnect').before(settings);
-  const chat = element('button', 'New chat', 'icon-button new-chat');
-  chat.type = 'button';
-  chat.title = 'Start a chat on any protocol';
-  chat.addEventListener('click', openNewChat);
-  get('new').after(chat);
-  // Show the companion's own controls once paired, and keep calls ringing.
+  // Keep calls ringing while the app is open.
   new MutationObserver(() => {
-    const paired = !get('workspace').hidden;
-    settings.hidden = !paired;
-    if (paired && !companionSettings) loadSettings().catch(() => {});
-    if (!paired) { companionSettings = null; callCursor = null; }
+    const shown = !get('workspace').hidden;
+    if (shown && !companionSettings) loadSettings().catch(() => {});
+    if (!shown && !signedIn) { companionSettings = null; callCursor = null; }
   }).observe(get('workspace'), {attributes: true, attributeFilter: ['hidden']});
   setInterval(pollCalls, 2000);
 })();
@@ -1182,7 +1279,7 @@ function showCalls() {
   list.replaceChildren();
   const recent = inbox.filter((message) => message.event && /^(Voice|Video) call/.test(message.body || '')).slice(0, 30);
   list.append(element('h2', 'Recent calls', 'calls-heading'));
-  if (!recent.length) list.append(element('p', 'No calls yet. Matrix calls you make or get show up here.', 'placeholder'));
+  if (!recent.length) list.append(element('p', 'No calls yet. Voice and video calls on Matrix show up here.', 'placeholder'));
   for (const call of recent) {
     const missed = /missed/.test(call.body);
     const row = element('button', '', 'call-row' + (missed ? ' missed' : ''));
@@ -1195,7 +1292,8 @@ function showCalls() {
   }
   list.append(element('h2', 'Call someone', 'calls-heading'));
   const callable = routes.filter((route) => route.protocol === 'matrix');
-  if (!callable.length) list.append(element('p', 'Link a Matrix address to a chat to call it from here.', 'placeholder'));
+  if (!callable.length) list.append(element('p', chatAccounts.some((account) => account.protocol === 'matrix')
+    ? 'Start a Matrix chat with someone to call them from here.' : 'Add a Matrix account in Settings to make voice and video calls.', 'placeholder'));
   for (const route of callable) {
     const row = element('div', '', 'call-row');
     row.append(element('span', initials(route.title), 'avatar'), element('strong', route.title), element('small', 'Matrix · end-to-end encrypted'));
@@ -1222,6 +1320,7 @@ function showCalls() {
     button.dataset.section = key;
     button.append(railIcon(key), element('span', label));
     button.addEventListener('click', () => key === 'settings' ? openSettings().catch(showError) : showSection(key));
+    if (key === 'messages') button.querySelector('span').textContent = 'Chats';
     rail.append(button);
   }
   get('workspace').prepend(rail);
@@ -1272,11 +1371,10 @@ async function startMeeting(video) {
 }
 
 (() => {
-  const button = element('button', 'Meeting', 'call-button');
-  button.type = 'button';
-  button.title = 'Send a meeting link in this chat and join it';
+  const button = headButton('meeting', 'Start a video meeting and send its link here');
   button.addEventListener('click', () => startMeeting(true).catch(showError));
   document.getElementById('details').before(button);
   const update = () => { button.hidden = !active || !threadAddress(active); };
+  update();
   new MutationObserver(update).observe(document.getElementById('recipient'), {childList: true, characterData: true, subtree: true});
 })();
