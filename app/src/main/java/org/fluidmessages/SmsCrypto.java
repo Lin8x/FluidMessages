@@ -130,6 +130,8 @@ final class SmsCrypto {
     static String outgoing(Context context, String conversation, MessageProtocol protocol, String text) throws Exception {
         var prefs = prefs(context);
         if (text == null || text.isBlank() || text.startsWith(PREFIX)) return text;
+        // Chat setting notices stay readable in any app, so someone without the key still learns encryption changed.
+        if (ExtrasKt.isChatNotice(text)) return text;
         boolean wantedHere = wanted(prefs, conversation, protocol);
         if (!wantedHere) return text;
         String key = sendingKey(prefs, conversation);

@@ -38,7 +38,7 @@ enum MessageProtocol {
         return false;
     }
 
-    static final String READ_ONLY = "Read-only: every way to message is turned off in Settings → Ways to message.";
+    static final String READ_ONLY = "Read-only: every chat service is turned off in Settings → Chat services.";
 
     String disabledReason(SharedPreferences prefs) {
         return enabled(prefs) ? "" : label + " is turned off in Settings. This conversation is read-only.";

@@ -119,6 +119,55 @@ class XmppClient:
             raise ConnectionError("XMPP isn’t connected yet")
         return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result(timeout)
 
+    def sync_rooms(self, rooms):
+        """Joins group chats added since the session started and leaves ones that were left."""
+        wanted = set(rooms)
+        added, gone = wanted - self.rooms, self.rooms - wanted
+        self.rooms = wanted
+        if not self.ready.is_set():
+            return  # Joined in started().
+        nick = self.account["jid"].split("@", 1)[0]
+        def apply():
+            muc = self.client.plugin["xep_0045"]
+            for room in added:
+                muc.join_muc(room, nick)
+            for room in gone:
+                muc.leave_muc(room, nick)
+        self.loop.call_soon_threadsafe(apply)
+
+    def muc_services(self):
+        """Group-chat (MUC) services on the account's server, found with service discovery (XEP-0030)."""
+        domain = self.account["jid"].split("@", 1)[1].split("/", 1)[0]
+        async def find():
+            disco = self.client.plugin["xep_0030"]
+            items = await disco.get_items(jid=domain, timeout=15)
+            found = []
+            for jid, _node, _name in items["disco_items"]["items"][:40]:
+                try:
+                    info = await disco.get_info(jid=jid, timeout=10)
+                except Exception:
+                    continue
+                if any(category == "conference" for category, _type, _lang, _name in info["disco_info"]["identities"]):
+                    found.append(str(jid))
+            return found
+        return self.call(find())
+
+    def browse(self, service, search="", limit=50):
+        """Public group chats on a MUC service (disco#items), filtered by [search]."""
+        search = (search or "").strip().lower()
+        async def rooms():
+            items = await self.client.plugin["xep_0030"].get_items(jid=service, timeout=20)
+            output = []
+            for jid, _node, name in items["disco_items"]["items"]:
+                jid = str(jid)
+                if search and search not in (jid + " " + (name or "")).lower():
+                    continue
+                output.append({"target": jid.lower(), "name": (name or jid)[:120], "members": 0, "topic": ""})
+                if len(output) >= limit:
+                    break
+            return output
+        return self.call(rooms())
+
     def change_member(self, room, add, member):
         """Invites an address to a group chat, or kicks a nickname from it (kicking needs moderator rights)."""
         async def apply():

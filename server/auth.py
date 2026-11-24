@@ -14,6 +14,9 @@
 - Wrong passwords and setup codes are rate-limited per address and overall.
 - Phones, desktop apps, and scripts keep using a bearer token: FLUID_TOKEN from the server's settings, or a pairing
   token made in the web app's settings (stored only as a hash).
+- Privacy and security (privacy.py): a private folder passcode, a decoy password, and an emergency erase passcode,
+  each kept only as a salted scrypt hash like the password. Every password sign-in checks all three the same way,
+  so a decoy or emergency sign-in takes as long and answers the same as a real one. None of them is ever logged.
 """
 import hashlib
 import hmac
@@ -39,6 +42,12 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     persistent INTEGER NOT NULL, label TEXT NOT NULL DEFAULT ''
 );
 """
+# Per-session privacy flags, added to auth_sessions by Auth.migrate: a decoy session (signed in with the decoy
+# password, or switched by Quick hide) and whether this session opened the private folder.
+SESSION_FLAGS = {"decoy": "INTEGER NOT NULL DEFAULT 0", "private_open": "INTEGER NOT NULL DEFAULT 0"}
+MAX_CODE = 1024
+CODE_NAMES = {"owner": "your FluidMessages Web password", "decoy": "your decoy password",
+              "distress": "your emergency erase passcode", "private_code": "your private folder passcode"}
 
 
 class Refused(Exception):
@@ -154,6 +163,58 @@ class Auth:
     def has_owner(self, db):
         return self._get(db, "owner") is not None
 
+    @staticmethod
+    def migrate(db):
+        columns = {row[1] for row in db.execute("PRAGMA table_info(auth_sessions)")}
+        for name, kind in SESSION_FLAGS.items():
+            if name not in columns:
+                db.execute("ALTER TABLE auth_sessions ADD COLUMN %s %s" % (name, kind))
+
+    # Privacy codes: the private folder passcode, the decoy password, and the emergency erase passcode
+
+    _dummy = None
+
+    @classmethod
+    def dummy(cls):
+        """A hash of nothing in particular, checked when a code isn't set, so every check costs the same."""
+        if cls._dummy is None:
+            cls._dummy = hash_password(secrets.token_hex(16))
+        return cls._dummy
+
+    def has_secret(self, db, name):
+        return self._get(db, name) is not None
+
+    def check_secret(self, db, name, code):
+        """Whether code is this privacy code. Always does the full slow check, whether it's set or not."""
+        stored = self._get(db, name)
+        usable = isinstance(code, str) and 0 < len(code) <= MAX_CODE
+        match = check_password(stored["hash"] if stored else self.dummy(), code if usable else "-")
+        return bool(stored) and usable and match
+
+    def set_secret(self, db, name, code):
+        self._set(db, name, None if code is None else {"hash": hash_password(code), "created": int(self.clock() * 1000)})
+
+    def refuse_reuse(self, db, code, *names):
+        """Keeps the password and the privacy codes apart: none may be the same as another."""
+        owner = self._get(db, "owner")
+        for name in names:
+            if name == "owner":
+                same = owner is not None and check_password(owner["password"], code)
+            else:
+                same = self.has_secret(db, name) and self.check_secret(db, name, code)
+            if same:
+                raise Refused(400, "Use something different from " + CODE_NAMES[name] + ".")
+
+    def guard(self, client):
+        """Raises Refused(429) while this address waits after too many wrong passwords or codes."""
+        self._guard(client)
+
+    def missed(self, client):
+        self.limiter.miss(client)
+
+    def matched(self, client):
+        self.limiter.success(client)
+
     # This computer: opening without a password
 
     def local_enabled(self, db):
@@ -202,8 +263,10 @@ class Auth:
         return "-".join(code[index:index + 4] for index in range(0, len(code), 4))
 
     def reset_owner(self, db):
-        """For a forgotten password: removes the password and every browser session, and makes a new setup code."""
+        """For a forgotten password: removes the password and every browser session, and makes a new setup code.
+        The decoy password goes too, since it only works next to a password."""
         self._set(db, "owner", None)
+        self._set(db, "decoy", None)
         db.execute("DELETE FROM auth_sessions")
         self.code_file.unlink(missing_ok=True)
         return self.setup_code(db)
@@ -232,13 +295,13 @@ class Auth:
 
     # Sessions
 
-    def _new_session(self, db, remember, label=""):
-        value = secrets.token_urlsafe(32)
+    def _new_session(self, db, remember, label="", decoy=False, value=None):
+        value = value or secrets.token_urlsafe(32)
         now = int(self.clock())
         expires = now + (REMEMBER_SECONDS if remember else SHORT_SECONDS)
         db.execute("DELETE FROM auth_sessions WHERE expires<?", (now,))
-        db.execute("INSERT INTO auth_sessions VALUES (?, ?, ?, ?, ?, ?)",
-                   (_digest(value), now, now, expires, int(bool(remember)), label[:120]))
+        db.execute("INSERT OR REPLACE INTO auth_sessions (id, created, seen, expires, persistent, label, decoy, private_open) "
+                   "VALUES (?, ?, ?, ?, ?, ?, ?, 0)", (_digest(value), now, now, expires, int(bool(remember)), label[:120], int(bool(decoy))))
         # At most 50 browsers signed in; the oldest drops off.
         db.execute("""DELETE FROM auth_sessions WHERE id NOT IN
                       (SELECT id FROM auth_sessions ORDER BY seen DESC LIMIT 50)""")
@@ -246,17 +309,35 @@ class Auth:
 
     def session(self, db, value):
         """The session behind a cookie, or None. Use slides the expiry forward, at most once a minute."""
+        found = self.session_info(db, value)
+        return found["key"] if found else None
+
+    def session_info(self, db, value):
+        """The session's key and its privacy flags, {"key", "decoy", "private_open"}, or None."""
         if not isinstance(value, str) or not 20 <= len(value) <= 100:
             return None
         key = _digest(value)
-        row = db.execute("SELECT seen, expires, persistent FROM auth_sessions WHERE id=?", (key,)).fetchone()
+        row = db.execute("SELECT seen, expires, persistent, decoy, private_open FROM auth_sessions WHERE id=?", (key,)).fetchone()
         now = int(self.clock())
         if row is None or row[1] < now:
             return None
         if now - row[0] >= 60:
             expires = now + (REMEMBER_SECONDS if row[2] else SHORT_SECONDS)
             db.execute("UPDATE auth_sessions SET seen=?, expires=? WHERE id=?", (now, expires, key))
-        return key
+        return {"key": key, "decoy": bool(row[3]), "private_open": bool(row[4])}
+
+    def set_session_flags(self, db, key, **flags):
+        for name, value in flags.items():
+            if name in SESSION_FLAGS:
+                db.execute("UPDATE auth_sessions SET %s=? WHERE id=?" % name, (int(bool(value)), key))
+
+    def lock_private_everywhere(self, db):
+        db.execute("UPDATE auth_sessions SET private_open=0")
+
+    def restore_session(self, db, value, remember, label):
+        """After an emergency erase emptied every session, puts this browser's back as a decoy session, so the page
+        keeps going and shows a harmless inbox."""
+        return self._new_session(db, remember, label, decoy=True, value=value)
 
     def end_session(self, db, value):
         if isinstance(value, str):
@@ -288,21 +369,34 @@ class Auth:
             self.limiter.miss(client)
             raise Refused(403, "That setup code isn't right. It's in the server's log and in its data folder (setup-code).")
         validate_password(password)
+        self.refuse_reuse(db, password, "distress")
         self.limiter.success(client)
         self._set(db, "owner", {"password": hash_password(password), "created": int(self.clock() * 1000)})
         self.code_file.unlink(missing_ok=True)
         return self._new_session(db, remember, label)
 
     def login(self, db, client, password, remember, label=""):
+        """Signs in with the password, the decoy password, or the emergency erase passcode. All three are checked
+        every time, in the same order, so neither the answer nor its timing says which one matched. Returns the
+        session value, whether it's remembered, and "real", "decoy", or "distress". A distress session isn't stored
+        yet: the caller erases everything first, then restores it as a decoy session (restore_session)."""
         owner = self._get(db, "owner")
         if owner is None:
             raise Refused(409, "Set up FluidMessages Web first.")
         self._guard(client)
-        if not isinstance(password, str) or len(password) > MAX_PASSWORD or not check_password(owner["password"], password):
+        usable = isinstance(password, str) and 0 < len(password) <= MAX_PASSWORD
+        given = password if usable else "-"
+        real = check_password(owner["password"], given) and usable
+        decoy = self.check_secret(db, "decoy", given)
+        distress = self.check_secret(db, "distress", given)
+        if not (real or decoy or distress):
             self.limiter.miss(client)
             raise Refused(403, "That password isn't right.")
         self.limiter.success(client)
-        return self._new_session(db, remember, label)
+        if real or decoy:
+            value, persistent = self._new_session(db, remember, label, decoy=not real)
+            return value, persistent, "real" if real else "decoy"
+        return secrets.token_urlsafe(32), bool(remember), "distress"
 
     def login_with_token(self, db, client, value, remember, label=""):
         self._guard(client)
@@ -331,6 +425,7 @@ class Auth:
                 self.limiter.miss(client)
                 raise Refused(403, "Your current password isn't right.")
         validate_password(password)
+        self.refuse_reuse(db, password, "decoy", "distress")
         self._set(db, "owner", {"password": hash_password(password), "created": int(self.clock() * 1000)})
         self.code_file.unlink(missing_ok=True)
 

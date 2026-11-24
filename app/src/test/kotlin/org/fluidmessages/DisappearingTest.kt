@@ -23,6 +23,15 @@ class DisappearingTest {
         assertEquals(0L, Disappearing.expiryAt(0, 300, since, Long.MAX_VALUE))
     }
 
+    @Test fun theTimerByAMessageSaysHowLongIsLeft() {
+        assertEquals("Disappears in 45 s", Disappearing.timeLeft(44_200))
+        assertEquals("Disappears in 5 min", Disappearing.timeLeft(4 * minute + 1))
+        assertEquals("Disappears in 1 h", Disappearing.timeLeft(60 * minute))
+        assertEquals("Disappears in 3 h", Disappearing.timeLeft(3 * 60 * minute - 5 * minute))
+        assertEquals("Disappears in 7 d", Disappearing.timeLeft(7 * 24 * 60 * minute))
+        assertEquals("Disappearing now", Disappearing.timeLeft(0))
+    }
+
     @Test fun aTimerTheMessageCarriesWins() {
         // Encrypted texts, Matrix, and XMPP carry the sender's timer, even where this phone has none.
         assertEquals(42L, Disappearing.expiryAt(42, 0, 10, Long.MAX_VALUE))

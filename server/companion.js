@@ -266,35 +266,96 @@ function appearanceSection(settings) {
 }
 
 /** One row per protocol: who you're signed in as, with Add, Edit, and Remove. Shared by Settings and the welcome. */
+/** Settings → Accounts: every account, grouped by service, with Add another on each. Forms open in place. */
 async function accountRows(list, again) {
   const result = await api('protocols/accounts');
   list.replaceChildren();
   const blurbs = {matrix: 'Chat, groups, and calls', xmpp: 'Jabber and XMPP chat', email: 'Any IMAP and SMTP mailbox', irc: 'Channels and private messages'};
+  const open = (protocol, account) => {
+    const back = element('button', '', 'sheet-back');
+    back.type = 'button';
+    back.append(element('span', '‹'), document.createTextNode(' Accounts'));
+    back.addEventListener('click', again);
+    list.replaceChildren(back, element('h3', (account ? '' : 'Add ') + labels[protocol] + (account ? ' · ' + account.name : ' account')),
+      element('p', typeof SERVER_HELP === 'object' ? SERVER_HELP[protocol] : '', 'muted'), accountForm(protocol, account, again, {add: !account}));
+    list.querySelector('input')?.focus();
+  };
   for (const protocol of Object.keys(ACCOUNT_FIELDS)) {
-    const account = result.accounts.find((item) => item.protocol === protocol);
-    const row = element('div', '', 'account-row');
+    const group = element('div', '', 'account-group');
+    const mine = result.accounts.filter((item) => item.protocol === protocol);
+    const head = element('div', '', 'account-row account-service');
     const badge = element('span', labels[protocol][0], 'account-badge p-' + protocol);
     badge.setAttribute('aria-hidden', 'true');
     const words = element('span', '', 'account-words');
-    const who = account ? (account.fields.user_id || account.fields.jid || account.fields.address || account.fields.nick || 'Connected') : '';
-    words.append(element('strong', labels[protocol]), element('span', account ? who + (account.source === 'compose' ? ' · set by the server' : '') : blurbs[protocol], 'muted'));
-    row.append(badge, words);
-    if (!account || account.source !== 'compose') {
-      const edit = element('button', account ? 'Edit' : 'Add', account ? '' : 'primary');
-      edit.type = 'button';
-      edit.setAttribute('aria-label', (account ? 'Edit ' : 'Add ') + labels[protocol] + ' account');
-      edit.addEventListener('click', () => editAccount(protocol, account, again));
-      row.append(edit);
+    words.append(element('strong', labels[protocol]), element('span', mine.length ? mine.length + (mine.length === 1 ? ' account' : ' accounts') : blurbs[protocol], 'muted'));
+    const add = element('button', mine.length ? 'Add another' : 'Add', mine.length ? '' : 'primary');
+    add.type = 'button';
+    add.setAttribute('aria-label', (mine.length ? 'Add another ' : 'Add ') + labels[protocol] + ' account');
+    add.addEventListener('click', () => open(protocol, null));
+    head.append(badge, words, add);
+    group.append(head);
+    for (const account of mine) {
+      const row = element('div', '', 'account-row account-item');
+      const who = element('span', '', 'account-words');
+      who.append(element('strong', account.error ? 'Docker Compose account' : account.name || 'Connected'),
+        element('span', account.error || (account.source === 'compose' ? 'Set by the server · read-only' : account.source === 'file' ? 'Set in the server’s config file'
+          : mine.length > 1 && account.primary ? 'First account · chats from before stay here' : 'On FluidMessages Web'), 'muted'));
+      row.append(who);
+      if (account.source === 'phone') {
+        const edit = element('button', 'Edit');
+        edit.type = 'button';
+        edit.setAttribute('aria-label', 'Edit ' + (account.name || labels[protocol]));
+        edit.addEventListener('click', () => open(protocol, account));
+        row.append(edit, confirmButton('Remove', 'Tap again to remove', async () => {
+          await api('protocols/accounts/delete', {protocol, id: account.id}).catch(showError);
+          again();
+        }, 'quiet'));
+      }
+      group.append(row);
     }
-    if (account && account.source !== 'compose') {
-      row.append(confirmButton('Remove', 'Tap again to remove', async () => {
-        await api('protocols/accounts/delete', {protocol}).catch(showError);
-        again();
-      }, 'quiet'));
-    }
-    list.append(row);
+    list.append(group);
   }
   return result;
+}
+
+/** An account's fields. [add] adds another account; with [account] it edits that one. [preset] pre-fills fields. */
+function accountForm(protocol, account, done, {add = false, preset = {}} = {}) {
+  const form = element('form', '', 'settings-section');
+  const inputs = {};
+  for (const [name, label, hint, secret] of ACCOUNT_FIELDS[protocol]) {
+    const input = Object.assign(element('input', ''), {name, placeholder: hint, type: secret ? 'password' : 'text', autocomplete: secret ? 'new-password' : 'off',
+      spellcheck: false});
+    const current = account?.fields?.[name] ?? preset[name];
+    if (current && !secret) input.value = Array.isArray(current) ? current.join(', ') : String(current);
+    if (secret && current) input.placeholder = 'Saved · leave blank to keep';
+    inputs[name] = input;
+    form.append(field(label, input));
+  }
+  const status = element('p', '', 'muted');
+  status.setAttribute('role', 'status');
+  const save = element('button', 'Save', 'primary');
+  form.append(element('p', 'Passwords are kept in a private file on your server and are never shown again.'
+    + (protocol === 'irc' ? ' FluidMessages connects to IRC with TLS only.' : ''), 'muted'), save, status);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const fields = {};
+    for (const [name, input] of Object.entries(inputs)) if (input.value.trim()) fields[name] = input.value.trim();
+    save.disabled = true;
+    try {
+      await api('protocols/accounts', {protocol, fields, ...(account?.id ? {id: account.id} : add ? {add: true} : {})});
+      done();
+    } catch (error) { status.textContent = error.message; }
+    finally { save.disabled = false; }
+  });
+  return form;
+}
+
+/** The account form in a sheet, for the setup guide. Without [account] it adds one. */
+function editAccount(protocol, account, done) {
+  const sheet = dialog(labels[protocol] + ' account');
+  sheet.append(accountForm(protocol, account, () => { sheet.close(); done(); }, {add: !account}));
+  sheet.showModal();
+  sheet.querySelector('input')?.focus();
 }
 
 /**
@@ -483,40 +544,6 @@ function phoneConnect(state, changed) {
   return box;
 }
 
-function editAccount(protocol, account, done) {
-  const sheet = dialog(labels[protocol] + ' account');
-  const form = element('form', '', 'settings-section');
-  const inputs = {};
-  for (const [name, label, hint, secret] of ACCOUNT_FIELDS[protocol]) {
-    const input = Object.assign(element('input', ''), {name, placeholder: hint, type: secret ? 'password' : 'text', autocomplete: secret ? 'new-password' : 'off',
-      spellcheck: false});
-    const current = account?.fields?.[name];
-    if (current && !secret) input.value = Array.isArray(current) ? current.join(', ') : String(current);
-    if (secret && current) input.placeholder = 'Saved · leave blank to keep';
-    inputs[name] = input;
-    form.append(field(label, input));
-  }
-  const status = element('p', '', 'muted');
-  status.setAttribute('role', 'status');
-  const save = element('button', 'Save', 'primary');
-  form.append(element('p', 'Passwords are kept in a private file on your server and are never shown again.', 'muted'), save, status);
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const fields = {};
-    for (const [name, input] of Object.entries(inputs)) if (input.value.trim()) fields[name] = input.value.trim();
-    save.disabled = true;
-    try {
-      await api('protocols/accounts', {protocol, fields});
-      sheet.close();
-      done();
-    } catch (error) { status.textContent = error.message; }
-    finally { save.disabled = false; }
-  });
-  sheet.append(form);
-  sheet.showModal();
-  form.querySelector('input')?.focus();
-}
-
 // Starting internet chats from the browser
 
 /** New chat on any account you have, or a text through your phone. [prefill] waits in the new chat's message box. */
@@ -540,7 +567,17 @@ function openNewChat(prefill = '') {
     email: 'maya@example.org', irc: '#channel or nickname'};
   const note = element('p', '', 'hint');
   const nameField = field('Name (optional)', name);
+  // With more than one account on a service, the chat goes through the one picked here (the most recent by default).
+  const account = element('select', '');
+  const accountField = field('Account', account);
+  const fillAccounts = () => {
+    const mine = chatAccounts.filter((item) => item.id && item.protocol === protocol.value);
+    account.replaceChildren(Object.assign(element('option', 'Most recently used'), {value: ''}),
+      ...mine.map((item) => Object.assign(element('option', item.name), {value: item.id})));
+    accountField.hidden = mine.length < 2;
+  };
   const update = () => {
+    fillAccounts();
     target.placeholder = hints[protocol.value];
     target.type = protocol.value === 'sms' ? 'tel' : 'text';
     groupLabel.hidden = protocol.value !== 'xmpp';
@@ -557,7 +594,7 @@ function openNewChat(prefill = '') {
     add.addEventListener('click', () => { sheet.close(); openSettings('settings-accounts').catch(showError); });
     form.append(element('p', 'Add a Matrix, XMPP, Email, or IRC account to chat with anyone on it.', 'notice'), add);
   }
-  form.append(field('Chat on', protocol), note, field('To', target), nameField, groupLabel, status,
+  form.append(field('Chat on', protocol), accountField, note, field('To', target), nameField, groupLabel, status,
     element('button', 'Start chat', 'primary'));
   update();
   form.addEventListener('submit', async (event) => {
@@ -573,10 +610,10 @@ function openNewChat(prefill = '') {
     const address = 'web-' + fluidCallId().slice(0, 16);
     try {
       const result = await api('protocols/routes', {address, protocol: protocol.value, target: target.value.trim(),
-        title: name.value.trim() || target.value.trim(), group: group.checked});
+        title: name.value.trim() || target.value.trim(), group: group.checked, ...(account.value ? {account: account.value} : {})});
       routes.push(result.route);
       sheet.close();
-      select(address + '\u001f' + protocol.value);
+      select(result.route.address + '\u001f' + protocol.value);
       fill();
     } catch (error) { status.textContent = error.message; }
   });
@@ -633,11 +670,31 @@ function securityRow(key) {
   const row = element('div', '', 'detail-row');
   const words = element('span', '', 'detail-words');
   words.append(element('strong', label), element('small', protocolName(protocol) + ' · ' + detail));
-  const badge = get('security-badge')?.cloneNode(true);
-  if (badge) { badge.removeAttribute('id'); badge.hidden = false; badge.classList.add('large'); }
-  row.append(words);
-  if (badge) row.append(badge);
+  row.append(words, lockBadge(tone, label, 'large'));
   return row;
+}
+
+/** The small padlock in a protection color: open and red, or closed and yellow or green. */
+function lockBadge(tone, label, extra = '') {
+  const badge = element('span', '', 'security-lock tone-' + tone + (extra ? ' ' + extra : ''));
+  badge.title = label;
+  badge.setAttribute('role', 'img');
+  badge.setAttribute('aria-label', label);
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('width', '11');
+  svg.setAttribute('height', '11');
+  const shackle = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  shackle.setAttribute('d', tone === 'red' ? 'M8 7V4.5a2.5 2.5 0 0 1 5 0' : 'M4.5 7V4.5a3.5 3.5 0 0 1 7 0V7');
+  shackle.setAttribute('fill', 'none');
+  shackle.setAttribute('stroke', 'currentColor');
+  shackle.setAttribute('stroke-width', '1.6');
+  const body = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  for (const [name, value] of [['x', '3'], ['y', '7.5'], ['width', '10'], ['height', '7'], ['rx', '1.6'], ['fill', 'none'],
+    ['stroke', 'currentColor'], ['stroke-width', '1.6']]) body.setAttribute(name, value);
+  svg.append(shackle, body);
+  badge.append(svg);
+  return badge;
 }
 
 async function openDetails({back} = {}) {
@@ -656,7 +713,6 @@ async function openDetails({back} = {}) {
     : group ? (sampleOn ? 'Sample group · ' : '') + (members.length + 1) + ' members including you'
       : sampleOn ? 'Sample contact · ' + protocolName(threadProtocol(key))
         : automatedThread(key) ? 'Automated sender · ' + address : route?.target || address;
-  const extras = detailsExtras(key);
   const nodes = [detailsHero(title, subtitle), reachTiles(key)];
   if (!group) {
     const info = element('section', '', 'settings-section');
@@ -664,6 +720,8 @@ async function openDetails({back} = {}) {
     const addresses = contactAddresses(key);
     for (const [label, value] of addresses) info.append(detailRow(label, value));
     if (!addresses.length) info.append(element('p', 'No address is known for this chat.', 'muted'));
+    // Their contact page: every address, favorites, and shared groups (people.js).
+    if (typeof contactPageLink === 'function') info.append(contactPageLink(key, back));
     nodes.push(info);
   }
   if (group) {
@@ -694,7 +752,21 @@ async function openDetails({back} = {}) {
     }
     nodes.push(list);
   }
-  nodes.push(sharedMedia(key));
+  // Leave a channel or room on its server (servers.js).
+  if (typeof leaveSection === 'function' && !sampleOn) nodes.push(leaveSection(route));
+  nodes.push(...conversationSettings(key, settings));
+  detailsPage('Conversation details', nodes, back);
+}
+
+/** Shown wherever disappearing messages can be turned on for texts. */
+const CARRIER_COPY_NOTE = 'Your carrier and the other person’s phone can still keep a copy of texts. Disappearing only removes them from FluidMessages.';
+
+/** A chat's own settings, also shown on the person's contact page (people.js): photos and files, wallpaper,
+ * folders, security and its timer, and its code. [settings] is null in the sample chats. */
+function conversationSettings(key, settings) {
+  const address = threadAddress(key);
+  const extras = detailsExtras(key);
+  const nodes = [sharedMedia(key)];
   if (extras.wallpaper) nodes.push(extras.wallpaper);
   nodes.push(extras.conversation);
   const security = element('section', '', 'settings-section');
@@ -704,10 +776,15 @@ async function openDetails({back} = {}) {
     const timer = timerSelect(own === undefined ? -1 : own, true);
     timer.addEventListener('change', () => {
       const chats = {...settings.disappearing.chats};
+      const effective = (own) => own ?? settings.disappearing.default ?? 0;
+      const before = effective(chats[address]);
       if (Number(timer.value) < 0) delete chats[address]; else chats[address] = Number(timer.value);
-      api('settings', {disappearing: {...settings.disappearing, chats}}).then(loadSettings).catch(showError);
+      const after = effective(chats[address]);
+      api('settings', {disappearing: {...settings.disappearing, chats}}).then(loadSettings)
+        .then(() => { if (after !== before) return announceSetting(key, timerNoticeText(after)); }).catch(showError);
     });
     security.append(field('Disappearing messages: remove messages in this chat after', timer));
+    if (!internet(threadProtocol(key))) security.append(element('p', CARRIER_COPY_NOTE, 'muted carrier-note'));
     if (settings.follow_phone && settings.phone.paired) {
       security.append(element('p', 'Your phone’s timers replace this when it syncs. Change it on the phone, or choose '
         + '“This web app’s own” in Settings → Phone and other devices.', 'muted'));
@@ -716,7 +793,23 @@ async function openDetails({back} = {}) {
     security.append(element('p', 'Disappearing messages are set per chat in your real chats’ details. Nothing in the sample inbox is saved.', 'muted'));
   }
   nodes.push(security, extras.code);
-  detailsPage('Conversation details', nodes, back);
+  return nodes;
+}
+
+/**
+ * Tells the other person about a chat setting change, as the plain-text notice the phone sends (cards.js). Not when
+ * “Announce chat setting changes” is off, and never from the sample inbox or a decoy session, where nothing is sent.
+ */
+async function announceSetting(key, text) {
+  if (!key || sampleOn || (typeof decoyLike === 'function' && decoyLike()) || resolvedAppearance().announceSettings === false) return;
+  const address = threadAddress(key), protocol = threadProtocol(key);
+  if (!internet(protocol)) {
+    await api('schedule', {address, body: text, due: Date.now()});
+  } else {
+    const request = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
+    await api('protocols/send', {address, protocol, body: text, text, request});
+  }
+  refresh().catch(() => setSyncStatus('Sync unavailable', true));
 }
 
 // Calls
@@ -761,24 +854,12 @@ function updateCallButtons() {
   if (!active) return;
   const [tone, label] = protection(active);
   // A small padlock in the protection color; Details explains it.
-  badge.className = 'security-lock tone-' + tone;
+  const fresh = lockBadge(tone, label);
+  badge.className = fresh.className;
   badge.title = label;
   badge.setAttribute('role', 'img');
   badge.setAttribute('aria-label', label);
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 16 16');
-  svg.setAttribute('width', '11');
-  svg.setAttribute('height', '11');
-  const shackle = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  shackle.setAttribute('d', tone === 'red' ? 'M8 7V4.5a2.5 2.5 0 0 1 5 0' : 'M4.5 7V4.5a3.5 3.5 0 0 1 7 0V7');
-  shackle.setAttribute('fill', 'none');
-  shackle.setAttribute('stroke', 'currentColor');
-  shackle.setAttribute('stroke-width', '1.6');
-  const body = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-  for (const [name, value] of [['x', '3'], ['y', '7.5'], ['width', '10'], ['height', '7'], ['rx', '1.6'], ['fill', 'none'],
-    ['stroke', 'currentColor'], ['stroke-width', '1.6']]) body.setAttribute(name, value);
-  svg.append(shackle, body);
-  badge.replaceChildren(svg);
+  badge.replaceChildren(...fresh.childNodes);
   // Sends from the browser aren't FluidMessages-encrypted; keys stay on the phone.
   get('schedule-status').textContent = fluidEncrypted(active)
     ? 'Your phone encrypts this chat with FluidMessages. Messages you send here are not encrypted that way.' : '';
@@ -1274,6 +1355,8 @@ let section = 'messages';
 function showSection(next) {
   // Leaving Settings leaves its address too, so Back returns to the Settings page you were on.
   if (next !== 'settings' && section === 'settings' && /^#settings/.test(location.hash)) history.pushState(null, '', location.pathname + location.search);
+  // A contact or chat details page belongs to the section it was opened in.
+  if (next !== section && typeof closeDetailsPage === 'function') closeDetailsPage(false);
   section = next;
   document.body.dataset.section = next;
   for (const button of document.querySelectorAll('.rail button[data-section]')) {
@@ -1282,42 +1365,9 @@ function showSection(next) {
   if (next === 'calls') showCalls();
 }
 
-// The Calls view: recent internet calls, and everyone you can call from here.
+// The Calls view, laid out like the phone's Phone tab: Favorites, Recents, Contacts, and the keypad (people.js).
 function showCalls() {
-  const list = get('calls-list');
-  list.replaceChildren();
-  const recent = inbox.filter((message) => message.event && /^(Voice|Video) call/.test(message.body || '')).slice(0, 30);
-  list.append(element('h2', 'Recent calls', 'calls-heading'));
-  if (!recent.length) list.append(element('p', 'No calls yet. Voice and video calls on Matrix show up here.', 'placeholder'));
-  for (const call of recent) {
-    const missed = /missed/.test(call.body);
-    const row = element('button', '', 'call-row' + (missed ? ' missed' : ''));
-    row.type = 'button';
-    const name = call.title || threadAddress(threadKey(call));
-    row.append(element('span', initials(name), 'avatar'), element('strong', name),
-      element('small', call.body.replace(/ from .*$/, '') + ' · ' + day(timeOf(call)) + ' ' + clock(timeOf(call))));
-    row.addEventListener('click', () => { showSection('messages'); select(threadKey(call)); });
-    list.append(row);
-  }
-  list.append(element('h2', 'Call someone', 'calls-heading'));
-  const callable = routes.filter((route) => route.protocol === 'matrix');
-  if (!callable.length) list.append(element('p', chatAccounts.some((account) => account.protocol === 'matrix')
-    ? 'Start a Matrix chat with someone to call them from here.' : 'Add a Matrix account in Settings to make voice and video calls.', 'placeholder'));
-  for (const route of callable) {
-    const row = element('div', '', 'call-row');
-    row.append(element('span', initials(route.title), 'avatar'), element('strong', route.title), element('small', 'Matrix · end-to-end encrypted'));
-    for (const [label, video] of [['Voice', false], ['Video', true]]) {
-      const button = headButton(video ? 'video' : 'voice', label + ' call with ' + route.title + ' (Matrix)');
-      button.classList.add('call-action');
-      button.addEventListener('click', () => {
-        showSection('messages');
-        select(route.address + '\u001f' + route.protocol);
-        startCall(video).catch(showError);
-      });
-      row.append(button);
-    }
-    list.append(row);
-  }
+  if (typeof showPhoneTab === 'function') showPhoneTab(get('calls-list'));
 }
 
 (() => {
@@ -1330,7 +1380,6 @@ function showCalls() {
     button.append(railIcon(key), element('span', label));
     button.addEventListener('click', () => key === 'settings' ? openSettings().catch(showError) : showSection(key));
     if (key === 'settings') button.setAttribute('aria-label', 'Settings');
-    if (key === 'messages') button.querySelector('span').textContent = 'Chats';
     rail.append(button);
   }
   get('workspace').prepend(rail);

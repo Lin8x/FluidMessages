@@ -134,7 +134,27 @@ internal fun plainPreview(text: String): String {
     val effect = parseEffect(text)
     // Invisible ink stays hidden in the inbox and notifications too.
     if (effect?.second == MessageEffect.INVISIBLE_INK) return "🫥 Invisible ink message"
-    return spoilerPattern.replace(effect?.first ?: text) { "▒▒▒" }
+    return dropMarks(effect?.first ?: text, 0)
+}
+
+/** Formatting marks removed and spoilers covered, leaving web addresses as they are. */
+private fun dropMarks(text: String, depth: Int): String {
+    if (!hasFormatting(text)) return text
+    val links = urlPattern.findAll(text).map { it.range }.toList()
+    val out = StringBuilder()
+    var at = 0
+    for (match in formatPattern.findAll(text)) {
+        if (links.any { it.first <= match.range.last && match.range.first <= it.last } || match.range.first < at) continue
+        out.append(text, at, match.range.first)
+        val groups = match.groupValues
+        out.append(when {
+            groups[2].isNotEmpty() -> "▒▒▒"
+            groups[1].isNotEmpty() || groups[3].isNotEmpty() -> groups[1].ifEmpty { groups[3] }.removeSuffix("\n")
+            else -> groups.drop(4).first { it.isNotEmpty() }.let { if (depth < 4) dropMarks(it, depth + 1) else it }
+        })
+        at = match.range.last + 1
+    }
+    return out.append(text.substring(at)).toString()
 }
 
 /** How long tapped invisible ink stays readable before it covers itself again. */
@@ -575,3 +595,42 @@ internal fun lichessGame(white: Boolean): Pair<String, String>? = runCatching {
         if (!mine.startsWith("https://lichess.org/") || !theirs.startsWith("https://lichess.org/")) null else mine to theirs
     } finally { connection.disconnect() }
 }.getOrNull()
+
+// Chat setting notices: "⏱️ Disappearing messages are on. New messages disappear after 1 day." and
+// "🔒 Messages in this chat are now encrypted with FluidMessages." Plain text for any app; FluidMessages shows an
+// outlined note instead of a bubble. server/cards.js parses the same sentences.
+
+internal sealed class ChatNotice {
+    /** Disappearing messages; 0 means off. */
+    data class Timer(val seconds: Int) : ChatNotice()
+    data class Encryption(val on: Boolean) : ChatNotice()
+}
+
+private val timerOnPattern = Regex("""^⏱️? Disappearing messages are on\. New messages disappear after (\d{1,4}) (second|minute|hour|day|week)s?\.$""")
+private val timerOffPattern = Regex("""^⏱️? Disappearing messages are off\.$""")
+private const val ENCRYPTED_NOTICE = "🔒 Messages in this chat are now encrypted with FluidMessages."
+private const val UNENCRYPTED_NOTICE = "🔓 Messages in this chat are no longer encrypted with FluidMessages."
+private val unitSeconds = mapOf("second" to 1, "minute" to 60, "hour" to 3600, "day" to 86400, "week" to 7 * 86400)
+
+internal fun chatNoticeText(notice: ChatNotice): String = when (notice) {
+    is ChatNotice.Timer -> if (notice.seconds <= 0) "⏱️ Disappearing messages are off."
+        else "⏱️ Disappearing messages are on. New messages disappear after ${Disappearing.label(notice.seconds)}."
+    is ChatNotice.Encryption -> if (notice.on) ENCRYPTED_NOTICE else UNENCRYPTED_NOTICE
+}
+
+internal fun timerNoticeText(seconds: Int) = chatNoticeText(ChatNotice.Timer(seconds.coerceAtLeast(0)))
+
+internal fun encryptionNoticeText(on: Boolean) = chatNoticeText(ChatNotice.Encryption(on))
+
+internal fun parseChatNotice(text: String): ChatNotice? {
+    val clean = text.trim()
+    if (clean == ENCRYPTED_NOTICE) return ChatNotice.Encryption(true)
+    if (clean == UNENCRYPTED_NOTICE) return ChatNotice.Encryption(false)
+    if (timerOffPattern.matches(clean)) return ChatNotice.Timer(0)
+    val match = timerOnPattern.matchEntire(clean) ?: return null
+    val seconds = match.groupValues[1].toInt() * unitSeconds.getValue(match.groupValues[2])
+    return if (seconds > 0) ChatNotice.Timer(seconds) else null
+}
+
+/** Whether a message is a chat setting notice, which is always sent as plain text. */
+internal fun isChatNotice(text: String?) = text != null && parseChatNotice(text) != null

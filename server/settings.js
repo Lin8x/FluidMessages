@@ -2,8 +2,9 @@
 // Settings as a full page and a tab, organized like the phone's (MainActivity.settings): the same groups, names,
 // and order, each category with an icon and a one-line summary, and its own page with a back arrow. Every page has
 // an address (#settings, #settings/privacy), so the browser's Back works. Phone-only settings (battery, app lock,
-// the private folder, SIP, carrier protocols) stay on the phone and are mentioned only where it helps.
-// Loaded last; uses the helpers in app.js, companion.js, look.js, chats.js, and media.js.
+// SIP, carrier protocols) stay on the phone and are mentioned only where it helps. The web's own private folder,
+// decoy mode, and emergency erase passcode add their pages from privacy.js.
+// Loaded near the end; uses the helpers in app.js, companion.js, look.js, chats.js, and media.js.
 
 const SETTINGS_ICONS = {
   palette: 'M12 3a9 9 0 0 0 0 18c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z',
@@ -52,7 +53,7 @@ const SETTINGS_GROUPS = [
     {id: 'messaging', icon: 'messaging', title: 'Messaging', summary: 'Timestamps, sending, scheduled messages, and gestures', page: messagingPage}]],
   ['Accounts and calls', [
     {id: 'accounts', icon: 'account', title: 'Accounts', summary: 'Sign in to Matrix, XMPP, Email, or IRC to chat there too', page: accountsPage},
-    {id: 'ways', icon: 'ways', title: 'Ways to message', page: waysPage,
+    {id: 'ways', icon: 'ways', title: 'Chat services', page: waysPage,
       summary: () => gatewayEnabled.length ? 'Turn services on or off, and combine one person’s chats' : 'All off · read-only, nothing is sent'},
     {id: 'calls', icon: 'calls', title: 'Calls', summary: 'Matrix voice and video, and meeting links', page: callsPage}]],
   ['In chats', [
@@ -67,7 +68,9 @@ const SETTINGS_GROUPS = [
   ['Storage and devices', [
     {id: 'backups', icon: 'backups', title: 'Backups', summary: 'Save and restore chat settings and messages (.fmb)', page: backupsPage},
     {id: 'devices', icon: 'devices', title: 'Phone and other devices', page: (settings, context) => [devicesSection(settings, context.rerender)],
-      summary: (settings) => (settings.phone.paired ? 'Phone connected' : 'Connect your phone') + ' · password and sign-ins'}]],
+      // The phone's last sync shows here, as on the phone's FluidMessages Web row, since phones have no top bar for it.
+      summary: (settings) => (settings.phone.paired ? (phonePaired() ? 'Phone synced ' + clock(updated) : 'Phone connected') : 'Connect your phone')
+        + ' · password and sign-ins'}]],
   ['Help', [
     {id: 'sample', icon: 'sample', title: 'Sample inbox', summary: 'Practice with made-up chats. Nothing is sent.', run: () => startSample()},
     {id: 'guide', icon: 'guide', title: 'Setup guide', summary: 'A quick tour of what FluidMessages can do', run: leaveSettingsThen(() => showWelcome())},
@@ -246,7 +249,7 @@ function messagingPage(settings) {
   const gestures = settingsCard('Gestures');
   const list = element('dl', '', 'settings-facts');
   for (const [term, detail] of [['Right-click or touch and hold a chat', 'Pin, archive, mute, block, or open its details.'],
-    ['Each message’s ⋯ menu', 'React, reply, copy, select text, see message details, or delete it for you.'],
+    ['Right-click or touch and hold a message', 'React, reply, copy, select text, see message details, or delete it for you. With a mouse, its ⋯ shows when you point at it.'],
     ['Chat details', 'The details button at the top of a chat: disappearing timer, people, chat code, and wallpaper.']]) {
     list.append(element('dt', term), element('dd', detail));
   }
@@ -255,7 +258,8 @@ function messagingPage(settings) {
   sample.type = 'button';
   sample.addEventListener('click', () => startSample());
   gestures.append(sample);
-  return [display, sending, privacy, gestures];
+  // Counts on the Calls and Chats tabs (people.js).
+  return [display, ...(typeof tabCountsCard === 'function' ? [tabCountsCard()] : []), sending, privacy, gestures];
 }
 
 // Accounts and calls
@@ -286,7 +290,7 @@ function waysPage(settings) {
       } catch (error) { showError(error); }
     }, PROTOCOL_BLURBS[key]), paired));
   }
-  internetCard.append(element('p', paired ? 'Your phone turns these on or off each time it syncs. Change them in Settings → Ways to message on the phone.'
+  internetCard.append(element('p', paired ? 'Your phone turns these on or off each time it syncs. Change them in Settings → Chat services on the phone.'
     : 'Off stops sending and receiving on this server. Its chats stay readable.', 'muted'));
   const locked = lookLocked(settings);
   const conversations = settingsCard('Conversations');
@@ -390,13 +394,22 @@ function disappearingSection(settings) {
   card.append(field('Disappearing messages', timer, 'The default for every chat; each chat’s details can change it. Your own Matrix and XMPP '
     + 'messages are taken back for everyone; texts, email, and IRC stay on the other person’s device.'
     + (settings.follow_phone && settings.phone.paired ? ' Your phone’s timers replace this when it syncs.' : '')));
+  if (typeof CARRIER_COPY_NOTE === 'string') card.append(element('p', CARRIER_COPY_NOTE, 'muted carrier-note'));
+  // Sends “⏱️ Disappearing messages are on…” in the chat when you change its timer, like the phone.
+  const locked = lookLocked(settings);
+  card.append(lockInput(checkbox('Announce chat setting changes', resolvedAppearance().announceSettings !== false,
+    (value) => saveWebLook({...webLook, announceSettings: value}, true),
+    'When you change a chat’s disappearing timer, send a short note so the other person knows. Off: the setting still changes, nothing is sent.'), locked));
+  if (locked) card.append(followingPhoneNote());
   return card;
 }
 
-function privacyPage(settings, context) {
+async function privacyPage(settings, context) {
   const erase = settingsCard('Erase');
   erase.append(settingsLink('erase', 'Removes all accounts, messages, keys, and settings from this server', true));
-  return [chatCodesSection(), privateNoteSection(), blockedSection(context), disappearingSection(settings), erase];
+  // Protect the app and Keep things private: the emergency erase passcode, the private folder, and decoy mode (privacy.js).
+  const own = typeof privacySections === 'function' ? await privacySections() : [];
+  return [...own, chatCodesSection(), privateNoteSection(), blockedSection(context), disappearingSection(settings), erase];
 }
 
 // Storage and devices → Backups: the phone's .fmb format, unchanged. A web backup holds this server's conversation
@@ -628,6 +641,7 @@ async function erasePage() {
     'Messages and chats kept on this server: internet messages, its copy of your texts, attachments, and scheduled messages, including texts still waiting for your phone',
     'Chat accounts (Matrix, XMPP, Email, IRC) with their saved passwords and tokens, and Matrix encryption keys',
     'Settings: theme, colors, fun and effects, chat folders, chat codes, and disappearing timers',
+    'The private folder and its passcode, decoy mode and its pretend chats, and the emergency erase passcode',
     'Stickers, your wallpaper photo, and everything else this browser saved for FluidMessages Web',
     'Your phone’s pairing token. The phone stops syncing until you connect it again',
     'Every browser sign-in' + (security.owner ? ', and the web password' : '')]));

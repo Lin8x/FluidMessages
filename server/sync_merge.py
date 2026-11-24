@@ -6,8 +6,9 @@ synced baseline kept here, writes what changed into its own settings, and posts 
 conflicts. Those wait here until someone picks a side, from the phone or from this web app; the other device sees
 the result on its next look.
 
-Nothing secret is part of an item: accounts are compared by their public address only, chat codes and passwords
-never become items, and stickers travel as the same small pictures either side already sends in chats.
+Nothing secret is part of an item: accounts are compared by their public address only (see ACCOUNTS below), chat codes and passwords
+never become items, and stickers travel as the same small pictures either side already sends in chats. Chats in the
+web's private folder (privacy.py) are left out both ways: the phone keeps seeing their last agreed values.
 
 Older phones never call these endpoints and keep the earlier one-way sync. A phone paired to a different server,
 or a server that was erased, has no matching pair id, so its first merge combines instead of deleting.
@@ -39,10 +40,22 @@ BOOLS = {"tails", "exactTimes", "combineProtocols"}
 FUN = {"effects": "effects", "reactions": "reactionEffects", "games": "games", "random": "random", "gifs": "gifs",
        "linkPreviews": "linkPreviews"}
 FOLDERS = ("pinned", "archived", "blocked")
+# Item groups named after a chat's address, which leave a private chat out of the merge.
+ADDRESSED = ("folder", "muted", "sender", "timer", "wallpaper")
 INTERNET = ("matrix", "xmpp", "email", "irc")
 # The phone's CustomMoney.validTemplate: a link an app can open, never javascript:, a file, or an intent.
 PAY_TEMPLATE = re.compile(r"(?!(?:javascript|file|content|intent|data|vbscript):)[a-z][a-z0-9+.-]{1,30}:\S*\{address\}\S*")
 GIF_URL = re.compile(r"https://[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/\S*)?")
+
+
+# Accounts. "account:matrix" = the service's first account's address is what older phones and servers compare: the
+# phone and the web each connecting a different account is a choice of who connects. With several accounts per
+# service, each account also has its own item, "account:matrix:@alice:example.org", whose value says where it
+# connects ("web" or "phone"). Only the same account connected on both sides is then a conflict; different accounts
+# on each side simply both connect. Phones that understand per-account items ignore "account:<service>" whenever the
+# web lists per-account ones, and older phones never compare the per-account items, since neither side copies
+# account items.
+ACCOUNT_SIDES = ("web", "phone")
 
 
 def _state(db, key, default=None):
@@ -215,14 +228,30 @@ class Merge:
             items["sticker:" + key] = "1"
         for account in self.gateway.accounts.redacted():
             name = identity(account.get("protocol"), account.get("fields") or {})
-            if name:
-                items["account:" + account["protocol"]] = name
+            if not name:
+                continue
+            if account.get("primary", True):
+                items.setdefault("account:" + account["protocol"], name)
+            items["account:" + account["protocol"] + ":" + name] = "web"
         enabled = _state(db, "web_enabled")
         if enabled is not None:
             for protocol in INTERNET:
                 if protocol not in enabled:
                     items["protocol:" + protocol] = "off"
+        hidden = self.private(db)
+        if hidden:
+            # Chats in the web's private folder stay out of the merge: the phone keeps seeing what it last agreed on
+            # for them, so nothing about them changes on either side and nothing new about them leaves the server.
+            items = {key: value for key, value in items.items() if not (group(key) in ADDRESSED and hidden(key))}
+            for key, value in (_state(db, "merge_baseline") or {}).items():
+                if group(key) in ADDRESSED and hidden(key):
+                    items[key] = value
         return items
+
+    def private(self, db):
+        """is_private(key or address) for the web's private folder (privacy.matcher), or None."""
+        finder = self.hooks.get("private")
+        return finder(db) if finder else None
 
     def apply_web(self, db, changes):
         """Writes merged values into the web's stores. A missing value (None) means back to the default."""
@@ -234,9 +263,12 @@ class Merge:
         timers = json.loads(json.dumps(settings["disappearing"]))
         extras = clean_extras(_state(db, "web_extras", {}))
         enabled = _state(db, "web_enabled")
+        hidden = self.private(db)
         touched = set()
         for key, value in changes.items():
             kind, name = key.split(":", 1)
+            if hidden and kind in ADDRESSED and hidden(key):
+                continue  # A private chat's settings stay as they are on the web.
             touched.add(kind)
             if kind == "look":
                 if name == "mode":

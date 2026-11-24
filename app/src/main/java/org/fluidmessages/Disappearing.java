@@ -61,6 +61,17 @@ final class Disappearing {
 
     private static String plural(int count, String unit) { return count + " " + unit + (count == 1 ? "" : "s"); }
 
+    /** What the timer by a message says: "Disappears in 3 h". Rounds up below an hour, so it never reads 0. */
+    static String timeLeft(long millis) {
+        if (millis <= 0) return "Disappearing now";
+        long seconds = (millis + 999) / 1000, minutes = (seconds + 59) / 60;
+        if (seconds < 60) return "Disappears in " + seconds + " s";
+        if (minutes < 60) return "Disappears in " + minutes + " min";
+        long hours = Math.max(1, Math.round(millis / 3_600_000.0));
+        if (hours < 24) return "Disappears in " + hours + " h";
+        return "Disappears in " + Math.round(millis / 86_400_000.0) + " d";
+    }
+
     /** When a message goes, or 0. A timer carried by the message itself wins over this chat's timer. */
     static long expiry(SharedPreferences prefs, JSONObject row, String address) {
         long carried = row.optLong("expires");

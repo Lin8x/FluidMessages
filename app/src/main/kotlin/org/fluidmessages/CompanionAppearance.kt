@@ -31,6 +31,8 @@ internal object CompanionAppearance {
         return JSONObject()
             .put("dark", palette.ink() == android.graphics.Color.WHITE)
             .put("exactTimes", prefs.getBoolean("exactTimes", false))
+            .put(TabBadges.PREF, prefs.getBoolean(TabBadges.PREF, true))
+            .put(MainActivity.ANNOUNCE_SETTINGS, prefs.getBoolean(MainActivity.ANNOUNCE_SETTINGS, true))
             .put("tagMode", DisplayRules.mode(prefs, DisplayRules.TAGS))
             .put("encryptionMode", DisplayRules.mode(prefs, DisplayRules.ENCRYPTION))
             .put("combineProtocols", prefs.getBoolean("combineProtocols", false))

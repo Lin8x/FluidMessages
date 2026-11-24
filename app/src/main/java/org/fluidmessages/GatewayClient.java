@@ -272,20 +272,135 @@ final class GatewayClient {
     }
 
     static JSONArray saveAccount(SharedPreferences prefs, String protocol, JSONObject fields) throws Exception {
-        return request(prefs, "protocols/accounts", new JSONObject().put("protocol", protocol).put("fields", fields))
-            .optJSONArray("accounts");
+        return saveAccount(prefs, protocol, fields, "", false);
+    }
+
+    /** Saves an account on FluidMessages Web: [id] edits that one, [add] adds another, neither edits the first. */
+    static JSONArray saveAccount(SharedPreferences prefs, String protocol, JSONObject fields, String id, boolean add) throws Exception {
+        var payload = new JSONObject().put("protocol", protocol).put("fields", fields);
+        if (id != null && !id.isEmpty()) payload.put("id", id);
+        else if (add) payload.put("add", true);
+        nextCheck = 0;
+        return request(prefs, "protocols/accounts", payload).optJSONArray("accounts");
     }
 
     static JSONArray deleteAccount(SharedPreferences prefs, String protocol) throws Exception {
-        return request(prefs, "protocols/accounts/delete", new JSONObject().put("protocol", protocol)).optJSONArray("accounts");
+        return deleteAccount(prefs, protocol, "");
+    }
+
+    static JSONArray deleteAccount(SharedPreferences prefs, String protocol, String id) throws Exception {
+        var payload = new JSONObject().put("protocol", protocol);
+        if (id != null && !id.isEmpty()) payload.put("id", id);
+        nextCheck = 0;
+        return request(prefs, "protocols/accounts/delete", payload).optJSONArray("accounts");
+    }
+
+    // Several accounts per service, and servers (IRC networks, Matrix homeservers, XMPP accounts)
+
+    /** The companion's accounts from its last sync: {protocol, source, id, name}. Older companions send no id. */
+    static List<JSONObject> accountList(SharedPreferences prefs) {
+        var result = new ArrayList<JSONObject>();
+        try {
+            var accounts = new JSONArray(prefs.getString("gatewayAccounts", "[]"));
+            for (int i = 0; i < accounts.length(); i++) if (accounts.optJSONObject(i) != null) result.add(accounts.optJSONObject(i));
+        } catch (Exception ignored) {}
+        return result;
+    }
+
+    static List<JSONObject> accountsFor(SharedPreferences prefs, String service) {
+        var result = new ArrayList<JSONObject>();
+        for (var account : accountList(prefs)) if (service.equals(account.optString("protocol")) && !account.optString("id").isEmpty()) result.add(account);
+        return result;
+    }
+
+    /** The account a conversation goes through on [format], or "". */
+    static String accountOf(SharedPreferences prefs, String address, MessageProtocol format) {
+        for (var link : links(prefs, address)) {
+            if (MessageProtocol.parse(link.optString("protocol")) == format) return link.optString("account");
+        }
+        return "";
+    }
+
+    /** "via alice@example.org" for a chat's header when its service has more than one account. */
+    static String via(SharedPreferences prefs, String address, MessageProtocol format) {
+        for (var link : links(prefs, address)) {
+            if (MessageProtocol.parse(link.optString("protocol")) != format) continue;
+            String account = link.optString("account");
+            if (account.isEmpty()) return "";
+            return AccountKeys.INSTANCE.via(account, link.optString("account_name"),
+                accountsFor(prefs, AccountKeys.INSTANCE.service(account)).size());
+        }
+        return "";
+    }
+
+    /** The server (IRC network, Matrix or XMPP account) a conversation belongs to, or "". */
+    static String serverOf(SharedPreferences prefs, String address) {
+        for (var link : links(prefs, address)) {
+            String account = link.optString("account");
+            if (AccountKeys.INSTANCE.getServerServices().contains(AccountKeys.INSTANCE.service(account))) return account;
+        }
+        return "";
+    }
+
+    /** Whether a conversation is a channel, room, or group chat on its server. */
+    static boolean groupChat(SharedPreferences prefs, String address) {
+        for (var link : links(prefs, address)) if (link.optBoolean("group")) return true;
+        return false;
+    }
+
+    /** Server connections for the inbox's server strip: accounts on IRC, Matrix, and XMPP. */
+    static List<JSONObject> servers(SharedPreferences prefs) {
+        var result = new ArrayList<JSONObject>();
+        for (var account : accountList(prefs)) {
+            if (!account.optString("id").isEmpty() && AccountKeys.INSTANCE.getServerServices().contains(account.optString("protocol"))) result.add(account);
+        }
+        return result;
+    }
+
+    /** A server's directory: IRC LIST, the Matrix room directory, or XMPP group chat services and their rooms. */
+    static JSONObject browse(SharedPreferences prefs, String account, String search, String service) throws Exception {
+        var payload = new JSONObject().put("account", account).put("search", search).put("limit", 100);
+        if (service != null && !service.isEmpty()) payload.put("service", service);
+        return request(prefs, "protocols/browse", payload);
+    }
+
+    /** The Matrix Spaces an account has joined, with their rooms. */
+    static JSONArray spaces(SharedPreferences prefs, String account) throws Exception {
+        return request(prefs, "protocols/servers/spaces", new JSONObject().put("account", account)).optJSONArray("spaces");
+    }
+
+    /** Joins a channel or room on a server; returns its link. */
+    static JSONObject join(SharedPreferences prefs, String account, String target, String title) throws Exception {
+        var route = request(prefs, "protocols/join", new JSONObject().put("account", account).put("target", target)
+            .put("title", title == null ? "" : title)).optJSONObject("route");
+        nextCheck = 0;
+        return route;
+    }
+
+    /** Leaves a channel or room on its server. Its earlier messages stay. */
+    static void leave(SharedPreferences prefs, String address, MessageProtocol format) throws Exception {
+        request(prefs, "protocols/leave", new JSONObject().put("address", address).put("protocol", format.name().toLowerCase(Locale.ROOT)));
+        nextCheck = 0;
     }
 
     /** Links a conversation (a contact's phone number, or a new id) to an address on an internet protocol. */
     static void link(SharedPreferences prefs, String address, MessageProtocol format, String target, String title,
                      boolean group) throws Exception {
-        request(prefs, "protocols/routes", new JSONObject().put("address", address)
-            .put("protocol", format.name().toLowerCase(Locale.ROOT)).put("target", target).put("title", title).put("group", group));
+        link(prefs, address, format, target, title, group, "");
+    }
+
+    /**
+     * Links through [account], or the service's most recently used one when it's "". The companion keeps a contact's
+     * second account in a chat of its own; the returned address is that chat's.
+     */
+    static String link(SharedPreferences prefs, String address, MessageProtocol format, String target, String title,
+                       boolean group, String account) throws Exception {
+        var payload = new JSONObject().put("address", address)
+            .put("protocol", format.name().toLowerCase(Locale.ROOT)).put("target", target).put("title", title).put("group", group);
+        if (account != null && !account.isEmpty()) payload.put("account", account);
+        var route = request(prefs, "protocols/routes", payload).optJSONObject("route");
         nextCheck = 0;
+        return route == null ? address : route.optString("address", address);
     }
 
     /** Every chat linked to Matrix, on the phone or the companion: [address, title] pairs, for the phone's call list. */

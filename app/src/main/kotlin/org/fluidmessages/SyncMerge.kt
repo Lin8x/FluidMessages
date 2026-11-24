@@ -14,6 +14,8 @@ import java.util.Locale
  *   both stays pinned, and a sticker on one shows up on both.
  * - Different on both: a conflict, kept for the person to choose. Nothing changes for that key until then.
  * Accounts are compared by their public address only and never copied: choosing a side decides who connects.
+ * With several accounts per service, each has its own item (AccountKeys): only the same account connected on both
+ * sides is a conflict, and the older one-per-service item is left out whenever the web lists per-account ones.
  */
 internal data class SyncConflict(val key: String, val phone: String?, val web: String?, val phoneTime: Long = 0, val webTime: Long = 0)
 
@@ -54,12 +56,15 @@ internal object SyncMerge {
         val next = (baseline ?: emptyMap()).toMutableMap()
         fun agree(key: String, value: String?) { if (value == null) next.remove(key) else next[key] = value }
         val keys = (phone.keys + web.keys + baseline.orEmpty().keys).toSortedSet()
+        val perAccount = AccountKeys.perAccountServices(web.keys)
         for (key in keys) {
             if (!inScope(key)) continue
             val p = phone[key]
             val w = web[key]
             if (group(key) == "account") {
                 next.remove(key)
+                // A newer web lists each account; different accounts on each side then simply both connect.
+                if (AccountKeys.perAccount(key) == null && name(key) in perAccount) continue
                 val decided = decisions[key]
                 if (p != null && w != null && p != w && (decided == null || decided.phone != p || decided.web != w)) {
                     conflicts += SyncConflict(key, p, w)
@@ -141,8 +146,9 @@ internal object SyncMerge {
             "gifoff" -> "GIF sites" to name.replaceFirstChar { it.titlecase(Locale.ROOT) }
             "pay" -> "Payments" to if (name == "*") "Default way to pay" else name
             "sticker" -> "Stickers" to "Sticker"
-            "account" -> "Chat accounts" to name.replaceFirstChar { it.titlecase(Locale.ROOT) }
-            "protocol" -> "Ways to message" to name.replaceFirstChar { it.titlecase(Locale.ROOT) }
+            "account" -> "Chat accounts" to (AccountKeys.perAccount(key)?.let { (service, address) ->
+                service.replaceFirstChar { it.titlecase(Locale.ROOT) } + " · " + address } ?: name.replaceFirstChar { it.titlecase(Locale.ROOT) })
+            "protocol" -> "Chat services" to name.replaceFirstChar { it.titlecase(Locale.ROOT) }
             else -> "Other" to key
         }
     }
@@ -169,7 +175,12 @@ internal object SyncMerge {
             "wallpaper" -> when (value) { null, "none" -> "Solid"; "photo" -> "A photo"; else -> value.replaceFirstChar { it.titlecase(Locale.ROOT) } }
             "gif", "pay" -> value ?: "Not added"
             "sticker" -> if (value == null) "Deleted" else "Kept"
-            "account" -> value ?: "None"
+            "account" -> when (value) {
+                AccountKeys.WEB -> "Connects through FluidMessages Web"
+                AccountKeys.PHONE -> "Connects from this phone"
+                null -> "None"
+                else -> value
+            }
             else -> value ?: "Default"
         }
     }

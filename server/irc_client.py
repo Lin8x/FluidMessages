@@ -72,6 +72,9 @@ class IrcClient:
         self.lock = threading.Lock()
         self.stopped = threading.Event()
         self.ready = threading.Event()
+        # A channel LIST in progress: {"rows": [...], "limit": n, "done": Event}.
+        self.listing = None
+        self.list_lock = threading.Lock()
 
     def open_tls(self):
         raw = socket.create_connection((self.account["server"], int(self.account.get("port", 6697))), timeout=30)
@@ -154,6 +157,16 @@ class IrcClient:
             for channel in self.account.get("channels", []):
                 self.write("JOIN " + channel)
             self.ready.set()
+        elif command == "322" and len(params) >= 3 and self.listing is not None:
+            # RPL_LIST: me, channel, visible users, topic.
+            listing = self.listing
+            if len(listing["rows"]) < listing["limit"] and (not listing["search"] or listing["search"] in
+                                                            (params[1] + " " + (params[3] if len(params) > 3 else "")).lower()):
+                users = int(params[2]) if params[2].isdigit() else 0
+                listing["rows"].append({"target": params[1], "name": params[1], "members": users,
+                                        "topic": (params[3] if len(params) > 3 else "")[:300]})
+        elif command in ("323", "416") and self.listing is not None:
+            self.listing["done"].set()
         elif command == "433":
             self.nick = self.nick[:28] + "_"
             self.write("NICK " + self.nick)
@@ -250,6 +263,38 @@ class IrcClient:
         # Direct messages are filed under the other person's nick; channel messages under the channel.
         conversation = target if target[:1] in "#&" else (target if outgoing else nick)
         self.on_message(conversation, nick, text, tags, self.date(tags), outgoing)
+
+    def list_channels(self, search="", limit=50, timeout=20):
+        """The network's public channels (LIST), filtered by [search], at most [limit]. Big networks send thousands,
+        so only the first [limit] matches are kept; the rest of the reply is read and dropped."""
+        if not self.ready.wait(20):
+            raise ConnectionError("IRC isn’t connected yet")
+        search = (search or "").strip().lower()[:100]
+        with self.list_lock:
+            self.listing = {"rows": [], "limit": max(1, min(int(limit), 200)), "search": search, "done": threading.Event()}
+            try:
+                # ELIST=M servers filter themselves; others send everything and the filter above applies.
+                self.write("LIST" + (" *" + search.replace(" ", "") + "*" if search and "*" not in search else ""))
+                self.listing["done"].wait(timeout)
+                rows = self.listing["rows"]
+            finally:
+                self.listing = None
+        return sorted(rows, key=lambda row: -row["members"])
+
+    def sync_channels(self, channels):
+        """Joins channels added since the connection opened and parts ones that were left, without reconnecting."""
+        wanted = {channel.lower(): channel for channel in channels}
+        joined = {channel.lower(): channel for channel in self.account.get("channels", [])}
+        self.account = {**self.account, "channels": sorted(wanted.values())}
+        if not self.ready.is_set():
+            return  # Joined on connect (001).
+        for key, channel in wanted.items():
+            if key not in joined:
+                self.write("JOIN " + channel)
+        for key, channel in joined.items():
+            if key not in wanted:
+                self.write("PART " + channel + " :Left in FluidMessages")
+                self.channels.pop(key, None)
 
     def send(self, target, text, reply=None, react=None):
         """Sends text, or a reaction when react is set. Returns the lines' msgid when echo-message gives one."""

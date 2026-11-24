@@ -131,6 +131,7 @@ object SettingsPages {
         view.setContent {
             val appearance = remember { Appearance.read(prefs) }
             var exactTimes by remember { mutableStateOf(prefs.getBoolean("exactTimes", false)) }
+            var tabCounts by remember { mutableStateOf(prefs.getBoolean(TabBadges.PREF, true)) }
             AppTheme(appearance) {
                 val scheme = MaterialTheme.colorScheme
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp),
@@ -141,6 +142,15 @@ object SettingsPages {
                                 exactTimes) {
                                 exactTimes = it
                                 prefs.edit().putBoolean("exactTimes", it).apply()
+                            }
+                        }
+                    }
+                    item {
+                        PreferencesCard("Tabs") {
+                            SettingsSwitch("Show counts on tabs", "Missed calls on Phone and unread chats on Messages. Muted, archived, and blocked chats aren't counted.",
+                                tabCounts) {
+                                tabCounts = it
+                                prefs.edit().putBoolean(TabBadges.PREF, it).apply()
                             }
                         }
                     }

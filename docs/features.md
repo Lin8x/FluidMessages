@@ -187,7 +187,7 @@ A group's details can **Add people** or **Remove someone**:
 
 ## Read-only mode
 
-Turn off every way to message in **Settings → Ways to message** and FluidMessages becomes read-only: you can still read every chat, but the compose button is gone, nothing can be sent, and the inbox says why. Turn off every way to call in **Settings → Calls** and the Phone tab still shows your calls and contacts, but the keypad and call buttons go away and no call can be placed. Incoming messages and calls still arrive. Either one can be on without the other.
+Turn off every chat service in **Settings → Chat services** and FluidMessages becomes read-only: you can still read every chat, but the compose button is gone, nothing can be sent, and the inbox says why. Turn off every way to call in **Settings → Calls** and the Phone tab still shows your calls and contacts, but the keypad and call buttons go away and no call can be placed. Incoming messages and calls still arrive. Either one can be on without the other.
 
 ## Backups
 

@@ -126,7 +126,7 @@ function mergeDescribe(key) {
     folder: ['Chat folders', mergePerson(name)], muted: ['Muted chats', mergePerson(name)], sender: ['Automated senders', mergePerson(name)],
     timer: ['Disappearing messages', name === '*' ? 'Default timer' : mergePerson(name)], wallpaper: ['Chat wallpaper', mergePerson(name)],
     gif: ['GIF sites', name], gifoff: ['GIF sites', capital(name)], pay: ['Payments', name === '*' ? 'Default way to pay' : name],
-    sticker: ['Stickers', 'Sticker'], account: ['Chat accounts', capital(name)], protocol: ['Ways to message', capital(name)]}[group]
+    sticker: ['Stickers', 'Sticker'], account: ['Chat accounts', name.includes(':') ? capital(name.split(':')[0]) + ' · ' + name.split(':').slice(1).join(':') : capital(name)], protocol: ['Chat services', capital(name)]}[group]
     || ['Other', key];
 }
 
@@ -157,7 +157,8 @@ function mergeValue(key, value) {
     case 'timer': return value == null ? (name === '*' ? 'Off' : 'Follows the default') : mergeTimer(Number(value));
     case 'wallpaper': return value == null || value === 'none' ? 'Solid' : value === 'photo' ? 'A photo' : capital(value);
     case 'gif': case 'pay': return value ?? 'Not added';
-    case 'account': return value ?? 'None';
+    // Per-account items say where that account connects (sync_merge.py).
+    case 'account': return value === 'web' ? 'Connects through FluidMessages Web' : value === 'phone' ? 'Connects from this phone' : value ?? 'None';
     default: return value ?? 'Default';
   }
 }

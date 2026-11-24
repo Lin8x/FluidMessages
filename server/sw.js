@@ -1,9 +1,9 @@
 'use strict';
 // Lets FluidMessages Web install as an app and open instantly. Only the app's own files are cached: messages,
 // accounts, and anything under /api always come from your server and are never stored by the browser.
-const VERSION = 'fluid-web-9';
+const VERSION = 'fluid-web-12';
 const SHELL = ['/', '/style.css', '/app.js', '/companion.js', '/call.js', '/chess.js', '/cards.js', '/welcome.js', '/icon.webp',
-  '/look.js', '/chats.js', '/media.js', '/editor.js', '/settings.js', '/sync-merge.js', '/features.css',
+  '/look.js', '/chats.js', '/media.js', '/editor.js', '/settings.js', '/sync-merge.js', '/people.js', '/privacy.js', '/servers.js', '/features.css', '/samples/maya.webp', '/samples/jordan.webp',
   '/manifest.webmanifest', '/favicon.ico', '/icons/favicon-32.png', '/icons/icon-192.png', '/icons/icon-512.png',
   '/icons/maskable-192.png', '/icons/maskable-512.png', '/icons/apple-touch-icon.png'];
 

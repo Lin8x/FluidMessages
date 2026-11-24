@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <title>FluidMessages</title>
 <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
@@ -25,6 +25,9 @@
 <script src="/editor.js" defer></script>
 <script src="/settings.js" defer></script>
 <script src="/sync-merge.js" defer></script>
+<script src="/people.js" defer></script>
+<script src="/privacy.js" defer></script>
+<script src="/servers.js" defer></script>
 </head>
 <body>
 <header class="topbar">
@@ -77,24 +80,28 @@
   <section id="workspace" class="workspace" hidden>
     <aside class="sidebar" aria-label="Inbox">
       <div class="sidebar-head">
-        <h1>Chats</h1>
+        <h1 id="inbox-title">Messages</h1>
         <button id="open-queue" class="chip-button" type="button" hidden>Scheduled</button>
-        <select id="folder" aria-label="Inbox filter">
-          <option>Inbox</option><option>Archived</option><option>Blocked</option>
-        </select>
+        <span class="folder-filter" title="Inbox, Archived, or Blocked">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <select id="folder" aria-label="Inbox filter">
+            <option>Inbox</option><option>Archived</option><option>Blocked</option>
+          </select>
+        </span>
+        <p id="inbox-status" class="inbox-status" role="status" hidden></p>
       </div>
       <nav id="threads" aria-label="Conversations"></nav>
       <div class="search-dock">
         <input id="search" type="search" placeholder="Search" aria-label="Search conversations">
-        <button id="new" class="new-chat primary" type="button" title="Start a new chat"><span aria-hidden="true">＋</span> New chat</button>
+        <button id="new" class="new-chat" type="button" title="Start a new chat" aria-label="New chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5M18.4 2.6a2 2 0 0 1 2.9 2.9L12 14.8 8 16l1.2-4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="new-chat-label">New chat</span></button>
       </div>
     </aside>
     <article class="thread-pane">
       <div class="thread-head">
-        <button id="back" class="icon-button" type="button" aria-label="Back to chats">‹</button>
+        <button id="back" class="icon-button" type="button" aria-label="Back to messages"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <div id="head-info" class="head-info">
           <span id="avatar" class="avatar" aria-hidden="true"></span>
-          <div class="thread-title"><h2 id="recipient">Chats</h2><span id="transport"></span></div>
+          <div class="thread-title"><h2 id="recipient">Messages</h2><span id="transport"></span></div>
         </div>
         <button id="call" class="head-button" type="button" hidden title="Call from your phone" aria-label="Call from your phone"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg></button>
       </div>
@@ -111,7 +118,7 @@
         </div>
         <div class="compose-row">
           <textarea id="body" maxlength="1600" rows="1" placeholder="Message" aria-label="Message"></textarea>
-          <button class="primary send-button" id="send">Send</button>
+          <button class="primary send-button" id="send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="visually-hidden">Send</span></button>
         </div>
         <details id="later"><summary>Send later</summary>
           <label>Send after<input id="due" type="datetime-local"></label>

@@ -67,6 +67,22 @@ class SyncMergeTest {
         assertEquals(1, SyncMerge.merge(mapOf("account:matrix" to "@alex:matrix.example.org"), web, null, decided).conflicts.size)
     }
 
+    @Test fun severalAccountsConflictOnlyWhenTheSameAccountIsOnBothSides() {
+        // A newer web: one item per account, plus the older first-account item for older phones.
+        val web = mapOf("account:matrix" to "@alice:alpha.example.test", "account:matrix:@alice:alpha.example.test" to "web",
+            "account:matrix:@alice:beta.example.test" to "web")
+        // This phone connects a third account: no conflict, even though the older items differ.
+        val other = mapOf("account:matrix" to "@sam:gamma.example.test", "account:matrix:@sam:gamma.example.test" to "phone")
+        SyncMerge.merge(other, web, null).let { assertTrue(it.conflicts.isEmpty() && it.applyPhone.isEmpty() && it.applyWeb.isEmpty()) }
+        // The phone connects the same account as the web: that one account asks who connects.
+        val same = mapOf("account:matrix" to "@alice:beta.example.test", "account:matrix:@alice:beta.example.test" to "phone")
+        assertEquals(listOf(SyncConflict("account:matrix:@alice:beta.example.test", "phone", "web")), SyncMerge.merge(same, web, null).conflicts)
+        // An older web lists only the first-account item, which still works the old way.
+        assertEquals(listOf("account:matrix"), SyncMerge.merge(same, mapOf("account:matrix" to "@alice:alpha.example.test"), null).conflicts.map { it.key })
+        assertEquals("Matrix · @alice:beta.example.test", SyncMerge.describe("account:matrix:@alice:beta.example.test") { it }.second)
+        assertEquals("Connects from this phone", SyncMerge.valueLabel("account:matrix:@alice:beta.example.test", "phone"))
+    }
+
     @Test fun keysOutOfScopeKeepTheirBaseline() {
         val baseline = mapOf("look:theme" to "ember")
         val result = SyncMerge.merge(mapOf("look:theme" to "midnight"), mapOf("look:theme" to "love"), baseline) { SyncMerge.group(it) != "look" }

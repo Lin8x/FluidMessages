@@ -195,3 +195,169 @@ button.member-row:hover { background: color-mix(in srgb, var(--action, var(--acc
 }
 /* Automated senders' inbox tag uses the automated color, like the phone. */
 .tag.automated { color: var(--automated); }
+
+/* The Calls tab, like the phone's Phone tab (people.js): Favorites, Recents, Contacts, the keypad, and contact pages. */
+.avatar.has-photo { overflow: hidden; padding: 0; background: var(--surface); }
+.avatar.has-photo img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+.calls-pane:has(.phone-tab) { padding: 0; }
+.phone-tab { display: flex; flex-direction: column; min-height: 100%; padding: .75rem .75rem 1rem; }
+.phone-segments { display: flex; gap: 2px; padding: 2px; border-radius: 11px; background: var(--surface); margin-bottom: .55rem; }
+.phone-segment { flex: 1; min-height: 34px; padding: .25rem .4rem; border: 0; border-radius: 9px; background: none; color: var(--ink); font-size: .88rem; }
+.phone-segment[aria-selected="true"] { background: var(--canvas); font-weight: 650; box-shadow: 0 1px 3px rgb(0 0 0 / .12); }
+:root[data-mode="dark"] .phone-segment[aria-selected="true"] { background: var(--line); }
+.phone-sample-note { margin: 0 0 .3rem; text-align: center; color: var(--muted); font-size: .78rem; }
+.phone-body { flex: 1; display: flex; flex-direction: column; }
+.phone-title { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .3rem .5rem .45rem; }
+.phone-title h2 { font-size: 2rem; letter-spacing: -.04em; margin: 0; }
+.phone-filter { display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--surface); }
+.phone-filter button { min-height: 30px; padding: .15rem .8rem; border: 0; border-radius: 7px; background: none; font-size: .84rem; }
+.phone-filter button[aria-pressed="true"] { background: var(--canvas); font-weight: 650; box-shadow: 0 1px 3px rgb(0 0 0 / .12); }
+:root[data-mode="dark"] .phone-filter button[aria-pressed="true"] { background: var(--line); }
+.phone-search { margin: 0 .25rem .4rem; width: calc(100% - .5rem); border-radius: 11px; background: var(--surface); border-color: transparent; }
+.person-row { display: flex; align-items: center; gap: .25rem; border-bottom: 1px solid color-mix(in srgb, var(--line) 75%, transparent); }
+.person-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: .75rem; min-height: 60px; padding: .45rem .5rem; border: 0;
+  border-radius: 14px; background: none; text-align: start; }
+.person-open:hover { background: var(--surface); }
+.person-words { display: grid; gap: .18rem; flex: 1; min-width: 0; }
+.person-words strong { font-size: 1.02rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person-words small { color: var(--muted); font-size: .8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.person-tag { padding: 0 .4rem; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: .7rem; font-weight: 600; line-height: 1.45; }
+.details-hero .person-tags { justify-content: center; }
+.recent-line { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .4rem; min-width: 0; }
+.recent-line small { white-space: normal; overflow: visible; }
+.recent-when { color: var(--muted); font-size: .84rem; white-space: nowrap; }
+.recent-row.missed .person-words strong, .detail-row.missed strong { color: #d0262b; }
+:root[data-mode="dark"] .recent-row.missed .person-words strong, :root[data-mode="dark"] .detail-row.missed strong { color: #ff6b66; }
+.star-button, .quick-call, .info-button { flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0;
+  border-radius: 50%; background: none; color: var(--action, var(--accent)); }
+.star-button:hover, .quick-call:hover, .info-button:hover { background: color-mix(in srgb, var(--action, var(--accent)) 12%, transparent); }
+.star-button svg, .quick-call svg, .info-button svg { width: 22px; height: 22px; }
+.star-button[aria-pressed="false"] { color: var(--muted); }
+.contact-letter h3 { position: sticky; top: 0; z-index: 1; margin: 0; padding: .3rem .6rem; font-size: .8rem; color: var(--muted);
+  background: color-mix(in srgb, var(--canvas) 92%, transparent); backdrop-filter: blur(6px); }
+.contact-count { text-align: center; color: var(--muted); font-size: .82rem; margin: .9rem 0 4.5rem; }
+.keypad-fab { position: sticky; bottom: 1rem; align-self: flex-end; margin-top: auto; display: grid; place-items: center; width: 58px; height: 58px;
+  padding: 0; border: 0; border-radius: 50%; background: var(--accent); color: var(--accent-ink); box-shadow: 0 6px 18px rgb(0 0 0 / .22); }
+.keypad-fab svg { width: 24px; height: 24px; }
+.phone-status { margin: .6rem .5rem; color: var(--muted); font-size: .86rem; line-height: 1.4; }
+.phone-status:empty { display: none; }
+.phone-status.error { color: #c4141f; }
+.phone-notice { display: grid; gap: .45rem; margin: .7rem .3rem; padding: .85rem 1rem; border-radius: 16px; background: var(--surface); text-align: start; }
+.phone-notice strong { font-size: .95rem; }
+/* The keypad: big round keys with letters, the number above, and Call and Delete below. */
+.dialpad { --key: clamp(58px, min(19vw, 9.4dvh), 78px); flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+  gap: .35rem; padding: .5rem 0 .25rem; }
+.dial-display { display: block; width: 100%; min-height: 3.1rem; text-align: center; font-size: 2.3rem; font-weight: 300; letter-spacing: .02em;
+  overflow-wrap: anywhere; line-height: 1.3; border-radius: 12px; }
+.dial-display.long { font-size: 1.7rem; }
+.dial-display:focus { outline: none; }
+.dial-display:focus-visible { outline: 2px solid var(--action, var(--accent)); }
+.dial-match { min-height: 28px; padding: .1rem .6rem; border: 0; border-radius: 8px; background: none; color: var(--action, var(--accent)); font-size: .95rem; }
+.dial-match[hidden] { display: block; visibility: hidden; }
+.dial-keys { display: grid; grid-template-columns: repeat(3, var(--key)); gap: calc(var(--key) * .18) calc(var(--key) * .34); margin-top: .5rem; }
+.dial-key { width: var(--key); height: var(--key); display: grid; align-content: center; justify-items: center; padding: 0; border: 0; border-radius: 50%;
+  background: var(--surface); color: var(--ink); line-height: 1; transition: background .12s; }
+.dial-key:hover { background: color-mix(in srgb, var(--ink) 10%, var(--surface)); }
+.dial-key:active { background: color-mix(in srgb, var(--ink) 20%, var(--surface)); }
+.dial-digit { font-size: calc(var(--key) * .42); font-weight: 400; }
+.dial-letters { font-size: calc(var(--key) * .13); font-weight: 650; letter-spacing: .14em; margin-top: 2px; min-height: 1em; }
+.dial-actions { display: grid; grid-template-columns: repeat(3, var(--key)); gap: calc(var(--key) * .34); align-items: center; margin-top: calc(var(--key) * .18); }
+.dial-call { width: var(--key); height: var(--key); display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: #1f9d46; color: #fff; }
+.dial-call svg { width: calc(var(--key) * .42); height: calc(var(--key) * .42); }
+.dial-call:disabled { opacity: .45; cursor: default; }
+.dial-erase { width: var(--key); height: var(--key); display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--ink); }
+.dial-erase svg { width: 30px; height: 30px; }
+.dial-erase[hidden] { display: grid; visibility: hidden; }
+.dial-status { width: min(420px, 100%); }
+.dial-hint { margin: .2rem 0 0; color: var(--muted); font-size: .76rem; text-align: center; }
+@media (hover: none) { .dial-hint { display: none; } }
+.dial-close { margin-top: .1rem; }
+/* A contact page. */
+.favorite-toggle { display: inline-flex; align-items: center; gap: .35rem; margin-top: .35rem; padding: .35rem .85rem; border: 0; border-radius: 999px;
+  background: color-mix(in srgb, var(--action, var(--accent)) 12%, transparent); color: var(--action, var(--accent)); font-weight: 650; font-size: .88rem; }
+.favorite-toggle svg { width: 18px; height: 18px; }
+.person-reach { display: grid; gap: .5rem; }
+.reach-tile[aria-expanded="true"] { outline: 2px solid color-mix(in srgb, var(--action, var(--accent)) 55%, transparent); }
+.reach-choices { display: grid; padding: .3rem 1rem; border-radius: 18px; background: var(--raised, var(--surface)); }
+.reach-choices[hidden] { display: none; }
+.details-page .phone-status { margin: 0; text-align: center; }
+.dm-settings { display: grid; gap: .75rem; }
+.dm-settings > summary { cursor: pointer; padding: .7rem 1rem; border-radius: 16px; background: var(--raised, var(--surface)); font-weight: 650; }
+.dm-settings > .settings-section { margin-top: .75rem; }
+.contact-link { margin-top: .2rem; border-top: 1px solid var(--line); }
+.danger-text { color: #c4141f; font-weight: 650; }
+:root[data-mode="dark"] .danger-text { color: #ff6b66; }
+/* On phones a contact page opened from Calls takes the screen, and Back returns to the list. */
+@media (max-width: 670px) {
+  body[data-section="calls"] .workspace[data-details="true"] .calls-pane { display: none; }
+  body[data-section="calls"] .workspace[data-details="true"] .thread-pane { display: flex; }
+  .phone-title h2 { font-size: 1.75rem; }
+}
+/* Counts on the Calls and Chats tabs: white on red, on the rail and the bottom tabs. */
+.rail button[data-section] { position: relative; }
+.tab-badge { position: absolute; top: 2px; left: calc(50% + 3px); min-width: 19px; height: 19px; padding: 0 5px; box-sizing: border-box;
+  border-radius: 10px; background: #d0262b; color: #fff; font-size: .68rem; font-weight: 700; line-height: 19px; text-align: center;
+  box-shadow: 0 0 0 2px var(--canvas); font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { .dial-key { transition: none; } }
+@media (forced-colors: active) { .phone-segment[aria-selected="true"], .phone-filter button[aria-pressed="true"] { outline: 2px solid Highlight; } }
+
+/* Privacy and security (privacy.js): the private folder's passcode prompt and open bar in the chat list, the
+   Move to private folder question, and the decoy chat editor's bubbles, which use the same bubble colors. */
+.private-gate { display: grid; justify-items: center; gap: .6rem; margin: .5rem .75rem; padding: 1.4rem 1rem; border-radius: 20px;
+  background: var(--raised, var(--surface)); text-align: center; }
+.private-gate h2 { margin: 0; font-size: 1.15rem; }
+.private-gate p { margin: 0; }
+.private-gate label { display: grid; gap: .3rem; width: min(280px, 100%); text-align: start; }
+.private-gate input { text-align: center; font-size: 1.15rem; letter-spacing: .14em; }
+.private-gate .error:empty { display: none; }
+.private-gate .button-row { justify-content: center; }
+.private-gate-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%;
+  background: color-mix(in srgb, var(--action, var(--accent)) 14%, transparent); color: var(--action, var(--accent)); }
+.private-gate-icon svg { width: 28px; height: 28px; }
+.private-bar { display: flex; align-items: center; gap: .5rem; margin: 0 .75rem .5rem; padding: .55rem .75rem; border-radius: 14px;
+  background: color-mix(in srgb, var(--action, var(--accent)) 13%, transparent); }
+.private-bar > span { display: grid; flex: 1; min-width: 0; }
+.private-bar small { color: var(--muted); font-size: .78rem; }
+.private-bar button { min-height: 34px; }
+.thread-actions .private-confirm { flex: 1 1 100%; margin: 0 0 .2rem; font-size: .86rem; line-height: 1.4; }
+.privacy-lead { display: block; font-weight: 650; }
+.decoy-lines { display: grid; gap: .5rem; padding: .7rem; border-radius: 16px; background: var(--canvas); }
+.decoy-line { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .35rem; width: min(88%, 460px); }
+.decoy-line.me { flex-direction: row-reverse; margin-inline-start: auto; }
+.decoy-line textarea { flex: 1 1 100%; min-width: 0; min-height: 40px; resize: vertical; padding: .5rem .8rem; border-radius: var(--bubble-radius, 18px);
+  border: 0; background: var(--incoming); color: var(--incoming-ink); }
+.decoy-line.me textarea { background: var(--sms); color: var(--sms-ink); }
+.decoy-line textarea::placeholder { color: inherit; opacity: .65; }
+.decoy-line .small-button { flex: none; white-space: nowrap; }
+
+/* Servers (servers.js): a strip of server chips above the chats, like Discord's server list, laid out iOS-style. */
+.server-strip { display: flex; gap: .4rem; padding: .5rem .75rem .45rem; overflow-x: auto; scrollbar-width: none; }
+.server-strip::-webkit-scrollbar { display: none; }
+.server-chip { flex: none; display: inline-flex; align-items: center; gap: .4rem; min-height: 34px; padding: .3rem .8rem .3rem .35rem;
+  border-radius: 999px; border: 1px solid var(--line); background: var(--raised, var(--surface)); font-size: .86rem; white-space: nowrap; }
+.server-chip:not(.p-irc):not(.p-matrix):not(.p-xmpp) { padding-inline-start: .8rem; }
+.server-chip[aria-pressed="true"] { border-color: var(--action, var(--accent)); font-weight: 650;
+  background: color-mix(in srgb, var(--action, var(--accent)) 14%, var(--canvas)); }
+.server-badge { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 8px; color: #fff; font-size: .72rem; font-weight: 700;
+  background: var(--action, var(--accent)); }
+.p-irc > .server-badge { background: #6a4bc4; }
+.p-matrix > .server-badge { background: #0b7d6e; }
+.p-xmpp > .server-badge { background: #b5520f; }
+.server-add { padding: .3rem .75rem; font-size: 1.05rem; font-weight: 600; color: var(--action, var(--accent)); }
+.server-bar { display: flex; align-items: center; gap: .5rem; margin: 0 .75rem .35rem; padding: .6rem .7rem; border-radius: 14px;
+  background: var(--raised, var(--surface)); }
+.server-bar { flex-wrap: wrap; }
+.server-words { display: grid; flex: 1 0 100%; min-width: 0; }
+.server-bar button { padding: .35rem .8rem; font-size: .86rem; }
+.server-words strong, .server-words small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-words small { color: var(--muted); font-size: .78rem; }
+.server-heading { margin: .7rem 1rem .25rem; color: var(--muted); font-size: .76rem; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+.browse-list { display: grid; }
+.browse-row { display: flex; align-items: center; gap: .6rem; padding: .6rem 0; }
+.browse-row + .browse-row { border-top: 1px solid var(--line); }
+.browse-row .account-words { flex: 1; min-width: 0; }
+.account-group { display: grid; }
+.account-group + .account-group { margin-top: .5rem; }
+.account-item { padding-inline-start: 2.9rem; }
+.account-item .account-words strong { font-weight: 550; }

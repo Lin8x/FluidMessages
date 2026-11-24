@@ -40,7 +40,7 @@ let chatAccounts = [];
 let localHere = false;
 let lastLocalSignIn = 0;
 let welcomed = true;
-// Which internet protocols this server sends and receives (Settings → Ways to message).
+// Which internet protocols this server sends and receives (Settings → Chat services).
 let gatewayEnabled = ['matrix', 'xmpp', 'email', 'irc'];
 const phonePaired = () => updated !== null && updated !== undefined;
 
@@ -136,7 +136,7 @@ function themeAppearance(look) {
     line: mixColor(surface, ink, .14), outline: readable(mixColor(surface, ink, .3), canvas, ink, 3),
     action: readable(controls, canvas, ink, 3), accent: bubbleFill(controls), accentInk: bubbleInk(controls)};
   for (const key of BUBBLES) colors[key] = base[key];
-  return {dark, colors, exactTimes: !!look.exactTimes, combineProtocols: !!look.combineProtocols,
+  return {dark, colors, exactTimes: !!look.exactTimes, combineProtocols: !!look.combineProtocols, announceSettings: look.announceSettings !== false,
     tagMode: look.tagMode || 'auto', encryptionMode: look.encryptionMode || 'auto',
     radius: look.radius ?? LAYOUT.radius, size: look.size ?? LAYOUT.size, padding: look.padding ?? LAYOUT.padding};
 }
@@ -219,6 +219,20 @@ function initials(address) {
   // First letters of the first two words, so "#radio-club" reads RC and "Maya Chen" reads MC.
   const words = address.split(/[\s._-]+/).map((word) => [...word].find((value) => /\p{L}/u.test(value))).filter(Boolean);
   return words.slice(0, 2).join('').toUpperCase() || '●';
+}
+
+// The phone's photo-less avatars: one of five gradients, picked from the name (MessagingScreens.kt Avatar).
+function avatarTint(name) {
+  // Java's String.hashCode and Math.floorMod, so a name gets the same colors here as on the phone.
+  let hash = 0;
+  const text = String(name || '');
+  for (let index = 0; index < text.length; index++) hash = (Math.imul(hash, 31) + text.charCodeAt(index)) | 0;
+  return String(((hash % 5) + 5) % 5);
+}
+function setAvatar(node, name) {
+  node.textContent = name ? initials(name) : '';
+  if (name) node.dataset.tint = avatarTint(name); else delete node.dataset.tint;
+  return node;
 }
 
 function excerpt(value, limit) {
@@ -360,7 +374,7 @@ function messageActions(message, row) {
   // Only one menu open at a time. It floats over the page, placed to stay on screen (placeMessageMenu).
   menu.classList.add('floats');
   menu.addEventListener('toggle', () => {
-    if (!menu.open) { if (openMenu?.menu === menu) unplaceMessageMenu(); return; }
+    if (!menu.open) { delete menu.dataset.via; if (openMenu?.menu === menu) unplaceMessageMenu(); return; }
     for (const other of document.querySelectorAll('details.message-tools[open]')) if (other !== menu) other.open = false;
     placeMessageMenu(menu);
   });
@@ -397,7 +411,44 @@ function messageActions(message, row) {
   // Custom emoji, message details, share, select text, and delete for me (chats.js).
   if (typeof moreMessageActions === 'function') moreMessageActions(message, row, {action, quick, more, sendable});
   if (!quick.children.length) quick.remove();
+  pressOpens(row, menu);
   return menu;
+}
+
+// Touch and hold a message, or right-click it, to open its menu, like the phone's long-press. On touch screens
+// that's the only way in, so no ⋯ sits beside every bubble; with a mouse the ⋯ shows on hover and keyboard focus.
+function pressOpens(row, menu) {
+  const open = () => {
+    menu.dataset.via = 'press';
+    if (menu.open) placeMessageMenu(menu); else menu.open = true;
+    try { localStorage.setItem('pressHint', 'seen'); } catch (error) { /* private mode */ }
+    document.querySelector('.press-hint')?.remove();
+  };
+  const target = () => row.querySelector('.bubble-wrap');
+  row.addEventListener('contextmenu', (event) => {
+    if (!target()?.contains(event.target)) return;
+    // A selection you made keeps the browser's own menu, so Copy still works.
+    const picked = String(getSelection?.() || '');
+    if (picked && event.pointerType !== 'touch' && row.contains(getSelection().anchorNode)) return;
+    event.preventDefault();
+    open();
+  });
+  let timer = 0, startX = 0, startY = 0;
+  const cancel = () => { if (timer > 0) { clearTimeout(timer); timer = 0; } };
+  row.addEventListener('pointerdown', (event) => {
+    // A new press starts fresh, so a hold that ended without a click doesn't swallow this tap.
+    cancel();
+    timer = 0;
+    if (event.pointerType === 'mouse' || !target()?.contains(event.target)) return;
+    startX = event.clientX; startY = event.clientY;
+    timer = setTimeout(() => { timer = -1; navigator.vibrate?.(8); open(); }, 480);
+  });
+  row.addEventListener('pointermove', (event) => {
+    if (timer > 0 && Math.hypot(event.clientX - startX, event.clientY - startY) > 10) cancel();
+  });
+  for (const name of ['pointerup', 'pointercancel', 'pointerleave']) row.addEventListener(name, cancel);
+  // The press that opened the menu isn't also a tap on a link, spoiler, or card in the bubble.
+  row.addEventListener('click', (event) => { if (timer === -1) { event.preventDefault(); event.stopImmediatePropagation(); timer = 0; } }, true);
 }
 
 // The open ⋯ menu floats with fixed coordinates, so the chat's scrolling box can't clip it: above the message when
@@ -415,7 +466,10 @@ function placeMessageMenu(menu) {
     const width = document.documentElement.clientWidth, height = window.innerHeight;
     popover.style.maxWidth = Math.max(160, Math.min(300, width - margin * 2)) + 'px';
     const box = popover.getBoundingClientRect();
-    const dots = summary.getBoundingClientRect();
+    // Opened by touch-and-hold or right-click, or with no ⋯ drawn (touch screens): lined up with the bubble itself.
+    const shown = summary.getBoundingClientRect();
+    const pressed = menu.dataset.via === 'press' || shown.width < 4;
+    const dots = pressed ? (menu.closest('.bubble-line')?.querySelector('.bubble-wrap') || line).getBoundingClientRect() : shown;
     const anchor = line.getBoundingClientRect();
     // A message scrolled out of the chat closes its menu, as menus do.
     const pane = get('conversation').getBoundingClientRect();
@@ -426,7 +480,7 @@ function placeMessageMenu(menu) {
     // Over the bubble, from the ⋯ side: incoming messages open leftward from the ⋯, yours rightward (mirrored in RTL).
     const out = !!menu.closest('.message.out');
     const rtl = getComputedStyle(line).direction === 'rtl';
-    let left = out !== rtl ? dots.left : dots.right - box.width;
+    let left = pressed ? (out !== rtl ? dots.right - box.width : dots.left) : out !== rtl ? dots.left : dots.right - box.width;
     // Inside the chat's pane when it's wide enough, otherwise inside the window.
     let low = Math.max(margin, pane.left + 4), high = Math.min(width - margin, pane.right - 4);
     if (high - low < box.width) { low = margin; high = width - margin; }
@@ -525,6 +579,9 @@ function showMessages(preserve = false) {
   let lastDay = '';
   let position = -1;
   let newestReaction = null;
+  // Runs of bubbles from one sender sit closer together and round their inner corners less, like the phone's.
+  const notice = (message) => typeof parseChatNotice === 'function' && !message.attachment && !!parseChatNotice(message.body);
+  const sender = (message) => message && !message.event && !notice(message) ? (message.type !== 1 ? 'me' : 'from:' + (message.author || '')) : null;
   for (const message of history) {
     position++;
     const messageDay = day(timeOf(message));
@@ -532,9 +589,22 @@ function showMessages(preserve = false) {
     lastDay = messageDay;
     const outgoing = message.type !== 1;
     if (message.event) { conversation.append(element('p', '— ' + message.body, 'event')); continue; }
+    // Chat setting notices (disappearing messages, encryption), sent or received, are outlined notes like the phone's.
+    if (notice(message)) {
+      const note = element('p', message.body + ' · ' + clock(timeOf(message)), 'event notice p-' + (message.protocol || 'sms'));
+      note.setAttribute('role', 'note');
+      conversation.append(note);
+      continue;
+    }
     const protocolClass = ' p-' + (message.protocol || 'sms');
     const row = element('div', '', (outgoing ? 'message out' + (automatedThread(active) ? ' automated' : '') : 'message') + protocolClass);
-    if (!outgoing && message.author && (internet(message.protocol) || message.protocol === 'mms')) row.append(element('small', message.author, 'author'));
+    const before = history[position - 1], after = history[position + 1];
+    const sameDay = (other) => other && day(timeOf(other)) === messageDay;
+    if (sameDay(before) && sender(before) === sender(message)) row.classList.add('joins-prev');
+    if (sameDay(after) && sender(after) === sender(message)) row.classList.add('joins-next');
+    // Who said it, in any group, as on the phone (RCS groups too).
+    const group = typeof threadIsGroup === 'function' && threadIsGroup(active);
+    if (!outgoing && message.author && (internet(message.protocol) || message.protocol === 'mms' || group)) row.append(element('small', message.author, 'author'));
     if (appearance.combineProtocols && message.protocol) row.append(element('small', labels[message.protocol] || '', 'via'));
     const bubble = element('div', '', 'bubble');
     const quoted = /^Reply to (?:“([\s\S]+?)”|"([\s\S]+?)")\s*\r?\n(?:\r?\n)?([\s\S]+)$/.exec(message.body);
@@ -585,6 +655,7 @@ function showMessages(preserve = false) {
     const meta = element('div', '', 'message-meta');
     if (message.earlier?.length) meta.append(element('small', 'Edited', 'message-time'));
     if (appearance.exactTimes || status) meta.append(element('small', clock(timeOf(message)) + status, 'message-time'));
+    if (message.expires > Date.now()) meta.append(disappearTimer(message.expires));
     if (meta.children.length) row.append(meta);
     conversation.append(row);
     // New reactions since this chat was last drawn get a short animation: the newest one, not one per reaction.
@@ -599,9 +670,44 @@ function showMessages(preserve = false) {
   if (newestReaction) { const [row, emoji] = newestReaction; setTimeout(() => playReaction(row, emoji), 30); }
   threadsShown.add(active);
   if (!history.length && get('schedule').hidden) conversation.append(emptyThreadPane());
+  // Touch screens have no ⋯ beside each bubble, so the first chat says once how to reach a message's menu.
+  if (history.length && matchMedia('(hover: none)').matches && !localStorage.getItem('pressHint')) {
+    conversation.append(element('p', 'Touch and hold a message to react, reply, or copy it.', 'press-hint'));
+  }
   conversation.scrollTop = preserve && !atEnd ? scrollTop : conversation.scrollHeight;
   conversation.dataset.atEnd = String(!preserve || atEnd);
 }
+
+/** "Disappears in 3 h": what the timer by a disappearing message says. Rounds up below an hour, so it never reads 0. */
+function timeLeft(millis) {
+  if (millis <= 0) return 'Disappearing now';
+  const seconds = Math.ceil(millis / 1000), minutes = Math.ceil(seconds / 60);
+  if (seconds < 60) return 'Disappears in ' + seconds + ' s';
+  if (minutes < 60) return 'Disappears in ' + minutes + ' min';
+  const hours = Math.max(1, Math.round(millis / 3600000));
+  return hours < 24 ? 'Disappears in ' + hours + ' h' : 'Disappears in ' + Math.round(millis / 86400000) + ' d';
+}
+
+/** A small timer by a disappearing message's time. Hover shows the time left; a tap or click keeps it open. */
+function disappearTimer(expires) {
+  const timer = element('button', '', 'disappear-timer');
+  timer.type = 'button';
+  timer.append(element('span', '⏱\uFE0E', 'timer-glyph'), element('span', '', 'timer-left'));
+  const update = () => {
+    const left = timeLeft(expires - Date.now());
+    timer.title = left;
+    timer.setAttribute('aria-label', left);
+    timer.lastChild.textContent = timer.classList.contains('open') ? left : '';
+  };
+  timer.addEventListener('click', () => { timer.classList.toggle('open'); update(); });
+  timer.addEventListener('mouseenter', update);
+  timer.refresh = update;
+  update();
+  return timer;
+}
+
+// Open timers count down while the chat is open.
+setInterval(() => { for (const timer of document.querySelectorAll('#conversation .disappear-timer.open')) timer.refresh?.(); }, 1000);
 
 // Pictures and videos load after the chat is drawn; if you were at the newest message, stay there as they grow.
 get('conversation').addEventListener('scroll', () => {
@@ -656,7 +762,8 @@ function select(key) {
   const protocol = key ? threadProtocol(key) : 'sms';
   get('workspace').dataset.thread = 'true';
   get('recipient').textContent = key ? threadTitle(key) : 'New text message';
-  get('avatar').textContent = initials(key ? threadTitle(key) : '');
+  setAvatar(get('avatar'), key ? threadTitle(key) : '');
+  if (typeof paintAvatar === 'function') paintAvatar(get('avatar'), key ? threadTitle(key) : '');
   // Groups say how many people are in them, like the phone's header (chats.js).
   get('transport').textContent = key && typeof headerSubtitle === 'function' ? headerSubtitle(key)
     : automatedThread(key) ? 'SMS · Automated sender' : labels[protocol] || 'SMS';
@@ -722,17 +829,28 @@ function showThreads() {
   const filter = get('search').value.trim();
   const matches = messageMatcher(filter);
   const folder = get('folder').value;
+  get('inbox-title').textContent = folder === 'Inbox' ? 'Messages' : folder;
+  // The private folder's passcode prompt, or its open bar (privacy.js).
+  if (typeof privateFolderGate === 'function' && privateFolderGate(list, folder)) return;
   const selected = typeof chatFolders === 'function' ? chatFolders() : appearance.folders || {};
   const rows = [...threads].filter(([address, messages]) => messages.length).filter(([address, messages]) => {
     const blocked = selected.blocked?.includes(threadAddress(address));
     const archived = selected.archived?.includes(threadAddress(address));
-    const inFolder = folder === 'Blocked' ? blocked : !blocked && (folder === 'Archived' ? archived : !archived);
+    // Private chats show only in the Private folder, and only once this session has opened it.
+    const hidden = typeof privateFolderHas === 'function' && privateFolderHas(threadAddress(address));
+    const inFolder = folder === 'Private folder' ? hidden
+      : !hidden && (folder === 'Blocked' ? blocked : !blocked && (folder === 'Archived' ? archived : !archived));
     // A chat with a code is found by its name only, never by what it says.
     const sealed = typeof chatLocked === 'function' && chatLocked(address);
+    // A server picked in the strip at the top shows only its channels and direct messages (servers.js).
+    if (typeof serverShows === 'function' && !serverShows(address)) return false;
     return inFolder && (matches(threadTitle(address), '') || !sealed && messages.some((message) => matches(threadTitle(address), message.body)));
   });
   const pinned = new Set(selected.pinned || []);
   rows.sort(([a], [b]) => Number(pinned.has(threadAddress(b))) - Number(pinned.has(threadAddress(a))));
+  if (typeof serverOrder === 'function') rows.sort(serverOrder);
+  if (typeof serverStrip === 'function') serverStrip(list);
+  let previousKey = null;
   // Same rule as the phone: Automatic shows tags once more than one kind of conversation is present.
   const mode = appearance.tagMode || (appearance.protocolTags ? 'always' : 'auto');
   const families = new Set([...threads.values()].flatMap((messages) => messages.map((row) => family(row.protocol || 'sms'))));
@@ -760,24 +878,32 @@ function showThreads() {
       || (typeof cardPreview === 'function' ? cardPreview(message.body || '') : null);
     copy.append(element('small', /^FM1:/.test(message.body || '') ? '🔒 Encrypted with FluidMessages' : meetingLine || message.body));
     const time = timeOf(message);
-    button.append(element('span', '', 'indicator'), element('span', initials(threadTitle(key)), 'avatar'), copy,
+    // Photos where one is known, like the sample contacts' (people.js), otherwise tinted initials.
+    const face = setAvatar(element('span', '', 'avatar'), threadTitle(key));
+    if (typeof paintAvatar === 'function') paintAvatar(face, threadTitle(key));
+    button.append(element('span', '', 'indicator'), face, copy,
       element('time', day(time) === 'Today' ? clock(time) : day(time) + (appearance.exactTimes ? ' ' + clock(time) : '')));
     button.addEventListener('click', () => select(address));
     // Pinned, muted, and locked marks, and the pin/archive/mute menu (chats.js).
     if (typeof decorateThread === 'function') decorateThread(key, button, copy);
+    if (typeof serverHeading === 'function') serverHeading(list, key, previousKey);
+    previousKey = key;
     list.append(button);
   }
   if (!rows.length) {
     if (filter) list.append(element('p', 'No chats match “' + excerpt(filter, 40) + '”', 'placeholder'));
-    else if (folder !== 'Inbox') list.append(element('p', 'Nothing ' + folder.toLowerCase() + '.', 'placeholder'));
+    else if (typeof activeServer === 'string' && activeServer) list.append(element('p', 'No chats on this server yet. Join a channel or room above.', 'placeholder'));
+    else if (folder !== 'Inbox') list.append(element('p', folder === 'Private folder' ? 'Nothing in the private folder.' : 'Nothing ' + folder.toLowerCase() + '.', 'placeholder'));
     else {
       const empty = element('div', '', 'empty-list');
       empty.append(element('strong', 'No chats yet'), element('p', chatAccounts.length
-        ? 'Start one with New chat below.' : 'Add a chat account to get started.', 'muted'));
+        ? 'Start one with the new chat button beside Search.' : 'Add a chat account to get started.', 'muted'));
       empty.append(emptyActions([...(chatAccounts.length ? [] : [['Add an account', () => openSettings('settings-accounts').catch(showError), true]]), ...sampleAction()]));
       list.append(empty);
     }
   }
+  // Unread and missed counts on the tabs, the app icon, and the title (people.js).
+  if (typeof updateTabBadges === 'function') updateTabBadges();
 }
 
 function showJobs(jobs) {
@@ -818,7 +944,7 @@ async function refresh() {
   if (currentSession !== session || request !== refreshNumber) return;
   // Redraws when anything changed: a phone sync, new or updated internet messages, or the settings.
   const look = JSON.stringify([snapshot.appearance, snapshot.follow_phone, snapshot.web_appearance, snapshot.routes, snapshot.messages,
-    snapshot.prefs, snapshot.accounts, snapshot.web_chats]);
+    snapshot.prefs, snapshot.accounts, snapshot.web_chats, snapshot.web_favorites]);
   welcomed = snapshot.welcomed !== false;
   if (!refreshed || updated !== snapshot.updated || look !== lastLook) {
     lastLook = look;
@@ -843,12 +969,21 @@ async function refresh() {
     rebuildThreads();
     showThreads();
     showMessages(true);
+    // Favorites, and the Calls tab when it's open (people.js).
+    if (typeof noticePeople === 'function') noticePeople(snapshot);
     refreshed = true;
   }
   // The phone is an add-on: its sync time shows once it's connected, and nothing is said about it before.
   if (typeof noticeMerge === 'function') noticeMerge(snapshot);
-  get('status').textContent = phonePaired() ? 'Phone synced ' + new Date(updated).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'}) : '';
+  setSyncStatus(phonePaired() ? 'Phone synced ' + new Date(updated).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'}) : '');
   showJobs(jobs);
+}
+
+/** The phone's sync time beside the app's name on wide screens; on phones, where there's no top bar, only a problem shows, under the title. */
+function setSyncStatus(text, problem = false) {
+  get('status').textContent = text;
+  get('inbox-status').textContent = problem ? text : '';
+  get('inbox-status').hidden = !problem;
 }
 
 let statusTimer = 0;
@@ -872,7 +1007,7 @@ async function send(body, text, relation, due = Date.now(), attachment) {
     attachment: attachment || undefined});
   if (currentSession !== session) return;
   say(due > Date.now() + 30000 ? 'Scheduled for ' + new Date(due).toLocaleString() + '.' : 'Sending…');
-  refresh().catch(() => { get('status').textContent = 'Sync unavailable'; });
+  refresh().catch(() => setSyncStatus('Sync unavailable', true));
 }
 
 async function download(message) {
@@ -900,7 +1035,7 @@ async function queueSms(body, address, due) {
   if (currentSession !== session) return;
   say(due > Date.now() + 30000 ? 'Scheduled. Your phone sends it after ' + new Date(due).toLocaleString() + '.'
     : phonePaired() ? 'Queued for your phone.' : 'Waiting for your phone. Connect it in Settings to send texts.');
-  refresh().catch(() => { get('status').textContent = 'Sync unavailable'; });
+  refresh().catch(() => setSyncStatus('Sync unavailable', true));
 }
 
 // Signing in: a password you create on first visit, then a session cookie. No access token to type.
@@ -1010,9 +1145,9 @@ function signOutHere(message = '') {
   get('folder').value = 'Inbox';
   get('recipient').textContent = 'Messages';
   get('transport').textContent = '';
-  get('avatar').textContent = '';
+  setAvatar(get('avatar'), '');
   delete get('workspace').dataset.thread;
-  get('status').textContent = '';
+  setSyncStatus('');
   get('open-queue').hidden = true;
   get('welcome').hidden = true;
   // On this computer the app simply opens again; elsewhere it asks for the password.
@@ -1091,7 +1226,7 @@ get('schedule').addEventListener('submit', async (event) => {
 });
 setInterval(() => {
   if (signedIn && !get('workspace').hidden) refresh().catch(() => {
-    if (signedIn) get('status').textContent = 'Sync unavailable';
+    if (signedIn) setSyncStatus('Sync unavailable', true);
   });
 }, 5000);
 
@@ -1132,6 +1267,19 @@ async function start(message = '') {
     try { await enterWorkspace(); return; } catch (error) { signedIn = false; }
   }
   showSignIn(state.owner ? 'login' : 'setup', message);
+}
+
+// The on-screen keyboard: browsers that don't shrink the page for it (iOS Safari) still keep the message box just above
+// it, because the app's height follows the part of the page you can see.
+if (window.visualViewport) {
+  const fit = () => {
+    const view = window.visualViewport;
+    document.documentElement.style.setProperty('--view-height', Math.round(view.height) + 'px');
+    document.documentElement.style.setProperty('--view-top', Math.round(view.offsetTop) + 'px');
+  };
+  visualViewport.addEventListener('resize', fit);
+  visualViewport.addEventListener('scroll', fit);
+  fit();
 }
 
 applyAppearance(themeAppearance({theme: 'fluid', mode: 'system'}));

@@ -62,23 +62,32 @@ private val notes = mapOf(
     MessageProtocol.IRC to "FluidMessages connects with TLS only. Channels listed here appear in your inbox; direct messages appear for nicks you link.",
 )
 
-object AccountsScreen {
+/** What the account form is showing: an account to edit, or a new one to add (optionally pre-filled). */
+private data class Editing(val protocol: MessageProtocol, val existing: JSONObject?, val add: Boolean,
+                           val preset: Map<String, String> = emptyMap())
+
+internal object AccountsScreen {
     @JvmStatic
-    fun mount(root: LinearLayout, prefs: SharedPreferences, openCompanion: Runnable) {
+    fun mount(root: LinearLayout, prefs: SharedPreferences, openCompanion: Runnable) = mount(root, prefs, openCompanion, null, emptyMap(), null)
+
+    /** Opens straight on the form to add another [protocol] account ("Add server"), pre-filled with [preset]. */
+    @JvmStatic
+    fun mount(root: LinearLayout, prefs: SharedPreferences, openCompanion: Runnable, add: MessageProtocol?,
+              preset: Map<String, String>, done: Runnable?) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-        view.setContent { AppTheme(Appearance.read(prefs)) { Accounts(prefs, openCompanion) } }
+        view.setContent { AppTheme(Appearance.read(prefs)) { Accounts(prefs, openCompanion, add?.let { Editing(it, null, true, preset) }, done) } }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
     }
 }
 
 @Composable
-private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable) {
+private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: Editing? = null, done: Runnable? = null) {
     val scope = rememberCoroutineScope()
     val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(), Privacy.token(prefs))
     var accounts by remember { mutableStateOf<JSONArray?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var editing by remember { mutableStateOf<MessageProtocol?>(null) }
+    var editing by remember { mutableStateOf(start) }
     fun load() = scope.launch {
         error = null
         runCatching { withContext(Dispatchers.IO) { GatewayClient.accounts(prefs) } }
@@ -86,12 +95,15 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable) {
     }
     LaunchedEffect(paired) { if (paired) load() else accounts = JSONArray() }
     val context = androidx.compose.ui.platform.LocalContext.current
-    fun account(protocol: MessageProtocol): JSONObject? = accounts?.let { list ->
-        (0 until list.length()).map { list.getJSONObject(it) }.firstOrNull { it.optString("protocol") == protocol.name.lowercase() }
-    }
+    fun accountsOf(protocol: MessageProtocol): List<JSONObject> = accounts?.let { list ->
+        (0 until list.length()).map { list.getJSONObject(it) }.filter { it.optString("protocol") == protocol.name.lowercase() }
+    }.orEmpty()
     val current = editing
     if (current != null) {
-        AccountForm(prefs, current, account(current), { editing = null }) { updated -> accounts = updated; editing = null }
+        AccountForm(prefs, current, { if (done != null && current == start) done.run() else editing = null }) { updated ->
+            accounts = updated
+            if (done != null && current == start) done.run() else editing = null
+        }
         return
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
@@ -102,27 +114,41 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable) {
             }
         }
         error?.let { item { Text(it, Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.error) } }
-        item {
-            PreferencesCard("Accounts") {
-                listOf(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC).forEachIndexed { index, protocol ->
-                    if (index > 0) HorizontalDivider(Modifier.padding(start = 15.dp))
-                    val entry = account(protocol)
-                    val direct = DirectProtocols.account(context, protocol)
+        // One card per service: every account on it, and Add another.
+        for (protocol in listOf(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)) item(protocol.name) {
+            val entries = accountsOf(protocol)
+            val direct = DirectProtocols.account(context, protocol)?.takeIf { DirectProtocols.on(prefs, protocol) }
+            PreferencesCard(protocol.label) {
+                var shown = 0
+                if (direct != null) {
+                    PreferenceText(summary(protocol, JSONObject().put("fields", direct)).ifEmpty { "Connected" },
+                        "On this phone" + if (DirectProtocols.stayConnected(prefs, protocol)) " · stays connected" else "",
+                        Modifier.fillMaxWidth().clickable { editing = Editing(protocol, null, false) }.padding(15.dp))
+                    shown++
+                }
+                for (entry in entries) {
+                    if (shown > 0) HorizontalDivider(Modifier.padding(start = 15.dp))
                     val detail = when {
-                        direct != null && DirectProtocols.on(prefs, protocol) -> "On this phone · " + summary(protocol, JSONObject().put("fields", direct)) +
-                            if (DirectProtocols.stayConnected(prefs, protocol)) " · stays connected" else ""
-                        accounts == null -> "Checking…"
-                        entry == null -> "Not set up"
                         entry.has("error") -> entry.optString("error")
-                        entry.optString("source") == "compose" -> "Set in Docker Compose · " + summary(protocol, entry)
-                        else -> "On FluidMessages Web · " + summary(protocol, entry)
+                        entry.optString("source") == "compose" -> "Set in Docker Compose · read-only"
+                        entries.size > 1 && entry.optBoolean("primary") -> "On FluidMessages Web · first account, chats from before stay here"
+                        else -> "On FluidMessages Web"
                     }
-                    PreferenceText(protocol.label, detail, Modifier.fillMaxWidth().clickable(enabled = accounts != null) { editing = protocol }.padding(15.dp))
+                    PreferenceText(entry.optString("name").ifEmpty { summary(protocol, entry) }.ifEmpty { protocol.label }, detail,
+                        Modifier.fillMaxWidth().clickable { editing = Editing(protocol, entry, false) }.padding(15.dp))
+                    shown++
+                }
+                if (shown == 0) Text(if (accounts == null) "Checking…" else "Not set up", Modifier.padding(horizontal = 15.dp, vertical = 6.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (shown > 0) HorizontalDivider(Modifier.padding(start = 15.dp))
+                TextButton(enabled = accounts != null, onClick = { editing = Editing(protocol, null, shown > 0) },
+                    modifier = Modifier.padding(horizontal = 6.dp)) {
+                    Text(if (shown > 0) "Add another" else "Add")
                 }
             }
         }
         item {
-            Text("Link a contact to their addresses from the contact’s details. Turning a protocol off in Message protocols keeps its account and history.",
+            Text("Link a contact to their addresses from the contact’s details. Turning a protocol off in Message protocols keeps its account and history. This phone can connect one account per service itself; add more through FluidMessages Web.",
                 Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -139,14 +165,19 @@ private fun summary(protocol: MessageProtocol, entry: JSONObject): String {
 }
 
 @Composable
-private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, existing: JSONObject?, close: () -> Unit,
-                        saved: (JSONArray) -> Unit) {
+private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () -> Unit, saved: (JSONArray) -> Unit) {
+    val protocol = editing.protocol
+    val existing = editing.existing
+    val adding = editing.add
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
     val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(), Privacy.token(prefs))
-    val direct = remember { DirectProtocols.account(context, protocol) }
+    // Adding another account doesn't show (or replace) the one this phone connects.
+    val direct = remember { if (adding) null else DirectProtocols.account(context, protocol) }
+    // This phone connects one account per service; more go through FluidMessages Web.
+    val phoneFree = !adding || !DirectProtocols.on(prefs, protocol)
     // Where the connection runs. "This phone" needs the battery notice accepted first.
-    var onPhone by remember { mutableStateOf(DirectProtocols.on(prefs, protocol) || !paired) }
+    var onPhone by remember { mutableStateOf(if (existing != null) false else if (adding) !paired else DirectProtocols.on(prefs, protocol) || !paired) }
     var consent by remember { mutableStateOf(DirectProtocols.on(prefs, protocol)) }
     var asking by remember { mutableStateOf(false) }
     var always by remember { mutableStateOf(DirectProtocols.stayConnected(prefs, protocol)) }
@@ -156,7 +187,7 @@ private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, exi
             val secret = forms.getValue(protocol).any { it.key == key && it.secret }
             put(key, if (secret) JSONObject().put("set", true) else account.get(key))
         } }
-    } else existing?.optJSONObject("fields") ?: JSONObject()
+    } else existing?.optJSONObject("fields") ?: JSONObject().apply { for ((key, value) in editing.preset) put(key, value) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     if (asking) BatteryConsent(protocol, { asking = false }) { consent = true; onPhone = true; asking = false }
@@ -173,7 +204,20 @@ private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, exi
         }
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text(protocol.label, style = MaterialTheme.typography.headlineSmall) }
+        item { Text(if (adding) "Add a ${protocol.label} account" else existing?.optString("name")?.takeIf { it.isNotEmpty() } ?: protocol.label,
+            style = MaterialTheme.typography.headlineSmall) }
+        if (adding) item { Text(AccountKeys.help(protocol.name.lowercase()), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (adding && protocol == MessageProtocol.IRC) item {
+            // Well-known public networks: picking one fills in the form. Nothing connects until Save.
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Popular networks", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (network in AccountKeys.knownNetworks) FilterChip(selected = values["server"] == network.host,
+                        onClick = { values["server"] = network.host; if (values["port"].isNullOrBlank()) values["port"] = "6697" },
+                        label = { Text(network.name) })
+                }
+            }
+        }
         item { Text(notes.getValue(protocol), color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -181,7 +225,7 @@ private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, exi
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = !onPhone, enabled = paired && !busy, onClick = { onPhone = false },
                         label = { Text("FluidMessages Web") })
-                    FilterChip(selected = onPhone, enabled = !busy, onClick = { if (consent) onPhone = true else asking = true },
+                    FilterChip(selected = onPhone, enabled = !busy && phoneFree && existing == null, onClick = { if (consent) onPhone = true else asking = true },
                         label = { Text("This phone") })
                 }
                 Text(if (onPhone) "Your phone connects to ${protocol.label} itself" +
@@ -190,6 +234,8 @@ private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, exi
                         else -> " It checks on your Battery and sync schedule."
                     } else if (paired) "Recommended. FluidMessages Web keeps the connection open, and your phone syncs on your Battery and sync schedule."
                     else "Pair FluidMessages Web to connect through it.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                if (!phoneFree) Text("This phone already connects a ${protocol.label} account. More accounts go through FluidMessages Web.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 if (onPhone && (protocol == MessageProtocol.IRC || protocol == MessageProtocol.XMPP)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -226,7 +272,7 @@ private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, exi
                     scope.launch {
                         runCatching { withContext(Dispatchers.IO) {
                             if (onPhone) { DirectProtocols.removeAccount(context, protocol); if (paired) GatewayClient.accounts(prefs) else JSONArray() }
-                            else GatewayClient.deleteAccount(prefs, protocol.name.lowercase())
+                            else GatewayClient.deleteAccount(prefs, protocol.name.lowercase(), existing?.optString("id").orEmpty())
                         } }.onSuccess { saved(it ?: JSONArray()) }.onFailure { error = it.message; busy = false }
                     }
                 }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
@@ -256,9 +302,9 @@ private fun AccountForm(prefs: SharedPreferences, protocol: MessageProtocol, exi
                                     if (paired) GatewayClient.accounts(prefs) else JSONArray()
                                 } else {
                                     // Moving back to the companion turns off the phone connection but keeps its links.
-                                    if (DirectProtocols.on(prefs, protocol)) prefs.edit().putBoolean(DirectProtocols.key(protocol), false).apply()
+                                    if (!adding && existing == null && DirectProtocols.on(prefs, protocol)) prefs.edit().putBoolean(DirectProtocols.key(protocol), false).apply()
                                     DirectProtocols.restart(context)
-                                    GatewayClient.saveAccount(prefs, protocol.name.lowercase(), fields)
+                                    GatewayClient.saveAccount(prefs, protocol.name.lowercase(), fields, existing?.optString("id").orEmpty(), adding)
                                 }
                             }
                         }.onSuccess { saved(it ?: JSONArray()) }.onFailure { error = it.message ?: "Couldn’t save the account."; busy = false }

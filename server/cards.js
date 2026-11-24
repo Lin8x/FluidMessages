@@ -724,6 +724,9 @@ function linkPreview(link, bubble) {
     if (preview.description) words.append(element('span', preview.description, 'muted'));
     card.append(words);
     bubble.append(card);
+    // The card lands after the chat scrolled to its end, so the newest bubble (often a link you just sent) would
+    // grow below the composer. Stay at the end if you were there (app.js).
+    if (typeof keepAtEnd === 'function') keepAtEnd();
   });
 }
 
@@ -1186,7 +1189,7 @@ function openContact() {
 
 const FORMAT_SOURCE = '```\\n?([\\s\\S]+?)```|\\|\\|([\\s\\S]+?)\\|\\||`([^`\\n]+)`|(?<![\\w*])\\*(?=\\S)([^*\\n]+?)(?<=\\S)\\*(?![\\w*])'
   + '|(?<![\\w_])_(?=\\S)([^_\\n]+?)(?<=\\S)_(?![\\w_])|(?<![\\w~])~(?=\\S)([^~\\n]+?)(?<=\\S)~(?![\\w~])';
-const EFFECT = /\n?\(sent with (Slam|Loud|Gentle|Invisible ink|Confetti|Balloons|Hearts|Fireworks)\b[^)\n]{0,40}\)\s*$/;
+const EFFECT = /\n?\(sent with (Slam|Loud|Gentle|Invisible ink|Confetti|Balloons|Hearts|Fireworks)\b[^)\n]{0,80}\)\r?\s*$/;
 const EFFECTS = {Slam: ['💥', false, 'Lands with a thud'], Loud: ['📢', false, 'Big and shaking'], Gentle: ['🕊️', false, 'Small and soft'],
   'Invisible ink': ['🫥', false, 'Hidden until clicked'], Confetti: ['🎉', true, 'Fills the screen'], Balloons: ['🎈', true, 'Float up the screen'],
   Hearts: ['💕', true, 'Hearts everywhere'], Fireworks: ['🎆', true, 'Bursts of color']};
@@ -1240,7 +1243,28 @@ function formattedText(body) {
   return fragment;
 }
 
-function plainPreview(body) { return (parseEffect(body)?.words ?? body).replace(/\|\|[\s\S]+?\|\|/g, '▒▒▒'); }
+/** For the inbox and notifications, like the phone's: invisible ink stays hidden, spoilers covered, formatting marks dropped. */
+function plainPreview(body) {
+  const effect = parseEffect(body);
+  if (effect?.effect === 'Invisible ink') return '🫥 Invisible ink message';
+  return dropMarks(effect?.words ?? body, 0);
+}
+function dropMarks(text, depth) {
+  text = String(text ?? '');
+  if (text.length > 4000 || !/[*_~`|]/.test(text)) return text;
+  const links = [...text.matchAll(/https?:\/\/\S+/g)].map((m) => [m.index, m.index + m[0].length - 1]);
+  let out = '', at = 0;
+  for (const match of text.matchAll(new RegExp(FORMAT_SOURCE, 'g'))) {
+    const start = match.index, end = start + match[0].length - 1;
+    if (start < at || links.some(([a, b]) => a <= end && start <= b)) continue;
+    out += text.slice(at, start);
+    if (match[2]) out += '▒▒▒';
+    else if (match[1] || match[3]) out += (match[1] || match[3]).replace(/\n$/, '');
+    else { const inner = match[4] || match[5] || match[6]; out += depth < 4 ? dropMarks(inner, depth + 1) : inner; }
+    at = end + 1;
+  }
+  return out + text.slice(at);
+}
 
 // Effects: bubble effects move one bubble; screen effects play over the page. Each plays once on its own.
 
@@ -1342,7 +1366,7 @@ function playScreenEffect(effect) {
         context.globalAlpha = (1 - local) * fade;
         for (let ray = 0; ray < 28; ray++) {
           const angle = ray / 28 * Math.PI * 2, reach = local * (120 + p[3] * 140);
-          context.beginPath(); context.arc(cx + Math.cos(angle) * reach, cy + Math.sin(angle) * reach + local * local * 60, 4 * (1 - local) + 1.5, 0, Math.PI * 2); context.fill();
+          context.beginPath(); context.arc(cx + Math.cos(angle) * reach, cy + Math.sin(angle) * reach + local * local * 60, Math.max(0, 4 * (1 - local) + 1.5), 0, Math.PI * 2); context.fill();
         }
         context.globalAlpha = fade;
       }
@@ -1417,7 +1441,7 @@ function playReactionEffect(emoji, bubble, outgoing) {
       heart(hearts[index % hearts.length], x, y, (12 + p[5] * 14) * Math.min(1, local / .15), fadeOut(local, .7));
     });
     else if (kind === 'thumb') {
-      const ring = easeOut(t) * 70, fade = 1 - t;
+      const ring = Math.max(0, easeOut(Math.min(1, t)) * 70), fade = Math.max(0, 1 - t);
       context.save(); context.strokeStyle = context.fillStyle = '#0a84ff';
       context.globalAlpha = fade * .8; context.lineWidth = Math.max(1, 5 * fade);
       context.beginPath(); context.arc(ax, ay, ring, 0, Math.PI * 2); context.stroke();
@@ -1899,3 +1923,36 @@ function attachmentContact(message, bubble) {
   });
   return true;
 }
+
+// Chat setting notices, the same sentences as the phone's (Extras.kt): "⏱️ Disappearing messages are on. New
+// messages disappear after 1 day." Plain text in any app; FluidMessages shows an outlined note instead of a bubble.
+// chat-notice:start (scripts/test-local runs this block on its own)
+const NOTICE_TIMER_ON = /^⏱️? Disappearing messages are on\. New messages disappear after (\d{1,4}) (second|minute|hour|day|week)s?\.$/u;
+const NOTICE_TIMER_OFF = /^⏱️? Disappearing messages are off\.$/u;
+const NOTICE_ENCRYPTED = '🔒 Messages in this chat are now encrypted with FluidMessages.';
+const NOTICE_UNENCRYPTED = '🔓 Messages in this chat are no longer encrypted with FluidMessages.';
+const NOTICE_UNITS = {second: 1, minute: 60, hour: 3600, day: 86400, week: 604800};
+
+/** {kind: 'timer', seconds} (0 is off) or {kind: 'encryption', on}, or null for any other text. */
+function parseChatNotice(text) {
+  const clean = String(text || '').trim();
+  if (clean === NOTICE_ENCRYPTED) return {kind: 'encryption', on: true};
+  if (clean === NOTICE_UNENCRYPTED) return {kind: 'encryption', on: false};
+  if (NOTICE_TIMER_OFF.test(clean)) return {kind: 'timer', seconds: 0};
+  const match = NOTICE_TIMER_ON.exec(clean);
+  const seconds = match ? Number(match[1]) * NOTICE_UNITS[match[2]] : 0;
+  return seconds > 0 ? {kind: 'timer', seconds} : null;
+}
+
+/** The notice for a chat's new disappearing timer, labeled like Disappearing.label on the phone. */
+function timerNoticeText(seconds) {
+  if (!(seconds > 0)) return '⏱️ Disappearing messages are off.';
+  let label = seconds + ' second' + (seconds === 1 ? '' : 's');
+  for (const [unit, size] of [['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]]) {
+    if (seconds % size === 0) { label = seconds / size + ' ' + unit + (seconds / size === 1 ? '' : 's'); break; }
+  }
+  return '⏱️ Disappearing messages are on. New messages disappear after ' + label + '.';
+}
+
+const encryptionNoticeText = (on) => on ? NOTICE_ENCRYPTED : NOTICE_UNENCRYPTED;
+// chat-notice:end

@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends rclone ca-certi
 COPY *.py *.html *.js *.css *.webp *.webmanifest ./
 COPY shared/ ./shared/
 COPY icons/ ./icons/
+COPY samples/ ./samples/
 USER fluid
 ENV FLUID_BIND=0.0.0.0 FLUID_DB=/data/fluid.sqlite
 EXPOSE 8080

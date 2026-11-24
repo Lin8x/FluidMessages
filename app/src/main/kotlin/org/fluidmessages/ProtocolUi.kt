@@ -36,6 +36,8 @@ internal data class ChatRouting @JvmOverloads constructor(
     val preferredVia: MessageProtocol? = null,
     /** This conversation's encryption when it differs from the protocol's usual, such as an encrypted Matrix room. */
     val encryption: Encryption? = null,
+    /** "via alice@example.org" when the service has more than one account (AccountKeys.via). */
+    val account: String = "",
 )
 
 data class GroupMember @JvmOverloads constructor(

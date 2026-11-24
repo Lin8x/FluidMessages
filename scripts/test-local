@@ -154,6 +154,7 @@ def smoke_test():
     print("PASS  Companion assets, authentication, sync, scheduling, cancellation, claiming, click-to-call and attachment uploads")
     print("PASS  web phone features: scripts served, delete for me, pinned/archived/muted chats and chat codes, appearance extras")
     print("PASS  web details and effects: conversation details and members, call icons, floating message menu, capped effects")
+    print("PASS  web Calls tab: favorites, recents, contacts, keypad, contact pages, saved favorites, sample portraits, and tab counts")
 
 
 def web_features_test(request):
@@ -224,12 +225,90 @@ def web_details_effects_test(request):
     check(b"canvas.width = innerWidth * scale" not in cards_js, "Effects draw full-window canvases at the device pixel ratio")
     # The sample like is Maya's on your message, so it must not say "(my message)", which would mean her own.
     check("Liked “See you there!” (my message)".encode() not in chats_js, "The sample reaction can't fold onto its message")
+    chat_notice_test(cards_js, request("/app.js", authorized=False), request("/style.css", authorized=False))
     # IRC channels' members reach the browser for a group's details.
     with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db, db:
         db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('channel:irc-fixture', ?)",
                    (json.dumps({"name": "#fixture", "topic": "Fictional topic", "members": ["mosaic", "kestrel"]}),))
     channels = request("/api/inbox").get("channels", {})
     check(channels.get("irc-fixture", {}).get("members") == ["mosaic", "kestrel"], "Channel members aren't in the inbox snapshot")
+    web_people_test(request)
+
+
+# The phone's chat setting notices (ChatNoticeTest.kt) and lookalikes that must stay ordinary messages.
+CHAT_NOTICES = (("⏱️ Disappearing messages are on. New messages disappear after 1 day.", {"kind": "timer", "seconds": 86400}),
+                ("⏱️ Disappearing messages are on. New messages disappear after 30 seconds.", {"kind": "timer", "seconds": 30}),
+                ("⏱️ Disappearing messages are on. New messages disappear after 4 weeks.", {"kind": "timer", "seconds": 28 * 86400}),
+                ("⏱ Disappearing messages are on. New messages disappear after 1 hour.\n", {"kind": "timer", "seconds": 3600}),
+                ("⏱️ Disappearing messages are off.", {"kind": "timer", "seconds": 0}),
+                ("🔒 Messages in this chat are now encrypted with FluidMessages.", {"kind": "encryption", "on": True}),
+                ("🔓 Messages in this chat are no longer encrypted with FluidMessages.", {"kind": "encryption", "on": False}),
+                ("Disappearing messages are off.", None), ("⏱️ Disappearing messages are off. Just kidding", None),
+                ("⏱️ Disappearing messages are on. New messages disappear after 0 days.", None))
+
+
+def chat_notice_test(cards_js, app_js, style_css):
+    """The browser recognizes the phone's chat setting notices and draws them as outlined notes, not bubbles."""
+    block = re.search(rb"// chat-notice:start[^\n]*\n(.*?)// chat-notice:end", cards_js, re.S)
+    check(block, "cards.js has no chat setting notice parser")
+    check(b"parseChatNotice" in app_js and re.search(rb"#conversation > \.event\.notice \{[^}]*border: 1px solid", style_css),
+          "Chat setting notices aren't drawn as outlined notes")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("Skipped running the chat notice parser: node isn't installed (set NODE to its path)")
+        return
+    script = block.group(1).decode() + """
+const cases = JSON.parse(process.argv[1]);
+const wrong = cases.filter(([text, expected]) => JSON.stringify(parseChatNotice(text)) !== JSON.stringify(expected));
+for (const seconds of [0, 30, 300, 3600, 28800, 86400, 604800, 2419200]) {
+  const back = parseChatNotice(timerNoticeText(seconds));
+  if (!back || back.seconds !== seconds) wrong.push(['timer', seconds]);
+}
+if (parseChatNotice(encryptionNoticeText(true))?.on !== true || parseChatNotice(encryptionNoticeText(false))?.on !== false) wrong.push(['encryption']);
+process.stdout.write(JSON.stringify(wrong));
+"""
+    result = subprocess.run([node, "-e", script, json.dumps(CHAT_NOTICES, ensure_ascii=False)], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0 and result.stdout == "[]", "The browser's chat notice parser disagrees with the phone's: "
+          + (result.stdout or result.stderr)[:400])
+
+
+def web_people_test(request):
+    """The Calls tab like the phone's Phone tab, the contacts list and contact pages, favorites, and sample photos."""
+    people_js = request("/people.js", authorized=False)
+    for expected in (b"function showPhoneTab", b"function knownPeople", b"function openPersonPage", b"function keypadView",
+                     b"function openMemberContact", b"'Favorites'", b"'Recents'", b"'Contacts'", b"Text instead"):
+        check(expected in people_js, f"Missing {expected.decode()} in /people.js")
+    check(b"/people.js" in request("/", authorized=False), "The page doesn't load people.js")
+    check(b"showPhoneTab" in request("/companion.js", authorized=False), "The Calls tab doesn't draw the phone-style sections")
+    check(b"openMemberContact" in request("/chats.js", authorized=False), "A group member doesn't open their contact page")
+    shell = request("/sw.js", authorized=False)
+    for path in ("/people.js", "/samples/maya.webp", "/samples/jordan.webp"):
+        check(path.encode() in shell, f"The offline cache leaves out {path}")
+        if path.endswith(".webp"):
+            picture = request(path, authorized=False)
+            check(picture[:4] == b"RIFF" and picture[8:12] == b"WEBP", f"{path} isn't the sample WebP portrait")
+            check(picture == (ROOT / "app/src/main/res/drawable-nodpi" / ("sample_" + Path(path).name)).read_bytes(),
+                  f"{path} differs from the phone's sample portrait")
+    check(b"COPY samples/" in (ROOT / "server/Dockerfile").read_bytes(), "The Docker image leaves out the sample portraits")
+    # Favorites are kept for every browser, by number or chat address, and only as short plain text.
+    favorites = ["+12025550123", "web-fixture"]
+    check(request("/api/settings", {"web_favorites": favorites + ["+12025550123"]})["web_favorites"] == favorites, "Favorites weren't saved")
+    check(request("/api/inbox")["web_favorites"] == favorites, "The inbox doesn't carry favorites")
+    for bad in ("+12025550123", [5], ["x" * 301], ["line\nbreak"], [""]):
+        try:
+            request("/api/settings", {"web_favorites": bad})
+            raise RuntimeError("Invalid favorites were accepted: " + json.dumps(bad))
+        except HTTPError as error:
+            check(error.code == 400, f"Expected HTTP 400 for invalid favorites, got {error.code}")
+    check(request("/api/settings", {"web_favorites": []})["web_favorites"] == [], "Favorites couldn't be cleared")
+    # Counts on the tabs: on by default, a server preference, and drawn white on red on both tab bars.
+    for expected in (b"function updateTabBadges", b"setAppBadge", b"clearAppBadge", b"function tabCountsCard", b"markCallsSeen"):
+        check(expected in people_js, f"Missing {expected.decode()} in /people.js")
+    check(b"tabCountsCard" in request("/settings.js", authorized=False), "Settings → Messaging has no Show counts on tabs")
+    check(re.search(rb"\.tab-badge \{[^}]*color: #fff", request("/features.css", authorized=False)), "Tab counts aren't white on their fill")
+    check(request("/api/inbox")["prefs"].get("tabCounts") is True, "Counts on tabs aren't on by default")
+    check(request("/api/settings", {"prefs": {"tabCounts": False}})["prefs"]["tabCounts"] is False, "Counts on tabs couldn't be turned off")
+    check(request("/api/settings", {"prefs": {"tabCounts": True}})["prefs"]["tabCounts"] is True, "Counts on tabs couldn't be turned back on")
 
 
 def cloud_smoke_test():
@@ -806,6 +885,191 @@ def protocol_accounts_test():
     print("PASS  protocol accounts stay private, Compose accounts are read-only, and IRC speaks CAP, SASL, and IRCv3 tags")
 
 
+def multi_account_test():
+    """Several accounts per service, joining and leaving servers' channels and rooms, with fictional fixtures only."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import sqlite3
+    import threading
+    import accounts
+    import irc_client
+    import protocol_gateway
+    import sync_merge
+
+    with tempfile.TemporaryDirectory(prefix="fluid-multi-") as directory:
+        database = Path(directory) / "gateway.sqlite"
+
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            return db
+
+        with closing(connect()) as db, db:
+            db.executescript(protocol_gateway.SCHEMA)
+            # A chat and a message from before multiple accounts: no account named anywhere.
+            db.execute("INSERT INTO protocol_routes VALUES ('maya', 'matrix', ?)", (json.dumps(
+                {"address": "maya", "protocol": "matrix", "target": "!maya:alpha.test", "via": "matrix", "group": False,
+                 "title": "Maya", "members": []}),))
+            db.execute("INSERT INTO protocol_messages VALUES ('matrix-old', 1, ?)", (json.dumps(
+                {"id": "matrix-old", "address": "maya", "protocol": "matrix", "title": "Maya", "body": "From before",
+                 "date": 1, "type": 1, "read": 1, "status": "", "author": "@maya:alpha.test"}),))
+        # The one-account-per-service file from before.
+        store_path = Path(directory) / "protocol-accounts.json"
+        store_path.write_text(json.dumps({"matrix": {"homeserver": "https://alpha.test", "user_id": "@alice:alpha.test",
+                                                     "access_token": "fixture-alpha-token"}}))
+        store = accounts.AccountStore(store_path, environ={})
+        gateway = protocol_gateway.Gateway(connect, {}, Path(directory) / "files", store)
+        gateway.refresh_clients = lambda: None  # No real connections in this test.
+        alice, bob = "matrix:@alice:alpha.test", "matrix:@bob:beta.test"
+        check(gateway.route("maya", "matrix")["account"] == alice, "An old chat didn't stay with the first account")
+        store.save("matrix", {"homeserver": "https://beta.test", "user_id": "@bob:beta.test",
+                              "access_token": "fixture-beta-token"}, add=True)
+        saved = json.loads(store_path.read_text())
+        check(saved["version"] == 2 and [entry["id"] for entry in saved["accounts"]] == [alice, bob],
+              "The account file wasn't migrated in order")
+        check(gateway.route("maya", "matrix")["account"] == alice, "Adding an account moved an old chat")
+        try:
+            store.save("matrix", {"homeserver": "https://beta.test", "user_id": "@bob:beta.test", "access_token": "x"}, add=True)
+            raise RuntimeError("The same account was added twice")
+        except ValueError:
+            pass
+        listed = json.dumps(store.redacted())
+        check("fixture-alpha-token" not in listed and "fixture-beta-token" not in listed, "Account secrets were listed")
+
+        calls = []
+
+        def fake_matrix(path, body=None, allow_missing=False, method=None):
+            me = gateway.matrix["user_id"]
+            calls.append((me, path, body))
+            if path.startswith("sync?"):
+                room = "!maya:alpha.test" if me.endswith("alpha.test") else "!maya:beta.test"
+                return {"next_batch": "batch-" + me, "rooms": {"join": {room: {"timeline": {"events": [
+                    {"type": "m.room.message", "event_id": "$same", "sender": "@maya:x.test", "origin_server_ts": 5,
+                     "content": {"msgtype": "m.text", "body": "Hello " + me}}]}}}}}
+            if path.startswith("join/"):
+                return {"room_id": "!garden:beta.test"}
+            if path == "publicRooms":
+                return {"chunk": [{"room_id": "!garden:beta.test", "name": "Garden club", "num_joined_members": 12},
+                                  {"room_id": "!chess:beta.test", "name": "Chess", "num_joined_members": 4}]}
+            if "/send/" in path:
+                return {"event_id": "$sent-" + me}
+            return None if allow_missing else {}
+        gateway.matrix_request = fake_matrix
+
+        # The same contact through the second account is a chat of its own; the first keeps its address.
+        with closing(connect()) as db, db:
+            added = gateway.add_route(db, {"address": "maya", "protocol": "matrix", "target": "!maya:beta.test",
+                                           "title": "Maya", "account": bob})["route"]
+        second = "maya~" + accounts.tag(bob)
+        check(added["address"] == second and added["account"] == bob, "The second account's chat wasn't kept apart")
+        gateway.receive_matrix(alice)
+        gateway.receive_matrix(bob)
+        first_in = gateway.find("maya", "matrix", "body", "Hello @alice:alpha.test")
+        second_in = gateway.find(second, "matrix", "body", "Hello @bob:beta.test")
+        check(first_in and second_in and first_in["id"] != second_in["id"] and first_in["account"] == alice
+              and second_in["account"] == bob, "The two Matrix accounts didn't receive independently")
+        check(gateway.state("matrix:since") == "batch-@alice:alpha.test"
+              and gateway.state("matrix:since:" + accounts.tag(bob)) == "batch-@bob:beta.test",
+              "Matrix sync positions were mixed between accounts")
+        for address in ("maya", second):
+            with closing(connect()) as db, db:
+                gateway.enqueue(db, {"address": address, "protocol": "matrix", "body": "Reply to " + address,
+                                     "request": secrets.token_hex(8)})
+            gateway.deliver_job(gateway.claim())
+        failed = [json.loads(row[0])["status"] for row in connect().execute("SELECT payload FROM protocol_messages")
+                  if json.loads(row[0]).get("type") == 2 and json.loads(row[0])["status"] != "Sent"]
+        check(not failed, "A reply wasn't sent: " + ", ".join(failed))
+        sends = [(me, path) for me, path, body in calls if "/send/" in path]
+        check(len(sends) == 2 and sends[0][0] == "@alice:alpha.test" and "!maya:alpha.test" in sends[0][1].replace("%21", "!").replace("%3A", ":")
+              and sends[1][0] == "@bob:beta.test" and "!maya:beta.test" in sends[1][1].replace("%21", "!").replace("%3A", ":"),
+              "Replies didn't go through each chat's own account")
+        with closing(connect()) as db:
+            snapshot = gateway.snapshot(db)
+        check(any(m["id"] == "matrix-old" for m in snapshot["messages"]), "The old message was lost")
+        check({a["id"] for a in snapshot["accounts"]} == {alice, bob}
+              and any(r["address"] == second and r["account_name"] == "@bob:beta.test" for r in snapshot["routes"]),
+              "The snapshot doesn't name each chat's account")
+        # A new chat without a choice uses the account that was active most recently (bob replied last).
+        with closing(connect()) as db, db:
+            fresh = gateway.add_route(db, {"address": "web-new", "protocol": "matrix", "target": "!new:beta.test", "title": "New"})
+        check(fresh["route"]["account"] == bob, "A new chat didn't default to the most recent account")
+
+        # Browsing and joining a room on the second homeserver, then leaving it.
+        found = gateway.browse({"account": bob, "search": "garden", "limit": 10})["rooms"]
+        check(found[0]["name"] == "Garden club" and not found[0]["joined"]
+              and any(path == "publicRooms" and body.get("filter") == {"generic_search_term": "garden"} for _, path, body in calls),
+              "The Matrix room directory wasn't searched")
+        with closing(connect()) as db, db:
+            joined = gateway.join(db, {"account": bob, "target": "#garden:beta.test"})["route"]
+        check(joined["target"] == "!garden:beta.test" and joined["account"] == bob and joined["group"], "Joining a room failed")
+        check(gateway.browse({"account": bob, "search": "", "limit": 10})["rooms"][0]["joined"], "A joined room isn't marked")
+        servers = {server["id"]: server for server in gateway.servers()}
+        check(joined["address"] in servers[bob]["channels"] and second in servers[bob]["direct"]
+              and "maya" in servers[alice]["direct"], "Servers don't group their rooms and direct messages")
+        with closing(connect()) as db, db:
+            gateway.leave(db, {"address": joined["address"], "protocol": "matrix"})
+        check(any(me == "@bob:beta.test" and path.endswith("/leave") for me, path, _ in calls)
+              and gateway.route(joined["address"], "matrix") is None, "Leaving a room failed")
+
+        # Phone and web merge: the old item for older phones, and one per account.
+        hooks = {"appearance": lambda db: {}, "prefs": lambda db: {}, "chats": lambda db: {}}
+        with closing(connect()) as db:
+            items = sync_merge.Merge(gateway, hooks).web_items(db)
+        check(items.get("account:matrix") == "@alice:alpha.test" and items.get("account:matrix:@alice:alpha.test") == "web"
+              and items.get("account:matrix:@bob:beta.test") == "web", "Merge items aren't per account")
+
+        # IRC: two networks; a channel joined on one only appears and connects there.
+        store.save("irc", {"server": "irc.alpha.test", "nick": "fluidtest", "channels": "#radio-club"}, add=True)
+        store.save("irc", {"server": "irc.beta.test", "nick": "fluidtest"}, add=True)
+        one, two = "irc:fluidtest@irc.alpha.test", "irc:fluidtest@irc.beta.test"
+        with closing(connect()) as db, db:
+            channel = gateway.join(db, {"account": two, "target": "garden"})["route"]
+        check(channel["target"] == "#garden" and channel["account"] == two, "Joining an IRC channel failed")
+        wanted = gateway.wanted_clients()
+        check(wanted[one][2] == ["#radio-club"] and wanted[two][2] == ["#garden"], "IRC channels went to the wrong network")
+        gateway.accept_irc("#garden", "kestrel", "Seeds?", {"msgid": "g1"}, 7, False, account=two)
+        gateway.accept_irc("#garden", "kestrel", "Wrong network", {"msgid": "g2"}, 8, False, account=one)
+        check(gateway.find(channel["address"], "irc", "irc_msgid", "g1") and not gateway.find(channel["address"], "irc", "irc_msgid", "g2"),
+              "An IRC message reached the wrong network's channel")
+        radio = next(r for r in gateway.routes if r["account"] == one and r["target"] == "#radio-club")
+        with closing(connect()) as db, db:
+            gateway.leave(db, {"address": radio["address"], "protocol": "irc"})
+            gateway.leave(db, {"address": channel["address"], "protocol": "irc"})
+        check(not store.get(one).get("channels") and gateway.route(channel["address"], "irc") is None,
+              "Leaving IRC channels failed")
+
+    # IRC LIST with a search and a limit, and live JOIN/PART, on a recorded connection.
+    class Recorder:
+        def __init__(self):
+            self.lines = []
+
+        def sendall(self, data):
+            self.lines.append(data.decode().strip())
+
+    client = irc_client.IrcClient({"server": "irc.example.test", "nick": "fluidtest", "channels": ["#a", "#c"]},
+                                  lambda *args: None, lambda *args: None)
+    client.sock = Recorder()
+    client.ready.set()
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(rows=client.list_channels("radio", 2)), daemon=True)
+    worker.start()
+    deadline = time.time() + 5
+    while not client.sock.lines and time.time() < deadline:
+        time.sleep(0.02)
+    check(client.sock.lines[-1] == "LIST *radio*", "IRC LIST didn't ask for matching channels")
+    for line in (":irc.example.test 321 fluidtest Channel :Users Name",
+                 ":irc.example.test 322 fluidtest #radio-club 40 :Antenna night",
+                 ":irc.example.test 322 fluidtest #garden 9 :Seeds",
+                 ":irc.example.test 322 fluidtest #radio-help 3 :Questions",
+                 ":irc.example.test 322 fluidtest #radio-more 90 :Over the limit",
+                 ":irc.example.test 323 fluidtest :End of /LIST"):
+        client.handle(irc_client.parse(line))
+    worker.join(5)
+    check([row["target"] for row in result.get("rows", [])] == ["#radio-club", "#radio-help"], "IRC LIST filtering or limit failed")
+    client.sync_channels(["#a", "#b"])
+    check(client.sock.lines[-2:] == ["JOIN #b", "PART #c :Left in FluidMessages"], "IRC didn't join and part live")
+    print("PASS  several accounts per service: migration keeps old chats, two Matrix accounts and two IRC networks send and "
+          "receive apart, per-account merge items, and joining, browsing, and leaving channels and rooms")
+
+
 def sign_in_test():
     """Opening the web app without a token: first-run setup code, password, session cookie, CSRF, and rate limits."""
     import sqlite3
@@ -1160,6 +1424,206 @@ def erase_test():
     print("PASS  erase everything: browser session, CSRF, ERASE and password, rate limit; data, accounts, files, tokens, sessions gone; fresh welcome")
 
 
+def web_privacy_test():
+    """Settings → Privacy and security on the web: the private folder (hidden by the server until a session opens it),
+    decoy mode (a decoy password that only ever reaches a pretend inbox), and the emergency erase passcode (erases
+    everything and looks like a normal sign-in). Fictional people and codes only."""
+    import sqlite3
+    password, decoy, code, distress = "harbor maple lantern", "willow candle orbit", "4821", "violet anchor 93"
+    opener = build_opener(ProxyHandler({}))
+
+    def caller(origin):
+        def call(path, body=None, cookie=None, headers=None):
+            sent = {"X-Fluid-Request": "1", "Content-Type": "application/json", "Origin": origin, **(headers or {})}
+            sent = {key: value for key, value in sent.items() if value is not None}
+            if cookie:
+                sent["Cookie"] = cookie
+            data = json.dumps(body).encode() if body is not None else None
+            try:
+                with opener.open(Request(origin + path, data=data, headers=sent), timeout=30) as response:
+                    return response.status, json.loads(response.read() or b"{}"), response.headers
+            except HTTPError as error:
+                return error.code, json.loads(error.read() or b"{}"), error.headers
+        return call
+
+    with companion(free_port(), "") as (origin, request, _):
+        call = caller(origin)
+
+        def sign_in(secret):
+            started = time.monotonic()
+            status, result, headers = call("/api/auth/login", {"password": secret, "remember": True})
+            elapsed = time.monotonic() - started
+            cookies = headers.get_all("Set-Cookie") or []
+            return status, result, cookies[0].split(";")[0] if cookies else "", elapsed, [item.split("=", 1)[1].split(";", 1)[1] for item in cookies]
+
+        def stored(key=None):
+            with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db:
+                if key:
+                    return json.loads(db.execute("SELECT value FROM protocol_state WHERE key=?", (key,)).fetchone()[0])
+                return json.dumps(db.execute("SELECT * FROM auth_state").fetchall() + db.execute("SELECT * FROM protocol_state").fetchall())
+
+        status, _, headers = call("/api/auth/local", {})
+        check(status == 200, "This computer couldn't open the app")
+        here = headers.get("Set-Cookie").split(";")[0]
+        check(call("/api/auth/password", {"password": password}, cookie=here)[0] == 200, "Couldn't set the web password")
+        bearer = {"Authorization": "Bearer " + call("/api/auth/pairing", {}, cookie=here)[1]["token"]}
+        secret_chat, now = "+12025550123", int(time.time() * 1000)
+        request("/api/sync", {"messages": sample_messages()}, authorized=False, extra_headers=bearer)
+        request("/api/schedule", {"address": secret_chat, "body": "Fictional private text", "due": now + 3_600_000},
+                authorized=False, extra_headers=bearer)
+        status, _, real, _, _ = sign_in(password)
+        check(status == 200 and real, "Couldn't sign in with the password")
+
+        # Private folder: set up with its own passcode, typed twice, different from the password.
+        check(call("/api/privacy/private/move", {"address": secret_chat, "private": True}, cookie=real)[0] == 409,
+              "A chat moved to a private folder that isn't set up")
+        for body, why in (({"code": "12", "again": "12"}, "a too-short passcode"), ({"code": code, "again": "4822"}, "passcodes that don't match"),
+                          ({"code": password, "again": password}, "the web password as its passcode")):
+            check(call("/api/privacy/private/setup", body, cookie=real)[0] == 400, "The private folder accepted " + why)
+        status, result, _ = call("/api/privacy/private/setup", {"code": code, "again": code}, cookie=real)
+        check(status == 200 and result["private"] == {"set": True, "open": True, "count": 0}, "Couldn't set up the private folder")
+        check(call("/api/privacy/private/move", {"address": secret_chat, "private": True}, cookie=real)[0] == 200, "Couldn't move a chat")
+        check(call("/api/settings", {"web_chats": {"pinned": [secret_chat], "archived": [], "blocked": [], "muted": [], "locks": {}}},
+                   cookie=real)[0] == 200, "Couldn't pin the private chat")
+        opened = call("/api/inbox", cookie=real)[1]
+        check(any(row["address"] == secret_chat for row in opened["messages"]) and opened["private_chats"] == [secret_chat],
+              "The session that set up the private folder doesn't see its chat")
+
+        def hides(cookie, why):
+            snapshot = json.dumps(call("/api/inbox", cookie=cookie)[1]) + json.dumps(call("/api/settings", cookie=cookie)[1]) \
+                + json.dumps(call("/api/jobs", cookie=cookie)[1]) + json.dumps(call("/api/merge", cookie=cookie)[1])
+            check("5550123" not in snapshot and "Fictional private text" not in snapshot and "Coffee at ten?" not in snapshot,
+                  "A private chat is visible " + why)
+            check("5550146" in snapshot, "The rest of the inbox went missing " + why)
+
+        hides(here, "to another session that never opened the folder")
+        check(call("/api/privacy/private/lock", {}, cookie=real)[1] == {"open": False}, "Couldn't lock the private folder")
+        hides(real, "after locking the folder")
+        # A locked session saving its chat settings keeps the private chat's pin it never saw.
+        check(call("/api/settings", {"web_chats": {"pinned": [], "archived": [], "blocked": [], "muted": [], "locks": {}}},
+                   cookie=real)[0] == 200, "A locked session couldn't save chat settings")
+        check(stored("web_chats")["pinned"] == [secret_chat], "A locked session's save dropped the private chat's pin")
+        check("5550123" not in json.dumps(request("/api/merge", authorized=False, extra_headers=bearer)["web"]),
+              "The private chat went into the phone↔web merge")
+        check(call("/api/privacy/private/unlock", {"code": "0000"}, cookie=real)[1] == {"open": False}, "A wrong passcode opened the folder")
+        hides(real, "after a wrong passcode")
+        check(call("/api/privacy/private/unlock", {"code": code}, cookie=real)[1] == {"open": True}, "The right passcode didn't open the folder")
+        check(any(row["address"] == secret_chat for row in call("/api/inbox", cookie=real)[1]["messages"]), "Opening didn't show the chat")
+        hides(here, "to another session while this one has it open")
+
+        # Decoy mode: a second password, typed twice, confirmed with the real one, different from every other code.
+        check(call("/api/privacy/decoy", {"password": decoy, "again": decoy, "current": "not it"}, cookie=real)[0] == 403,
+              "The decoy password was set without the web password")
+        for body, why in (({"password": decoy, "again": decoy + "x"}, "passwords that don't match"),
+                          ({"password": password, "again": password}, "the real password"), ({"password": "short", "again": "short"}, "a short one")):
+            check(call("/api/privacy/decoy", {**body, "current": password}, cookie=real)[0] == 400, "Decoy mode accepted " + why)
+        check(call("/api/privacy/decoy", {"password": decoy, "again": decoy, "current": password}, cookie=real)[1]["decoy"]["set"] is True,
+              "Couldn't set the decoy password")
+        check(call("/api/privacy/decoy/chats", {"chats": [{"name": "Rowan Hale", "lines": [{"me": False, "text": "Lunch tomorrow?"},
+              {"me": True, "text": "Sounds good"}]}, {"name": "Garden Club", "lines": [{"me": False, "text": "Seeds swap is Saturday"}]}]},
+              cookie=real)[0] == 200, "Couldn't save pretend chats")
+        timings = {"real": [], "decoy": [], "wrong": []}
+        answers = {}
+        for _ in range(3):
+            for name, secret in (("real", password), ("decoy", decoy), ("wrong", "not the password at all")):
+                status, result, cookie, elapsed, flags = sign_in(secret)
+                timings[name].append(elapsed)
+                answers[name] = (status, result, flags)
+                if name == "decoy":
+                    fake = cookie
+        check(answers["real"] == answers["decoy"], "A decoy sign-in answers differently: " + repr((answers["real"], answers["decoy"])))
+        middle = {name: sorted(values)[1] for name, values in timings.items()}
+        check(middle["decoy"] < middle["real"] * 2 + 0.15 and middle["real"] < middle["decoy"] * 2 + 0.15,
+              "A decoy sign-in takes a different time: " + json.dumps(middle))
+        check(call("/api/auth", cookie=fake)[1]["owner"] is True and call("/api/auth", cookie=fake)[1]["signed_in"] is True,
+              "The decoy session doesn't look signed in")
+        pretend = call("/api/inbox", cookie=fake)[1]
+        text = json.dumps(pretend)
+        check("Rowan Hale" in text and "Garden Club" in text and pretend["updated"], "The decoy inbox doesn't show the pretend chats")
+        check(not any(word in text for word in ("Coffee at ten?", "5550146", "5550123", "I sent the route")), "The decoy inbox shows real messages")
+        check(call("/api/privacy", cookie=fake)[1]["private"] is None, "The decoy session can see the private folder settings")
+        security = call("/api/auth/security", cookie=fake)[1]
+        check(security["pairing"]["web"] is False and security["sessions"] == 1, "The decoy session sees real pairing and sessions")
+        check(call("/api/protocols/accounts", cookie=fake)[1]["accounts"] == [], "The decoy session sees accounts")
+        check("5550" not in json.dumps(call("/api/settings", cookie=fake)[1]) and call("/api/jobs", cookie=fake)[1] == [],
+              "The decoy session sees real settings or the queue")
+        for path, body in (("/api/erase", {"confirm": "ERASE", "password": decoy}), ("/api/auth/pairing", {}), ("/api/auth/pairing/delete", {}),
+                           ("/api/auth/password", {"current": decoy, "password": "a brand new password"}), ("/api/auth/sessions/end-others", {}),
+                           ("/api/auth/local-access", {"enabled": False}), ("/api/protocols/accounts", {"protocol": "email", "fields": {}}),
+                           ("/api/protocols/accounts/delete", {"protocol": "email"}), ("/api/privacy/decoy/off", {"current": decoy}),
+                           ("/api/privacy/distress", {"code": "123456", "again": "123456", "understood": True, "current": decoy}),
+                           ("/api/privacy/private/unlock", {"code": code}), ("/api/merge/resolve", {}), ("/api/sync", {"messages": []})):
+            check(call(path, body, cookie=fake)[0] == 503, "The decoy session reached " + path)
+        check(call("/api/settings", {"follow_phone": False}, cookie=fake, headers={"X-Fluid-Request": None})[0] == 403,
+              "CSRF isn't checked for decoy sessions")
+        check(call("/api/schedule", {"address": "+12025550161", "body": "Fictional decoy reply", "due": now}, cookie=fake)[0] == 200,
+              "Sending in the decoy inbox wasn't sandboxed")
+        check("Fictional decoy reply" in json.dumps(call("/api/inbox", cookie=fake)[1]), "The sandboxed text didn't show in the decoy chat")
+        check("Fictional decoy reply" not in json.dumps(call("/api/jobs", cookie=real)[1]), "A decoy text reached the phone's queue")
+        check(len(call("/api/inbox", cookie=real)[1]["messages"]) >= 3 and call("/api/auth/security", cookie=real)[1]["pairing"]["web"],
+              "The decoy session changed real data")
+
+        # Quick hide switches this session to decoy mode; Show your real inbox takes the private folder passcode.
+        check(call("/api/privacy/quick-hide", {}, cookie=real)[0] == 200, "Quick hide failed")
+        check("Rowan Hale" in json.dumps(call("/api/inbox", cookie=real)[1]), "Quick hide didn't show the decoy inbox")
+        check(call("/api/privacy/reveal", {"code": "0000"}, cookie=real)[0] == 403, "A wrong passcode ended decoy mode")
+        check(call("/api/privacy/reveal", {"code": code}, cookie=real)[1] == {"ok": True}, "The private folder passcode didn't end decoy mode")
+        back = call("/api/inbox", cookie=real)[1]
+        check("Rowan Hale" not in json.dumps(back) and "5550123" not in json.dumps(back), "Decoy mode didn't end, or left the private folder open")
+
+        # Emergency erase passcode: at least 6 characters, typed twice, confirmed, and unlike every other code.
+        base = {"code": distress, "again": distress, "understood": True, "current": password}
+        for body, why in (({**base, "understood": False}, "without confirming"), ({**base, "again": distress + "!"}, "passcodes that don't match"),
+                          ({**base, "code": "12345", "again": "12345"}, "a short one"), ({**base, "code": password, "again": password}, "the password"),
+                          ({**base, "code": decoy, "again": decoy}, "the decoy password")):
+            check(call("/api/privacy/distress", body, cookie=real)[0] == 400, "The emergency passcode accepted " + why)
+        check(call("/api/privacy/distress", {**base, "current": "nope"}, cookie=real)[0] == 403, "The emergency passcode was set without the password")
+        check(call("/api/privacy/distress", base, cookie=real)[1]["distress"]["set"] is True, "Couldn't set the emergency passcode")
+        check(call("/api/auth/password", {"current": password, "password": distress}, cookie=real)[0] == 400,
+              "The password could be changed to the emergency passcode")
+        saved = stored()
+        check(all(value not in saved for value in (password, decoy, code, distress)) and saved.count("scrypt") >= 4,
+              "A password or passcode is stored in the clear")
+
+        # Wrong codes count toward the sign-in rate limit, from one address.
+        away = {"X-Forwarded-For": "198.51.100.23"}
+        for _ in range(5):
+            call("/api/privacy/private/unlock", {"code": "9999"}, cookie=real, headers=away)
+        check(call("/api/privacy/private/unlock", {"code": code}, cookie=real, headers=away)[0] == 429, "Wrong private folder passcodes weren't rate-limited")
+        check(call("/api/auth/login", {"password": password}, headers=away)[0] == 429, "Wrong passcodes didn't count toward sign-in limits")
+
+        status, result, cookie, elapsed, flags = sign_in(distress)
+        check((status, result, flags) == answers["real"], "The emergency passcode answers differently from a real sign-in")
+        check(elapsed < middle["real"] * 2 + 0.15, "The emergency passcode took longer than a sign-in: %.3f vs %.3f" % (elapsed, middle["real"]))
+        timing = "sign-in %d ms, decoy %d ms, wrong %d ms, emergency %d ms" % (
+            middle["real"] * 1000, middle["decoy"] * 1000, middle["wrong"] * 1000, elapsed * 1000)
+        after = call("/api/inbox", cookie=cookie)
+        check(after[0] == 200 and "Coffee at ten?" not in json.dumps(after[1]) and after[1]["messages"], "After the emergency passcode the page isn't a decoy inbox")
+        check(call("/api/inbox", cookie=here)[0] == 401 and call("/api/auth")[1]["owner"] is False, "The emergency passcode didn't erase everything")
+        with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db:
+            left = [db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("inbox", "jobs", "protocol_messages")]
+            secrets_left = db.execute("SELECT key FROM auth_state").fetchall()
+        check(not any(left) and not secrets_left and b"Fictional private text" not in (request.directory / "demo.sqlite").read_bytes(),
+              "Data was left after the emergency erase")
+
+    # The emergency passcode in the private folder prompt answers like a wrong passcode, and erases everything.
+    with companion(free_port(), "") as (origin, request, _):
+        call = caller(origin)
+        status, _, headers = call("/api/auth/local", {})
+        here = headers.get("Set-Cookie").split(";")[0]
+        token = call("/api/auth/pairing", {}, cookie=here)[1]["token"]
+        request("/api/sync", {"messages": sample_messages()}, authorized=False, extra_headers={"Authorization": "Bearer " + token})
+        call("/api/privacy/private/setup", {"code": code, "again": code}, cookie=here)
+        check(call("/api/privacy/distress", {**base, "current": ""}, cookie=here)[0] == 200, "Couldn't set the emergency passcode without a password")
+        call("/api/privacy/private/lock", {}, cookie=here)
+        wrong = call("/api/privacy/private/unlock", {"code": "11111111"}, cookie=here)[:2]
+        check(call("/api/privacy/private/unlock", {"code": distress}, cookie=here)[:2] == wrong, "The emergency passcode answers differently from a wrong one")
+        after = json.dumps(call("/api/inbox", cookie=here)[1])
+        check("Coffee at ten?" not in after and "Mom" in after, "The private folder prompt's emergency passcode didn't erase into a decoy inbox")
+    print("PASS  web privacy: private folder hidden by the server until opened, decoy password sandboxed everywhere and indistinguishable, "
+          "emergency erase passcode, rate limits, and hashes only (" + timing + ")")
+
+
 def merge_test():
     """Phone and web merge: auth and CSRF, a conflict settled in the browser, the phone picking it up, stickers."""
     token = secrets.token_hex(24)
@@ -1365,12 +1829,14 @@ def main():
         sign_in_test()
         local_access_test()
         erase_test()
+        web_privacy_test()
         cloud_smoke_test()
         gateway_relations_test()
         reaction_revisions_test()
         email_quotes_test()
         privacy_calls_test()
         protocol_accounts_test()
+        multi_account_test()
         merge_test()
         android(args)
         if args.demo:

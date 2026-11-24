@@ -100,5 +100,8 @@ class ExtrasTest {
         assertFalse(hasFormatting("2*3*4 and snake_case_name"))
         assertTrue(hasFormatting("this is _really_ ~not~ `code`"))
         assertEquals("Secret: ▒▒▒", plainPreview("Secret: ||the answer||"))
+        assertEquals("Bring the good beans and this https://example.org/a_b_c",
+            plainPreview("Bring the *good* beans and _this_ https://example.org/a_b_c"))
+        assertEquals("bold italic and code", plainPreview("*bold _italic_* and `code`"))
     }
 }

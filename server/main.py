@@ -19,6 +19,7 @@ import accounts
 import auth
 import cloud_backup
 import link_fetch
+import privacy
 import protocol_gateway
 import sync_merge
 
@@ -39,21 +40,24 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/editor.js": ("editor.js", "text/javascript"), "/media.js": ("media.js", "text/javascript"),
          "/chats.js": ("chats.js", "text/javascript"), "/look.js": ("look.js", "text/javascript"),
          "/features.css": ("features.css", "text/css"), "/settings.js": ("settings.js", "text/javascript"),
-         "/sync-merge.js": ("sync-merge.js", "text/javascript"),
+         "/sync-merge.js": ("sync-merge.js", "text/javascript"), "/people.js": ("people.js", "text/javascript"),
+         "/privacy.js": ("privacy.js", "text/javascript"), "/servers.js": ("servers.js", "text/javascript"),
+         # The sample inbox's fictional portraits, the phone's own (res/drawable-nodpi/sample_*.webp).
+         "/samples/maya.webp": ("samples/maya.webp", "image/webp"), "/samples/jordan.webp": ("samples/jordan.webp", "image/webp"),
          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/sw.js": ("sw.js", "text/javascript"),
          "/favicon.ico": ("icons/favicon.ico", "image/x-icon"), "/icons/favicon-32.png": ("icons/favicon-32.png", "image/png"),
          "/icons/icon-192.png": ("icons/icon-192.png", "image/png"), "/icons/icon-512.png": ("icons/icon-512.png", "image/png"),
          "/icons/maskable-192.png": ("icons/maskable-192.png", "image/png"),
          "/icons/maskable-512.png": ("icons/maskable-512.png", "image/png"),
          "/icons/apple-touch-icon.png": ("icons/apple-touch-icon.png", "image/png")}
-# Fun and effects, kept for this server (every browser), never taken from the phone.
-PREFS = ("effects", "reactionEffects", "games", "random", "gifs", "linkPreviews")
+# Fun and effects, and counts on the tabs, kept for this server (every browser), never taken from the phone.
+PREFS = ("effects", "reactionEffects", "games", "random", "gifs", "linkPreviews", "tabCounts")
 
 def appearance_snapshot(value):
     if not isinstance(value, dict):
         return {}
     clean = {}
-    for key in ("dark", "exactTimes", "mmsReady", "protocolTags", "protocolPrivacy", "combineProtocols"):
+    for key in ("dark", "exactTimes", "mmsReady", "protocolTags", "protocolPrivacy", "combineProtocols", "tabCounts", "announceSettings"):
         if type(value.get(key)) is bool:
             clean[key] = value[key]
     for key, lower, upper in (("radius", 2, 30), ("size", 12, 28), ("padding", 6, 24)):
@@ -102,7 +106,7 @@ def clean_web_appearance(value):
         raise ValueError("Invalid appearance")
     clean = {"theme": value.get("theme") if value.get("theme") in THEMES else "fluid",
              "mode": value.get("mode") if value.get("mode") in ("system", "light", "dark") else "system"}
-    for key in ("exactTimes", "combineProtocols"):
+    for key in ("exactTimes", "combineProtocols", "announceSettings"):
         if type(value.get(key)) is bool:
             clean[key] = value[key]
     for key in ("tagMode", "encryptionMode"):
@@ -191,6 +195,19 @@ def clean_web_chats(value):
     return clean
 
 
+def web_favorites(db):
+    """Starred contacts in the Calls tab: one address (number or chat address) per favorite, kept for every browser."""
+    row = db.execute("SELECT value FROM protocol_state WHERE key='web_favorites'").fetchone()
+    return json.loads(row[0]) if row else []
+
+
+def clean_web_favorites(value):
+    if not isinstance(value, list) or len(value) > 500 or any(
+            not isinstance(item, str) or not item.strip() or len(item) > 300 or re.search(r"[\x00-\x1f]", item) for item in value):
+        raise ValueError("Invalid favorites")
+    return list(dict.fromkeys(value))
+
+
 def web_appearance(db):
     row = db.execute("SELECT value FROM protocol_state WHERE key='web_appearance'").fetchone()
     return json.loads(row[0]) if row else {"theme": "fluid", "mode": "system"}
@@ -237,7 +254,7 @@ def settings_view(db):
     """FluidMessages Web's own settings, and whether a phone has synced, so the browser works with or without one."""
     row = db.execute("SELECT updated FROM inbox WHERE id=1").fetchone()
     return {**gateway.settings(db), "web_appearance": web_appearance(db), "prefs": web_prefs(db), "welcomed": welcomed(db),
-            "web_chats": web_chats(db), "phone":{"paired": row is not None, "last_sync": row[0] if row else None},
+            "web_chats": web_chats(db), "web_favorites": web_favorites(db), "phone":{"paired": row is not None, "last_sync": row[0] if row else None},
             **merge_snapshot(db)}
 
 
@@ -265,7 +282,9 @@ def merge_hooks():
 
     return {"appearance": lambda db: dict(web_appearance(db)), "prefs": web_prefs,
             "chats": lambda db: {**{"pinned": [], "archived": [], "blocked": [], "muted": [], "locks": {}}, **web_chats(db)},
-            "save_appearance": save_appearance, "save_prefs": save_prefs, "save_chats": save_chats}
+            "save_appearance": save_appearance, "save_prefs": save_prefs, "save_chats": save_chats,
+            # Chats in the web's private folder stay out of the merge, both ways.
+            "private": lambda db: privacy.matcher(privacy.private_addresses(db))}
 
 
 class EraseLimiter:
@@ -310,7 +329,8 @@ def erase_files(ids):
             for item in entry.iterdir():
                 if item.is_symlink() or item.is_file():
                     item.unlink(missing_ok=True)
-        elif entry.name in ("matrix-store", "stickers") and entry.is_dir() and not entry.is_symlink():
+        elif (entry.name in ("matrix-store", "stickers") or re.fullmatch(r"matrix-store-[0-9a-f]{8}", entry.name)) \
+                and entry.is_dir() and not entry.is_symlink():
             shutil.rmtree(entry, ignore_errors=True)
         elif (entry.is_symlink() or entry.is_file()) and (entry.name in known or dedicated and MESSAGE_FILE.fullmatch(entry.name)):
             entry.unlink(missing_ok=True)
@@ -340,11 +360,40 @@ def erase_everything():
         db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     erase_files(ids)
     gateway.erase()
+    with DECOYS.lock:
+        DECOYS.sessions.clear()
     authority.code_file.unlink(missing_ok=True)
     with closing(connect()) as db, db:
         code = authority.setup_code(db)
     print("FluidMessages Web: everything on this server was erased. Open it on this computer to start again, or set it up "
           "from another device with this one-time setup code: %s" % authority.pretty(code), flush=True)
+
+
+# Held while an emergency erase runs. Every signed-in request waits for it, so nothing is read halfway through.
+ERASE_GATE = threading.Lock()
+DECOYS = privacy.DecoyWorld()
+
+
+def wait_for_erase():
+    with ERASE_GATE:
+        pass
+
+
+def emergency_erase(session_value, remember, label):
+    """The emergency erase passcode: Erase everything's own path, started at once so the answer to the person who
+    typed it isn't slower than a normal one. Their browser's session comes back afterward as a decoy session."""
+    ERASE_GATE.acquire()
+
+    def run():
+        try:
+            erase_everything()
+            with closing(connect()) as db, db:
+                authority.restore_session(db, session_value, remember, label)
+        except Exception as error:  # noqa: BLE001 — the gate must open again whatever happens
+            print("FluidMessages Web: erase didn't finish (%s)" % type(error).__name__, file=sys.stderr, flush=True)
+        finally:
+            ERASE_GATE.release()
+    threading.Thread(target=run, name="fluid-erase", daemon=True).start()
 
 
 def connect():
@@ -373,6 +422,9 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
     session_key = None
     kind = None
+    # The session's privacy flags (auth.Auth.session_info): a decoy session, and whether it opened the private folder.
+    decoy = False
+    private_open = False
 
     def log_message(self, format, *args):
         # Paths only: query strings can hold links from messages or a GIF key, and logs never show those.
@@ -467,6 +519,7 @@ class Handler(BaseHTTPRequestHandler):
         return urlsplit(origin).netloc.lower() in hosts - {""} or origin.rstrip("/") in ORIGINS
 
     def authorize(self, changing=False):
+        wait_for_erase()
         header = self.headers.get("Authorization", "")
         with closing(connect()) as db, db:
             if header.startswith("Bearer "):
@@ -475,17 +528,50 @@ class Handler(BaseHTTPRequestHandler):
                     return "token"
                 self.reply(401, {"error": "That access token isn't right", "signed_out": True})
                 return None
-            key = authority.session(db, self.cookie())
-        if key is None:
+            info = authority.session_info(db, self.cookie())
+        if info is None:
             self.reply(401, {"error": "Sign in to FluidMessages Web", "signed_out": True},
                        headers=self.clear_cookies() if self.cookie() else ())
             return None
         if changing and not self.same_origin():
             self.reply(403, {"error": "This request didn't come from FluidMessages Web"})
             return None
-        self.session_key = key
+        self.session_key = info["key"]
         self.kind = "session"
+        self.decoy = info["decoy"]
+        self.private_open = info["private_open"] and not info["decoy"]
+        # The one central check for decoy sessions: they only ever reach the decoy world (privacy.DecoyWorld), except
+        # Show your real inbox, which asks for the private folder passcode.
+        if self.decoy and not (self.command == "POST" and self.path == "/api/privacy/reveal"):
+            self.decoy_reply()
+            return None
         return "session"
+
+    def decoy_reply(self):
+        parts = urlsplit(self.path)
+        defaults = {"settings": protocol_gateway.Gateway.DEFAULT_SETTINGS, "web_appearance": {"theme": "fluid", "mode": "system"},
+                    "prefs": {key: True for key in PREFS}, "enabled": sorted(sync_merge.INTERNET)}
+        with closing(connect()) as db:
+            if self.command == "GET":
+                status, payload = DECOYS.get(db, self.session_key, parts.path, parts.query, defaults, {
+                    "https": self.https(), "here": self.here(), "local_only": LOCAL_ONLY,
+                    "xmpp": protocol_gateway.xmpp_client.available()})
+            elif self.command == "POST" and parts.path in ("/api/schedule", "/api/call", "/api/cancel", "/api/settings",
+                                                            "/api/protocols/read", "/api/protocols"):
+                try:
+                    data = self.read_json()
+                except (ValueError, TypeError) as error:
+                    self.reply(400, {"error": str(error)})
+                    return
+                status, payload = DECOYS.post(db, self.session_key, parts.path, data, defaults,
+                                              {"appearance": clean_web_appearance, "prefs": clean_prefs})
+            else:
+                status, payload = DECOYS.REFUSED
+        self.reply(status, payload)
+
+    def private_check(self, db):
+        """None when this request may see private chats; otherwise what hides them (privacy.scrub)."""
+        return None if self.private_open else privacy.matcher(privacy.private_addresses(db))
 
     def read_json(self, limit=64_000):
         size = int(self.headers.get("Content-Length", "0"))
@@ -498,11 +584,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def auth_request(self, path):
         """Sign-in endpoints, which work before you're signed in."""
+        wait_for_erase()
         if self.command == "GET":
             with closing(connect()) as db, db:
-                signed_in = authority.session(db, self.cookie()) is not None
+                info = authority.session_info(db, self.cookie())
                 # "local": this browser is on the computer FluidMessages Web runs on, so it opens without a password.
-                self.reply(200, {"owner": authority.has_owner(db), "signed_in": signed_in,
+                # A decoy session sees a server with a password, even after an emergency erase.
+                self.reply(200, {"owner": authority.has_owner(db) or bool(info and info["decoy"]), "signed_in": info is not None,
                                  "local": self.here() and authority.local_enabled(db)})
             return
         if not self.same_origin():
@@ -513,11 +601,13 @@ class Handler(BaseHTTPRequestHandler):
             data = {} if path == "/api/auth/logout" else self.read_json()
             label = (self.headers.get("User-Agent") or "")[:120]
             remember = data.get("remember") is True
+            outcome = None
             with closing(connect()) as db, db:
                 if path == "/api/auth/setup":
                     value, persistent = authority.setup(db, self.client(), data.get("code"), data.get("password"), remember, label)
                 elif path == "/api/auth/login":
-                    value, persistent = authority.login(db, self.client(), data.get("password"), remember, label)
+                    # The password, the decoy password, or the emergency erase passcode: answered the same way.
+                    value, persistent, outcome = authority.login(db, self.client(), data.get("password"), remember, label)
                 elif path == "/api/auth/token":
                     value, persistent = authority.login_with_token(db, self.client(), data.get("token"), remember, label)
                 elif path == "/api/auth/local":
@@ -528,6 +618,8 @@ class Handler(BaseHTTPRequestHandler):
                     authority.end_session(db, self.cookie())
                     self.reply(200, {"signed_in": False}, headers=self.clear_cookies())
                     return
+            if outcome == "distress":
+                emergency_erase(value, persistent, label)
         except auth.Refused as error:
             self.reply(error.status, {"error": str(error)})
         except (ValueError, TypeError) as error:
@@ -560,6 +652,143 @@ class Handler(BaseHTTPRequestHandler):
         return {"owner": authority.has_owner(db), "sessions": authority.session_count(db),
                 "pairing": authority.pairing_status(db), "https": self.https(),
                 "local": authority.local_enabled(db), "here": self.here(), "local_only": LOCAL_ONLY}
+
+    # Privacy and security: the private folder, decoy mode, and the emergency erase passcode (privacy.py)
+
+    def privacy_status(self, db):
+        open_now = self.private_open
+        exists = authority.has_secret(db, "private_code")
+        return {"password": authority.has_owner(db),
+                "private": {"set": exists, "open": open_now and exists,
+                            "count": len(privacy.private_addresses(db)) if open_now and exists else None},
+                "decoy": {"set": authority.has_secret(db, "decoy"), "chats": privacy.decoy_chats(db)},
+                "distress": {"set": authority.has_secret(db, "distress")},
+                "quick_hide": exists and self.kind == "session"}
+
+    def check_private_code(self, db, code):
+        """The private folder passcode, or the emergency erase passcode in its place. Both are always checked, so a
+        wrong code, the right one, and the emergency one take the same time. Wrong ones count toward rate limits."""
+        client = self.client()
+        authority.guard(client)
+        distress = authority.check_secret(db, "distress", code)
+        match = authority.check_secret(db, "private_code", code)
+        if distress:
+            return "distress"
+        if match:
+            authority.matched(client)
+            return "match"
+        authority.missed(client)
+        return "wrong"
+
+    def distress_here(self, db):
+        """Erases everything, then keeps this browser going as a decoy session (see emergency_erase)."""
+        row = db.execute("SELECT persistent, label FROM auth_sessions WHERE id=?", (self.session_key,)).fetchone()
+        return (self.cookie(), bool(row and row[0]), row[1] if row else "")
+
+    def privacy_change(self, data):
+        if self.kind != "session":
+            raise auth.Refused(403, "Change privacy settings from FluidMessages Web in a browser.")
+        path = self.path.removeprefix("/api/privacy/")
+        erase_after = None
+        client = self.client()
+        with closing(connect()) as db, db:
+            exists = authority.has_secret(db, "private_code")
+            if path in ("private/unlock", "reveal"):
+                outcome = self.check_private_code(db, data.get("code"))
+                if outcome == "distress":
+                    erase_after = self.distress_here(db)
+                elif outcome == "match":
+                    authority.set_session_flags(db, self.session_key, private_open=path == "private/unlock", decoy=False)
+                if path == "private/unlock":
+                    # A wrong passcode opens an empty folder rather than an error, as on the phone, so nobody can tell
+                    # whether anything is hidden. The emergency passcode looks the same as a wrong one.
+                    response = {"open": outcome == "match"}
+                elif outcome != "match":
+                    response = None
+                else:
+                    response = {"ok": True}
+            elif path == "private/lock":
+                authority.set_session_flags(db, self.session_key, private_open=False)
+                response = {"open": False}
+            elif path == "private/setup":
+                if exists and not self.private_open:
+                    raise auth.Refused(403, "Open the private folder first")
+                code = data.get("code")
+                if not isinstance(code, str) or not 4 <= len(code) <= auth.MAX_CODE:
+                    raise ValueError("Use at least 4 characters")
+                if code != data.get("again"):
+                    raise ValueError("The passcodes don't match")
+                authority.refuse_reuse(db, code, "owner", "decoy", "distress")
+                authority.set_secret(db, "private_code", code)
+                if not exists:
+                    privacy.save_private(db, [])
+                authority.set_session_flags(db, self.session_key, private_open=True)
+                self.private_open = True
+                response = self.privacy_status(db)
+            elif path == "private/move":
+                address = privacy.clean_address(data.get("address"))
+                if not exists:
+                    raise auth.Refused(409, "Set up the private folder first, in Settings → Privacy and security")
+                current = privacy.private_addresses(db)
+                if data.get("private") is True:
+                    privacy.save_private(db, current + [address])
+                else:
+                    if not self.private_open:
+                        raise auth.Refused(403, "Open the private folder first")
+                    privacy.save_private(db, [item for item in current if item != address])
+                response = self.privacy_status(db)
+            elif path == "private/off":
+                if exists and not self.private_open:
+                    raise auth.Refused(403, "Open the private folder first")
+                authority.set_secret(db, "private_code", None)
+                privacy.save_private(db, None)
+                authority.lock_private_everywhere(db)
+                self.private_open = False
+                response = self.privacy_status(db)
+            elif path == "quick-hide":
+                if not exists:
+                    raise auth.Refused(409, "Set up the private folder first, in Settings → Privacy and security")
+                authority.set_session_flags(db, self.session_key, decoy=True, private_open=False)
+                response = {"ok": True}
+            elif path in ("decoy", "decoy/off"):
+                if not authority.has_owner(db):
+                    raise auth.Refused(409, "Decoy mode works with a password. Set one in Settings → Phone and other devices first.")
+                authority.confirm_password(db, client, data.get("current"))
+                if path == "decoy":
+                    password = data.get("password")
+                    auth.validate_password(password)
+                    if password != data.get("again"):
+                        raise ValueError("The passwords don't match")
+                    authority.refuse_reuse(db, password, "owner", "distress", "private_code")
+                    authority.set_secret(db, "decoy", password)
+                else:
+                    authority.set_secret(db, "decoy", None)
+                response = self.privacy_status(db)
+            elif path == "decoy/chats":
+                privacy.save_decoys(db, data.get("chats"))
+                response = self.privacy_status(db)
+            elif path in ("distress", "distress/off"):
+                authority.confirm_password(db, client, data.get("current"))
+                if path == "distress":
+                    code = data.get("code")
+                    if not isinstance(code, str) or not 6 <= len(code) <= auth.MAX_CODE:
+                        raise ValueError("Use at least 6 characters")
+                    if code != data.get("again"):
+                        raise ValueError("The passcodes don't match")
+                    if data.get("understood") is not True:
+                        raise ValueError("Confirm that this passcode erases everything")
+                    authority.refuse_reuse(db, code, "owner", "decoy", "private_code")
+                    authority.set_secret(db, "distress", code)
+                else:
+                    authority.set_secret(db, "distress", None)
+                response = self.privacy_status(db)
+            else:
+                raise ValueError("Unknown endpoint")
+        if erase_after:
+            emergency_erase(*erase_after)
+        if response is None:
+            raise auth.Refused(403, "That passcode doesn't match")
+        return response
 
     def do_HEAD(self):
         path = urlsplit(self.path).path
@@ -625,8 +854,11 @@ class Handler(BaseHTTPRequestHandler):
                 settings = gateway.settings(db)
                 phone = gateway.visible(settings, json.loads(row["content"]) if row else [])
                 messages = phone + history["messages"]
+                # Each disappearing message says when it goes, so the browser can show its timer.
+                messages = [{**message, "expires": at} if not message.get("expires") and (at := gateway.expiry(settings, message)) > 0
+                            else message for message in messages]
                 messages.sort(key=lambda message: message["date"], reverse=True)
-                self.reply(200, {"messages": messages, "routes": history["routes"], "enabled": history["enabled"],
+                self.reply(200, privacy.scrub({"messages": messages, "routes": history["routes"], "enabled": history["enabled"],
                                  # IRC channels' topics and member lists, for a group's details.
                                  "channels": history["channels"],
                                  "accounts": history["accounts"],
@@ -635,32 +867,43 @@ class Handler(BaseHTTPRequestHandler):
                                  # Which settings the browser uses: the phone's (the default) or its own.
                                  "follow_phone": settings["follow_phone"], "web_appearance": web_appearance(db),
                                  "prefs": web_prefs(db), "welcomed": welcomed(db), "web_chats": web_chats(db),
-                                 **merge_snapshot(db)})
+                                 # The private folder's chats, once this session opened it with its passcode.
+                                 "private_chats": privacy.private_addresses(db) if self.private_open else [],
+                                 "web_favorites": web_favorites(db), **merge_snapshot(db)}, self.private_check(db)))
+            elif self.path == "/api/privacy":
+                self.reply(200, self.privacy_status(db))
             elif self.path.startswith("/api/calls?since="):
                 since = self.path.removeprefix("/api/calls?since=")
                 self.reply(200, gateway.call_events(int(since) if since.isdigit() else 0))
             elif self.path == "/api/calls/ice":
                 self.reply(200, gateway.ice_servers())
             elif self.path == "/api/settings":
-                self.reply(200, settings_view(db))
+                self.reply(200, privacy.scrub(settings_view(db), self.private_check(db)))
             elif self.path == "/api/merge":
                 with db:
-                    self.reply(200, merger.view(db))
+                    # The phone keeps the full baseline; a browser that hasn't opened the private folder doesn't.
+                    self.reply(200, merger.view(db) if self.kind == "token" else privacy.scrub(merger.view(db), self.private_check(db)))
             elif self.path == "/api/stickers":
                 self.reply(200, {"stickers": [{"id": key, **entry} for key, entry in merger.stickers(db).items()]})
             elif self.path == "/api/protocols/accounts":
                 self.reply(200, {"accounts": gateway.accounts.redacted(), "xmpp": protocol_gateway.xmpp_client.available()})
+            elif self.path == "/api/protocols/servers":
+                self.reply(200, {"servers": gateway.servers()})
             elif self.path == "/api/jobs":
                 rows = db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 100").fetchall()
                 internet = db.execute("""SELECT jobs.id, jobs.date AS due, jobs.state, messages.payload
                     FROM protocol_jobs jobs JOIN protocol_messages messages ON messages.id=jobs.id
                     ORDER BY jobs.date DESC LIMIT 100""")
                 result = [dict(row) for row in rows]
+                hide = self.private_check(db)
                 for job in internet:
                     message = json.loads(job["payload"])
+                    # Internet jobs show the chat's title; the private folder goes by the chat's address.
+                    if hide and hide(message.get("address")):
+                        continue
                     result.append({"id": job["id"], "due": job["due"], "protocol": message["protocol"],
                                    "address": message["title"], "body": message["body"], "state": job["state"]})
-                self.reply(200, result)
+                self.reply(200, privacy.scrub(result, hide))
             else:
                 self.reply(404, {"error": "Unknown endpoint"})
 
@@ -712,6 +955,8 @@ class Handler(BaseHTTPRequestHandler):
             data = self.read_json(8_000_000)
             if self.path.startswith("/api/merge"):
                 response = self.merge(data)
+            elif self.path.startswith("/api/privacy/"):
+                response = self.privacy_change(data)
             else:
                 response = self.account_security(data) if self.path.startswith("/api/auth/") else self.mutate(data)
         except auth.Refused as error:
@@ -720,6 +965,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(409, {"error": str(error)})
         except (KeyError, ValueError, TypeError) as error:
             self.reply(400, {"error": str(error)})
+        except (ConnectionError, OSError) as error:
+            # A chat server that's down or refused (joining or browsing a server, for example).
+            self.reply(502, {"error": protocol_gateway.network_error(error)})
         else:
             self.reply(200, response)
 
@@ -800,6 +1048,9 @@ class Handler(BaseHTTPRequestHandler):
     def send_file(self, message_id):
         with closing(connect()) as db:
             row = db.execute("SELECT payload FROM protocol_messages WHERE id=?", (message_id,)).fetchone()
+            hide = self.private_check(db)
+        if row and hide and hide(json.loads(row[0]).get("address")):
+            row = None
         attachment = json.loads(row[0]).get("attachment") if row else None
         try:
             path = gateway.file_path(message_id)
@@ -835,11 +1086,22 @@ class Handler(BaseHTTPRequestHandler):
                 return gateway.enqueue(db, data)
             if self.path == "/api/protocols/accounts":
                 # Saving replaces the account; a blank password keeps the saved one.
-                gateway.accounts.save(data.get("protocol"), dict(data.get("fields") or {}))
+                # "id" edits that account and "add" adds another; neither (older phones) edits the first one.
+                ident = data.get("id") if isinstance(data.get("id"), str) and data.get("id") else None
+                gateway.accounts.save(data.get("protocol"), dict(data.get("fields") or {}), ident, data.get("add") is True)
                 return {"accounts": gateway.accounts.redacted()}
             if self.path == "/api/protocols/accounts/delete":
-                gateway.accounts.delete(data.get("protocol"))
+                ident = data.get("id") if isinstance(data.get("id"), str) and data.get("id") else None
+                gateway.accounts.delete(data.get("protocol"), ident)
                 return {"accounts": gateway.accounts.redacted()}
+            if self.path == "/api/protocols/servers/spaces":
+                return gateway.spaces(data)
+            if self.path == "/api/protocols/browse":
+                return gateway.browse(data)
+            if self.path == "/api/protocols/join":
+                return gateway.join(db, data)
+            if self.path == "/api/protocols/leave":
+                return gateway.leave(db, data)
             if self.path == "/api/protocols/read":
                 return gateway.mark_read(db, data)
             if self.path == "/api/protocols/delete":
@@ -851,6 +1113,14 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/protocols/members":
                 return gateway.change_member(db, data)
             if self.path == "/api/settings":
+                # A browser that hasn't opened the private folder never saw its chats, so it can't drop their settings.
+                hide = self.private_check(db)
+                if hide and isinstance(data.get("web_chats"), dict):
+                    data["web_chats"] = privacy.keep_private(web_chats(db), data["web_chats"], hide)
+                if hide and isinstance(data.get("web_appearance"), dict):
+                    data["web_appearance"] = privacy.keep_private(web_appearance(db), data["web_appearance"], hide)
+                if hide and isinstance(data.get("disappearing"), dict):
+                    data["disappearing"] = privacy.keep_private(gateway.settings(db)["disappearing"], data["disappearing"], hide)
                 if "web_appearance" in data:
                     db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_appearance', ?)",
                                (json.dumps(clean_web_appearance(data.pop("web_appearance"))),))
@@ -860,6 +1130,9 @@ class Handler(BaseHTTPRequestHandler):
                 if "web_chats" in data:
                     db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_chats', ?)",
                                (json.dumps(clean_web_chats(data.pop("web_chats"))),))
+                if "web_favorites" in data:
+                    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_favorites', ?)",
+                               (json.dumps(clean_web_favorites(data.pop("web_favorites"))),))
                 if "web_extras" in data:
                     db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_extras', ?)",
                                (json.dumps(sync_merge.clean_extras(data.pop("web_extras"))),))
@@ -868,7 +1141,7 @@ class Handler(BaseHTTPRequestHandler):
                 if data.get("reset") is True:
                     db.execute("DELETE FROM protocol_state WHERE key IN ('web_appearance', 'prefs')")
                 gateway.save_settings(db, data)
-                return settings_view(db)
+                return privacy.scrub(settings_view(db), hide)
             if self.path == "/api/protocols/routes/delete":
                 return gateway.delete_route(db, data)
             if self.path == "/api/sync":
@@ -886,10 +1159,10 @@ class Handler(BaseHTTPRequestHandler):
                     if "thumbnail" in message and (not isinstance(message["thumbnail"], str)
                             or len(message["thumbnail"]) > 160_000 or not re.fullmatch(r"[A-Za-z0-9+/=]+", message["thumbnail"])):
                         raise ValueError("Invalid MMS thumbnail")
-                privacy = data.get("privacy")
-                if isinstance(privacy, dict):
-                    merger.hold_timers(db, privacy)
-                    gateway.save_settings(db, privacy, from_phone=True)
+                phone_privacy = data.get("privacy")
+                if isinstance(phone_privacy, dict):
+                    merger.hold_timers(db, phone_privacy)
+                    gateway.save_settings(db, phone_privacy, from_phone=True)
                 db.execute("INSERT OR REPLACE INTO inbox VALUES (1, ?, ?)", (json.dumps(messages), now))
                 db.execute("INSERT OR REPLACE INTO phone_appearance VALUES (1, ?)",
                            (json.dumps(appearance_snapshot(data.get("appearance"))),))
@@ -979,6 +1252,7 @@ if __name__ == "__main__":
             db.execute("ALTER TABLE jobs ADD COLUMN protocol TEXT NOT NULL DEFAULT 'sms'")
         db.executescript(protocol_gateway.SCHEMA)
         db.executescript(auth.SCHEMA)
+        auth.Auth.migrate(db)
     authority = auth.Auth(connect, DB.parent, TOKEN)
     if sys.argv[1:] == ["reset-password"]:
         with closing(connect()) as db, db:

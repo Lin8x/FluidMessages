@@ -126,7 +126,7 @@ dialog .sidebar-head { padding-inline: 0; }
 .job { padding: .7rem; margin-block: .35rem; border-radius: 13px; background: var(--surface); overflow-wrap: anywhere; }
 .job p { margin: .3rem 0; white-space: pre-wrap; }
 .job button { margin-inline-start: .45rem; }
-@media (max-width: 670px) {
+@media (max-width: 700px) {
   .workspace { grid-template-columns: minmax(0, 1fr); }
   .workspace:not([data-thread="true"]) .thread-pane, .workspace[data-thread="true"] .sidebar { display: none; }
   #back { display: inline-block; }
@@ -273,7 +273,7 @@ button.call-row:hover, .call-row:hover { background: var(--surface); }
 .bubble { box-shadow: 0 1px 1px rgb(0 0 0 / .06); }
 .pair { background: var(--canvas); padding: 2rem; border-radius: 28px; box-shadow: 0 10px 40px rgb(0 0 0 / .08); }
 dialog.sheet { border: 0; border-radius: 24px; box-shadow: 0 20px 60px rgb(0 0 0 / .25); }
-@media (max-width: 670px) {
+@media (max-width: 700px) {
   .workspace { grid-template-columns: minmax(0, 1fr); padding: 0; gap: 0; height: calc(100dvh - 60px - 64px); }
   .sidebar, .thread-pane, .calls-pane { border-radius: 0; }
   .rail { position: fixed; inset: auto 0 0 0; z-index: 6; flex-direction: row; justify-content: space-around; border-radius: 0;
@@ -282,7 +282,7 @@ dialog.sheet { border: 0; border-radius: 24px; box-shadow: 0 20px 60px rgb(0 0 0
   .rail button[data-section="settings"] { margin-top: 0; }
   body[data-section="calls"] .thread-pane { display: none; }
 }
-@media (max-width: 670px) { .status { display: none; } }
+@media (max-width: 700px) { .status { display: none; } }
 
 .meeting-card { display: flex; align-items: center; gap: .7rem; min-width: 230px; }
 .meeting-icon { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: rgb(127 127 127 / .2); font-size: 1.1rem; }
@@ -612,9 +612,11 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
 .thread-head .call-button + .head-button, .thread-head .head-button ~ .head-button { margin-inline-start: 0; }
 .thread-head > .head-button:not([hidden]):first-of-type { margin-inline-start: auto; }
 
-/* Messages: a small ⋯ beside each bubble, shown on hover or keyboard focus, opens reactions and actions. */
-.bubble-line { display: flex; align-items: center; gap: .2rem; }
-.message.out .bubble-line { flex-direction: row-reverse; }
+/* Messages: with a mouse, a small ⋯ beside the bubble you point at (or keyboard focus) opens reactions and actions.
+   It sits outside the bubble's width, so bubbles are as wide as the phone's. Touch screens show no ⋯: touch and hold
+   a message instead, like the phone; right-click works with a mouse too (app.js pressOpens). */
+.bubble-line { position: relative; display: flex; align-items: center; }
+.message.out .bubble-line { justify-content: flex-end; }
 .bubble-wrap { position: relative; display: inline-block; min-width: 0; max-width: 100%; vertical-align: top; }
 .message.out .bubble-wrap { text-align: start; }
 .message-meta { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; margin-top: .2rem; }
@@ -626,12 +628,26 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
 .message:not(.out) .reaction { margin-inline-start: .6rem; }
 .message.out .reaction { margin-inline-end: .6rem; }
 .message-tools { position: relative; flex: none; font-size: .82rem; }
+#conversation .message-tools { position: absolute; top: 0; bottom: 0; inset-inline-start: 100%; display: flex; align-items: center;
+  padding-inline: 2px; }
+#conversation .message.out .message-tools { inset-inline-start: auto; inset-inline-end: 100%; }
 .message-tools > summary { list-style: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%;
   cursor: pointer; color: var(--muted); font-weight: 800; letter-spacing: .05em; opacity: 0; transition: opacity .12s; }
 .message-tools > summary::-webkit-details-marker { display: none; }
-.message:hover .message-tools > summary, .message:focus-within .message-tools > summary, .message-tools[open] > summary { opacity: 1; }
-.message-tools > summary:hover, .message-tools[open] > summary { background: var(--surface); color: var(--ink); }
-@media (hover: none) { .message-tools > summary { opacity: .5; } }
+.message-tools > summary:focus-visible, .message-tools[open] > summary, .message:has(:focus-visible) .message-tools > summary { opacity: 1; }
+@media (hover: hover) {
+  .message:hover .message-tools > summary { opacity: 1; }
+  .message-tools > summary:hover { background: var(--surface); color: var(--ink); }
+}
+.message-tools[open] > summary { background: var(--surface); color: var(--ink); }
+/* Touch screens: no ⋯ at all, but it stays reachable from a keyboard and is drawn when focused there. */
+@media (hover: none) {
+  #conversation .message-tools > summary:not(:focus-visible) { position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); opacity: 0; }
+  #conversation .bubble { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+}
+.press-hint { align-self: center; margin-top: 12px; padding: .35rem .8rem; border-radius: 999px; background: var(--surface);
+  color: var(--muted); font-size: .8rem; text-align: center; }
 /* The menu opens above the ⋯, over the bubble, so it never runs off the side of the chat. */
 .message-popover { position: absolute; bottom: calc(100% + 4px); z-index: 6; display: grid; gap: .35rem; width: max-content; max-width: min(300px, 80vw);
   padding: .45rem; border-radius: 18px; background: var(--raised, var(--surface)); border: 1px solid var(--line); box-shadow: 0 8px 26px rgb(0 0 0 / .16); }
@@ -744,7 +760,7 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
 
 /* First-run setup guide and the phone sync guide: see the block at the end of this file. */
 
-@media (max-width: 670px) {
+@media (max-width: 700px) {
   .workspace { height: calc(100dvh - 52px - 64px); }
   .brand-mark { width: 24px; height: 24px; }
   .new-chat { padding-inline: .75rem; }
@@ -757,7 +773,7 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
 }
 
 /* With no chat open on a wide screen, the pane shows its empty state without a blank header above it. */
-@media (min-width: 671px) {
+@media (min-width: 701px) {
   .workspace:not([data-thread="true"]) .thread-head { display: none; }
   /* The message pane already offers these buttons beside the list. */
   .empty-list .button-row { display: none; }
@@ -1096,7 +1112,7 @@ body[data-section="settings"] .sidebar, body[data-section="settings"] .thread-pa
 .erase-list { margin: 0; padding-inline-start: 1.2rem; display: grid; gap: .4rem; line-height: 1.45; }
 .danger-button { background: #c4141f; color: #fff; border-color: transparent; font-weight: 650; min-height: 44px; }
 .danger-button:disabled { opacity: .5; cursor: not-allowed; }
-@media (max-width: 670px) {
+@media (max-width: 700px) {
   .settings-pane { grid-column: 1; grid-template-columns: minmax(0, 1fr); gap: 0; }
   .settings-list, .settings-page { border-radius: 0; }
   .settings-pane[data-page="true"] .settings-list, .settings-pane:not([data-page="true"]) .settings-page { display: none; }
@@ -1107,3 +1123,197 @@ body[data-section="settings"] .sidebar, body[data-section="settings"] .thread-pa
 /* The ⋯ menu floats over the page with measured coordinates (app.js placeMessageMenu), so no scrolling box clips it. */
 .message-tools.floats .message-popover { position: fixed; left: 0; top: 0; right: auto; bottom: auto; z-index: 30; visibility: hidden; }
 .message-tools.floats .message-popover.placed { visibility: visible; }
+
+/* ==== Drawn like the phone (MessagingScreens.kt, PhoneTab.kt, SettingsPages.kt) at every width; phones get the rest below. ==== */
+
+/* Inbox head: the filter at the upper trailing edge, then the large title, which names the folder you're in. */
+.sidebar-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "queue filter" "title title" "status status";
+  align-items: center; gap: 0 .5rem; padding: 4px 10px 2px; }
+.sidebar-head h1 { grid-area: title; margin: 0; padding-inline: 12px; font-size: 32px; line-height: 1.16; font-weight: 700; letter-spacing: -.04em; }
+#open-queue { grid-area: queue; justify-self: start; }
+.folder-filter { grid-area: filter; position: relative; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%;
+  color: var(--action, var(--accent)); }
+.folder-filter svg { width: 24px; height: 24px; pointer-events: none; }
+.folder-filter select { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; padding: 0; opacity: 0; cursor: pointer; }
+.folder-filter:hover { background: color-mix(in srgb, var(--action, var(--accent)) 12%, transparent); }
+.folder-filter:has(select:focus-visible) { outline: 2px solid var(--action, var(--accent)); outline-offset: 2px; }
+.inbox-status { grid-area: status; padding: 2px 12px 0; color: var(--muted); font-size: .86rem; }
+/* The sample inbox says so in a quiet line under the title, with Exit beside it, like the phone's "Sample inbox · Reset". */
+.sidebar .sample-banner { margin: 0 12px 4px 22px; padding: 0; border-radius: 0; background: none; gap: 0 .5rem; }
+.sidebar .sample-banner strong { font-size: .9rem; font-weight: 500; color: var(--muted); }
+.sidebar .sample-banner small { font-size: .78rem; }
+.sidebar .sample-banner button.quiet { min-height: 44px; padding-inline: .6rem; }
+@media (max-width: 700px) { .sidebar .sample-banner small { display: none; } }
+/* The reaction strip scrolls sideways instead of wrapping, as on the phone. */
+#conversation .quick-reactions, .message-tools.floats .quick-reactions { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.quick-reactions > button { flex: none; }
+
+/* Conversation rows: 48px gradient avatars, 17px names, two lines of preview, dividers past the avatar. */
+#threads { padding: 6px 10px 8px 6px; }
+.thread { position: relative; display: grid; grid-template-columns: 10px 48px minmax(0, 1fr) auto; align-items: center; gap: 0;
+  min-height: 77px; margin: 0; width: 100%; padding: 10px 5px; border: 0; border-radius: 16px; }
+.thread + .thread::before { content: ''; position: absolute; top: 0; inset-inline: 74px 6px; border-top: 1px solid var(--line); }
+.thread:hover::before, .thread:hover + .thread::before, .thread[aria-current="true"]::before, .thread[aria-current="true"] + .thread::before { opacity: 0; }
+.thread .indicator { width: 6px; height: 6px; justify-self: center; }
+.thread[data-unread="true"] .indicator { background: var(--action, var(--accent)); }
+.thread .avatar { width: 48px; height: 48px; font-size: 16px !important; font-weight: 600; }
+.thread-copy { padding-inline-start: 11px; display: grid; gap: 1px; }
+.thread-copy strong { font-size: 17px; font-weight: 600; }
+.thread[data-unread="true"] .thread-copy strong { font-weight: 700; }
+.thread-copy small { font-size: 15px; line-height: 19px; white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow-wrap: anywhere; padding-inline-end: 4px; }
+.thread time { align-self: start; padding-top: 3px; padding-inline-start: 8px; font-size: 12px; white-space: nowrap; }
+.avatar[data-tint]:not(:empty) { color: #fff !important; font-weight: 600; }
+.avatar[data-tint="0"]:not(:empty) { background: linear-gradient(135deg, #466c9d, #173b72); }
+.avatar[data-tint="1"]:not(:empty) { background: linear-gradient(135deg, #8069a4, #513477); }
+.avatar[data-tint="2"]:not(:empty) { background: linear-gradient(135deg, #277c78, #07504e); }
+.avatar[data-tint="3"]:not(:empty) { background: linear-gradient(135deg, #b06153, #803641); }
+.avatar[data-tint="4"]:not(:empty) { background: linear-gradient(135deg, #686f9a, #424969); }
+
+/* Search: the phone's docked bar, one rounded field with New chat at its end. */
+.search-dock { margin: 8px 12px 12px; padding: 3px 3px 3px 14px; gap: .35rem; border: 1px solid var(--line); border-radius: 27px;
+  background: var(--canvas); align-items: center; }
+.search-dock::before { content: ''; flex: none; width: 18px; height: 18px; background: var(--ink); opacity: .7;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='10.5' cy='10.5' r='6.5'/%3E%3Cpath d='M15.5 15.5 21 21'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='10.5' cy='10.5' r='6.5'/%3E%3Cpath d='M15.5 15.5 21 21'/%3E%3C/svg%3E") center / contain no-repeat; }
+.search-dock input { min-height: 44px; padding-inline: .2rem; border: 0; background: none; font-size: 16px; }
+.search-dock input:focus-visible { outline: none; }
+.search-dock:focus-within { border-color: var(--action, var(--accent)); }
+.new-chat { display: grid; place-items: center; width: 44px; min-width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: none;
+  color: var(--action, var(--accent)); }
+.new-chat:hover { background: color-mix(in srgb, var(--action, var(--accent)) 12%, transparent); }
+.new-chat svg { width: 24px; height: 24px; }
+.new-chat-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+:root[data-search="top"] .search-dock { margin: 8px 14px 5px; border: 0; border-radius: 14px; background: var(--surface); }
+
+/* Chat header: back, a 39px avatar, the name, and a small subtitle. */
+.thread-head { gap: .25rem; padding: 6px 10px 8px 7px; min-height: 60px; }
+#back { place-items: center; width: 44px; min-width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: none;
+  color: var(--action, var(--accent)); }
+#back svg { width: 26px; height: 26px; }
+#avatar { width: 39px; height: 39px; font-size: 14px !important; }
+.thread-title { display: grid; grid-template-columns: minmax(0, max-content) 1fr; align-items: center; padding-inline-start: 6px; }
+.thread-head h2 { grid-column: 1 / -1; min-width: 0; font-size: 17px; font-weight: 600; }
+/* One line of subtitle, with the lock right after it, like the phone's. */
+.thread-head #transport { min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread-head .security-lock { justify-self: start; }
+.head-button { width: 44px; height: 44px; min-height: 44px; }
+
+/* Messages: up to 80% of the chat (at most 460px), runs of one sender 3px apart and others 8px, and inner corners of 7px. */
+#conversation { gap: 0; padding: 16px 16px 14px; }
+#conversation > .day { margin: 16px auto 12px; font-size: 12px; }
+#conversation > .day:first-child { margin-top: 4px; }
+#conversation > .message { margin-top: 8px; max-width: min(80%, 460px); }
+#conversation > .message.joins-prev { margin-top: 3px; }
+#conversation > .day + .message { margin-top: 0; }
+#conversation > .event { margin: 8px 0 0; }
+/* Chat setting notices: a centered outlined note like the phone's, never a bubble. */
+#conversation > .event.notice { align-self: center; justify-self: center; width: fit-content; max-width: min(90%, 520px); margin: 10px auto 2px;
+  padding: .2rem .75rem; border: 1px solid color-mix(in srgb, var(--action, var(--accent)) 70%, transparent); border-radius: 12px;
+  color: var(--action, var(--accent)); font-style: normal; font-size: .78rem; text-align: center; line-height: 1.35; }
+.bubble { padding: calc(var(--bubble-padding) * .72) var(--bubble-padding); line-height: calc(var(--bubble-size) + 4px);
+  border-radius: var(--bubble-radius); }
+.out .bubble, .message:not(.out) .bubble { border-radius: var(--bubble-radius); }
+.message.out.joins-prev .bubble { border-start-end-radius: min(var(--bubble-radius), 7px); }
+.message.out:not(.joins-next) .bubble { border-end-end-radius: min(var(--bubble-radius), 7px); }
+.message:not(.out).joins-prev .bubble { border-start-start-radius: min(var(--bubble-radius), 7px); }
+.message:not(.out):not(.joins-next) .bubble { border-end-start-radius: min(var(--bubble-radius), 7px); }
+#conversation .message .author { font-size: 12px; font-weight: 600; margin: 5px 9px 3px; }
+#conversation .message.joins-prev .author { display: none; }
+.message-meta .message-time { font-size: 11px; }
+/* The small timer by a disappearing message; a click shows how long is left. */
+.disappear-timer { display: inline-flex; align-items: center; gap: .25rem; min-height: 24px; padding: 0 .3rem; border: 0; border-radius: 6px; background: none;
+  color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+.disappear-timer:hover, .disappear-timer:focus-visible { background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.disappear-timer .timer-glyph { font-size: 12px; }
+.disappear-timer .timer-left:empty { display: none; }
+
+/* Composer: + in the control color, a rounded field with a thin edge, and a round send arrow. */
+.composer { padding: 8px 12px; gap: .4rem; }
+.compose-row { gap: 8px; align-items: flex-end; }
+.compose-more { display: grid; place-items: center; width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 0; border: 0; background: none;
+  font-size: 1.6rem; }
+.compose-more:hover { background: color-mix(in srgb, var(--action, var(--accent)) 12%, transparent); }
+.compose-row textarea { min-height: 46px; padding: 12px 15px; border: 1px solid var(--line); border-radius: 24px; background: var(--canvas);
+  font-size: 16px; line-height: 21px; }
+.compose-row textarea:focus-visible { outline: none; border-color: var(--action, var(--accent)); }
+#body::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#send { display: grid; place-items: center; width: 44px; min-width: 44px; height: 44px; padding: 0; border-radius: 50%; }
+#send svg { width: 20px; height: 20px; }
+.voice-button { width: 44px; min-width: 44px; height: 44px; padding: 0; border: 0; background: none; }
+#later summary { min-height: 32px; padding-inline: 4px; }
+
+/* Settings: each group is one rounded card with dividers between its rows, like the phone's preference groups. */
+.settings-group-title { margin: 0 12px 7px; font-size: .875rem; font-weight: 600; text-transform: none; letter-spacing: 0; }
+.settings-group { margin-top: 18px; }
+.settings-rows { gap: 0; border-radius: 19px; background: var(--surface); overflow: hidden; }
+.settings-rows .settings-row { position: relative; min-height: 60px; padding: .6rem .9rem; border-radius: 0; }
+.settings-rows .settings-row + .settings-row::before { content: ''; position: absolute; top: 0; inset-inline: 64px 0; border-top: 1px solid var(--line); }
+.settings-rows .settings-row:hover { background: color-mix(in srgb, var(--ink) 5%, var(--surface)); }
+.settings-rows .settings-row[aria-current="page"] { background: color-mix(in srgb, var(--action, var(--accent)) 14%, var(--surface)); }
+.settings-icon { width: 34px; height: 34px; border-radius: 10px; }
+.settings-icon svg { width: 20px; height: 20px; }
+.settings-words strong { font-size: 1rem; font-weight: 500; }
+.settings-chevron { color: var(--action, var(--accent)); }
+/* On/off settings are switches at the row's end, as on the phone (51×31 track, 27px thumb). */
+.settings-page-body .settings-section label.check:has(> input[type="checkbox"]) { flex-direction: row-reverse; justify-content: space-between;
+  align-items: center; gap: .9rem; min-height: 44px; }
+.settings-page-body .settings-section label.check > input[type="checkbox"] { -webkit-appearance: none; appearance: none; position: relative;
+  flex: none; width: 51px; height: 31px; margin: 0; padding: 0; border: 0; border-radius: 999px; background: var(--outline, var(--line));
+  cursor: pointer; transition: background-color .2s; }
+.settings-page-body .settings-section label.check > input[type="checkbox"]::after { content: ''; position: absolute; top: 2px; left: 2px;
+  width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 2px 4px rgb(0 0 0 / .22); transition: transform .2s; }
+.settings-page-body .settings-section label.check > input[type="checkbox"]:checked { background: var(--accent); }
+.settings-page-body .settings-section label.check > input[type="checkbox"]:checked::after { transform: translateX(20px); }
+:root[dir="rtl"] .settings-page-body .settings-section label.check > input[type="checkbox"]:checked::after { transform: translateX(-20px); }
+.settings-page-body .settings-section label.check > input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
+@media (forced-colors: active) {
+  .settings-page-body .settings-section label.check > input[type="checkbox"] { appearance: auto; width: 20px; height: 20px; }
+  .settings-page-body .settings-section label.check > input[type="checkbox"]::after { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-page-body .settings-section label.check > input[type="checkbox"],
+  .settings-page-body .settings-section label.check > input[type="checkbox"]::after { transition: none; }
+}
+
+/* ==== Phones and narrow windows: no top bar, full-height screens, and tabs at the bottom of the inbox only. ==== */
+@media (max-width: 700px) {
+  .topbar { display: none; }
+  body { background: var(--canvas); overflow: hidden; }
+  /* The app fills what you can see, so the message box stays just above the on-screen keyboard (app.js --view-height). */
+  .workspace { position: fixed; inset-inline: 0; top: var(--view-top, 0px); height: var(--view-height, 100dvh); max-width: none; margin: 0;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; gap: 0; }
+  .workspace > :not(.rail) { grid-row: 1; grid-column: 1; }
+  .sidebar, .thread-pane, .calls-pane, .settings-list, .settings-page { border-radius: 0; }
+  /* Tabs like the phone's: a thin line above, the control color and a bolder label for the open tab, no pill. */
+  .rail { grid-row: 2; grid-column: 1; position: static; flex-direction: row; gap: 0; padding: 0 0 env(safe-area-inset-bottom); border-radius: 0;
+    border-top: .5px solid var(--line); background: var(--canvas); }
+  .rail button { flex: 1; min-height: 56px; gap: 2px; padding: 6px 0 4px; border-radius: 0; font-size: 11px; font-weight: 500; background: none; }
+  .rail button svg { width: 24px; height: 24px; }
+  .rail button[aria-current="true"] { background: none; font-weight: 650; }
+  /* An open chat takes the whole screen, as on the phone, with Back at the top. */
+  body[data-section="messages"] .workspace[data-thread="true"] .rail { display: none; }
+  body[data-section="messages"] .workspace[data-thread="true"] .composer { padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
+  body[data-section="messages"] .workspace[data-thread="true"] .readonly { padding-bottom: calc(.8rem + env(safe-area-inset-bottom)); }
+  #back { display: grid; margin-inline-start: -4px; }
+  .thread-head #avatar { display: grid; }
+  .thread-head { gap: .15rem; padding-inline: 4px 6px; }
+  .thread-head .head-button { width: 44px; height: 44px; min-height: 44px; }
+  .sidebar-head h1 { font-size: 37px; letter-spacing: -.039em; }
+  #threads { padding: 4px 12px 8px 8px; }
+  .search-dock { margin: 6px 14px 10px; }
+  #conversation { padding-inline: 12px; }
+  .settings-list { padding: 8px 14px 1.5rem; }
+  .settings-list > h1 { margin: 4px 4px 0; font-size: 34px; letter-spacing: -.035em; }
+  .settings-page-head { min-height: 56px; }
+  .settings-back { width: 44px; height: 44px; }
+  #later summary { min-height: 44px; margin-block: -8px -10px; }
+  .quick-reactions button { min-width: 44px; min-height: 44px; }
+  .message-menu button, .thread-actions button { min-height: 44px; }
+  .card-actions a, .card-actions button { min-height: 44px; display: inline-flex; align-items: center; }
+  .button-row.center button { min-height: 44px; }
+}
+@media (max-width: 380px) {
+  .sidebar-head h1 { font-size: 34px; }
+}

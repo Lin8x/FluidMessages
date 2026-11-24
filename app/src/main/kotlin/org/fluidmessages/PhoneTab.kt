@@ -11,6 +11,16 @@ import android.telephony.PhoneNumberUtils
 import android.text.format.DateUtils
 import android.widget.LinearLayout
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -32,12 +42,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -54,9 +66,12 @@ import org.json.JSONArray
 private val CallGreen = Color(0xFF34C759)
 private val MissedRed = Color(0xFFFF3B30)
 
-/** The two main tabs: Phone on the left, Messages on the right. */
+/**
+ * The two main tabs: Phone on the left, Messages on the right. counts adds missed calls and unread chats as
+ * badges, unless "Show counts on tabs" is off in Settings → Messaging.
+ */
 @Composable
-internal fun MainTabBar(palette: Palette, phoneSelected: Boolean, phone: Runnable, messages: Runnable) {
+internal fun MainTabBar(palette: Palette, phoneSelected: Boolean, phone: Runnable, messages: Runnable, counts: TabCounts? = null) {
     val surface = if (palette.appearance.toolbarFinish == "plain") palette.bg else palette.toolbar
     Column(Modifier.fillMaxWidth().background(surface)) {
         HorizontalDivider(color = palette.edge, thickness = .5.dp)
@@ -65,14 +80,49 @@ internal fun MainTabBar(palette: Palette, phoneSelected: Boolean, phone: Runnabl
                 val isPhone = index == 0
                 val selected = isPhone == phoneSelected
                 val tint = if (selected) palette.inboxAction else palette.muted
+                val count = if (counts == null || !counts.shown) 0 else if (isPhone) counts.phone else counts.messages
                 Column(Modifier.weight(1f).fillMaxHeight()
                     .clickable(role = Role.Tab) { if (selected) return@clickable; if (isPhone) phone.run() else messages.run() }
-                    .semantics { contentDescription = if (isPhone) "Phone" else "Messages" },
+                    .semantics { contentDescription = TabBadges.description(isPhone, count) },
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    if (isPhone) HandsetGlyph(tint, Modifier.size(23.dp), filled = selected) else ChatGlyph(tint, selected)
+                    // The badge overlaps the icon's upper corner without moving the icon or label.
+                    Box(Modifier.size(23.dp)) {
+                        if (isPhone) HandsetGlyph(tint, Modifier.size(23.dp), filled = selected) else ChatGlyph(tint, selected)
+                        TabBadge(count, palette, surface.compositeOver(palette.bg), Modifier.align(Alignment.TopStart)
+                            .offset(x = 13.dp, y = (-7).dp).wrapContentSize(Alignment.TopStart, unbounded = true))
+                    }
                     Text(if (isPhone) "Phone" else "Messages", color = tint, fontSize = 11.sp,
                         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium)
                 }
+            }
+        }
+    }
+}
+
+/** Badge red, shaded so its white count reads clearly in light and dark themes. */
+private val BadgeFill = accessibleBubbleFill(MissedRed)
+
+/** A count on a tab: fades and scales in, out, and between numbers, and simply changes when motion is off. */
+@Composable
+private fun TabBadge(count: Int, palette: Palette, ring: Color, modifier: Modifier) {
+    val context = LocalContext.current
+    val speed = palette.appearance.speed
+    val motion = remember(speed) {
+        speed > 0 && android.provider.Settings.Global.getFloat(context.contentResolver,
+            android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
+    }
+    val duration = speed.coerceIn(120, 360)
+    AnimatedContent(TabBadges.label(count), modifier, transitionSpec = {
+        if (!motion) EnterTransition.None togetherWith ExitTransition.None
+        else (fadeIn(tween(duration)) + scaleIn(tween(duration), initialScale = .6f)) togetherWith
+            (fadeOut(tween(duration)) + scaleOut(tween(duration), targetScale = .6f)) using SizeTransform(clip = false)
+    }, contentAlignment = Alignment.CenterStart, label = "Tab badge") { label ->
+        if (label.isNotEmpty()) {
+            // The tab itself says the count to TalkBack, so the number here stays silent.
+            Box(Modifier.clearAndSetSemantics {}.heightIn(min = 18.dp).widthIn(min = 18.dp).border(1.5.dp, ring, CircleShape)
+                .padding(1.5.dp).background(BadgeFill, CircleShape).padding(horizontal = 4.dp), contentAlignment = Alignment.Center) {
+                Text(label, color = bubbleTextColor(BadgeFill), fontSize = 10.sp, lineHeight = 12.sp, fontWeight = FontWeight.Bold,
+                    maxLines = 1, softWrap = false)
             }
         }
     }
@@ -310,9 +360,36 @@ object PhoneTab {
      * restrictTo is set in decoy mode: only people and calls with these addresses show, plus pretend contacts for
      * the decoy chats, so the Phone tab tells the same story as the inbox.
      */
+    /** The sample Phone tab's missed calls, for its badge before it's opened. */
+    @JvmStatic
+    fun sampleMissedCalls(): Int = TabBadges.missedCalls(sampleCalls().map { BadgeCall(it.type, it.date, it.address) }, Long.MIN_VALUE)
+
+    /**
+     * Missed calls after since, for the Phone tab's badge: the same calls Recents shows (internet calls, and phone
+     * calls when they're allowed and shown), read without looking up contacts. Called off the main thread.
+     */
+    @JvmStatic
+    fun missedCallsSince(context: Context, prefs: SharedPreferences, since: Long, restrictTo: Collection<String>?): Int {
+        val calls = CallHistory.read(context).map { BadgeCall(it.optInt("type"), it.optLong("date"), it.optString("address")) }.toMutableList()
+        if (prefs.getBoolean("showPhoneCalls", true)
+            && context.checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED) {
+            try {
+                context.contentResolver.query(CallLog.Calls.CONTENT_URI, arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.DATE),
+                    "${CallLog.Calls.TYPE} = ? AND ${CallLog.Calls.DATE} > ?",
+                    arrayOf(CallLog.Calls.MISSED_TYPE.toString(), since.toString()), null)?.use { cursor ->
+                    while (cursor.moveToNext()) calls += BadgeCall(CallLog.Calls.MISSED_TYPE, cursor.getLong(1), cursor.getString(0).orEmpty())
+                }
+            } catch (error: RuntimeException) { /* permission was withdrawn or the call log is unavailable */ }
+        }
+        // Decoy mode: only calls the decoy Phone tab would show.
+        val allowed: ((String) -> Boolean)? = restrictTo?.let { list -> { address: String -> address.isNotEmpty() && list.any { it == address
+            || SmsStore.validRecipient(it) && SmsStore.validRecipient(address) && PhoneNumberUtils.compare(it, address) } } }
+        return TabBadges.missedCalls(calls, since, allowed)
+    }
+
     @JvmStatic @JvmOverloads
     fun mount(root: LinearLayout, prefs: SharedPreferences, actions: PhoneActions, sample: Boolean = false,
-              restrictTo: List<String>? = null, decoyNames: List<String> = emptyList()) {
+              restrictTo: List<String>? = null, decoyNames: List<String> = emptyList(), counts: TabCounts? = null) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -384,7 +461,7 @@ object PhoneTab {
                             }
                         }
                     }
-                    MainTabBar(palette, true, {}, { actions.messages() })
+                    MainTabBar(palette, true, {}, { actions.messages() }, counts)
                 }
             }
         }

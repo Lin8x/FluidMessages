@@ -224,10 +224,13 @@ object SecurityDialogs {
         }, dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } })
     }
 
-    /** Disappearing timer. current is -1 for "use the default" when defaultLabel is given. */
-    @JvmStatic
+    /**
+     * Disappearing timer. current is -1 for "use the default" when defaultLabel is given. [texts] adds a note that
+     * carriers keep their own copy, for SMS and MMS chats and the default that covers them.
+     */
+    @JvmStatic @JvmOverloads
     fun disappearing(activity: ComponentActivity, prefs: SharedPreferences, title: String, current: Int, defaultLabel: String?,
-                     pick: IntConsumer) = present(activity, prefs) { dismiss ->
+                     pick: IntConsumer, texts: Boolean = false) = present(activity, prefs) { dismiss ->
         val presets = Disappearing.CHOICES.toList()
         var chosen by remember { mutableIntStateOf(if (current in presets || current == -1) current else -2) }
         var amount by remember { mutableStateOf(if (current > 0 && current !in presets) customAmount(current).first.toString() else "") }
@@ -246,6 +249,11 @@ object SecurityDialogs {
                         "device. Matrix and XMPP take back the messages you send, and texts with FluidMessages encryption " +
                         "also disappear in their FluidMessages.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp))
+                }
+                if (texts) item {
+                    Text("Your carrier and the other person’s phone can still keep a copy of texts. Disappearing only " +
+                        "removes them from FluidMessages.", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(bottom = 8.dp))
                 }
                 if (defaultLabel != null) item { Choice("Use the default ($defaultLabel)", chosen == -1) { chosen = -1 } }

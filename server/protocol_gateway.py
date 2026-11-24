@@ -1,5 +1,11 @@
-"""Opt-in Internet messaging for configured correspondents and Matrix rooms."""
-from contextlib import closing
+"""Opt-in Internet messaging for configured correspondents and Matrix rooms.
+
+Each service can have several accounts (accounts.py). A link (route) names the account it goes through; links and
+messages from before multiple accounts name none and belong to the service's first account. The same contact linked
+through a second account is a chat of its own: its address gets the account's short tag ("maya~1a2b3c4d"), so the
+first account's chats keep their addresses and every app that keys chats by address keeps them apart.
+"""
+from contextlib import closing, contextmanager
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -20,7 +26,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
-from accounts import AccountStore, CHANNEL, JID, MXID, NICK
+from accounts import AccountStore, CHANNEL, JID, MXID, NICK, identity as account_name, tag as account_tag
 import irc_client
 import matrix_e2ee
 import xmpp_client
@@ -43,6 +49,41 @@ EMAIL = re.compile(r"[^@\s<>\x00-\x1f]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[
 NUMBER = re.compile(r"\+?[0-9][0-9(). -]{2,38}")
 ROOM = re.compile(r"![^\s/\x00-\x1f]{1,250}")
 ID = re.compile(r"[a-zA-Z0-9_-]{1,90}")
+TAG = re.compile(r"[0-9a-f]{8}")
+
+
+def valid_address(address):
+    """A phone conversation's address, optionally with an account tag for a chat through another account."""
+    if not isinstance(address, str):
+        return False
+    base, mark, suffix = address.partition("~")
+    return bool(ID.fullmatch(base) or NUMBER.fullmatch(base)) and (not mark or bool(TAG.fullmatch(suffix)))
+
+
+def via_for(format, target):
+    """The service that carries a link: a Matrix room for XMPP or IRC is a bridge, so it goes through Matrix."""
+    return "matrix" if format == "matrix" or format in ("xmpp", "irc") and isinstance(target, str) and target.startswith("!") \
+        else format
+
+
+class Poller:
+    """A loop for services without a long-lived connection (Email, and Matrix without encryption), one per account."""
+
+    def __init__(self, operation, interval):
+        self.operation = operation
+        self.interval = interval
+        self.stopped = threading.Event()
+
+    def run(self):
+        while not self.stopped.is_set():
+            try:
+                self.operation()
+            except Exception:
+                pass
+            self.stopped.wait(self.interval() if callable(self.interval) else self.interval)
+
+    def stop(self):
+        self.stopped.set()
 # Mirrors SmsReaction on Android so folded reactions read the same on every protocol.
 REACTION_VERBS = {"👍": "Liked", "❤️": "Loved", "👎": "Disliked", "😆": "Laughed at", "‼️": "Emphasized", "❓": "Questioned"}
 
@@ -156,6 +197,20 @@ def bounded(value, limit):
     return value[:limit] if isinstance(value, str) else ""
 
 
+def network_error(error):
+    """A short reason for a chat server's refusal, such as Matrix's own error text."""
+    if isinstance(error, HTTPError):
+        try:
+            reason = json.loads(error.read(4096) or b"{}").get("error")
+        except (ValueError, OSError, AttributeError):
+            reason = None
+        return "The server said: " + bounded(reason, 200) if isinstance(reason, str) and reason else \
+            "The server refused (" + str(error.code) + ")"
+    if isinstance(error, ConnectionError):
+        return str(error)[:200]
+    return "Couldn’t reach the server. Check its address and try again."
+
+
 def configured():
     path = os.environ.get("FLUID_PROTOCOL_CONFIG")
     if not path:
@@ -183,29 +238,107 @@ class Gateway:
         self.calls = collections.deque(maxlen=400)
         self.call_number = 0
         self.call_lock = threading.Lock()
+        # The account a sender, poller, or callback is working for; None means each service's first account.
+        self.local = threading.local()
         self.legacy_routes = self.validate_routes(config.get("routes") or [])
+
+    # Accounts
+
+    def first(self, protocol):
+        """The service's first account, noted once. It owns the chats, state, and message ids from before multiple
+        accounts, so those keep working even when another account is added ahead of it (from Docker Compose)."""
+        known = json.loads(self.state("accounts:first") or "{}")
+        if protocol not in known:
+            primary = self.accounts.primary(protocol)
+            if not primary:
+                return ""
+            known[protocol] = primary
+            self.save_state("accounts:first", json.dumps(known))
+        return known[protocol]
+
+    def owner(self, route, everyone=None):
+        """The id of the account a link goes through: its own, or for older links the service's first account."""
+        if route.get("account"):
+            return route["account"]
+        via = route.get("via") or via_for(route.get("protocol"), route.get("target"))
+        everyone = self.accounts.all() if everyone is None else everyone
+        ids = [entry["id"] for entry in everyone if entry["protocol"] == via]
+        if not ids:
+            return ""
+        first = self.first(via)
+        return first if first in ids else ids[0]
+
+    def default_account(self, protocol):
+        return self.owner({"protocol": protocol, "via": protocol})
+
+    def scope(self, account):
+        """"" for a service's first account, so its thread keys, state, and message ids stay as they were."""
+        if not account:
+            return ""
+        return "" if account == self.first(account.split(":", 1)[0]) else account_tag(account)
+
+    def stable(self, route, text):
+        scope = self.scope(route.get("account"))
+        return hashlib.sha256(((scope + ":") if scope else "").encode() + text.encode()).hexdigest()
+
+    @contextmanager
+    def using(self, account):
+        """Runs Matrix, Email, IRC, and XMPP calls as [account]; None keeps each service's first account."""
+        previous = getattr(self.local, "account", None)
+        self.local.account = account or None
+        try:
+            yield
+        finally:
+            self.local.account = previous
+
+    def current_account(self, protocol):
+        chosen = getattr(self.local, "account", None)
+        return chosen if chosen and chosen.startswith(protocol + ":") else self.default_account(protocol)
+
+    def values(self, protocol):
+        return self.accounts.get(self.current_account(protocol)) or {}
+
+    def recent_account(self, db, via):
+        """For a new chat: the account of the service that sent or received most recently, else the newest one."""
+        choices = [entry["id"] for entry in self.accounts.of(via)]
+        if not choices:
+            return ""
+        for (payload,) in db.execute("SELECT payload FROM protocol_messages ORDER BY date DESC, rowid DESC LIMIT 500"):
+            account = json.loads(payload).get("account")
+            if account in choices:
+                return account
+        return choices[-1]
 
     @property
     def email(self):
-        return self.accounts.current().get("email") or {}
+        return self.values("email")
 
     @property
     def matrix(self):
-        return self.accounts.current().get("matrix") or {}
+        return self.values("matrix")
 
     @property
     def routes(self):
-        """Links from the old config file plus the ones added from the phone, stored in the database."""
+        """Links from the old config file plus the ones added from the phone, stored in the database. Each names
+        the account it goes through ("" when its service has none)."""
         with closing(self.connect()) as db:
             rows = db.execute("SELECT payload FROM protocol_routes ORDER BY rowid").fetchall()
-        routes = self.legacy_routes + [json.loads(row[0]) for row in rows]
-        # Channels listed on the IRC account appear in the inbox without a separate link.
-        linked = {r["target"].lower() for r in routes if r["protocol"] == "irc"}
-        for channel in (self.accounts.current().get("irc") or {}).get("channels", []):
-            if channel.lower() not in linked:
-                routes.append({"address": "irc-" + hashlib.sha256(channel.lower().encode()).hexdigest()[:16],
-                               "protocol": "irc", "target": channel, "via": "irc", "group": True, "title": channel,
-                               "members": []})
+        routes = [dict(route) for route in self.legacy_routes] + [json.loads(row[0]) for row in rows]
+        everyone = self.accounts.all()
+        for route in routes:
+            route["account"] = self.owner(route, everyone)
+        # Channels listed on each IRC account appear in the inbox without a separate link.
+        for entry in everyone:
+            if entry["protocol"] != "irc":
+                continue
+            linked = {r["target"].lower() for r in routes if r["protocol"] == "irc" and r["account"] == entry["id"]}
+            scope = self.scope(entry["id"])
+            for channel in entry["values"].get("channels", []):
+                if channel.lower() not in linked:
+                    key = ((scope + ":") if scope else "") + channel.lower()
+                    routes.append({"address": "irc-" + hashlib.sha256(key.encode()).hexdigest()[:16],
+                                   "protocol": "irc", "target": channel, "via": "irc", "group": True, "title": channel,
+                                   "members": [], "account": entry["id"]})
         return routes
 
     def validate_routes(self, routes):
@@ -223,9 +356,12 @@ class Gateway:
         (room@conference.server); an IRC #channel or nick. A Matrix room for XMPP or IRC means a bridge.
         """
         format, address, target = route.get("protocol"), route.get("address"), route.get("target")
-        if (not isinstance(address, str) or not (ID.fullmatch(address) or NUMBER.fullmatch(address))
-                or not isinstance(target, str) or any(r["address"] == address and r["protocol"] == format for r in existing)):
+        if (not valid_address(address) or not isinstance(target, str)
+                or any(r["address"] == address and r["protocol"] == format for r in existing)):
             raise ValueError("Invalid or duplicate protocol route")
+        account = route.get("account") or ""
+        if not isinstance(account, str) or account and not account.startswith(via_for(format, target) + ":"):
+            raise ValueError("Choose an account for this service")
         via = format
         if format == "email":
             if not EMAIL.fullmatch(target):
@@ -244,20 +380,40 @@ class Gateway:
                 raise ValueError("Enter an IRC #channel or nickname")
         else:
             raise ValueError("Unknown internet format")
-        if any(r.get("via", r["protocol"]) == via and r["target"].lower() == target.lower() for r in existing):
-            raise ValueError("Each address or room can belong to one conversation")
+        if any(r.get("via", r["protocol"]) == via and r["target"].lower() == target.lower()
+               and (r.get("account") or "") == account for r in existing):
+            raise ValueError("Each address or room can belong to one conversation per account")
         members = route.get("members", [])
         if not isinstance(members, list) or len(members) > 100:
             raise ValueError("Invalid route member list")
         group = bool(route.get("group")) or format == "irc" and target[:1] in "#&"
-        return {"address": address, "protocol": format, "target": target, "via": via, "group": group,
-                "title": bounded(route.get("title"), 120) or address,
-                "members": [bounded(name, 120) for name in members if isinstance(name, str)]}
+        result = {"address": address, "protocol": format, "target": target, "via": via, "group": group,
+                  "title": bounded(route.get("title"), 120) or address,
+                  "members": [bounded(name, 120) for name in members if isinstance(name, str)]}
+        if account:
+            result["account"] = account
+        return result
 
     def add_route(self, db, data):
-        route = self.validate_route(data, self.routes)
+        """Links a chat. [account] picks which account it goes through; without one (older phones, or a choice not
+        made) it's the service's most recently used account."""
+        data = dict(data)
+        via = via_for(data.get("protocol"), data.get("target"))
+        choices = [entry["id"] for entry in self.accounts.of(via)]
+        account = data.get("account") or self.recent_account(db, via)
+        if account and account not in choices:
+            raise ValueError("That account isn’t on FluidMessages Web anymore")
+        existing = self.routes
+        address = data.get("address")
+        if account and valid_address(address) and any(r["address"] == address and r["protocol"] == data.get("protocol")
+                                                       and r["account"] != account for r in existing):
+            # The same contact through another account is a chat of its own.
+            data["address"] = address.partition("~")[0] + "~" + account_tag(account)
+        data["account"] = account
+        route = self.validate_route(data, existing)
         if route["via"] == "matrix" and route["target"].startswith("@"):
-            route["target"] = self.matrix_direct_room(route["target"])
+            with self.using(account):
+                route["target"] = self.matrix_direct_room(route["target"])
         db.execute("INSERT INTO protocol_routes (address, protocol, payload) VALUES (?, ?, ?)",
                    (route["address"], route["protocol"], json.dumps(route)))
         self.refresh_clients()
@@ -295,16 +451,24 @@ class Gateway:
         channels = {}
         for key, value in db.execute("SELECT key, value FROM protocol_state WHERE key LIKE 'channel:%'"):
             channels[key.removeprefix("channel:")] = json.loads(value)
-        secure = self.clients.get("matrix", (None, None))[1]
+        listed = [account for account in self.accounts.redacted() if "error" not in account]
+        names = {account["id"]: account["name"] for account in listed}
         def shown(route):
             item = {key: value for key, value in route.items() if key != "via"}
-            if route.get("via") == "matrix" and secure is not None:
+            if not item.get("account"):
+                item.pop("account", None)
+            elif item["account"] in names:
+                # Shown as "via alice@example.org" when a service has more than one account.
+                item["account_name"] = names[item["account"]]
+            secure = self.secure(route.get("account")) if route.get("via") == "matrix" else None
+            if secure is not None:
                 item["encrypted"] = secure.encrypted(route["target"])
             return item
         routes = [shown(route) for route in self.routes if not self.hidden(settings, route)]
+        # Older phones read only protocol and source; the id and public address name each account.
         return {"messages": messages, "routes": routes, "enabled": sorted(self.enabled(db)), "channels": channels,
-                "accounts": [{"protocol": account["protocol"], "source": account["source"]}
-                             for account in self.accounts.redacted()]}
+                "accounts": [{"protocol": account["protocol"], "source": account["source"], "id": account["id"],
+                              "name": account["name"]} for account in listed]}
 
     @staticmethod
     def mark_read(db, data):
@@ -443,15 +607,20 @@ class Gateway:
                 continue
             route = self.route(message["address"], message["protocol"])
             try:
-                if route and route.get("via") == "matrix" and message.get("event_id"):
-                    room = quote(route["target"], safe="")
-                    self.matrix_request("rooms/" + room + "/redact/" + quote(message["event_id"], safe="") + "/"
-                                        + message["id"] + "-expire", {"reason": "Disappearing message"}, method="PUT")
-                elif route and route.get("via") == "xmpp" and message.get("xmpp_id"):
-                    self.client("xmpp").retract(route["target"], message["xmpp_id"], route.get("group"))
+                with self.using(route and route.get("account")):
+                    self.take_back(route, message)
             except Exception:
                 pass
         return len(gone)
+
+    def take_back(self, route, message):
+        """Takes back your own disappearing Matrix or XMPP message, through the chat's account."""
+        if route and route.get("via") == "matrix" and message.get("event_id"):
+            room = quote(route["target"], safe="")
+            self.matrix_request("rooms/" + room + "/redact/" + quote(message["event_id"], safe="") + "/"
+                                + message["id"] + "-expire", {"reason": "Disappearing message"}, method="PUT")
+        elif route and route.get("via") == "xmpp" and message.get("xmpp_id"):
+            self.client("xmpp").retract(route["target"], message["xmpp_id"], route.get("group"))
 
     def expirer(self):
         while True:
@@ -476,7 +645,7 @@ class Gateway:
                                "sender": bounded(event.get("sender"), 300), "date": date, "live": live})
         if event["type"] == "m.call.invite":
             video = "m=video" in str((content.get("offer") or {}).get("sdp", ""))
-            record = self.message(route, "call-" + hashlib.sha256(event["event_id"].encode()).hexdigest(),
+            record = self.message(route, "call-" + self.stable(route, event["event_id"]),
                                   ("Video call" if video else "Voice call") + (" from " + route["title"] if live else " · missed"),
                                   False, date, author=bounded(event.get("sender"), 120))
             record["event"] = True
@@ -494,11 +663,12 @@ class Gateway:
         if kind not in CALL_TYPES or not isinstance(content, dict) or len(json.dumps(content)) > 64_000:
             raise ValueError("Invalid call signal")
         transaction = "call-" + uuid.uuid4().hex
-        secure = self.clients.get("matrix", (None, None))[1]
-        if secure is not None:
-            return {"event_id": secure.send(route["target"], kind, content, transaction)}
-        response = self.matrix_request("rooms/" + quote(route["target"], safe="") + "/send/" + kind + "/" + transaction,
-                                       content, method="PUT")
+        with self.using(route["account"]):
+            secure = self.secure()
+            if secure is not None:
+                return {"event_id": secure.send(route["target"], kind, content, transaction)}
+            response = self.matrix_request("rooms/" + quote(route["target"], safe="") + "/send/" + kind + "/" + transaction,
+                                           content, method="PUT")
         return {"event_id": response["event_id"]}
 
     def ice_servers(self):
@@ -528,7 +698,11 @@ class Gateway:
             raise ValueError("Link this group first")
         if action not in ("add", "remove") or not isinstance(member, str) or not 0 < len(member.strip()) <= 300:
             raise ValueError("Enter who to add or remove")
-        member, add, via = member.strip(), action == "add", route.get("via")
+        with self.using(route["account"]):
+            return self.change_member_as(route, add=action == "add", member=member.strip())
+
+    def change_member_as(self, route, add, member):
+        via = route.get("via")
         if via == "matrix":
             if not re.fullmatch(r"@[^:\s]+:[^\s]+", member):
                 raise ValueError("Enter a Matrix ID like @maya:example.org")
@@ -722,34 +896,44 @@ class Gateway:
                 self.wake.wait(5)
                 self.wake.clear()
                 continue
-            key, format, endpoint, payload = row
-            message = json.loads(payload)
-            try:
-                with closing(self.connect()) as db:
-                    if format not in self.enabled(db):
-                        raise ValueError("Protocol disabled")
-                route = self.route(message["address"], format)
-                if route is None or route["target"] != endpoint:
-                    raise ValueError("Route changed")
-                send = {"email": self.send_mail, "matrix": self.send_matrix, "xmpp": self.send_xmpp,
-                        "irc": self.send_irc}[route.get("via", format)]
+            self.deliver_job(row)
+
+    def deliver_job(self, row):
+        """Sends one claimed job through its chat's account and records the result."""
+        key, format, endpoint, payload = row
+        message = json.loads(payload)
+        try:
+            with closing(self.connect()) as db:
+                if format not in self.enabled(db):
+                    raise ValueError("Protocol disabled")
+            route = self.route(message["address"], format)
+            if route is None or route["target"] != endpoint:
+                raise ValueError("Route changed")
+            if route["account"] and self.accounts.get(route["account"]) is None:
+                raise ValueError("This chat’s account was removed from FluidMessages Web")
+            send = {"email": self.send_mail, "matrix": self.send_matrix, "xmpp": self.send_xmpp,
+                    "irc": self.send_irc}[route.get("via", format)]
+            with self.using(route["account"]):
                 message.update(send(route, message) or {})
-                state, caption = "sent", "Sent"
-            except (ValueError, ConnectionError) as error:
-                # Short reasons reach the phone's red "Not delivered" notice.
-                state, caption = "failed", "Couldn’t send · " + str(error)[:120]
-            except Exception:
-                state, caption = "failed", "Couldn’t send"
-            with closing(self.connect()) as db, db:
-                message["status"] = caption
-                db.execute("UPDATE protocol_messages SET payload=? WHERE id=?", (json.dumps(message), key))
-                db.execute("UPDATE protocol_jobs SET state=? WHERE id=?", (state, key))
+            state, caption = "sent", "Sent"
+        except (ValueError, ConnectionError) as error:
+            # Short reasons reach the phone's red "Not delivered" notice.
+            state, caption = "failed", "Couldn’t send · " + str(error)[:120]
+        except Exception:
+            state, caption = "failed", "Couldn’t send"
+        with closing(self.connect()) as db, db:
+            message["status"] = caption
+            db.execute("UPDATE protocol_messages SET payload=? WHERE id=?", (json.dumps(message), key))
+            db.execute("UPDATE protocol_jobs SET state=? WHERE id=?", (state, key))
 
     @staticmethod
     def message(route, id, body, outgoing, date, status="", author=""):
-        return {"id": id, "address": route["address"], "protocol": route["protocol"], "title": route["title"],
-                "body": bounded(body, 8000), "date": date, "type": 2 if outgoing else 1,
-                "read": 1 if outgoing else 0, "status": status, "author": bounded(author, 120)}
+        record = {"id": id, "address": route["address"], "protocol": route["protocol"], "title": route["title"],
+                  "body": bounded(body, 8000), "date": date, "type": 2 if outgoing else 1,
+                  "read": 1 if outgoing else 0, "status": status, "author": bounded(author, 120)}
+        if route.get("account"):
+            record["account"] = route["account"]
+        return record
 
     def add_incoming(self, message):
         with closing(self.connect()) as db, db:
@@ -829,8 +1013,13 @@ class Gateway:
             server.send_message(envelope, from_addr=cfg["address"], to_addrs=[route["target"]])
         return {"mail_id": str(envelope["Message-ID"]), "mail_subject": str(envelope["Subject"])}
 
-    def receive_mail(self):
+    def receive_mail(self, account=None):
+        with self.using(account):
+            self.receive_mail_as(self.current_account("email"))
+
+    def receive_mail_as(self, account):
         cfg = self.email
+        scope = self.scope(account)
         with imaplib.IMAP4_SSL(cfg["imap_host"], int(cfg.get("imap_port", 993)), ssl_context=self.tls, timeout=12) as mailbox:
             mailbox.login(cfg.get("imap_user", cfg["address"]), cfg["imap_password"])
             if mailbox.select(cfg.get("folder", "INBOX"), readonly=True)[0] != "OK":
@@ -840,9 +1029,9 @@ class Gateway:
                 return
             epoch = validity.decode()
             for route in self.routes:
-                if route["protocol"] != "email":
+                if route["protocol"] != "email" or route["account"] != account:
                     continue
-                key = "mail:" + epoch + ":" + route["target"]
+                key = "mail:" + (scope + ":" if scope else "") + epoch + ":" + route["target"]
                 highest = int(self.state(key) or 0)
                 criteria = ('FROM', '"' + route["target"] + '"') if highest == 0 else (
                     'UID', str(highest + 1) + ':*', 'FROM', '"' + route["target"] + '"')
@@ -901,7 +1090,7 @@ class Gateway:
             date = min(self.time(), int(parsedate_to_datetime(message.get("Date")).timestamp() * 1000))
         except (AttributeError, ValueError, TypeError, OverflowError):
             date = self.time()
-        stable = hashlib.sha256(f"{route['target']}:{epoch}:{uid}".encode()).hexdigest()
+        stable = self.stable(route, f"{route['target']}:{epoch}:{uid}")
         record = self.message(route, "mail-" + stable, text, False, max(0, date), author=route["title"])
         record["mail_id"] = bounded(str(message.get("Message-ID", "")), 240)
         record["mail_subject"] = bounded(str(message.get("Subject", "")), 120)
@@ -933,7 +1122,7 @@ class Gateway:
 
     def send_matrix(self, route, message):
         room = quote(route["target"], safe="")
-        secure = self.clients.get("matrix", (None, None))[1]
+        secure = self.secure()
         if secure is None and self.matrix_request("rooms/" + room + "/state/m.room.encryption", allow_missing=True) is not None:
             raise ValueError("This room is end-to-end encrypted. Install matrix-nio[e2e] on FluidMessages Web to use it.")
         relation = message.get("relation") or {}
@@ -1017,12 +1206,18 @@ class Gateway:
                 raise
             return self.matrix_raw(self.matrix["homeserver"] + "/_matrix/media/v3/download/" + path)
 
-    def receive_matrix(self):
-        rooms = {route["target"]: route for route in self.routes if route.get("via") == "matrix"}
+    def receive_matrix(self, account=None):
+        with self.using(account):
+            self.receive_matrix_as(self.current_account("matrix"))
+
+    def receive_matrix_as(self, account):
+        rooms = {route["target"]: route for route in self.routes if route.get("via") == "matrix" and route["account"] == account}
         filter = {"presence": {"types": []}, "room": {"rooms": list(rooms), "timeline": {"limit": 60,
                   "types": ["m.room.message", "m.room.encrypted", "m.reaction", "m.room.redaction", *CALL_TYPES]}}}
         args = {"filter": json.dumps(filter, separators=(",", ":")), "timeout": 10_000}
-        if token := self.state("matrix:since"):
+        scope = self.scope(account)
+        since = "matrix:since" + (":" + scope if scope else "")
+        if token := self.state(since):
             args["since"] = token
         joined = self.matrix_request("sync?" + urlencode(args))
         for room, data in joined.get("rooms", {}).get("join", {}).items():
@@ -1031,9 +1226,13 @@ class Gateway:
             for event in data.get("timeline", {}).get("events", []):
                 self.accept_matrix(rooms[room], event)
         if isinstance(joined.get("next_batch"), str):
-            self.save_state("matrix:since", joined["next_batch"])
+            self.save_state(since, joined["next_batch"])
 
     def accept_matrix(self, route, event):
+        with self.using(route.get("account")):
+            self.accept_matrix_as(route, event)
+
+    def accept_matrix_as(self, route, event):
         if event.get("sender") == self.matrix.get("user_id") or not isinstance(event.get("event_id"), str):
             return
         content = event.get("content", {})
@@ -1043,7 +1242,7 @@ class Gateway:
             self.call_event(route, event, content)
             return
         relates = content.get("m.relates_to") if isinstance(content.get("m.relates_to"), dict) else {}
-        stable = hashlib.sha256(event["event_id"].encode()).hexdigest()
+        stable = self.stable(route, event["event_id"])
         date = event.get("origin_server_ts")
         date = date if type(date) is int else self.time()
         author = event.get("sender", "")
@@ -1113,24 +1312,10 @@ class Gateway:
         record["event_id"] = event["event_id"]
         self.add_incoming(record)
 
-    def receiver(self, operation, interval, needed):
-        """Runs a poller only while an account and at least one link use it, re-checking as they change."""
-        while True:
-            try:
-                if needed():
-                    operation()
-            except Exception:
-                pass
-            time.sleep(interval() if callable(interval) else interval)
-
     def active(self, protocol):
         """Turned on in the phone's settings and not connected from the phone instead."""
         with closing(self.connect()) as db:
             return protocol in self.enabled(db)
-
-    def uses(self, via):
-        return lambda: (bool(self.accounts.current().get(via)) and self.active(via)
-                        and any(r.get("via", r["protocol"]) == via for r in self.routes))
 
     def start(self):
         try:
@@ -1138,12 +1323,6 @@ class Gateway:
         except Exception:
             pass
         threading.Thread(target=self.sender, daemon=True, name="protocol-sender").start()
-        mail_interval = lambda: 60 * int(self.email.get("poll_minutes", 1))
-        threading.Thread(target=self.receiver, args=(self.receive_mail, mail_interval, self.uses("email")),
-                         daemon=True, name="protocol-imap").start()
-        plain_matrix = lambda: self.uses("matrix")() and "matrix" not in self.clients
-        threading.Thread(target=self.receiver, args=(self.receive_matrix, 5, plain_matrix),
-                         daemon=True, name="protocol-matrix").start()
         threading.Thread(target=self.supervise, daemon=True, name="protocol-clients").start()
         threading.Thread(target=self.expirer, daemon=True, name="protocol-disappearing").start()
 
@@ -1155,102 +1334,293 @@ class Gateway:
                 pass
             time.sleep(15)
 
-    def refresh_clients(self):
-        """Starts, restarts, or stops the long-lived IRC, XMPP, and encrypted Matrix sessions to match accounts and links."""
-        accounts = self.accounts.current()
+    def wanted_clients(self):
+        """What should run for each account: {account id: (signature, start)}. A poller or connection runs only while
+        its account is turned on and at least one link uses it."""
         routes = self.routes
-        matrix = accounts.get("matrix") if self.active("matrix") else None
-        wanted = json.dumps(matrix, sort_keys=True) if matrix and matrix_e2ee.available() and any(
-            r.get("via") == "matrix" for r in routes) else None
-        current = self.clients.get("matrix")
-        if (current[0] if current else None) != wanted:
-            if current:
-                current[1].stop()
-                del self.clients["matrix"]
-            if wanted:
-                rooms = lambda: {r["target"] for r in self.routes if r.get("via") == "matrix"}
-                secure = matrix_e2ee.MatrixE2ee(matrix, self.files / "matrix-store", rooms, self.accept_secure)
-                self.clients["matrix"] = (wanted, secure)
-                threading.Thread(target=self.guard, args=(secure.run,), daemon=True, name="protocol-matrix-e2ee").start()
-        for protocol in ("irc", "xmpp"):
-            account = accounts.get(protocol) if self.active(protocol) else None
-            native = [r for r in routes if r["protocol"] == protocol and r.get("via") == protocol]
-            wanted = None
-            if account and (native or protocol == "irc" and account.get("channels")):
-                rooms = sorted({r["target"] for r in native if r.get("group")})
-                wanted = json.dumps([account, rooms], sort_keys=True)
-            current = self.clients.get(protocol)
-            if current and current[0] == wanted:
+        wanted = {}
+        for entry in self.accounts.all():
+            ident, protocol, account = entry["id"], entry["protocol"], entry["values"]
+            if not self.active(protocol):
                 continue
-            if current:
-                current[1].stop()
-                del self.clients[protocol]
-            if wanted is None:
-                continue
-            if protocol == "irc":
-                channels = sorted(set(account.get("channels", [])) | set(rooms))
-                client = irc_client.IrcClient({**account, "channels": channels}, self.accept_irc, self.channel_state)
-            else:
-                if not xmpp_client.available():
+            mine = [r for r in routes if r.get("via", r["protocol"]) == protocol and r["account"] == ident]
+            if protocol == "matrix" and mine:
+                secure = matrix_e2ee.available()
+                wanted[ident] = (json.dumps([account, secure], sort_keys=True),
+                                 (lambda i=ident, a=account: self.secure_client(i, a)) if secure else
+                                 (lambda i=ident: Poller(lambda: self.receive_matrix(i), 5)), None)
+            elif protocol == "email" and mine:
+                interval = lambda i=ident: 60 * int((self.accounts.get(i) or {}).get("poll_minutes", 1))
+                wanted[ident] = (json.dumps(account, sort_keys=True),
+                                 lambda i=ident, every=interval: Poller(lambda: self.receive_mail(i), every), None)
+            elif protocol in ("irc", "xmpp"):
+                native = [r for r in mine if r["protocol"] == protocol]
+                if not (native or protocol == "irc" and account.get("channels")):
                     continue
-                client = xmpp_client.XmppClient(account, self.accept_xmpp, rooms)
-            self.clients[protocol] = (wanted, client)
-            threading.Thread(target=client.run, daemon=True, name="protocol-" + protocol).start()
+                if protocol == "xmpp" and not xmpp_client.available():
+                    continue
+                rooms = sorted({r["target"] for r in native if r.get("group")})
+                if protocol == "irc":
+                    rooms = sorted(set(account.get("channels", [])) | set(rooms), key=str.lower)
+                # Joining or leaving a channel or group chat doesn't reconnect: sync() updates the live session.
+                wanted[ident] = (json.dumps(account, sort_keys=True),
+                                 lambda i=ident, a=account, r=rooms, p=protocol: self.chat_client(p, i, a, r), rooms)
+        return wanted
+
+    def refresh_clients(self):
+        """Starts, restarts, or stops each account's IRC, XMPP, encrypted Matrix, or polling session to match
+        accounts and links."""
+        wanted = self.wanted_clients()
+        for ident, entry in list(self.clients.items()):
+            if ident not in wanted or wanted[ident][0] != entry[0]:
+                entry[1].stop()
+                del self.clients[ident]
+        for ident, (signature, create, rooms) in wanted.items():
+            if ident in self.clients:
+                client = self.clients[ident][1]
+                if rooms is not None and hasattr(client, "sync_channels"):
+                    client.sync_channels(rooms)
+                elif rooms is not None and hasattr(client, "sync_rooms"):
+                    client.sync_rooms(rooms)
+                continue
+            client = create()
+            self.clients[ident] = (signature, client)
+            run = (lambda c=client, i=ident: self.guard(i, c)) if isinstance(client, matrix_e2ee.MatrixE2ee) else client.run
+            threading.Thread(target=run, daemon=True, name="protocol-" + ident.split(":", 1)[0]).start()
+
+    def secure_client(self, ident, account):
+        scope = self.scope(ident)
+        store = self.files / ("matrix-store" + ("-" + scope if scope else ""))
+        rooms = lambda: {r["target"] for r in self.routes if r.get("via") == "matrix" and r["account"] == ident}
+        return matrix_e2ee.MatrixE2ee(account, store, rooms, lambda room, event: self.accept_secure(room, event, ident))
+
+    def chat_client(self, protocol, ident, account, rooms):
+        if protocol == "irc":
+            return irc_client.IrcClient({**account, "channels": list(rooms)},
+                                        lambda *args: self.accept_irc(*args, account=ident),
+                                        lambda channel, state: self.channel_state(channel, state, ident))
+        return xmpp_client.XmppClient(account, lambda *args: self.accept_xmpp(*args, account=ident), rooms)
 
     def erase(self):
         """Erase everything: stops every chat connection and forgets recent calls, before the data behind them goes."""
-        for protocol, entry in list(self.clients.items()):
+        for ident, entry in list(self.clients.items()):
             try:
                 entry[1].stop()
             except Exception:
                 pass
-            self.clients.pop(protocol, None)
+            self.clients.pop(ident, None)
         with self.call_lock:
             self.calls.clear()
 
-    def guard(self, run):
+    def guard(self, ident, secure):
         try:
-            run()
+            secure.run()
         except Exception:
             # A failed encrypted session falls back to the plain Matrix poller until the next account change.
-            entry = self.clients.get("matrix")
-            if entry and entry[1].run == run:
-                del self.clients["matrix"]
+            entry = self.clients.get(ident)
+            if entry and entry[1] is secure:
+                poller = Poller(lambda: self.receive_matrix(ident), 5)
+                self.clients[ident] = (entry[0], poller)
+                threading.Thread(target=poller.run, daemon=True, name="protocol-matrix").start()
 
-    def accept_secure(self, room_id, event):
-        route = next((r for r in self.routes if r.get("via") == "matrix" and r["target"] == room_id), None)
+    def accept_secure(self, room_id, event, account=None):
+        account = account or self.default_account("matrix")
+        route = next((r for r in self.routes if r.get("via") == "matrix" and r["target"] == room_id
+                      and r["account"] == account), None)
         if route is not None:
             try:
                 self.accept_matrix(route, event)
             except Exception:
                 pass
 
+    def secure(self, account=None):
+        """The encrypted Matrix session of [account] (default: the one in use), or None."""
+        entry = self.clients.get(account or self.current_account("matrix"))
+        return entry[1] if entry and isinstance(entry[1], matrix_e2ee.MatrixE2ee) else None
+
     def client(self, protocol):
-        entry = self.clients.get(protocol)
-        if entry is None:
+        entry = self.clients.get(self.current_account(protocol))
+        if entry is None or isinstance(entry[1], Poller):
             raise ConnectionError(protocol.upper() + " isn’t connected. Check the account on FluidMessages Web.")
         return entry[1]
 
+    # Servers: each IRC network, Matrix account, and XMPP account is a "server", like a Discord server, with its
+    # channels or rooms and its direct messages. Browsing uses each protocol's own directory.
+
+    def servers(self):
+        """Every server connection, with its chats split into channels/rooms and direct messages."""
+        routes = self.routes
+        output = []
+        for account in self.accounts.redacted():
+            if "error" in account or account["protocol"] not in ("irc", "matrix", "xmpp"):
+                continue
+            fields = account["fields"]
+            host = {"irc": fields.get("server", ""), "matrix": urlsplit(fields.get("homeserver", "")).hostname or "",
+                    "xmpp": account["name"].partition("@")[2]}[account["protocol"]]
+            mine = [r for r in routes if r["account"] == account["id"]]
+            output.append({"id": account["id"], "protocol": account["protocol"], "name": account["name"], "host": host,
+                           "source": account["source"],
+                           "channels": [r["address"] for r in mine if r.get("group")],
+                           "direct": [r["address"] for r in mine if not r.get("group")],
+                           "spaces": self.cached_spaces(account["id"]) if account["protocol"] == "matrix" else []})
+        return output
+
+    def server_account(self, data, protocols=("irc", "matrix", "xmpp")):
+        ident = data.get("account")
+        entry = next((e for e in self.accounts.all() if e["id"] == ident), None) if isinstance(ident, str) else None
+        if entry is None or entry["protocol"] not in protocols:
+            raise ValueError("Choose a server first")
+        return entry
+
+    def cached_spaces(self, ident):
+        cached = json.loads(self.state("spaces:" + ident) or "null")
+        return cached["spaces"] if cached else []
+
+    def spaces(self, data):
+        """Matrix Spaces the account has joined, with their rooms (the space hierarchy), cached for ten minutes."""
+        entry = self.server_account(data, ("matrix",))
+        cached = json.loads(self.state("spaces:" + entry["id"]) or "null")
+        if cached and self.time() - cached["at"] < 600_000 and not data.get("refresh"):
+            return {"spaces": cached["spaces"]}
+        spaces = []
+        with self.using(entry["id"]):
+            joined = (self.matrix_request("joined_rooms") or {}).get("joined_rooms", [])
+            for room in [room for room in joined if isinstance(room, str) and ROOM.fullmatch(room)][:150]:
+                create = self.matrix_request("rooms/" + quote(room, safe="") + "/state/m.room.create", allow_missing=True) or {}
+                if create.get("type") != "m.space":
+                    continue
+                tree = self.matrix_request("rooms/" + quote(room, safe="") + "/hierarchy?max_depth=1&limit=50",
+                                           allow_missing=True) or {}
+                rooms = tree.get("rooms") if isinstance(tree.get("rooms"), list) else []
+                top = next((item for item in rooms if item.get("room_id") == room), {})
+                children = [{"target": item["room_id"], "name": bounded(item.get("name") or item.get("canonical_alias")
+                                                                        or item["room_id"], 120),
+                             "topic": bounded(item.get("topic"), 300), "members": item.get("num_joined_members", 0)
+                             if type(item.get("num_joined_members")) is int else 0}
+                            for item in rooms if isinstance(item, dict) and isinstance(item.get("room_id"), str)
+                            and item["room_id"] != room and ROOM.fullmatch(item["room_id"]) and item.get("room_type") != "m.space"]
+                spaces.append({"id": room, "name": bounded(top.get("name") or top.get("canonical_alias") or room, 120),
+                               "rooms": children})
+                if len(spaces) >= 30:
+                    break
+        self.save_state("spaces:" + entry["id"], json.dumps({"at": self.time(), "spaces": spaces}))
+        return {"spaces": spaces}
+
+    def browse(self, data):
+        """Public channels or rooms on a server: IRC LIST, the Matrix room directory, or XMPP disco#items."""
+        entry = self.server_account(data)
+        search = data.get("search", "")
+        limit = data.get("limit", 50)
+        if not isinstance(search, str) or len(search) > 100 or type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("Invalid search")
+        with self.using(entry["id"]):
+            if entry["protocol"] == "irc":
+                rooms = self.client("irc").list_channels(search, limit)
+            elif entry["protocol"] == "matrix":
+                body = {"limit": limit, **({"filter": {"generic_search_term": search.strip()}} if search.strip() else {})}
+                found = self.matrix_request("publicRooms", body, method="POST") or {}
+                rooms = [{"target": item["room_id"], "alias": bounded(item.get("canonical_alias"), 255),
+                          "name": bounded(item.get("name") or item.get("canonical_alias") or item["room_id"], 120),
+                          "topic": bounded(item.get("topic"), 300),
+                          "members": item["num_joined_members"] if type(item.get("num_joined_members")) is int else 0}
+                         for item in found.get("chunk", []) if isinstance(item, dict) and isinstance(item.get("room_id"), str)
+                         and ROOM.fullmatch(item["room_id"])][:limit]
+            else:
+                service = data.get("service")
+                client = self.client("xmpp")
+                if not service:
+                    return {"rooms": [], "services": client.muc_services()}
+                if not isinstance(service, str) or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", service):
+                    raise ValueError("Enter a group chat service like conference.example.org")
+                rooms = client.browse(service, search, limit)
+        joined = {(r["target"].lower()) for r in self.routes if r["account"] == entry["id"]}
+        for room in rooms:
+            room["joined"] = room["target"].lower() in joined
+        return {"rooms": rooms}
+
+    def join(self, db, data):
+        """Joins a channel or room on a server and adds it to the inbox under that server."""
+        entry = self.server_account(data)
+        target, title = data.get("target"), data.get("title")
+        if not isinstance(target, str) or not 0 < len(target.strip()) <= 300:
+            raise ValueError("Enter a channel or room")
+        target = target.strip()
+        protocol = entry["protocol"]
+        if protocol == "irc":
+            if target[:1] not in "#&":
+                target = "#" + target
+            if not CHANNEL.fullmatch(target):
+                raise ValueError("Enter a channel like #fluidmessages")
+        elif protocol == "matrix":
+            if not re.fullmatch(r"[!#][^\s/\x00-\x1f]{1,250}:[A-Za-z0-9.:-]{1,255}", target):
+                raise ValueError("Enter a room address like #room:example.org")
+            with self.using(entry["id"]):
+                joined = self.matrix_request("join/" + quote(target, safe=""), {}, method="POST") or {}
+            if not isinstance(joined.get("room_id"), str) or not ROOM.fullmatch(joined["room_id"]):
+                raise ValueError("The homeserver didn’t let you join that room")
+            title = title or (target if target.startswith("#") else "")
+            target = joined["room_id"]
+        else:
+            if not JID.fullmatch(target):
+                raise ValueError("Enter a group chat address like room@conference.example.org")
+            target = target.lower()
+        existing = next((r for r in self.routes if r["account"] == entry["id"] and r.get("via") == protocol
+                         and r["target"].lower() == target.lower()), None)
+        if existing:
+            return {"route": {key: value for key, value in existing.items() if key != "via"}, "joined": False}
+        address = "room-" + hashlib.sha256((entry["id"] + "\n" + target.lower()).encode()).hexdigest()[:16]
+        result = self.add_route(db, {"address": address, "protocol": protocol, "target": target, "group": True,
+                                     "title": bounded(title, 120) or target, "account": entry["id"]})
+        result["joined"] = True
+        return result
+
+    def leave(self, db, data):
+        """Leaves a channel or room on its server and takes it out of the inbox. Its earlier messages stay."""
+        address, protocol = data.get("address"), data.get("protocol")
+        route = self.route(address, protocol) if isinstance(address, str) and isinstance(protocol, str) else None
+        if route is None or not route.get("group"):
+            raise ValueError("Only channels and rooms can be left")
+        if any(r["address"] == address and r["protocol"] == protocol for r in self.legacy_routes):
+            raise ValueError("This link is set in FluidMessages Web’s configuration file")
+        stored = db.execute("SELECT 1 FROM protocol_routes WHERE address=? AND protocol=?", (address, protocol)).fetchone()
+        if not stored:
+            # A channel listed on the IRC account itself: take it off the account's list.
+            entry = next((e for e in self.accounts.all() if e["id"] == route["account"]), None)
+            if entry is None or entry["source"] != "phone":
+                raise ValueError("This channel is set in Docker Compose. Remove it there.")
+            values = dict(entry["values"])
+            values["channels"] = [c for c in values.get("channels", []) if c.lower() != route["target"].lower()]
+            self.accounts.save("irc", values, entry["id"])
+        if route.get("via") == "matrix":
+            with self.using(route["account"]):
+                self.matrix_request("rooms/" + quote(route["target"], safe="") + "/leave", {}, method="POST")
+        db.execute("DELETE FROM protocol_routes WHERE address=? AND protocol=?", (address, protocol))
+        # Once this is saved, IRC parts the channel and XMPP leaves the group chat, without reconnecting.
+        threading.Timer(0.5, self.refresh_clients).start()
+        return {"left": True}
+
     # IRC
 
-    def irc_route(self, conversation):
+    def irc_route(self, conversation, account=None):
+        account = account or self.default_account("irc")
         for route in self.routes:
-            if route["protocol"] == "irc" and route.get("via") == "irc" and route["target"].lower() == conversation.lower():
+            if route["protocol"] == "irc" and route.get("via") == "irc" and route["account"] == account \
+                    and route["target"].lower() == conversation.lower():
                 return route
         return None
 
-    def channel_state(self, channel, state):
-        route = self.irc_route(channel)
+    def channel_state(self, channel, state, account=None):
+        route = self.irc_route(channel, account)
         if route is not None:
             self.save_state("channel:" + route["address"], json.dumps({"name": channel, **state}))
 
-    def accept_irc(self, conversation, nick, text, tags, date, outgoing):
-        route = self.irc_route(conversation)
+    def accept_irc(self, conversation, nick, text, tags, date, outgoing, account=None):
+        route = self.irc_route(conversation, account)
         # Direct messages from nicks you haven't linked are ignored, the same way unknown email is.
         if route is None or outgoing:
             return
         msgid = tags.get("msgid", "")
-        stable = hashlib.sha256((msgid or f"{conversation}:{nick}:{date}:{text}").encode()).hexdigest()
+        stable = self.stable(route, msgid or f"{conversation}:{nick}:{date}:{text}")
         react, reply = tags.get("+draft/react"), tags.get("+draft/reply")
         target = self.find(route["address"], "irc", "irc_msgid", reply) if reply else None
         if react:
@@ -1289,19 +1659,21 @@ class Gateway:
 
     # XMPP
 
-    def xmpp_route(self, conversation):
+    def xmpp_route(self, conversation, account=None):
+        account = account or self.default_account("xmpp")
         for route in self.routes:
-            if route["protocol"] == "xmpp" and route.get("via") == "xmpp" and route["target"] == conversation.lower():
+            if route["protocol"] == "xmpp" and route.get("via") == "xmpp" and route["account"] == account \
+                    and route["target"] == conversation.lower():
                 return route
         return None
 
-    def accept_xmpp(self, conversation, author, text, message_id, date, outgoing, extra):
-        route = self.xmpp_route(conversation)
+    def accept_xmpp(self, conversation, author, text, message_id, date, outgoing, extra, account=None):
+        route = self.xmpp_route(conversation, account)
         if route is None:
             return
         if outgoing and self.find(route["address"], "xmpp", "xmpp_id", message_id):
             return  # Our own message reflected back by a group or carbon.
-        stable = hashlib.sha256(f"{conversation}:{message_id}:{date}".encode()).hexdigest()
+        stable = self.stable(route, f"{conversation}:{message_id}:{date}")
         if "retract" in extra:
             target = self.find(route["address"], "xmpp", "xmpp_id", extra["retract"])
             if target is not None and (outgoing or target.get("author") == author):

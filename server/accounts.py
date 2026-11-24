@@ -6,9 +6,15 @@ Accounts come from three places, in this order of precedence:
 2. Accounts added from the phone, stored in a private JSON file in the data volume.
 3. The older FLUID_PROTOCOL_CONFIG file, still read for existing setups.
 
+Several accounts per service are allowed (two Matrix homeservers, a work and a personal mailbox, several IRC
+networks). Each has a stable id made from its service and public address, such as "matrix:@alice:example.org".
+The file that held one account per service ({"matrix": {...}}) is still read as is; the first save rewrites it as
+{"version": 2, "accounts": [...]}, keeping those accounts first and with the same ids.
+
 Secrets never leave the companion: the API reports only whether each secret is set.
 """
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -93,6 +99,29 @@ def validate(protocol, values):
     return clean
 
 
+def identity(protocol, values):
+    """An account's public address: what the person sees and what the phone and the web compare. Never a secret."""
+    pick = lambda name: values.get(name) if isinstance(values.get(name), str) else ""
+    if protocol == "matrix":
+        return pick("user_id")
+    if protocol == "xmpp":
+        return pick("jid").lower()
+    if protocol == "email":
+        return pick("address").lower()
+    if protocol == "irc":
+        return (pick("nick") + "@" + pick("server").lower()) if pick("nick") else ""
+    return ""
+
+
+def account_id(protocol, values):
+    return protocol + ":" + identity(protocol, values)
+
+
+def tag(account):
+    """A short, stable suffix for an account, used in the thread keys and state of every account but the first."""
+    return hashlib.sha256(account.encode()).hexdigest()[:8]
+
+
 class AccountStore:
     def __init__(self, path, legacy=None, environ=None):
         self.path = Path(path)
@@ -103,6 +132,7 @@ class AccountStore:
         self.errors = {}
 
     def environment(self):
+        """One read-only account per service from Docker Compose, as before."""
         result, self.errors = {}, {}
         for protocol, names in ENV.items():
             values = {field: self.environ[variable] for field, variable in names.items() if self.environ.get(variable)}
@@ -114,59 +144,139 @@ class AccountStore:
                     self.errors[protocol] = "Docker Compose: " + str(error)
         return result
 
-    def saved(self):
+    def saved_list(self):
+        """Accounts added from the phone or this web app, oldest first: [{"id", "protocol", "values"}]."""
         if not self.path.is_file():
-            return {}
+            return []
         data = json.loads(self.path.read_text())
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return []
+        if data.get("version") == 2:
+            entries = data.get("accounts") if isinstance(data.get("accounts"), list) else []
+            return [entry for entry in entries if isinstance(entry, dict) and entry.get("protocol") in PROTOCOLS
+                    and isinstance(entry.get("values"), dict) and isinstance(entry.get("id"), str)]
+        # The one-account-per-service file from before: same accounts, in the same order, with stable ids.
+        return [{"id": account_id(protocol, values), "protocol": protocol, "values": values}
+                for protocol, values in data.items() if protocol in PROTOCOLS and isinstance(values, dict)]
 
-    def current(self):
-        """Effective accounts: Compose overrides the phone's, which override the legacy file."""
-        result = {protocol: dict(self.legacy[protocol]) for protocol in PROTOCOLS if isinstance(self.legacy.get(protocol), dict)}
-        result.update(self.saved())
-        result.update(self.environment())
+    def saved(self):
+        """The first saved account of each service, the shape older code reads."""
+        result = {}
+        for entry in self.saved_list():
+            result.setdefault(entry["protocol"], entry["values"])
         return result
 
+    def all(self):
+        """Every effective account, in order: Compose, then saved ones, then the old config file's when nothing else
+        covers that service. The first account of a service is its primary. Each: {id, protocol, source, values}."""
+        output, seen = [], set()
+
+        def add(protocol, values, source, ident=None):
+            ident = ident or account_id(protocol, values)
+            if ident not in seen:
+                seen.add(ident)
+                output.append({"id": ident, "protocol": protocol, "source": source, "values": dict(values)})
+        for protocol, values in self.environment().items():
+            add(protocol, values, "compose")
+        for entry in self.saved_list():
+            add(entry["protocol"], entry["values"], "phone", entry["id"])
+        covered = {entry["protocol"] for entry in output}
+        for protocol in PROTOCOLS:
+            if protocol not in covered and isinstance(self.legacy.get(protocol), dict):
+                add(protocol, self.legacy[protocol], "file")
+        return output
+
+    def current(self):
+        """The primary account of each service: {protocol: values}."""
+        result = {}
+        for entry in self.all():
+            result.setdefault(entry["protocol"], entry["values"])
+        return result
+
+    def get(self, ident):
+        return next((entry["values"] for entry in self.all() if entry["id"] == ident), None)
+
+    def of(self, protocol):
+        return [entry for entry in self.all() if entry["protocol"] == protocol]
+
+    def primary(self, protocol):
+        return next((entry["id"] for entry in self.all() if entry["protocol"] == protocol), "")
+
     def sources(self):
-        env, saved = self.environment(), self.saved()
-        return {protocol: "compose" if protocol in env else "phone" if protocol in saved else "file"
-                for protocol in self.current()}
+        """Where each service's primary account comes from, as before."""
+        result = {}
+        for entry in self.all():
+            result.setdefault(entry["protocol"], entry["source"])
+        return result
 
     def redacted(self):
-        sources = self.sources()
-        output = []
-        for protocol, values in self.current().items():
+        output, primaries = [], set()
+        for entry in self.all():
+            protocol, values = entry["protocol"], entry["values"]
             fields = {}
             for name, (_, secret, _) in FIELDS[protocol].items():
                 if name in values:
                     fields[name] = {"set": True} if secret else values[name]
-            output.append({"protocol": protocol, "source": sources[protocol], "fields": fields})
+            primary = protocol not in primaries
+            primaries.add(protocol)
+            output.append({"protocol": protocol, "source": entry["source"], "fields": fields, "id": entry["id"],
+                           "name": identity(protocol, values), "primary": primary})
+        covered = {entry["protocol"] for entry in output}
         for protocol, error in self.errors.items():
-            if protocol not in sources:
+            if protocol not in covered:
                 output.append({"protocol": protocol, "source": "compose", "fields": {}, "error": error})
         return output
 
-    def save(self, protocol, values):
-        if protocol in self.environment():
+    def save(self, protocol, values, ident=None, add=False):
+        """Saves an account. [ident] edits that account; [add] adds another; neither (older phones) replaces the
+        service's first saved account, the way the one-account store worked."""
+        if protocol not in FIELDS:
+            raise ValueError("Unknown protocol")
+        environment = self.environment()
+        if ident and any(entry["id"] == ident and entry["source"] == "compose" for entry in self.all()) \
+                or not ident and not add and protocol in environment:
             raise ValueError("This account is set in Docker Compose. Change it there.")
         with self.lock:
-            saved = self.saved()
-            previous = saved.get(protocol, {})
+            saved = self.saved_list()
+            if ident:
+                index = next((i for i, entry in enumerate(saved) if entry["id"] == ident and entry["protocol"] == protocol), None)
+                if index is None:
+                    raise ValueError("That account was removed. Add it again.")
+            elif add:
+                index = None
+            else:
+                index = next((i for i, entry in enumerate(saved) if entry["protocol"] == protocol), None)
+            previous = saved[index]["values"] if index is not None else {}
             # Leaving a password blank keeps the one already saved.
-            for name, (_, secret, _) in FIELDS.get(protocol, {}).items():
+            for name, (_, secret, _) in FIELDS[protocol].items():
                 if secret and not values.get(name) and previous.get(name):
                     values[name] = previous[name]
-            saved[protocol] = validate(protocol, values)
-            self.write(saved)
-        return saved[protocol]
+            clean = validate(protocol, values)
+            new_id = account_id(protocol, clean)
+            others = [entry for i, entry in enumerate(saved) if i != index]
+            if any(entry["id"] == new_id or account_id(entry["protocol"], entry["values"]) == new_id for entry in others) \
+                    or (index is None and new_id in {account_id(p, v) for p, v in environment.items()}):
+                raise ValueError("That account is already added.")
+            if index is None:
+                saved.append({"id": new_id, "protocol": protocol, "values": clean})
+            else:
+                # Editing keeps the id, so chats stay with the account even if its details change.
+                saved[index] = {"id": saved[index]["id"], "protocol": protocol, "values": clean}
+            self.write({"version": 2, "accounts": saved})
+        return clean
 
-    def delete(self, protocol):
-        if protocol in self.environment():
+    def delete(self, protocol, ident=None):
+        if ident and any(entry["id"] == ident and entry["source"] == "compose" for entry in self.all()) \
+                or not ident and protocol in self.environment():
             raise ValueError("This account is set in Docker Compose. Remove it there.")
         with self.lock:
-            saved = self.saved()
-            saved.pop(protocol, None)
-            self.write(saved)
+            saved = self.saved_list()
+            if ident:
+                kept = [entry for entry in saved if entry["id"] != ident]
+            else:
+                first = next((entry for entry in saved if entry["protocol"] == protocol), None)
+                kept = [entry for entry in saved if entry is not first]
+            self.write({"version": 2, "accounts": kept})
 
     def write(self, data):
         self.path.parent.mkdir(parents=True, exist_ok=True)

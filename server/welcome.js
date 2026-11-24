@@ -176,13 +176,13 @@ function sampleConversation() {
   return card;
 }
 
-/** Calls and Chats, taking turns being selected (the phone's TabsIllustration). */
+/** Calls and Messages, taking turns being selected (the phone's TabsIllustration). */
 function tabsIllustration(flow) {
   const card = element('div', '', 'g-card g-tabs');
   const caption = element('span', 'All your chats', 'g-caption');
   const bar = element('div', '', 'g-tabbar');
   const tabs = {};
-  for (const [key, label] of [['calls', 'Calls'], ['messages', 'Chats']]) {
+  for (const [key, label] of [['calls', 'Calls'], ['messages', 'Messages']]) {
     const tab = element('span', '', 'g-tab');
     tab.append(railIcon(key), element('span', label));
     tabs[key] = tab;
@@ -596,10 +596,11 @@ function mockMessageMenu() {
   return {menu, summary, quick};
 }
 
-/** Quick moves: the web's real shortcuts, played with a pointer. */
+/** Quick moves: the web's real shortcuts, played with a pointer. Touch screens hold instead, like the phone. */
 function movesShowcase(flow) {
+  const touch = matchMedia('(hover: none)').matches;
   return showcase(flow, [
-    {caption: 'Point at a message and click ⋯ to react, reply, or forward', length: 4300, build(scene, {at, still, first}) {
+    {caption: touch ? 'Touch and hold a message to react, reply, or forward' : 'Point at a message and click ⋯, or right-click it, to react, reply, or forward', length: 4300, build(scene, {at, still, first}) {
       const {win, thread} = mockWindow('Book club', 'matrix', 'green');
       const target = mockMessage('Perfect! Who’s bringing snacks?', {author: 'Priya'});
       const tools = mockMessageMenu();
@@ -623,10 +624,10 @@ function movesShowcase(flow) {
         else target.bubble.classList.add('rx-hearts');
       });
     }},
-    {caption: 'Right-click a chat to pin, archive, mute, or block it', length: 4200, build(scene, {at, still}) {
+    {caption: touch ? 'Touch and hold a chat to pin, archive, mute, or block it' : 'Right-click a chat to pin, archive, mute, or block it', length: 4200, build(scene, {at, still}) {
       const inbox = element('div', '', 'g-inbox');
       const head = element('div', '', 'g-inbox-head');
-      head.append(element('strong', 'Chats'), element('span', 'Inbox ▾', 'g-filter'));
+      head.append(element('strong', 'Messages'), element('span', 'Inbox ▾', 'g-filter'));
       const rows = [['Book club', 'Priya: Who’s bringing snacks?', '9:41'], ['Maya Chen', 'See you at ten!', '9:12'],
         ['Radio Club', 'Antenna night is Friday', 'Mon']].map(([name, line, time]) => {
         const row = element('div', '', 'thread');
@@ -896,10 +897,10 @@ function showWelcome({at = 0} = {}) {
     {title: 'Welcome', subtitle: 'Your chats and calls, all in one place, right in your browser.',
       body: () => [sampleConversation(), element('p', 'New here? The sample inbox has fictional chats to click around in. Nothing in it is sent.', 'hint')],
       actions: (flow) => [['Get started', () => flow.next()], ['Try the sample inbox', trySample]]},
-    {title: 'Two tabs', subtitle: 'Calls and Chats, along the side or at the bottom.',
+    {title: 'Two tabs', subtitle: 'Calls and Messages, along the side or at the bottom.',
       body: (flow) => [tabsIllustration(flow), guideTips([
         {icon: 'phone', title: 'Calls', line: 'Voice and video with Matrix contacts, and meeting links'},
-        {icon: 'chat', title: 'Chats', line: 'Every chat in one place'},
+        {icon: 'chat', title: 'Messages', line: 'Every chat in one place'},
         {icon: 'gear', title: 'Settings', line: 'Accounts, themes, and an optional phone, next to the tabs'}])]},
     {title: 'One inbox', subtitle: 'Chat services side by side, and texts too if you connect your phone.',
       body: () => [waysIllustration(), guideTips([

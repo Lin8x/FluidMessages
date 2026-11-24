@@ -96,7 +96,12 @@ internal object PhoneSyncItems {
         for (protocol in internet) {
             if (!DirectProtocols.on(prefs, protocol)) continue
             val account = DirectProtocols.account(context, protocol) ?: continue
-            identity(protocol, account).takeIf { it.isNotEmpty() }?.let { items["account:" + protocol.name.lowercase(Locale.ROOT)] = it }
+            identity(protocol, account).takeIf { it.isNotEmpty() }?.let {
+                val service = protocol.name.lowercase(Locale.ROOT)
+                items["account:$service"] = it
+                // The same account, by its own key: a conflict only if FluidMessages Web connects it too.
+                items[AccountKeys.mergeKey(service, it)] = AccountKeys.PHONE
+            }
         }
         for (protocol in internet) if (!protocol.enabled(prefs)) items["protocol:" + protocol.name.lowercase(Locale.ROOT)] = "off"
         return items
@@ -187,8 +192,12 @@ internal object PhoneSyncItems {
                 "account" -> {
                     // The web was chosen for this account: stop connecting from this phone. The account stays saved here,
                     // so turning "Connect from this phone" back on needs no password.
-                    val protocol = MessageProtocol.parse(name)
-                    if (value != null && internet.contains(protocol) && DirectProtocols.on(prefs, protocol)) {
+                    val protocol = MessageProtocol.parse(name.substringBefore(':'))
+                    // Per account: only when the web was chosen for the very account this phone connects.
+                    val mine = AccountKeys.perAccount(key)?.let { (_, address) ->
+                        value == AccountKeys.WEB && DirectProtocols.account(context, protocol)?.let { identity(protocol, it) } == address
+                    } ?: (value != null)
+                    if (mine && internet.contains(protocol) && DirectProtocols.on(prefs, protocol)) {
                         edit.putBoolean(DirectProtocols.key(protocol), false)
                         afterwards += { DirectProtocols.restart(context) }
                     }

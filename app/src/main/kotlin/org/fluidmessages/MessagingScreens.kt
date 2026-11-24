@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -98,7 +99,12 @@ internal data class ThreadRow @JvmOverloads constructor(
     val protocol: String = "",
     val automated: Boolean = false,
     val members: List<GroupMember> = emptyList(),
+    /** With a server picked in the inbox: "Channels", "Rooms", or "Direct messages", shown above the first of each. */
+    val section: String = "",
 )
+
+/** A server in the inbox's strip: an IRC network, Matrix account, or XMPP account (ServersScreen). */
+internal data class ServerChip(val id: String, val name: String, val service: String)
 
 internal data class ChatLine @JvmOverloads constructor(
     val id: String,
@@ -117,6 +123,8 @@ internal data class ChatLine @JvmOverloads constructor(
     val event: Boolean = false,
     /** Sent or received encrypted by FluidMessages: shows a small lock by the time. */
     val encrypted: Boolean = false,
+    /** When a disappearing message goes (epoch millis), or 0: shows a small timer by the time. */
+    val expires: Long = 0L,
 ) {
     /** Photo or other attachment, as one value for forwarding and previews. */
     val media: Attachment? get() = attachment ?: photo?.let(Attachment::photo)
@@ -187,6 +195,8 @@ internal class InboxScreen(
     private val calls: Runnable? = null,
     /** Inbox folders in the filter menu; Hidden chats appears when it's set up and not left out of Settings. */
     private val folders: List<String> = listOf("Inbox", "Archived", "Blocked"),
+    /** Missed calls and unread chats for the tab bar's badges. */
+    private val counts: TabCounts? = null,
 ) {
     private var search by mutableStateOf(initialSearch)
     /** Clears the search field, e.g. after it was used to open hidden chats. */
@@ -197,11 +207,18 @@ internal class InboxScreen(
     /** Decoy mode only: holding the title asks for the passcode to show the real inbox. Nothing on screen hints at it. */
     var titleHold: Runnable? = null
     var error by mutableStateOf<String?>(null)
+    /** Server connections for the strip above the chats; empty hides it. */
+    var servers by mutableStateOf(emptyList<ServerChip>())
+    /** The picked server's account id, or "" for All. */
+    var activeServer by mutableStateOf("")
+    var pickServer: Consumer<String>? = null
+    /** "join", "browse", or "add", with the picked server's account id. */
+    var serverAction: BiConsumer<String, String>? = null
 
     init {
         mount(root, prefs) { palette ->
             val dock = palette.appearance.searchPosition == "bottom"
-            // Read-only when every way to message is off: no compose button, and a note saying why.
+            // Read-only when every chat service is off: no compose button, and a note saying why.
             val canSend = sample || MessageProtocol.anyEnabled(prefs)
             val editSearch: (String) -> Unit = {
                 search = it
@@ -260,17 +277,20 @@ internal class InboxScreen(
                             }
                         }
                     }
-                    if (connected && !canSend) Text("Read-only · sending is off in Settings → Ways to message",
+                    if (connected && !canSend) Text("Read-only · sending is off in Settings → Chat services",
                         Modifier.padding(top = 3.dp, bottom = 4.dp), color = palette.muted, fontSize = 14.sp)
                     if (!dock && (sample || connected)) SearchBox(search, palette, change = editSearch)
                 }
+                if (!sample && connected && folder == "Inbox" && servers.isNotEmpty()) ServerStrip(palette)
                 if (!sample && !connected) {
                     WelcomeCard(palette, connect, compose)
                 } else {
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                         if (threads.isEmpty()) {
                             Text(
-                                error ?: if (search.isEmpty()) "No conversations yet" else "No matches for “$search”",
+                                error ?: if (search.isNotEmpty()) "No matches for “$search”"
+                                    else if (activeServer.isNotEmpty()) "No chats on this server yet. Join a channel or room above."
+                                    else "No conversations yet",
                                 Modifier.padding(horizontal = 22.dp, vertical = 28.dp),
                                 color = palette.muted,
                                 fontSize = 16.sp,
@@ -287,6 +307,10 @@ internal class InboxScreen(
                                 overscrollEffect = stretch,
                             ) {
                                 itemsIndexed(threads, key = { _, thread -> thread.id }) { index, thread ->
+                                    if (thread.section.isNotEmpty() && (index == 0 || threads[index - 1].section != thread.section)) {
+                                        Text(thread.section.uppercase(), Modifier.padding(start = 8.dp, top = if (index == 0) 2.dp else 12.dp, bottom = 2.dp),
+                                            color = palette.muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = .5.sp)
+                                    }
                                     Box(Modifier.elasticRow(stretch, listState, index)) {
                                         ConversationRow(thread, palette, showTags, { open.accept(thread.id) }, { details.accept(thread.id) },
                                             if (sample) null else ({ more.accept(thread.id) }))
@@ -312,7 +336,7 @@ internal class InboxScreen(
                         }
                     }
                 }
-                calls?.let { MainTabBar(palette, false, it, {}) }
+                calls?.let { MainTabBar(palette, false, it, {}, counts) }
             }
         }
     }
@@ -407,6 +431,52 @@ internal fun ConversationRow(thread: ThreadRow, palette: Palette, showProtocol: 
             }
         }
         HorizontalDivider(Modifier.padding(start = 74.dp, end = 6.dp), color = palette.edge)
+    }
+}
+
+/** Servers above the inbox, like Discord's: All, then each IRC network, Matrix account, and XMPP account. */
+@Composable
+private fun InboxScreen.ServerStrip(palette: Palette) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+        @Composable
+        fun chip(label: String, value: String, service: String?) {
+            val on = activeServer == value
+            Row(Modifier.clip(RoundedCornerShape(50)).background(if (on) palette.inboxAction.copy(alpha = .14f) else palette.wash)
+                .border(1.dp, if (on) palette.inboxAction else palette.edge, RoundedCornerShape(50))
+                .clickable(onClickLabel = "Show $label") { pickServer?.accept(value) }
+                .padding(start = if (service == null) 13.dp else 5.dp, end = 13.dp, top = 5.dp, bottom = 5.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                if (service != null) {
+                    val format = MessageProtocol.parse(service)
+                    Box(Modifier.size(22.dp).clip(RoundedCornerShape(7.dp)).background(format.tint(palette.appearance)),
+                        contentAlignment = Alignment.Center) {
+                        Text(format.label.take(1), color = Color(MessageStyle.textOn(format.tint(palette.appearance).toArgb())),
+                            fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(label, color = palette.ink, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+            }
+        }
+        chip("All", "", null)
+        for (server in servers) chip(server.name, server.id, server.service)
+        Text("+", Modifier.clip(RoundedCornerShape(50)).border(1.dp, palette.edge, RoundedCornerShape(50))
+            .clickable(onClickLabel = "Add server") { serverAction?.accept("add", "") }.padding(horizontal = 13.dp, vertical = 3.dp),
+            color = palette.inboxAction, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+    }
+    val server = servers.firstOrNull { it.id == activeServer } ?: return
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp).clip(RoundedCornerShape(14.dp)).background(palette.wash)
+        .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(server.name, color = palette.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(MessageProtocol.parse(server.service).label + " · " + AccountKeys.address(server.id), color = palette.muted, fontSize = 12.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        TextButton(onClick = { serverAction?.accept("join", server.id) }) {
+            Text(if (server.service == "irc") "Join channel" else "Join room", color = palette.inboxAction)
+        }
+        TextButton(onClick = { serverAction?.accept("browse", server.id) }) { Text("Browse", color = palette.inboxAction) }
     }
 }
 
@@ -615,9 +685,9 @@ internal class ConversationScreen @JvmOverloads constructor(
                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
                             val mode = when {
                                 sample && group -> "Sample group · ${sampleMembers.size + 1} members"
-                                group -> "${groupMembers.size + 1} members · ${active.label}"
+                                group -> "${groupMembers.size + 1} members · ${active.label}" + routing?.account.orEmpty().let { if (it.isEmpty()) "" else " · $it" }
                                 sample -> "Sample ${routing?.active?.label ?: transport}"
-                                else -> routing?.active?.label ?: transport
+                                else -> (routing?.active?.label ?: transport) + routing?.account.orEmpty().let { if (it.isEmpty()) "" else " · $it" }
                             }
                             val category = when {
                                 senderStyle == SenderStyle.AUTOMATED -> " · Automated sender"
@@ -657,6 +727,19 @@ internal class ConversationScreen @JvmOverloads constructor(
                     LaunchedEffect(messages.size) {
                         if (messages.isNotEmpty()) list.scrollToItem(messages.lastIndex)
                     }
+                    // A link preview loads after its bubble is drawn, so the newest message (often the link you just sent)
+                    // grows below the composer. While it's on screen, follow it by the height it gained.
+                    LaunchedEffect(list) {
+                        var before: Pair<Int, Int>? = null
+                        snapshotFlow {
+                            val info = list.layoutInfo
+                            info.visibleItemsInfo.lastOrNull()?.takeIf { it.index == info.totalItemsCount - 1 }?.let { it.index to it.size }
+                        }.collect { now ->
+                            val grew = now != null && before?.first == now.first && now.second > before!!.second
+                            if (grew && list.canScrollForward && !list.isScrollInProgress) list.scrollBy((now!!.second - before!!.second).toFloat())
+                            before = now
+                        }
+                    }
                     LazyColumn(
                         Modifier.weight(1f).fillMaxWidth(),
                         state = list,
@@ -679,6 +762,11 @@ internal class ConversationScreen @JvmOverloads constructor(
                             if (line.event) {
                                 // Channel events (joins, parts, topic changes) are small outlined notes in the IRC color.
                                 ChannelEvent(line, palette, MessageProtocol.IRC.tint(palette.appearance))
+                                return@itemsIndexed
+                            }
+                            if (line.attachment == null && line.photo == null && isChatNotice(line.text)) {
+                                // Chat setting notices (disappearing messages, encryption), sent or received, use the same outlined note.
+                                ChannelEvent(line, palette, line.format?.let { if (it == active) activeColor else it.tint(palette.appearance) } ?: activeColor)
                                 return@itemsIndexed
                             }
                             val grouped = !beginsDay && previous != null && line.senderKey() == previous.senderKey()
@@ -1214,8 +1302,11 @@ private fun MessageBubble(
                 line.status.takeIf { it.isNotEmpty() && !failed }).joinToString(" · ")
             // A small outlined lock marks every message FluidMessages encrypted, so you can check a chat at a glance.
             val details = if (line.encrypted) "🔒\uFE0E" + (if (shown.isEmpty()) "" else " $shown") else shown
-            if (details.isNotEmpty()) Text(details, Modifier.padding(top = 3.dp, end = 4.dp),
-                color = palette.muted, fontSize = 11.sp)
+            if (details.isNotEmpty() || line.expires > 0) Row(Modifier.padding(top = 3.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                if (details.isNotEmpty()) Text(details, color = palette.muted, fontSize = 11.sp)
+                if (line.expires > 0) DisappearTimer(line.expires, palette.muted)
+            }
             if (failed) {
                 // Like a "Not Delivered" notice: red text under the bubble, with resend and edit choices.
                 var failedMenu by remember { mutableStateOf(false) }
@@ -1236,6 +1327,27 @@ private fun MessageBubble(
                     Modifier.padding(end = 4.dp), color = palette.muted, fontSize = 11.sp)
             }
         }
+    }
+}
+
+/** A small timer by a disappearing message's time. Tapping it says how long is left, counting down while the chat is open. */
+@Composable
+private fun DisappearTimer(expires: Long, color: Color) {
+    var open by remember(expires) { mutableStateOf(false) }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(expires, open) {
+        while (open) {
+            now = System.currentTimeMillis()
+            kotlinx.coroutines.delay(if (expires - now < 120_000) 1_000 else 30_000)
+        }
+    }
+    val left = Disappearing.timeLeft(expires - now)
+    Row(Modifier.clip(RoundedCornerShape(6.dp))
+        .clickable(onClickLabel = if (open) "Hide time left" else "Show time left") { now = System.currentTimeMillis(); open = !open }
+        .semantics(mergeDescendants = true) { contentDescription = Disappearing.timeLeft(expires - System.currentTimeMillis()) }
+        .padding(horizontal = 4.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("⏱︎", color = color, fontSize = 12.sp)
+        if (open) Text(" $left", color = color, fontSize = 11.sp)
     }
 }
 

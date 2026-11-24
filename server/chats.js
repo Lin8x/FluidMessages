@@ -88,6 +88,9 @@ function threadMenu(key, button) {
     item.addEventListener('click', () => { row.remove(); toggleChat(address, folder); });
     row.append(item);
   }
+  // Move to private folder, once it's set up (privacy.js).
+  const hide = typeof privateMenuItem === 'function' ? privateMenuItem(key, row) : null;
+  if (hide) row.append(hide);
   const details = element('button', 'Details');
   details.type = 'button';
   details.addEventListener('click', () => { row.remove(); select(key); openDetails().catch(showError); });
@@ -212,6 +215,8 @@ function detailsExtras(key) {
       button.addEventListener('click', () => { toggleChat(address, folder); draw(); });
       row.append(button);
     }
+    const hide = typeof privateDetailsButton === 'function' ? privateDetailsButton(address) : null;
+    if (hide) row.append(hide);
   };
   draw();
   chat.append(row, element('p', 'Muted chats don’t chime. Blocking hides the chat in Blocked here; it doesn’t stop delivery.', 'muted'));
@@ -239,7 +244,7 @@ function detailsExtras(key) {
 
 // The sample groups' people, as on the phone (MainActivity SAMPLE_GROUPS). Fictional names, 555-01xx numbers, example.org.
 const SAMPLE_MEMBERS = {
-  'mms:+12025550131,+12025550142': [['Sam Rivera', '+12025550131'], ['Jordan Lee', '+12025550142']],
+  'mms:+12025550131,+12025550142': [['Sam Rivera', '+12025550131'], ['Jordan Ellis', '+12025550142']],
   'sample-photo-walk': [['Ana Ortiz', '+12025550155'], ['Leo Park', '+12025550166'], ['Maya Chen', '+12025550123']],
   'sample-radio-club': [['Kestrel', '@kestrel:example.org'], ['Orbital', '@orbital:example.org'], ['Mosaic', '@mosaic:example.org']],
 };
@@ -294,9 +299,11 @@ const protocolName = (protocol) => protocol === 'rcs' ? 'RCS preview' : labels[p
 function headerSubtitle(key) {
   const protocol = threadProtocol(key);
   if (automatedThread(key)) return 'SMS · Automated sender';
-  if (!threadIsGroup(key)) return (sampleOn ? 'Sample ' : '') + protocolName(protocol);
+  // "via alice@example.org" when the service has more than one account (servers.js).
+  const via = typeof accountVia === 'function' && typeof routeFor === 'function' ? accountVia(routeFor(key)) : '';
+  if (!threadIsGroup(key)) return (sampleOn ? 'Sample ' : '') + protocolName(protocol) + via;
   const count = threadMembers(key).length + 1;
-  return (sampleOn ? 'Sample group · ' : '') + count + ' members · ' + protocolName(protocol);
+  return (sampleOn ? 'Sample group · ' : '') + count + ' members · ' + protocolName(protocol) + via;
 }
 
 function detailsPageNode() {
@@ -352,7 +359,8 @@ function closeDetailsPage(focus = true) {
 /** The big avatar, name, and line at the top of a details page. */
 function detailsHero(name, line, lock) {
   const hero = element('div', '', 'details-hero');
-  hero.append(element('span', initials(name), 'avatar details-avatar'), element('h3', name));
+  hero.append(typeof avatarFor === 'function' ? avatarFor(name, 'details-avatar') : element('span', initials(name), 'avatar details-avatar'),
+    element('h3', name));
   if (line) hero.append(element('p', line, 'muted'));
   if (lock) hero.append(lock);
   return hero;
@@ -382,7 +390,7 @@ function contactAddresses(key) {
   const add = (label, value) => { if (value && !out.some(([, known]) => known.toLowerCase() === value.toLowerCase())) out.push([label, value]); };
   const route = typeof routeFor === 'function' ? routeFor(key) : null;
   if (!/^(web|sample|irc)-/.test(address)) add(automatedThread(key) ? 'Automated sender · SMS' : protocolName(threadProtocol(key)), address);
-  if (route) add(protocolName(route.protocol), route.target);
+  if (route) add(protocolName(route.protocol) + (typeof accountVia === 'function' ? accountVia(route) : ''), route.target);
   for (const linked of (typeof routes === 'undefined' ? [] : routes)) if (linked.address === address) add(protocolName(linked.protocol), linked.target);
   // The same person in another chat, when chats aren't combined.
   const title = threadTitle(key);
@@ -416,7 +424,8 @@ function memberList(key, members) {
     row.type = 'button';
     const words = element('span', '', 'detail-words');
     words.append(element('strong', member.name), element('small', [member.address !== member.name ? member.address : '', protocolName(member.protocol)].filter(Boolean).join(' · ')));
-    row.append(element('span', initials(member.name), 'avatar'), words, element('span', '›', 'chevron'));
+    row.append(typeof avatarFor === 'function' ? avatarFor(member.name) : element('span', initials(member.name), 'avatar'), words,
+      element('span', '›', 'chevron'));
     row.setAttribute('aria-label', member.name + ', ' + (member.address && member.address !== member.name ? member.address + ', ' : '') + protocolName(member.protocol) + '. Open details');
     row.addEventListener('click', () => openMemberDetails(key, member));
     list.append(row);
@@ -426,9 +435,10 @@ function memberList(key, members) {
   return section;
 }
 
-/** A group member's details: their own chat's details when you have one, otherwise their contact card. */
+/** A group member's contact page (people.js), with Back returning to the group's details. */
 function openMemberDetails(groupKey, member) {
   const backToGroup = () => { select(groupKey); openDetails().catch(showError); };
+  if (typeof openMemberContact === 'function') { openMemberContact(member, backToGroup).catch(showError); return; }
   const own = memberThread(member);
   if (own) { select(own); openDetails({back: backToGroup}).catch(showError); return; }
   const info = element('section', '', 'settings-section');
@@ -604,6 +614,8 @@ function sampleMessages() {
     type, date: now - ago * minute, read: 1, author});
   const maya = '+12025550123';
   add(maya, 'sms', 'Maya Chen', 'Coffee at ten?', 1, 95);
+  // A chat setting notice, shown locally as the outlined note a real one gets (cards.js).
+  if (typeof timerNoticeText === 'function') add(maya, 'sms', 'Maya Chen', timerNoticeText(86400), 2, 92);
   add(maya, 'sms', 'Maya Chen', 'See you there!', 2, 90);
   add(maya, 'sms', 'Maya Chen', 'Bring the *good* beans this time ☕ and ||the secret recipe||', 1, 88);
   // Maya likes your message. " (my message)" would mean she liked her own, so it wouldn't fold onto yours.
@@ -611,14 +623,14 @@ function sampleMessages() {
   const plans = 'mms:+12025550131,+12025550142';
   add(plans, 'mms', 'Weekend Plans', 'Who’s in for Saturday?', 1, 300, 'Sam Rivera');
   add(plans, 'mms', 'Weekend Plans', '📊 Poll: Where should we hike?\n1. Ridge loop\n2. Lake trail\n3. Pine meadow\nReply with a number to vote · poll smpl01', 2, 290);
-  add(plans, 'mms', 'Weekend Plans', '2', 1, 280, 'Jordan Lee');
+  add(plans, 'mms', 'Weekend Plans', '2', 1, 280, 'Jordan Ellis');
   add(plans, 'mms', 'Weekend Plans', '🗳️ Ridge loop · voted in “Where should we hike?” (poll smpl01)', 1, 275, 'Sam Rivera');
   const saturday = new Date(now + 3 * 86400000);
   saturday.setHours(9, 0, 0, 0);
   if (typeof eventText === 'function') {
     add(plans, 'mms', 'Weekend Plans', eventText({title: 'Saturday hike', start: saturday.getTime(), end: saturday.getTime() + 4 * 3600000, allDay: false,
       location: 'Ridge trailhead', notes: 'Bring water and a snack'}), 2, 260);
-    add(plans, 'mms', 'Weekend Plans', 'yes', 1, 250, 'Jordan Lee');
+    add(plans, 'mms', 'Weekend Plans', 'yes', 1, 250, 'Jordan Ellis');
   }
   const walk = 'sample-photo-walk';
   add(walk, 'rcs', 'Photo Walk', 'Golden hour starts at six!\n(sent with Confetti 🎉)', 1, 40, 'Ana Ortiz');
@@ -681,7 +693,7 @@ function startSample(options) {
   active = '';
   delete get('workspace').dataset.thread;
   get('schedule').hidden = true;
-  get('recipient').textContent = 'Chats';
+  get('recipient').textContent = 'Messages';
   get('transport').textContent = '';
   get('avatar').textContent = '';
   rebuildThreads();
@@ -703,7 +715,7 @@ function exitSample() {
   active = '';
   delete get('workspace').dataset.thread;
   get('schedule').hidden = true;
-  get('recipient').textContent = 'Chats';
+  get('recipient').textContent = 'Messages';
   get('transport').textContent = '';
   get('avatar').textContent = '';
   if (sampleSaved && typeof routes !== 'undefined') routes = sampleSaved.routes;
@@ -776,10 +788,9 @@ function chatCodesSection() {
 /** Privacy and security → Keep things private: what stays on the phone. */
 function privateNoteSection() {
   const section = element('section', '', 'settings-section');
-  section.append(element('h3', 'Keep things private'),
-    element('p', 'Your phone’s private folder never syncs here, and FluidMessages Web hides its copies. Decoy mode and Quick hide are on '
-      + 'your phone. Messages sent from the browser aren’t FluidMessages-encrypted; that key stays on your phone. On another device, '
-      + 'FluidMessages Web always asks for its password.', 'muted'));
+  section.append(element('h3', 'Your phone and this browser'),
+    element('p', 'Your phone’s private folder and decoy chats never sync here, and FluidMessages Web hides its copies. Messages sent '
+      + 'from the browser aren’t FluidMessages-encrypted; that key stays on your phone. On another device, FluidMessages Web always asks for its password.', 'muted'));
   return section;
 }
 
