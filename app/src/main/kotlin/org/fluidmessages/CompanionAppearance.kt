@@ -32,6 +32,10 @@ internal object CompanionAppearance {
             .put("dark", palette.ink() == android.graphics.Color.WHITE)
             .put("exactTimes", prefs.getBoolean("exactTimes", false))
             .put(TabBadges.PREF, prefs.getBoolean(TabBadges.PREF, true))
+            // Messages → Communities and the inbox filter menu, so the browser shows them the same way.
+            .put(Communities.SHOW_PREF, Communities.show(prefs))
+            .put(Communities.SORT_PREF, Communities.sort(prefs).id)
+            .put(InboxFilters.PREF, InboxFilters.stored(prefs))
             .put(MainActivity.ANNOUNCE_SETTINGS, prefs.getBoolean(MainActivity.ANNOUNCE_SETTINGS, true))
             .put("tagMode", DisplayRules.mode(prefs, DisplayRules.TAGS))
             .put("encryptionMode", DisplayRules.mode(prefs, DisplayRules.ENCRYPTION))

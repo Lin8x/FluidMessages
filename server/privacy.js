@@ -106,7 +106,8 @@ async function reloadInbox() {
 get('folder').addEventListener('change', () => {
   const folder = get('folder').value;
   if (folder === QUICK_HIDE) { quickHide().catch(showError); return; }
-  if (folder !== PRIVATE_FOLDER) privateGateMode = privateGateMode === 'reveal' ? 'reveal' : '';
+  // Filters inside the open private folder (inbox-filters.js) stay in it.
+  if (folder !== PRIVATE_FOLDER && !folder.startsWith('private:')) privateGateMode = privateGateMode === 'reveal' ? 'reveal' : '';
 });
 
 /** Quick hide: this browser switches to the decoy inbox at once. The private folder closes. */

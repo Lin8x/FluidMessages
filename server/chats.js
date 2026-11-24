@@ -4,7 +4,7 @@
 // each message's ⋯ menu, and the sample chats, which try everything with fictional people and send nothing.
 // Loaded after app.js, companion.js, and cards.js, and uses their helpers.
 
-const NO_CHATS = () => ({pinned: [], archived: [], blocked: [], muted: [], locks: {}});
+const NO_CHATS = () => ({pinned: [], archived: [], blocked: [], muted: [], mute_until: {}, locks: {}});
 let webChats = NO_CHATS();
 
 /** The snapshot's web chat settings and new messages (app.js refresh). */
@@ -19,6 +19,7 @@ function chatState() { return sampleOn ? sampleChats : webChats; }
 function saveChats(next) {
   if (sampleOn) sampleChats = next; else webChats = next;
   showThreads();
+  if (typeof updateMuteMark === 'function') updateMuteMark();
   if (!sampleOn) api('settings', {web_chats: next}).catch(showError);
 }
 
@@ -32,17 +33,237 @@ function chatFolders() {
 }
 
 function inFolder(address, key) { return chatFolders()[key].includes(address); }
-function chatMuted(address) { const state = chatState(); return state.muted.includes(address) || inFolder(address, 'blocked'); }
+/** Kept quiet: muted now (by itself or its server, and not yet run out) or blocked. */
+function chatMuted(address) { return chatMuteEnds(address) !== null || inFolder(address, 'blocked'); }
 function chatLocked(key) { return !!chatState().locks[threadAddress(key)]; }
 
-const FOLDER_ACTIONS = {pinned: ['Pin', 'Unpin'], archived: ['Archive', 'Unarchive'], muted: ['Mute', 'Unmute'], blocked: ['Block', 'Unblock']};
-const FOLDER_DONE = {pinned: ['Pinned.', 'Unpinned.'], archived: ['Archived.', 'Moved back to the inbox.'], muted: ['Muted. It won’t chime.', 'Unmuted.'],
+// Muting, for a while or for good: a chat, everyone's chats with one person, or every channel and room on a server.
+// Muted chats don't notify, chime, or vibrate, and don't count on the tabs; their messages still arrive and show
+// unread. Keys are kept in web_chats.muted as before: a chat's address, or "server:<account id>" for a whole
+// server. web_chats.mute_until says when a timed mute ends; a key without one is muted forever, as every mute
+// from before was. A mute whose time is up simply stops counting, with nothing to run in the background, and is
+// tidied away on the next save. Same rules as the phone (Mutes.kt). [muteClock] is swapped in the tests.
+
+const MUTE_CHOICES = [['1 hour', 3600000], ['6 hours', 6 * 3600000], ['1 day', 86400000], ['1 week', 7 * 86400000], ['Forever', 0]];
+const SERVER_MUTE = 'server:';
+let muteClock = () => Date.now();
+
+/** When [key]'s own mute ends: 0 for forever, the time it ends, or null when it isn't muted (or its time is up). */
+function muteEnds(key, state = chatState(), now = muteClock()) {
+  if (!key || !(state.muted || []).includes(key)) return null;
+  const until = Number((state.mute_until || {})[key]) || 0;
+  return until && until <= now ? null : until;
+}
+
+/** The longer of two mutes: forever beats any time, and null is no mute. */
+function longerMute(a, b) {
+  if (a === null || a === undefined) return b ?? null;
+  if (b === null || b === undefined) return a;
+  return a === 0 || b === 0 ? 0 : Math.max(a, b);
+}
+
+/** The server (account id) a chat's address belongs to, for chats in a channel, room, or server DM. */
+function muteServerOf(address) {
+  const route = (typeof routes === 'undefined' ? [] : routes).find((item) => item.address === address && item.account);
+  return route ? route.account : '';
+}
+
+/** When a chat's mute ends, counting its server's: 0 forever, a time, or null when it isn't muted. */
+function chatMuteEnds(address, state = chatState(), now = muteClock()) {
+  const server = muteServerOf(address);
+  return longerMute(muteEnds(address, state, now), server ? muteEnds(SERVER_MUTE + server, state, now) : null);
+}
+
+/** Several keys, such as a person's chats, are muted when every one of them is; the soonest end is what shows. */
+function keysMuteEnds(keys, state = chatState(), now = muteClock()) {
+  if (!keys.length) return null;
+  let soonest = 0;
+  for (const key of keys) {
+    const ends = key.startsWith(SERVER_MUTE) ? muteEnds(key, state, now) : chatMuteEnds(key, state, now);
+    if (ends === null) return null;
+    if (ends && (!soonest || ends < soonest)) soonest = ends;
+  }
+  return soonest;
+}
+
+/** The chat settings with mutes whose time is up taken out. */
+function pruneMutes(state, now = muteClock()) {
+  const until = {...(state.mute_until || {})};
+  const muted = (state.muted || []).filter((key) => {
+    const ends = Number(until[key]) || 0;
+    if (ends && ends <= now) { delete until[key]; return false; }
+    return true;
+  });
+  for (const key of Object.keys(until)) if (!muted.includes(key) || !(Number(until[key]) > 0)) delete until[key];
+  return {...state, muted, mute_until: until};
+}
+
+/** Mutes [keys] for [duration] milliseconds, or forever with 0. */
+function muteKeys(keys, duration, state = chatState(), now = muteClock()) {
+  const next = pruneMutes(state, now);
+  for (const key of keys) {
+    if (!next.muted.includes(key)) next.muted = [...next.muted, key];
+    if (duration > 0) next.mute_until[key] = now + duration; else delete next.mute_until[key];
+  }
+  return next;
+}
+
+function unmuteKeys(keys, state = chatState(), now = muteClock()) {
+  const next = pruneMutes(state, now);
+  next.muted = next.muted.filter((key) => !keys.includes(key));
+  for (const key of keys) delete next.mute_until[key];
+  return next;
+}
+
+/** "Muted", "Muted until 3:40 PM" (later today), or "Muted for 6 hours" / "1 day" / "1 week". Empty when not muted. */
+function muteLabel(ends, now = muteClock()) {
+  if (ends === null || ends === undefined) return '';
+  if (!ends) return 'Muted';
+  if (new Date(ends).toDateString() === new Date(now).toDateString()) return 'Muted until ' + clock(ends);
+  const hours = Math.ceil((ends - now) / 3600000);
+  if (hours < 24) return 'Muted for ' + hours + (hours === 1 ? ' hour' : ' hours');
+  const days = Math.max(1, Math.round((ends - now) / 86400000));
+  return 'Muted for ' + (days === 7 ? '1 week' : days === 1 ? '1 day' : days + ' days');
+}
+
+/** The small outlined bell with a slash through it. A button when [open] is given. */
+function muteMark(label, open) {
+  const mark = element(open ? 'button' : 'span', '', 'mute-mark');
+  if (open) {
+    mark.type = 'button';
+    mark.setAttribute('aria-label', label + '. Change or unmute');
+    mark.addEventListener('click', (event) => { event.stopPropagation(); open(); });
+    mark.addEventListener('keydown', (event) => event.stopPropagation());
+  } else {
+    mark.setAttribute('role', 'img');
+    mark.setAttribute('aria-label', label);
+  }
+  mark.title = label;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const d of ['M4 11.5V7.2a4 4 0 0 1 6.4-3.2M12 6.6v4.9l1 1H5.5', 'M6.6 13.6a1.5 1.5 0 0 0 2.8 0', 'M2.5 2.5l11 11']) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    for (const [name, value] of [['d', d], ['fill', 'none'], ['stroke', 'currentColor'], ['stroke-width', '1.5'],
+      ['stroke-linecap', 'round'], ['stroke-linejoin', 'round']]) path.setAttribute(name, value);
+    svg.append(path);
+  }
+  mark.append(svg);
+  return mark;
+}
+
+/**
+ * The mute page: how long, or Unmute, as a list of choices on a full page. [keys] are chat addresses (a person's
+ * every address) or a server key. [what] says what it covers. [back] runs afterwards and for Back.
+ */
+function openMutePage({keys, title, what, back}) {
+  const done = back || (() => closeDetailsPage());
+  const draw = () => {
+    const now = muteClock();
+    const ends = keysMuteEnds(keys, chatState(), now);
+    const status = element('section', '', 'settings-section mute-status');
+    const line = element('p', '', 'mute-line');
+    if (ends !== null) line.append(muteMark(muteLabel(ends, now)), document.createTextNode(' ' + muteLabel(ends, now)));
+    else line.textContent = 'Notifications are on.';
+    status.append(line, element('p', what + ' No notifications, sounds, or vibration while muted. Messages still arrive and '
+      + 'show as unread, and muted chats don’t count on the tabs.', 'muted'));
+    if (ends !== null) {
+      const unmute = element('button', 'Unmute', 'primary');
+      unmute.type = 'button';
+      unmute.addEventListener('click', () => { saveChats(unmuteKeys(keys)); say('Unmuted.'); done(); });
+      status.append(unmute);
+    }
+    const list = element('section', '', 'settings-section mute-choices');
+    list.setAttribute('role', 'group');
+    list.append(element('h3', ends === null ? 'Mute for' : 'Change to'));
+    for (const [label, duration] of MUTE_CHOICES) {
+      const row = element('button', '', 'member-row mute-choice');
+      row.type = 'button';
+      row.dataset.duration = String(duration);
+      const words = element('span', '', 'detail-words');
+      words.append(element('strong', label), element('small', duration ? 'Until ' + (new Date(now + duration).toDateString() === new Date(now).toDateString()
+        ? clock(now + duration) : new Date(now + duration).toLocaleString([], {weekday: 'short', hour: 'numeric', minute: '2-digit'}))
+        : 'Until you unmute'));
+      row.append(words, element('span', '›', 'chevron'));
+      row.addEventListener('click', () => {
+        saveChats(muteKeys(keys, duration));
+        say(duration ? 'Muted for ' + label + '.' : 'Muted.');
+        done();
+      });
+      list.append(row);
+    }
+    detailsPage(ends === null ? 'Mute ' + title : 'Muted · ' + title, [status, list], done);
+  };
+  draw();
+}
+
+/** Mute for one chat, from its details, the inbox menu, or the header's mark. */
+function openChatMute(key, back) {
+  const address = threadAddress(key);
+  const server = muteServerOf(address);
+  const serverMuted = server && muteEnds(SERVER_MUTE + server) !== null;
+  openMutePage({keys: [address], title: threadTitle(key), back,
+    what: serverMuted ? 'Its whole server is muted too; unmute the server from the server’s bar to hear its other chats.' : 'Just this chat.'});
+}
+
+/** Mute for a person's contact page: all of their chats and numbers at once (people.js). */
+function personMuteSection(person, chats) {
+  const addresses = [...new Set([...chats.map(threadAddress), ...(person.numbers || [])])];
+  const section = element('section', '', 'settings-section');
+  section.append(element('h3', 'Notifications'));
+  const ends = addresses.length ? keysMuteEnds(addresses) : null;
+  const row = element('button', '', 'member-row');
+  row.type = 'button';
+  row.disabled = !addresses.length;
+  const words = element('span', '', 'detail-words');
+  words.append(element('strong', ends === null ? 'Mute ' + person.name : muteLabel(ends)),
+    element('small', ends === null ? 'All of their chats and numbers' : 'All of their chats and numbers · tap to change or unmute'));
+  if (ends !== null) row.append(muteMark(muteLabel(ends)));
+  row.append(words, element('span', '›', 'chevron'));
+  row.addEventListener('click', () => openMutePage({keys: addresses, title: person.name, what: 'All of ' + person.name + '’s chats and numbers.',
+    back: () => (typeof openPersonPage === 'function' ? openPersonPage(person).catch(showError) : closeDetailsPage())}));
+  section.append(row);
+  return section;
+}
+
+/** A server's mark and Mute button, for its bar or header (servers.js): every channel, room, and DM on it. */
+function serverMuteControls(accountId, name) {
+  const key = SERVER_MUTE + accountId;
+  const ends = muteEnds(key);
+  const open = () => openMutePage({keys: [key], title: name, what: 'Every channel, room, and direct message on ' + name + '.'});
+  const nodes = [];
+  if (ends !== null) nodes.push(muteMark(muteLabel(ends), open));
+  const button = element('button', ends === null ? 'Mute' : 'Muted');
+  button.type = 'button';
+  button.setAttribute('aria-pressed', String(ends !== null));
+  button.addEventListener('click', open);
+  nodes.push(button);
+  return nodes;
+}
+
+/** The mark beside the chat header's lock (app.js select, and after any change). */
+function updateMuteMark() {
+  const old = document.getElementById('mute-mark');
+  const address = typeof active === 'string' && active ? threadAddress(active) : '';
+  const ends = address ? chatMuteEnds(address) : null;
+  if (ends === null) { old?.remove(); return; }
+  const mark = muteMark(muteLabel(ends), () => openChatMute(active));
+  mark.id = 'mute-mark';
+  if (old) old.replaceWith(mark);
+  else (document.getElementById('security-badge') || get('transport')).after(mark);
+}
+
+// End of muting.
+
+// Mute opens its own page with how long (openChatMute), so it isn't a toggle like the folders.
+const FOLDER_ACTIONS = {pinned: ['Pin', 'Unpin'], archived: ['Archive', 'Unarchive'], muted: ['Mute…', 'Muted…'], blocked: ['Block', 'Unblock']};
+const FOLDER_DONE = {pinned: ['Pinned.', 'Unpinned.'], archived: ['Archived.', 'Moved back to the inbox.'],
   blocked: ['Blocked here. FluidMessages Web moves it to Blocked; delivery isn’t blocked.', 'Unblocked.']};
 
 function toggleChat(address, key) {
   const state = chatState();
   const list = state[key] || [];
-  if (!list.includes(address) && key !== 'muted' && inFolder(address, key)) {
+  if (!list.includes(address) && inFolder(address, key)) {
     say('Your phone set this. Change it there, or choose “This web app’s own” settings.', true);
     return;
   }
@@ -59,7 +280,13 @@ function decorateThread(key, button, copy) {
   const address = threadAddress(key);
   const time = button.querySelector('time');
   if (chatLocked(key)) copy.lastElementChild.textContent = '🔒 Chat code';
-  if (chatState().muted.includes(address) && time) time.prepend(Object.assign(element('span', '🔕 '), {title: 'Muted'}));
+  // Muted: the bell with a slash, beside the protocol tags (or the name when tags are hidden).
+  const muted = chatMuteEnds(address);
+  if (muted !== null) {
+    const mark = muteMark(muteLabel(muted));
+    const tags = copy.querySelector('.tags');
+    if (tags) tags.append(mark); else copy.querySelector('strong')?.append(mark);
+  }
   if (inFolder(address, 'pinned') && time) time.prepend('Pinned · ');
   button.addEventListener('contextmenu', (event) => { event.preventDefault(); threadMenu(key, button); });
   let timer = 0;
@@ -82,10 +309,13 @@ function threadMenu(key, button) {
   row.setAttribute('aria-label', 'Choices for ' + threadTitle(key));
   const state = chatState();
   for (const [folder, [on, off]] of Object.entries(FOLDER_ACTIONS)) {
-    const set = folder === 'muted' ? state.muted.includes(address) : inFolder(address, folder);
+    const set = folder === 'muted' ? chatMuteEnds(address, state) !== null : inFolder(address, folder);
     const item = element('button', set ? off : on);
     item.type = 'button';
-    item.addEventListener('click', () => { row.remove(); toggleChat(address, folder); });
+    item.addEventListener('click', () => {
+      row.remove();
+      if (folder === 'muted') { select(key); openChatMute(key); } else toggleChat(address, folder);
+    });
     row.append(item);
   }
   // Move to private folder, once it's set up (privacy.js).
@@ -208,18 +438,24 @@ function detailsExtras(key) {
     row.replaceChildren();
     const state = chatState();
     for (const [folder, [on, off]] of Object.entries(FOLDER_ACTIONS)) {
-      const set = folder === 'muted' ? state.muted.includes(address) : inFolder(address, folder);
-      const button = element('button', set ? off : on);
+      const ends = folder === 'muted' ? chatMuteEnds(address, state) : null;
+      const set = folder === 'muted' ? ends !== null : inFolder(address, folder);
+      const button = element('button', folder === 'muted' && set ? muteLabel(ends) + '…' : set ? off : on);
       button.type = 'button';
       button.setAttribute('aria-pressed', String(set));
-      button.addEventListener('click', () => { toggleChat(address, folder); draw(); });
+      if (folder === 'muted' && set) button.prepend(muteMark(muteLabel(ends)), ' ');
+      button.addEventListener('click', () => {
+        if (folder !== 'muted') { toggleChat(address, folder); draw(); return; }
+        // Back from the mute page returns to these details.
+        openChatMute(key, () => (typeof openDetails === 'function' && active === key ? openDetails().catch(showError) : closeDetailsPage()));
+      });
       row.append(button);
     }
     const hide = typeof privateDetailsButton === 'function' ? privateDetailsButton(address) : null;
     if (hide) row.append(hide);
   };
   draw();
-  chat.append(row, element('p', 'Muted chats don’t chime. Blocking hides the chat in Blocked here; it doesn’t stop delivery.', 'muted'));
+  chat.append(row, element('p', 'Muted chats don’t notify or chime, for as long as you choose; messages still arrive. Blocking hides the chat in Blocked here; it doesn’t stop delivery.', 'muted'));
   let wall = null;
   if (typeof wallpaperPicker === 'function') {
     wall = element('section', '', 'settings-section');

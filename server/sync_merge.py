@@ -20,7 +20,7 @@ import secrets
 import shutil
 import time
 
-KEY = re.compile(r"(look|fun|folder|muted|sender|timer|wallpaper|gif|gifoff|pay|sticker|account|protocol):[^\x00-\x1f]{1,300}")
+KEY = re.compile(r"(look|fun|folder|muted|muteuntil|sender|timer|wallpaper|gif|gifoff|pay|sticker|account|protocol):[^\x00-\x1f]{1,300}")
 # Settings that follow the phone only while FluidMessages Web uses the phone's settings (Settings → Phone and other
 # devices). With "This web app's own" chosen, each side keeps its own look, fun, and timers.
 SETTINGS_GROUPS = ("look", "fun", "timer", "wallpaper")
@@ -41,7 +41,14 @@ FUN = {"effects": "effects", "reactions": "reactionEffects", "games": "games", "
        "linkPreviews": "linkPreviews"}
 FOLDERS = ("pinned", "archived", "blocked")
 # Item groups named after a chat's address, which leave a private chat out of the merge.
-ADDRESSED = ("folder", "muted", "sender", "timer", "wallpaper")
+ADDRESSED = ("folder", "muted", "muteuntil", "sender", "timer", "wallpaper")
+# Timed mutes. "muted:<key>" = "on" stays what every version compares, for timed mutes too, so an older phone or
+# server still sees the chat as muted and nothing it doesn't know ever reaches it. When the mute ends there's no item
+# at all, which older versions read as unmuted. How long is a second item, "muteuntil:<key>" = the end in epoch
+# milliseconds (no item: forever). Older servers refuse a group they don't know and older phones would take a missing
+# item as a change, so these items are only exchanged once both sides say they understand them: the phone asks with
+# the X-Fluid-Merge-Items: muteuntil header and posts "mute_until": 1; this server answers "mute_until": 1.
+TIMED = "muteuntil"
 INTERNET = ("matrix", "xmpp", "email", "irc")
 # The phone's CustomMoney.validTemplate: a link an app can open, never javascript:, a file, or an intent.
 PAY_TEMPLATE = re.compile(r"(?!(?:javascript|file|content|intent|data|vbscript):)[a-z][a-z0-9+.-]{1,30}:\S*\{address\}\S*")
@@ -206,8 +213,15 @@ class Merge:
                 places.setdefault(address, []).append(folder)
         for address, folders in places.items():
             items["folder:" + address] = "+".join(sorted(folders))
+        until = chats.get("mute_until") or {}
+        now = int(self.clock() * 1000)
         for address in chats.get("muted", []):
+            ends = until.get(address, 0) if type(until.get(address, 0)) is int else 0
+            if 0 < ends <= now:
+                continue  # Its time is up: unmuted, on both sides.
             items["muted:" + address] = "on"
+            if ends:
+                items[TIMED + ":" + address] = str(ends)
         for address, kind in (chats.get("senders") or {}).items():
             items["sender:" + address] = kind
         timers = self.gateway.settings(db)["disappearing"]
@@ -301,6 +315,15 @@ class Merge:
             elif kind == "muted":
                 items = [item for item in chats.get("muted", []) if item != name]
                 chats["muted"] = items + [name] if value == "on" else items
+                if value != "on":
+                    chats["mute_until"] = {key: ends for key, ends in (chats.get("mute_until") or {}).items() if key != name}
+            elif kind == TIMED:
+                until = dict(chats.get("mute_until") or {})
+                if value and value.isdigit() and int(value) > 0:
+                    until[name] = int(value)
+                else:
+                    until.pop(name, None)  # Muted forever, if still muted.
+                chats["mute_until"] = until
             elif kind == "sender":
                 senders = dict(chats.get("senders") or {})
                 if value in ("automated", "person"):
@@ -344,7 +367,7 @@ class Merge:
             hooks["save_appearance"](db, look)
         if "fun" in touched:
             hooks["save_prefs"](db, prefs)
-        if touched & {"folder", "muted", "sender"}:
+        if touched & {"folder", "muted", TIMED, "sender"}:
             hooks["save_chats"](db, chats)
         if "timer" in touched:
             self.gateway.save_settings(db, {"disappearing": timers})
@@ -371,16 +394,19 @@ class Merge:
             _put(db, "merge_seen", seen)
         return {key: entry[1] for key, entry in seen.items()}
 
-    def view(self, db):
+    def view(self, db, timed=False):
+        """What the phone merges against. [timed]: the phone understands "muteuntil:" items (see TIMED)."""
         web = self.web_items(db)
         stamps = self.stamps(db, web)
+        if not timed:
+            web = {key: value for key, value in web.items() if group(key) != TIMED}
         pair = _state(db, "merge_pair")
         pending, resolved = _state(db, "merge_pending"), _state(db, "merge_resolved")
         baseline, decisions = _state(db, "merge_baseline"), _state(db, "merge_decisions", {})
         follow = self.gateway.settings(db)["follow_phone"]
         revision = hashlib.sha256(json.dumps([web, pair, baseline, decisions, follow, pending and pending["id"],
                                               resolved and resolved["id"]], sort_keys=True).encode()).hexdigest()[:24]
-        return {"supported": 1, "pair": pair, "revision": revision, "follow_phone": follow, "web": web,
+        return {"supported": 1, "mute_until": 1, "pair": pair, "revision": revision, "follow_phone": follow, "web": web,
                 "stamps": {key: stamps[key] for key in web if key in stamps}, "baseline": baseline,
                 "decisions": decisions, "pending": pending, "resolved": resolved}
 
@@ -394,7 +420,8 @@ class Merge:
     def post(self, db, data):
         """The phone's merge result. Refused when the web changed since the phone looked, so nothing is lost."""
         db.execute("BEGIN IMMEDIATE")
-        current = self.view(db)
+        timed = data.get("mute_until") == 1
+        current = self.view(db, timed)
         if data.get("revision") != current["revision"]:
             raise Conflict("FluidMessages Web changed while merging. Try again.")
         apply_web = clean_items(data.get("apply_web") or {}, nullable=True)
@@ -430,7 +457,7 @@ class Merge:
             _put(db, "merge_pending", {"id": ident, "created": created, "conflicts": found})
         else:
             _put(db, "merge_pending", None)
-        return self.view(db)
+        return self.view(db, timed)
 
     def resolve(self, db, data):
         """A choice for every conflict, from the phone or a browser, whichever opens it first."""

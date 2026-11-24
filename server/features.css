@@ -331,28 +331,53 @@ button.member-row:hover { background: color-mix(in srgb, var(--action, var(--acc
 .decoy-line textarea::placeholder { color: inherit; opacity: .65; }
 .decoy-line .small-button { flex: none; white-space: nowrap; }
 
-/* Servers (servers.js): a strip of server chips above the chats, like Discord's server list, laid out iOS-style. */
-.server-strip { display: flex; gap: .4rem; padding: .5rem .75rem .45rem; overflow-x: auto; scrollbar-width: none; }
-.server-strip::-webkit-scrollbar { display: none; }
-.server-chip { flex: none; display: inline-flex; align-items: center; gap: .4rem; min-height: 34px; padding: .3rem .8rem .3rem .35rem;
-  border-radius: 999px; border: 1px solid var(--line); background: var(--raised, var(--surface)); font-size: .86rem; white-space: nowrap; }
-.server-chip:not(.p-irc):not(.p-matrix):not(.p-xmpp) { padding-inline-start: .8rem; }
-.server-chip[aria-pressed="true"] { border-color: var(--action, var(--accent)); font-weight: 650;
-  background: color-mix(in srgb, var(--action, var(--accent)) 14%, var(--canvas)); }
-.server-badge { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 8px; color: #fff; font-size: .72rem; font-weight: 700;
-  background: var(--action, var(--accent)); }
-.p-irc > .server-badge { background: #6a4bc4; }
-.p-matrix > .server-badge { background: #0b7d6e; }
-.p-xmpp > .server-badge { background: #b5520f; }
-.server-add { padding: .3rem .75rem; font-size: 1.05rem; font-weight: 600; color: var(--action, var(--accent)); }
-.server-bar { display: flex; align-items: center; gap: .5rem; margin: 0 .75rem .35rem; padding: .6rem .7rem; border-radius: 14px;
-  background: var(--raised, var(--surface)); }
-.server-bar { flex-wrap: wrap; }
-.server-words { display: grid; flex: 1 0 100%; min-width: 0; }
-.server-bar button { padding: .35rem .8rem; font-size: .86rem; }
-.server-words strong, .server-words small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.server-words small { color: var(--muted); font-size: .78rem; }
-.server-heading { margin: .7rem 1rem .25rem; color: var(--muted); font-size: .76rem; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+/* Messages → Chats | Communities (servers.js): a segmented control under the title, then each server as a
+   collapsible section of chat rows. */
+.inbox-view { display: flex; gap: 2px; margin: -.35rem 1rem .55rem; padding: 2px; border-radius: 11px; background: var(--surface); }
+.inbox-view[hidden] { display: none; }
+:root[data-search="top"] .inbox-view { order: -3; }
+.inbox-view .segment { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-height: 34px;
+  padding: .25rem .6rem; border: 0; border-radius: 9px; background: transparent; color: var(--ink); font-size: .9rem; font-weight: 550; }
+.inbox-view .segment[aria-pressed="true"] { background: var(--canvas); box-shadow: 0 1px 3px rgb(0 0 0 / .18), 0 0 0 1px var(--line); font-weight: 650; }
+.segment-badge { min-width: 1.25rem; padding: 0 .35rem; border-radius: 999px; background: var(--accent); color: var(--accent-ink, #fff);
+  font-size: .72rem; line-height: 1.25rem; font-weight: 700; }
+.community-bar { display: flex; justify-content: flex-end; padding: .1rem .75rem .35rem; }
+.community-sort { display: inline-flex; align-items: center; gap: .45rem; color: var(--muted); font-size: .82rem; }
+.community-sort select { min-height: 32px; padding: .15rem .5rem; font-size: .85rem; }
+.community { border-bottom: 1px solid var(--line); }
+.community-head { display: flex; align-items: center; gap: .25rem; padding-inline-end: .5rem; }
+.community-toggle { flex: 1; display: flex; align-items: center; gap: .55rem; min-width: 0; min-height: 60px; padding: .45rem .5rem .45rem .35rem;
+  border: 0; border-radius: 0; background: transparent; text-align: start; }
+.community-toggle:hover { background: var(--surface); }
+.community-chevron { flex: none; width: 1rem; color: var(--muted); font-size: 1.1rem; text-align: center; transition: transform .15s; }
+.community-toggle[aria-expanded="true"] .community-chevron { transform: rotate(90deg); }
+.community-avatar { border-radius: 12px; color: #fff !important; }
+.community-avatar.p-irc { background: var(--irc); color: var(--irc-ink) !important; }
+.community-avatar.p-matrix { background: var(--matrix); color: var(--matrix-ink) !important; }
+.community-avatar.p-xmpp { background: var(--xmpp); color: var(--xmpp-ink) !important; }
+.community-words { display: grid; flex: 1; min-width: 0; }
+.community-title { display: flex; align-items: center; gap: .4rem; min-width: 0; }
+.community-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.community-title .tag { flex: none; }
+.community-words small { overflow: hidden; color: var(--muted); font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
+.community-more { flex: none; }
+.community-actions { display: flex; flex-wrap: wrap; gap: .35rem; margin: 0 .75rem .55rem; padding: .45rem; border-radius: 14px; background: var(--surface); }
+.community-actions[hidden] { display: none; }
+.community-actions button { min-height: 36px; padding: .25rem .75rem; font-size: .85rem; }
+.community-body .thread { padding-inline-start: 1.35rem; }
+.community-body .thread:last-child { border-bottom: 0; }
+.community-body .placeholder { padding: .3rem 1rem .9rem 2.6rem; font-size: .88rem; }
+.community-add { display: block; margin: .75rem auto 1rem; min-height: 40px; padding: .35rem 1rem; color: var(--action, var(--accent)); font-weight: 600; }
+.community-empty button { display: block; margin: .6rem auto 0; }
+/* Settings → Messaging → Inbox filters (inbox-filters.js). */
+.filter-order { display: grid; gap: 0; margin: .3rem 0 .5rem; padding: 0; list-style: none; }
+.filter-order-row { display: flex; align-items: center; gap: .6rem; min-height: 54px; padding: .3rem 0; }
+.filter-order-row + .filter-order-row { border-top: 1px solid var(--line); }
+.filter-order-row input { flex: none; width: 1.15rem; height: 1.15rem; }
+.filter-order-row .account-words { display: grid; flex: 1; min-width: 0; cursor: pointer; }
+.filter-order-row .account-words small { font-weight: 400; font-size: .8rem; white-space: normal; }
+.filter-order-row .icon-button.small { min-width: 40px; min-height: 40px; font-size: 1rem; color: var(--action, var(--accent)); }
+.filter-order-row .icon-button.small:disabled { color: var(--muted); opacity: .45; }
 .browse-list { display: grid; }
 .browse-row { display: flex; align-items: center; gap: .6rem; padding: .6rem 0; }
 .browse-row + .browse-row { border-top: 1px solid var(--line); }
@@ -382,3 +407,74 @@ button.member-row:hover { background: color-mix(in srgb, var(--action, var(--acc
 .notify-state[data-state="granted"] strong { color: var(--action, var(--accent)); }
 .notify-state[data-state="denied"] strong, .notify-state[data-state="insecure"] strong { color: #c62828; }
 .new-chat-switch { border: 1px solid var(--line); }
+/* Add server (servers.js): large service rows, then a searchable list of public servers and Other server…. */
+.service-list, .directory-list { display: grid; gap: 4px; }
+.service-row { min-height: 76px; padding: .7rem .7rem; border: 1px solid var(--line); }
+.service-row + .service-row { margin-top: 4px; }
+.service-row .account-words, .directory-row .account-words, .directory-other .account-words { display: grid; gap: .15rem; flex: 1; min-width: 0; }
+.service-row strong { font-size: 1.05rem; }
+.service-chevron { flex: none; color: var(--muted); font-size: 1.5rem; line-height: 1; }
+.directory-row { min-height: 64px; }
+.directory-row + .directory-row { border-top: 1px solid var(--line); border-radius: 0; }
+.directory-row:disabled { opacity: .55; cursor: not-allowed; }
+.directory-address { color: var(--muted); font-size: .78rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.directory-other { margin-top: .4rem; border: 1px dashed var(--line); }
+.directory-plus { background: color-mix(in srgb, var(--action, var(--accent)) 16%, transparent); color: var(--action, var(--accent)); font-size: 1.3rem; }
+.settings-section input[type="search"] { width: 100%; }
+.browse-row .browse-detail { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.browse-joined { flex: none; color: var(--muted); font-size: .8rem; font-weight: 600; }
+.browse-row button { flex: none; }
+.channel-row { gap: .6rem; }
+.channel-row .account-words span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-unread { flex: none; min-width: 22px; height: 22px; padding: 0 .4rem; border-radius: 999px; display: grid; place-items: center;
+  background: var(--action, var(--accent)); color: var(--action-ink, #fff); font-size: .74rem; font-weight: 700; }
+.channel-groups { display: grid; gap: .9rem; }
+/* Descriptions in Add server and Browse wrap rather than cut off. */
+.service-row .account-words > span, .directory-row .account-words > span, .directory-other .account-words > span,
+.browse-row .account-words > .browse-detail { white-space: normal; }
+/* On phones a full page opened from the chat list (Add server, Join, Browse) takes the screen; Back returns to the list. */
+@media (max-width: 700px) {
+  .workspace[data-details="true"] .thread-pane { display: flex; }
+  .workspace[data-details="true"] .sidebar { display: none; }
+
+
+/* Starting something new: New chat, the keypad's Address mode, and New contact or Edit (people.js, companion.js). */
+.new-chat-form .hint { display: block; }
+.new-chat-people { display: grid; gap: .2rem; }
+.new-chat-people:empty { display: none; }
+.new-chat-people h3 { margin: .2rem 0 0; font-size: .85rem; color: var(--muted); }
+.new-chat-choices[hidden] { display: none; }
+.new-contact { min-height: 36px; padding: .3rem .9rem; border-radius: 999px; font-size: .9rem; }
+.keypad-modes { align-self: center; justify-content: center; width: max-content; margin: .2rem auto .4rem; }
+.dial-new { justify-content: center; min-height: 44px; }
+.dial-new[hidden] { display: flex; visibility: hidden; }
+.address-dial { width: min(480px, 100%); margin: .4rem auto; padding: .4rem .8rem; border: 0; }
+.contact-tools { justify-content: center; }
+.contact-form { gap: .9rem; }
+.contact-set { display: grid; gap: .5rem; margin: 0; padding: 0; border: 0; }
+.contact-set legend { padding: 0 0 .35rem; font-weight: 650; }
+.contact-rows { display: grid; gap: .45rem; }
+.contact-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .45rem; align-items: center; }
+.contact-row.contact-address { grid-template-columns: minmax(0, 1fr) minmax(6.5rem, auto) auto; }
+.contact-set > button.quiet { justify-self: start; }
+.contact-where { margin: 0 .2rem; }
+@media (max-width: 520px) {
+  .contact-row.contact-address { grid-template-columns: minmax(0, 1fr) auto; }
+  .contact-row.contact-address input { grid-column: 1 / -1; }
+}
+
+/* Muted: a small outlined bell with a slash, beside the chat header's lock, a row's protocol tags, and a server's bar. */
+.mute-mark { display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--muted); vertical-align: -2px; }
+.mute-mark svg { width: 13px; height: 13px; }
+button.mute-mark { min-height: 0; padding: 2px; border: 0; border-radius: 6px; background: none; cursor: pointer; }
+button.mute-mark:hover { background: color-mix(in srgb, var(--action, var(--accent)) 12%, transparent); }
+.tags .mute-mark { margin-inline-start: .1rem; }
+.thread strong .mute-mark { margin-inline-start: .3rem; }
+.thread-head .thread-title { grid-template-columns: minmax(0, max-content) auto auto 1fr; }
+.thread-head .mute-mark { justify-self: start; margin-inline-start: .3rem; }
+.thread-head .mute-mark svg { width: 14px; height: 14px; }
+.server-bar .mute-mark svg { width: 16px; height: 16px; }
+.mute-line { display: flex; align-items: center; gap: .4rem; margin: 0 0 .4rem; font-weight: 650; }
+.mute-line .mute-mark svg { width: 18px; height: 18px; }
+.mute-status .primary { margin-top: .6rem; }
+.mute-choice .detail-words strong { font-weight: 600; }

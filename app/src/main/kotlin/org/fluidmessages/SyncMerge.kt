@@ -139,6 +139,7 @@ internal object SyncMerge {
             "fun" -> "Fun and effects" to (funNames[name] ?: name)
             "folder" -> "Chat folders" to person(name)
             "muted" -> "Muted chats" to person(name)
+            "muteuntil" -> "How long chats are muted" to person(name)
             "sender" -> "Automated senders" to person(name)
             "timer" -> "Disappearing messages" to if (name == "*") "Default timer" else person(name)
             "wallpaper" -> "Chat wallpaper" to person(name)
@@ -170,6 +171,8 @@ internal object SyncMerge {
                 if (set.isEmpty()) "Inbox" else folders.filter { it in set }.joinToString(", ") { it.replaceFirstChar { c -> c.titlecase(Locale.ROOT) } }
             }
             "muted" -> if (value == "on") "Muted" else "Alerts on"
+            "muteuntil" -> value?.toLongOrNull()?.let { "Until " + java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM,
+                java.text.DateFormat.SHORT).format(java.util.Date(it)) } ?: "Until you unmute"
             "sender" -> when (value) { "automated" -> "Automated"; "person" -> "A person"; else -> "Automatic" }
             "timer" -> value?.toIntOrNull()?.let { Disappearing.label(it) } ?: if (name == "*") "Off" else "Follows the default"
             "wallpaper" -> when (value) { null, "none" -> "Solid"; "photo" -> "A photo"; else -> value.replaceFirstChar { it.titlecase(Locale.ROOT) } }

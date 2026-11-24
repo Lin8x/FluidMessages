@@ -156,6 +156,7 @@ def smoke_test():
     print("PASS  web details and effects: conversation details and members, call icons, floating message menu, capped effects")
     print("PASS  web Calls tab: favorites, recents, contacts, keypad, contact pages, saved favorites, sample portraits, and tab counts")
     print("PASS  web Unread filter, Sounds and notifications (volume, muted chats, service worker notifications), New chat → Channels")
+    print("PASS  web mutes: 1 hour to forever, older lists forever, chats, people, and servers, no notifications or chimes, ends on its own")
 
 
 def web_features_test(request):
@@ -209,7 +210,110 @@ def web_features_test(request):
     dropped = ("wallpaper", "chromeOpacity", "speed", "haptics", "tails", "activePalette")
     check(saved == {key: value for key, value in look.items() if key not in dropped}, "Appearance extras weren't cleaned: " + json.dumps(saved))
     check(request("/api/settings", {"web_appearance": look})["web_appearance"] == look, "Appearance extras weren't saved")
+    web_mute_test(request)
     web_details_effects_test(request)
+
+
+def web_mute_test(request):
+    """Muting for a while or for good, on FluidMessages Web: stored with when it ends, older lists still forever, chats
+    and whole servers, nothing notifies or chimes while muted, and a mute whose time is up simply stops."""
+    now = int(time.time() * 1000)
+    server = "server:irc:fixture@irc.example.test"
+    chats = {"pinned": [], "archived": [], "blocked": [], "locks": {},
+             "muted": ["web-fixture", "+12025550177", "+12025550178", server],
+             "mute_until": {"web-fixture": now + 3_600_000, "+12025550177": now - 1_000}}
+    saved = request("/api/settings", {"web_chats": chats})["web_chats"]
+    # The one whose time is up is gone; the server and the entry without an end stay muted forever.
+    check(saved["muted"] == ["web-fixture", "+12025550178", server] and saved["mute_until"] == {"web-fixture": now + 3_600_000},
+          "A timed mute wasn't kept with its end: " + json.dumps(saved))
+    check(request("/api/inbox")["web_chats"]["mute_until"] == {"web-fixture": now + 3_600_000}, "The inbox doesn't carry when mutes end")
+    older = {"pinned": [], "archived": [], "blocked": [], "muted": ["web-fixture"], "locks": {}}
+    check(request("/api/settings", {"web_chats": older})["web_chats"] == older, "An older muted list didn't stay as it was")
+    for bad in ({"muted": ["a"], "mute_until": {"a": "soon"}}, {"muted": ["a"], "mute_until": {"a": -5}}, {"muted": ["a"], "mute_until": []}):
+        try:
+            request("/api/settings", {"web_chats": bad})
+            raise RuntimeError("Invalid mute times were accepted: " + json.dumps(bad))
+        except HTTPError as error:
+            check(error.code == 400, f"Expected HTTP 400 for invalid mute times, got {error.code}")
+    request("/api/settings", {"web_chats": {"pinned": [], "archived": [], "blocked": [], "muted": [], "locks": {}}})
+    chats_js, look_js, notify_js, people_js, app_js, servers_js = (request(path, authorized=False).decode() for path in (
+        "/chats.js", "/look.js", "/notify.js", "/people.js", "/app.js", "/servers.js"))
+    check("personMuteSection(person, chats)" in people_js and "serverMuteControls(account.id" in servers_js
+          and "updateMuteMark()" in app_js, "The contact page, server bar, or chat header doesn't offer muting")
+    check("chatMuted(message.address)) continue" in notify_js, "Notifications don't check for muted chats")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("Skipped running the mute rules: node isn't installed (set NODE to its path)")
+        return
+    block = re.search(r"// Muting, for a while.*?// End of muting\.", chats_js, re.S).group(0)
+    muted_rule = re.search(r"function chatMuted\(address\).*?\n", chats_js).group(0)
+    notice = re.search(r"const heard = new Set\(\);.*?(?=// Settings → Themes and appearance)", look_js, re.S).group(0)
+    notifier = re.search(r"function notifyIncoming\(.*?(?=\nlet notifiedChat)", notify_js, re.S).group(0)
+    rule = re.search(r"/\*\* Chats that never count.*?(?=function countTabs)", people_js, re.S).group(0)
+    script = """
+let sampleOn = false, sampleChats = {}, webChats = {muted: [], locks: {}}, appearance = {folders: {}}, inbox = [], webLook = {};
+const chatState = () => webChats;
+let routes = [{address: '#radio', protocol: 'irc', account: 'irc:fixture@irc.example.test'},
+  {address: 'kestrel', protocol: 'irc', account: 'irc:fixture@irc.example.test'}];
+const inFolder = (address, key) => key === 'blocked' && address === 'blocked-one';
+const clock = (time) => new Date(time).toISOString().slice(11, 16);
+const element = () => ({});
+const threadKey = (message) => message.address;
+const notifyOn = () => true, notifyPermission = () => 'granted', watchingChat = () => false;
+const shown = [];
+let tones = 0;
+const showChatNotification = async (note) => { shown.push(note); };
+const notificationFor = (message) => message.address;
+const playTone = () => { tones++; return true; };
+globalThis.setTimeout = (run) => run();
+""" + "\n".join((block, muted_rule, notice, notifier, rule)) + """
+let now = Date.UTC(2026, 10, 24, 21, 0);
+muteClock = () => now;
+const wrong = [];
+const same = (label, got, want) => { if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push(label + ': ' + JSON.stringify(got)); };
+// Older lists: an entry without an end is muted forever.
+webChats = {muted: ['sam'], locks: {}};
+same('older entry is forever', muteEnds('sam'), 0);
+same('forever label', muteLabel(0), 'Muted');
+// Timed, chat and server, and the labels.
+webChats = muteKeys(['maya'], 6 * 3600000);
+same('timed end', muteEnds('maya'), now + 6 * 3600000);
+same('six hours', muteLabel(muteEnds('maya')), 'Muted for 6 hours');
+same('later today', muteLabel(Date.UTC(2026, 10, 24, 22, 40)), 'Muted until 22:40');
+same('a day', muteLabel(now + 86400000), 'Muted for 1 day');
+same('a week', muteLabel(now + 7 * 86400000), 'Muted for 1 week');
+webChats = muteKeys([SERVER_MUTE + 'irc:fixture@irc.example.test'], 3600000);
+same('server covers its channel', chatMuteEnds('#radio'), now + 3600000);
+same('server covers its DMs', chatMuteEnds('kestrel'), now + 3600000);
+same('other chats are not muted', chatMuteEnds('ana'), null);
+webChats = muteKeys(['#radio'], 0);
+same('forever beats the server', chatMuteEnds('#radio'), 0);
+// A person: all of their addresses, muted when every one is.
+webChats = muteKeys(['leo', '+12025550166'], 86400000);
+same('person', keysMuteEnds(['leo', '+12025550166']), now + 86400000);
+same('person partly', keysMuteEnds(['leo', '+12025550199']), null);
+// Nothing notifies or chimes while muted; the tab count leaves them out; unread rows stay unread.
+const arrive = (...addresses) => lookNoticeIncoming(addresses.map((address, index) => ({id: address + now + index, address, type: 1, read: 0, date: Date.now()})));
+lookNoticeIncoming([]);
+arrive('maya', '#radio', 'kestrel', 'leo', 'blocked-one');
+same('muted stay quiet', [shown.length, tones], [0, 0]);
+inbox = ['maya', '#radio', 'kestrel', 'ana'].map((address) => ({address, type: 1, read: 0, body: 'Fictional'}));
+same('muted are not counted', [...unreadChats()], ['ana']);
+arrive('ana');
+same('others notify', [shown.slice(), tones], [['ana'], 1]);
+// Time passes: the six-hour and server mutes end on their own; forever and the person's day stay.
+now += 7 * 3600000;
+arrive('maya', 'kestrel', '#radio', 'leo');
+same('after the time is up', shown.slice(1), ['maya', 'kestrel']);
+same('counted again', [...unreadChats()], ['maya', 'kestrel', 'ana']);
+const tidy = pruneMutes(webChats);
+same('expired ones are tidied', [tidy.muted.includes('maya'), tidy.muted.includes(SERVER_MUTE + 'irc:fixture@irc.example.test'), tidy.muted.includes('#radio')], [false, false, true]);
+webChats = unmuteKeys(['#radio']);
+same('unmute', chatMuteEnds('#radio'), null);
+process.stdout.write(JSON.stringify(wrong));
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30, env={**os.environ, "TZ": "UTC"})
+    check(result.returncode == 0 and result.stdout == "[]", "The mute rules are wrong: " + (result.stdout or result.stderr)[:600])
 
 
 def web_details_effects_test(request):
@@ -326,7 +430,9 @@ def web_inbox_sounds_test(request):
     people_js, app_js, chats_js = (request(path, authorized=False).decode() for path in ("/people.js", "/app.js", "/chats.js"))
     check("function unreadIncoming" in people_js and "unreadIncoming(message, quiet, now)" in people_js.split("function countTabs", 1)[1],
           "The Chats tab count and Unread don't share one rule")
-    check("folder === 'Unread'" in app_js and "unreadChats()" in app_js, "The inbox filter's Unread isn't drawn from the unread rule")
+    check("unreadChats()" in app_js and "unread.has(address)" in app_js
+          and "case 'unread': return !!chat.unread" in request("/inbox-filters.js", authorized=False).decode(),
+          "The inbox filter's Unread isn't drawn from the unread rule")
     check(len(re.findall(r"'(?:Leo Park|Kestrel)', 0\)", chats_js)) == 2, "The sample inbox has no unread chats to try Unread with")
     notify_js = request("/notify.js", authorized=False).decode()
     for expected in ("registration.showNotification", "Notification.requestPermission", "isSecureContext", "Send a test notification",
@@ -1150,6 +1256,223 @@ def multi_account_test():
           "receive apart, per-account merge items, and joining, browsing, and leaving channels and rooms")
 
 
+def communities_test():
+    """Messages → Chats | Communities and the inbox filter menu: served, sorted, filtered, and their prefs round trip."""
+    with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
+        index = request("/", authorized=False).decode()
+        check('id="inbox-view"' in index and index.index('id="inbox-view"') < index.index('id="threads"'),
+              "Messages has no Chats | Communities switch under the title")
+        check(index.index("/servers.js") < index.index("/inbox-filters.js"), "The page doesn't load inbox-filters.js after servers.js")
+        check("'/inbox-filters.js'" in request("/sw.js", authorized=False).decode(), "The service worker doesn't cache inbox-filters.js")
+        servers_js = request("/servers.js", authorized=False).decode()
+        filters_js = request("/inbox-filters.js", authorized=False).decode()
+        app_js = request("/app.js", authorized=False).decode()
+        settings_js = request("/settings.js", authorized=False).decode()
+        css = request("/features.css", authorized=False).decode()
+        check(all(name in servers_js for name in ("function drawInboxSwitch", "'Communities'", "function drawCommunities", "function communityGroups",
+                                                   "No communities yet", "Add server", "Server details", "function communityChatsSwitch"))
+              and "function serverStrip" not in servers_js and "server-strip" not in css + servers_js + app_js,
+              "Communities isn't served, or the old server strip is still there")
+        check("function threadButton" in app_js and "drawCommunities(list, rows" in app_js, "Communities doesn't draw chat rows the way Chats does")
+        check(all(name in filters_js for name in ("function inboxFiltersPage", "'Move up'", "'Move down'", "In the private folder", "inboxDecoy()"))
+              and "communityChatsSwitch" in settings_js and "inbox-filters" in filters_js, "Settings → Messaging has no Inbox filters or community switch")
+        # The prefs: defaults, a round trip, and bad values refused.
+        prefs = request("/api/inbox")["prefs"]
+        check(prefs["showCommunityChats"] is True and prefs["communitySort"] == "recent" and prefs["inboxFilters"][:3] == ["inbox", "unread", "favorites"],
+              "Communities or inbox filter prefs have the wrong defaults")
+        check(request("/api/settings", {"prefs": {"communitySort": "name"}})["prefs"]["communitySort"] == "name", "The community sort wasn't kept")
+        check(request("/api/settings", {"prefs": {"showCommunityChats": False}})["prefs"]["showCommunityChats"] is False,
+              "Show community chats in Chats couldn't be turned off")
+        order = ["groups", "inbox", "-unread", "irc"]
+        saved = request("/api/settings", {"prefs": {"inboxFilters": order}})["prefs"]["inboxFilters"]
+        check(saved[:4] == order and len(saved) == 12 and request("/api/inbox")["prefs"]["inboxFilters"] == saved, "Inbox filters didn't round trip")
+        for bad in ({"communitySort": "newest"}, {"inboxFilters": ["-inbox"]}, {"inboxFilters": ["inbox", "inbox"]}, {"inboxFilters": ["spam"]},
+                    {"inboxFilters": "inbox"}, {"showCommunityChats": "yes"}):
+            try:
+                request("/api/settings", {"prefs": bad})
+                raise RuntimeError("Invalid prefs were accepted: " + json.dumps(bad))
+            except HTTPError as error:
+                check(error.code == 400, f"Expected HTTP 400 for {json.dumps(bad)}, got {error.code}")
+        # The phone's choices reach the browser, which follows them while it follows the phone.
+        request("/api/sync", {"messages": sample_messages(), "appearance": {"showCommunityChats": False, "communitySort": "joined",
+                                                                             "inboxFilters": ["direct", "inbox"]}})
+        phone = request("/api/inbox")["appearance"]
+        check(phone["showCommunityChats"] is False and phone["communitySort"] == "joined" and phone["inboxFilters"][:2] == ["direct", "inbox"],
+              "The phone's Communities and inbox filter choices didn't reach the browser")
+        request("/api/sync", {"messages": sample_messages(), "appearance": {"communitySort": "sideways", "inboxFilters": ["-inbox"]}})
+        check("communitySort" not in request("/api/inbox")["appearance"] and "inboxFilters" not in request("/api/inbox")["appearance"],
+              "The phone's invalid choices were kept")
+        request("/api/settings", {"prefs": {"communitySort": "recent", "showCommunityChats": True, "inboxFilters": []}})
+
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("SKIP  Communities sorting and inbox filter rules in Node: node is missing")
+        return
+    script = "globalThis.localStorage = {getItem: () => null, setItem() {}};\n" + "\n".join(
+        (ROOT / "server" / name).read_text() for name in ("servers.js", "inbox-filters.js")).replace(
+        "SETTINGS_SUBPAGES.push(", "[].push(") + r"""
+const wrong = [];
+const same = (a, b, why) => { if (JSON.stringify(a) !== JSON.stringify(b)) wrong.push(why + ': ' + JSON.stringify(a)); };
+const servers = [{id: 'irc:k@alpha', name: 'Alpha Net', order: 0}, {id: 'matrix:@k:beta.test', name: 'beta.test', order: 1},
+  {id: 'xmpp:k@gamma.test', name: 'gamma.test', order: 2}];
+const channels = [
+  {account: 'irc:k@alpha', name: '#radio-club', last: 500, joined: 1}, {account: 'irc:k@alpha', name: '#antennas', last: 900, joined: 3, unread: true},
+  {account: 'matrix:@k:beta.test', name: 'Seed swap', last: 700, joined: 5}, {account: 'matrix:@k:beta.test', name: 'Allotments', last: 100, joined: 4}];
+const shape = (sort) => communityGroups(servers, channels, sort).map((group) => [group.server.name, group.channels.map((c) => c.name), group.unread]);
+same(shape('recent'), [['Alpha Net', ['#antennas', '#radio-club'], 1], ['beta.test', ['Seed swap', 'Allotments'], 0], ['gamma.test', [], 0]], 'recent');
+same(shape('name'), [['Alpha Net', ['#antennas', '#radio-club'], 1], ['beta.test', ['Allotments', 'Seed swap'], 0], ['gamma.test', [], 0]], 'name');
+same(shape('joined'), [['gamma.test', [], 0], ['beta.test', ['Seed swap', 'Allotments'], 0], ['Alpha Net', ['#antennas', '#radio-club'], 1]], 'joined');
+same(shape('sideways'), shape('recent'), 'unknown sort');
+// Inbox filters: the stored order, the menu, and the rules in each scope.
+const order = inboxFilterOrder(['groups', '-unread', 'inbox', '-inbox', 'spam', 'groups']);
+same(order.slice(0, 3), [{id: 'groups', shown: true}, {id: 'unread', shown: false}, {id: 'inbox', shown: true}], 'order');
+same(order.length, INBOX_FILTERS.length, 'every filter');
+same(encodeInboxFilters(order).slice(0, 3), ['groups', '-unread', 'inbox'], 'encode');
+same(inboxFilterMenu(inboxFilterOrder(['inbox', 'irc', 'matrix']), new Set(['sms', 'irc'])).slice(0, 3), ['inbox', 'irc', 'unread'], 'menu');
+const chat = (facts) => ({group: false, favorite: false, unread: false, services: new Set(['sms']), ...facts});
+same(['groups', 'direct', 'favorites', 'texts', 'matrix', 'unread'].map((id) => inboxFilterMatches(id, chat({group: true, services: new Set(['matrix'])}))),
+  [true, false, false, false, true, false], 'group room');
+same(['groups', 'direct', 'favorites', 'texts'].map((id) => inboxFilterMatches(id, chat({favorite: true}))), [false, true, true, true], 'favorite text');
+const place = (facts) => ({hidden: false, archived: false, blocked: false, ...facts});
+same(['inbox', 'groups', 'archived', 'blocked'].map((id) => inboxFilterPlaces('', id, place({hidden: true}))), [false, false, false, false],
+  'the private folder leaks');
+same(['inbox', 'groups', 'archived'].map((id) => inboxFilterPlaces('private', id, place({hidden: true}))), [true, true, false], 'inside the private folder');
+same(inboxFilterPlaces('', 'archived', place({archived: true})), true, 'archived');
+same(inboxFilterPlaces('', 'favorites', place({archived: true})), false, 'archived favorite');
+// A decoy session never matches real favorites, even if they were somehow known.
+var privacyStatus = {private: null}, sampleOn = false;
+globalThis.decoyLike = () => true;
+globalThis.starredList = () => ['+12025550123'];
+globalThis.threadAddress = (key) => key.split('\u001f')[0];
+globalThis.sameText = (a, b) => a === b;
+globalThis.sameNumber = (a, b) => a === b;
+same(favoriteChat('+12025550123\u001fsms'), false, 'decoy favorite');
+globalThis.decoyLike = () => false;
+same(favoriteChat('+12025550123\u001fsms'), true, 'real favorite');
+if (wrong.length) { console.log(wrong.join('\n')); process.exit(1); }
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0, "Communities or inbox filter rules failed in Node: " + (result.stdout + result.stderr).strip()[:600])
+    print("PASS  Chats | Communities and inbox filters: the switch is served, servers and channels sort by recent activity, name, "
+          "and date joined, filters keep to the inbox, private folder, and decoy scopes, and their prefs round trip")
+
+
+def server_directory_test():
+    """Add server's public server list and Browse search, with fictional fixtures only, and no "Discord" anywhere served."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import asyncio
+    import sqlite3
+    import accounts
+    import protocol_gateway
+    import xmpp_client
+
+    with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
+        index = request("/", authorized=False).decode()
+        scripts = re.findall(r'(?:src|href)="(/[^"#?]+)"', index)
+        check(scripts.index("/server-directory.js") < scripts.index("/servers.js"), "The page doesn't load the server list before servers.js")
+        shell = request("/sw.js", authorized=False).decode()
+        check("'/server-directory.js'" in shell, "The service worker doesn't cache the server list")
+        served = {"/": index, "/sw.js": shell}
+        for path in scripts + re.findall(r"'(/[^']+\.(?:js|css|html|webmanifest))'", shell):
+            if path not in served and not path.endswith((".png", ".ico", ".webp")):
+                served[path] = request(path, authorized=False).decode()
+        mentions = [path for path, text in served.items() if "discord" in text.lower()]
+        check(not mentions, "Discord is mentioned in " + ", ".join(mentions))
+        directory = served["/server-directory.js"]
+        check("const SERVER_DIRECTORY" in directory and "function directorySearch" in directory, "The server list isn't served")
+        servers_js = served["/servers.js"]
+        check(all(name in servers_js for name in ("function showServerList", "Other server…", "function emptyServerRows", "roomSearch(found"))
+              and "prompt(" not in servers_js and "confirm(" not in servers_js and "alert(" not in servers_js,
+              "Add server or Browse isn't a full page with search")
+
+    node = os.environ.get("NODE") or shutil.which("node")
+    if node:
+        # The list itself: valid TLS hosts and ports, no duplicates, and search by name, address, or description.
+        script = (ROOT / "server/server-directory.js").read_text() + r"""
+const wrong = [];
+const host = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+for (const [service, list] of Object.entries(SERVER_DIRECTORY)) {
+  const names = new Set(list.map((entry) => entry.name.toLowerCase())), addresses = new Set(list.map(directoryAddress));
+  if (names.size !== list.length || addresses.size !== list.length) wrong.push(service + ' duplicates');
+  for (const entry of list) {
+    const address = directoryAddress(entry).replace(/^https:\/\//, '');
+    if (!host.test(address) || !entry.about) wrong.push(entry.name);
+    if (service === 'irc' && entry.tls !== false && entry.port !== 6697) wrong.push(entry.name + ' port');
+    if (service === 'matrix' && !entry.homeserver.startsWith('https://')) wrong.push(entry.name + ' https');
+  }
+}
+for (const name of ['Libera.Chat', 'OFTC', 'EFnet', 'IRCnet', 'Undernet', 'DALnet', 'QuakeNet', 'Rizon', 'hackint', 'Snoonet', 'GIMPNet', 'EsperNet'])
+  if (!SERVER_DIRECTORY.irc.some((entry) => entry.name === name)) wrong.push('missing ' + name);
+const names = (list) => list.map((entry) => entry.name).join();
+if (names(directorySearch(SERVER_DIRECTORY.irc, ' debian TOR ')) !== 'OFTC') wrong.push('search words');
+if (names(directorySearch(SERVER_DIRECTORY.matrix, 'Mozílla')) !== 'mozilla.org') wrong.push('search accents');
+if (directorySearch(SERVER_DIRECTORY.xmpp, '').length !== SERVER_DIRECTORY.xmpp.length) wrong.push('empty search');
+if (!/paid/.test(SERVER_DIRECTORY.xmpp.find((entry) => entry.name === 'conversations.im').about)) wrong.push('paid');
+const rooms = [{target: '#gardening', name: '#gardening', topic: 'Seeds and soil'}, {target: '!c:example.test', name: 'Chess club', alias: '#chess:example.test'}];
+if (roomSearch(rooms, 'soil').map((room) => room.target).join() !== '#gardening') wrong.push('room topic');
+if (roomSearch(rooms, '#chess').map((room) => room.target).join() !== '!c:example.test') wrong.push('room alias');
+if (roomSearch(rooms, '').length !== 2) wrong.push('room empty');
+process.stdout.write(JSON.stringify(wrong));
+"""
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+        check(result.returncode == 0 and result.stdout == "[]", "The server list or its search is wrong: " + (result.stdout or result.stderr)[:400])
+    else:
+        print("Skipped running the server list's search: node isn't installed (set NODE to its path)")
+
+    # Browse asks each server to search where it can (IRC LIST mask, Matrix filter) and XMPP is filtered here.
+    with tempfile.TemporaryDirectory(prefix="fluid-browse-") as directory:
+        database = Path(directory) / "gateway.sqlite"
+        connect = lambda: sqlite3.connect(database, timeout=10)
+        with closing(connect()) as db, db:
+            db.executescript(protocol_gateway.SCHEMA)
+        store = accounts.AccountStore(Path(directory) / "protocol-accounts.json", environ={})
+        store.save("irc", {"server": "irc.example.test", "nick": "fluidtest"}, add=True)
+        store.save("xmpp", {"jid": "sam@example.test", "password": "fixture-password"}, add=True)
+        gateway = protocol_gateway.Gateway(connect, {}, Path(directory) / "files", store)
+        gateway.refresh_clients = lambda: None
+        asked = []
+
+        class FakeIrc:
+            def list_channels(self, search, limit):
+                asked.append(search)
+                rows = [{"target": "#gardening", "name": "#gardening", "members": 12, "topic": "Seeds"},
+                        {"target": "#radio", "name": "#radio", "members": 4, "topic": "Antennas"}]
+                return [row for row in rows if search in row["target"]][:limit]
+
+        class FakeDisco:
+            async def get_items(self, jid, timeout):
+                return {"disco_items": {"items": [("garden@conference.example.test", None, "Garden club"),
+                                                  ("radio@conference.example.test", None, "Ham radio")]}}
+
+        class FakeXmpp:
+            client = type("Client", (), {"plugin": {"xep_0030": FakeDisco()}})()
+            call = staticmethod(asyncio.run)
+            browse = xmpp_client.XmppClient.browse
+            muc_services = lambda self: ["conference.example.test"]
+
+        clients = {"irc": FakeIrc(), "xmpp": FakeXmpp()}
+        gateway.client = lambda protocol: clients[protocol]
+        irc, xmpp = "irc:fluidtest@irc.example.test", "xmpp:sam@example.test"
+        found = gateway.browse({"account": irc, "search": "garden", "limit": 50})["rooms"]
+        check(asked == ["garden"] and [room["target"] for room in found] == ["#gardening"] and found[0]["members"] == 12
+              and not found[0]["joined"], "IRC Browse didn't search the network")
+        with closing(connect()) as db, db:
+            channel = gateway.join(db, {"account": irc, "target": "#gardening"})["route"]
+        check(channel["title"] == "#gardening", "A joined IRC channel isn't named #name")
+        check(gateway.browse({"account": irc, "search": "", "limit": 50})["rooms"][0]["joined"], "A joined channel isn't marked Joined")
+        check(gateway.browse({"account": xmpp, "search": ""})["services"] == ["conference.example.test"], "XMPP services weren't listed")
+        rooms = gateway.browse({"account": xmpp, "search": "HAM", "service": "conference.example.test", "limit": 50})["rooms"]
+        check([room["name"] for room in rooms] == ["Ham radio"], "XMPP Browse didn't filter group chats")
+        with closing(connect()) as db, db:
+            room = gateway.join(db, {"account": xmpp, "target": "radio@conference.example.test"})["route"]
+        check(room["title"] == "radio" and room["group"], "A group chat joined by address isn't named after the room")
+        servers = {server["id"]: server for server in gateway.servers()}
+        check(channel["address"] in servers[irc]["channels"] and room["address"] in servers[xmpp]["channels"],
+              "Joined channels and rooms aren't listed under their server")
+    print("PASS  Add server: public server list served and searchable (no Discord anywhere served); Browse searches IRC by "
+          "mask and filters XMPP group chats; joined channels and rooms are named and listed under their server")
+
+
 def sign_in_test():
     """Opening the web app without a token: first-run setup code, password, session cookie, CSRF, and rate limits."""
     import sqlite3
@@ -1632,14 +1955,29 @@ def web_privacy_test():
                            ("/api/auth/local-access", {"enabled": False}), ("/api/protocols/accounts", {"protocol": "email", "fields": {}}),
                            ("/api/protocols/accounts/delete", {"protocol": "email"}), ("/api/privacy/decoy/off", {"current": decoy}),
                            ("/api/privacy/distress", {"code": "123456", "again": "123456", "understood": True, "current": decoy}),
-                           ("/api/privacy/private/unlock", {"code": code}), ("/api/merge/resolve", {}), ("/api/sync", {"messages": []})):
+                           ("/api/privacy/private/unlock", {"code": code}), ("/api/merge/resolve", {}), ("/api/sync", {"messages": []}),
+                           ("/api/contacts", {"name": "Rowan Hale"}), ("/api/contacts/delete", {"id": "wc-0000000000000000"})):
             check(call(path, body, cookie=fake)[0] == 503, "The decoy session reached " + path)
+        check(call("/api/contacts", cookie=fake)[1]["contacts"] == [], "The decoy session sees web contacts")
         check(call("/api/settings", {"follow_phone": False}, cookie=fake, headers={"X-Fluid-Request": None})[0] == 403,
               "CSRF isn't checked for decoy sessions")
         check(call("/api/schedule", {"address": "+12025550161", "body": "Fictional decoy reply", "due": now}, cookie=fake)[0] == 200,
               "Sending in the decoy inbox wasn't sandboxed")
         check("Fictional decoy reply" in json.dumps(call("/api/inbox", cookie=fake)[1]), "The sandboxed text didn't show in the decoy chat")
         check("Fictional decoy reply" not in json.dumps(call("/api/jobs", cookie=real)[1]), "A decoy text reached the phone's queue")
+        # Inbox filters in a decoy session: its own menu, no real favorites, no servers, and only the pretend chats.
+        check(call("/api/settings", {"web_favorites": ["+12025550123"], "prefs": {"inboxFilters": ["favorites", "inbox", "-groups"]}},
+                   cookie=real)[0] == 200, "Real favorites or inbox filters weren't saved")
+        pretend = call("/api/inbox", cookie=fake)[1]
+        check("web_favorites" not in pretend and pretend["accounts"] == [] and pretend["routes"] == []
+              and pretend["prefs"]["inboxFilters"][0] == "inbox", "The decoy session sees real favorites, servers, or filters")
+        check(call("/api/settings", {"prefs": {"inboxFilters": ["groups", "inbox"], "communitySort": "name"}}, cookie=fake)[1]["prefs"]["inboxFilters"][0] == "groups"
+              and call("/api/inbox", cookie=fake)[1]["prefs"]["inboxFilters"][0] == "groups", "The decoy session can't keep its own inbox filters")
+        check(call("/api/settings", {"prefs": {"inboxFilters": ["-inbox"]}}, cookie=fake)[0] == 400, "The decoy session hid Inbox")
+        real_prefs = call("/api/inbox", cookie=real)[1]["prefs"]
+        check(real_prefs["inboxFilters"][:3] == ["favorites", "inbox", "-groups"] and real_prefs["communitySort"] == "recent",
+              "The decoy session changed the real inbox filters")
+        check(call("/api/settings", {"web_favorites": [], "prefs": {"inboxFilters": []}}, cookie=real)[0] == 200, "Inbox filters weren't reset")
         check(len(call("/api/inbox", cookie=real)[1]["messages"]) >= 3 and call("/api/auth/security", cookie=real)[1]["pairing"]["web"],
               "The decoy session changed real data")
 
@@ -1839,7 +2177,239 @@ def merge_test():
         check(call("/api/stickers", cookie=cookie)[1]["stickers"] == [], "The sticker wasn't deleted")
         stored = json.dumps([str(path) for path in request.directory.rglob("*")])
         check(token not in stored, "The pairing token showed up in a file name")
-    print("PASS  phone and web merge: auth, CSRF, a settled conflict on both sides, and stickers")
+
+        # Timed mutes (fictional chats): "muted:" stays "on" for every version; how long travels only to phones that ask.
+        soon = int(time.time() * 1000) + 3_600_000
+        server = "server:irc:fixture@irc.example.test"
+        chats_now = call("/api/settings", cookie=cookie)[1]["web_chats"]
+        status, _, _ = call("/api/settings", {"web_chats": {**chats_now, "muted": chats_now["muted"] + ["+15550107", server],
+                                                            "mute_until": {"+15550107": soon}}}, cookie=cookie)
+        check(status == 200, "A timed mute wasn't saved")
+        older = call("/api/merge", bearer=True)[1]
+        check(older["web"].get("muted:+15550107") == "on" and older["web"].get("muted:" + server) == "on"
+              and not any(key.startswith("muteuntil:") for key in older["web"]), "An older phone would see items it doesn't know")
+        timed = call("/api/merge", bearer=True, headers={"X-Fluid-Merge-Items": "muteuntil"})[1]
+        check(timed["mute_until"] == 1 and timed["web"].get("muteuntil:+15550107") == str(soon) and "muteuntil:" + server not in timed["web"],
+              "A newer phone doesn't see when a mute ends")
+        later = soon + 86_400_000
+        changes = {"muteuntil:+15550107": str(later), "muted:+15550108": "on", "muteuntil:+15550108": str(later)}
+        check(call("/api/merge", {"revision": timed["revision"], "apply_web": changes, "baseline": {}, "conflicts": []}, bearer=True)[0] == 409,
+              "A merge against the timed view was taken as an older phone's")
+        status, state, _ = call("/api/merge", {"revision": timed["revision"], "mute_until": 1, "apply_web": changes,
+                                               "baseline": {**timed["web"], **changes}, "conflicts": []}, bearer=True)
+        stored = call("/api/settings", cookie=cookie)[1]["web_chats"]
+        check(status == 200 and stored["mute_until"].get("+15550107") == later and stored["mute_until"].get("+15550108") == later
+              and "+15550108" in stored["muted"], "The phone's mute times didn't reach the web: " + json.dumps(stored.get("mute_until")))
+        # Forever from the phone, then a time that has already passed: unmuted on its own.
+        status, state, _ = call("/api/merge", {"revision": state["revision"], "mute_until": 1, "baseline": {},
+                                               "apply_web": {"muteuntil:+15550107": None, "muteuntil:+15550108": str(soon - 7_200_000)},
+                                               "conflicts": []}, bearer=True)
+        stored = call("/api/settings", cookie=cookie)[1]["web_chats"]
+        check(status == 200 and "+15550107" in stored["muted"] and "+15550107" not in stored.get("mute_until", {})
+              and "+15550108" not in stored["muted"] and "muted:+15550108" not in state["web"], "Forever or an ended mute is wrong")
+    print("PASS  phone and web merge: auth, CSRF, a settled conflict on both sides, stickers, and timed mutes")
+
+
+# Typed addresses and what they are, shared with the phone's NewAddressTest.kt: [text, [[service, target], ...]].
+NEW_ADDRESSES = [
+    ["+1 (202) 555-0143", [["sms", "+1 (202) 555-0143"]]],
+    ["2025550143", [["sms", "2025550143"]]],
+    ["12", []],
+    ["@maya:example.org", [["matrix", "@maya:example.org"]]],
+    ["!garden:example.org", [["matrix", "!garden:example.org"]]],
+    ["#book-club:example.org", [["matrix", "#book-club:example.org"]]],
+    ["maya@example.org", [["email", "maya@example.org"], ["xmpp", "maya@example.org"]]],
+    ["Maya@Example.org", [["email", "maya@example.org"], ["xmpp", "maya@example.org"]]],
+    ["garden@conference.example.org", [["xmpp", "garden@conference.example.org"], ["email", "garden@conference.example.org"]]],
+    ["amir@localhost", [["xmpp", "amir@localhost"]]],
+    ["riley@irc.libera.chat", [["irc", "riley"]]],
+    ["#radio", [["irc", "#radio"]]],
+    ["irc:riley", [["irc", "riley"]]],
+    ["sip:sam@sip.example.org", [["sip", "sip:sam@sip.example.org"]]],
+    ["riley", [["irc", "riley"]]],
+    ["Maya Chen", []],
+    ["", []],
+]
+
+
+def new_conversations_test():
+    """Starting something new: a chat with a new Matrix address actually sends, and typed addresses are read the same
+    way as on the phone. Fictional addresses only."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import sqlite3
+    import accounts
+    import protocol_gateway
+
+    with tempfile.TemporaryDirectory(prefix="fluid-new-chat-") as directory:
+        database = Path(directory) / "gateway.sqlite"
+        connect = lambda: sqlite3.connect(database, timeout=10)
+        with closing(connect()) as db, db:
+            db.executescript(protocol_gateway.SCHEMA)
+        store_path = Path(directory) / "protocol-accounts.json"
+        store_path.write_text(json.dumps({"matrix": {"homeserver": "https://alpha.test", "user_id": "@alice:alpha.test",
+                                                     "access_token": "fixture-alpha-token"}}))
+        gateway = protocol_gateway.Gateway(connect, {}, Path(directory) / "files", accounts.AccountStore(store_path, environ={}))
+        gateway.refresh_clients = lambda: None
+        calls = []
+
+        def fake_matrix(path, body=None, allow_missing=False, method=None):
+            calls.append((path, body, method))
+            if path == "createRoom":
+                return {"room_id": "!new-friend:alpha.test"}
+            if "/send/" in path:
+                return {"event_id": "$sent"}
+            return None if allow_missing else {}
+        gateway.matrix_request = fake_matrix
+        # New chat → @newfriend:beta.test → Start chat: the web app's own request (companion.js startInternetChat).
+        with closing(connect()) as db, db:
+            route = gateway.add_route(db, {"address": "web-0123456789abcdef", "protocol": "matrix", "target": "@newfriend:beta.test",
+                                           "title": "@newfriend:beta.test", "group": False})["route"]
+        check(route["target"] == "!new-friend:alpha.test" and route["title"] == "@newfriend:beta.test",
+              "A new Matrix address didn't become a direct chat: " + json.dumps(route))
+        invite = next((body for path, body, _ in calls if path == "createRoom"), None)
+        check(invite and invite["invite"] == ["@newfriend:beta.test"] and invite["is_direct"], "The new chat didn't invite them")
+        check(any(path.endswith("account_data/m.direct") and method == "PUT" for path, _, method in calls), "The new chat isn't marked direct")
+        # Then the first message sends.
+        with closing(connect()) as db, db:
+            queued = gateway.enqueue(db, {"address": route["address"], "protocol": "matrix", "body": "Hi, it's Alice from the garden club",
+                                          "request": secrets.token_hex(8)})["message"]
+        gateway.deliver_job(gateway.claim())
+        sent = json.loads(connect().execute("SELECT payload FROM protocol_messages WHERE id=?", (queued["id"],)).fetchone()[0])
+        check(sent["status"] == "Sent" and any("/send/" in path and "new-friend" in path for path, _, _ in calls),
+              "The first message to a new Matrix address didn't send: " + sent["status"])
+        # Starting it again opens the same chat instead of making a second one.
+        with closing(connect()) as db, db:
+            again = gateway.add_route(db, {"address": "web-fedcba9876543210", "protocol": "matrix", "target": "@newfriend:beta.test"})
+        check(again["route"]["address"] == route["address"] and again.get("existing") and len(gateway.routes) == 1,
+              "The same Matrix person got a second chat")
+        # Email and IRC people, and an IRC channel, are new chats too.
+        for target, protocol in (("leah.morgan@example.org", "email"), ("riley", "irc"), ("#radio", "irc")):
+            with closing(connect()) as db, db:
+                made = gateway.add_route(db, {"address": "web-" + secrets.token_hex(8), "protocol": protocol, "target": target})["route"]
+            check(made["target"] == target and made["group"] == target.startswith("#"), "Couldn't start a chat with " + target)
+
+    people_js = (ROOT / "server/people.js").read_text()
+    companion_js = (ROOT / "server/companion.js").read_text()
+    check("detailsPage(prefill ? 'Forward to' : 'New chat'" in companion_js and "dialog('New chat')" not in companion_js,
+          "New chat isn't a full page")
+    check("function startInternetChat" in companion_js and "protocols/join" in companion_js, "New chat can't start a person's chat or join a room")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("Skipped running address detection: node isn't installed (set NODE to its path)")
+    else:
+        block = re.search(r"// address-detect:start\n(.*?)// address-detect:end", people_js, re.S)
+        check(block, "people.js has no address detection")
+        script = block.group(1) + """
+const cases = JSON.parse(process.argv[1]);
+const wrong = cases.filter(([text, expected]) => JSON.stringify(detectAddress(text).map((item) => [item.service, item.target])) !== JSON.stringify(expected))
+  .map(([text]) => [text, detectAddress(text)]);
+if (detectAddress('riley@irc.libera.chat')[0].network !== 'irc.libera.chat') wrong.push('network');
+if (!detectAddress('riley')[0].guess || detectAddress('#radio')[0].group !== true) wrong.push('flags');
+process.stdout.write(JSON.stringify(wrong));
+"""
+        result = subprocess.run([node, "-e", script, json.dumps(NEW_ADDRESSES)], capture_output=True, text=True, timeout=30)
+        check(result.returncode == 0 and result.stdout == "[]", "Address detection is wrong: " + (result.stdout or result.stderr)[:400])
+    kotlin = (ROOT / "app/src/test/kotlin/org/fluidmessages/NewAddressTest.kt").read_text()
+    for text, expected in NEW_ADDRESSES:
+        check(json.dumps(text) in kotlin, "The phone's NewAddressTest.kt leaves out " + json.dumps(text))
+    print("PASS  new chats: a new Matrix address makes a direct chat and sends; email, IRC, channels; address detection matches the phone")
+
+
+def web_contacts_test():
+    """New contact and Edit on the web: kept on the server, checked, shown in every list, fetched by the phone on
+    its own endpoint, and never part of the settings merge. Fictional people only."""
+    token = secrets.token_hex(24)
+    with companion(free_port(), token) as (origin, request, _):
+        opener = build_opener(ProxyHandler({}))
+
+        def call(path, body=None, cookie=None, bearer=False):
+            sent = {"Authorization": "Bearer " + token} if bearer else {"X-Fluid-Request": "1", "Origin": origin}
+            sent["Content-Type"] = "application/json"
+            if cookie:
+                sent["Cookie"] = cookie
+            data = json.dumps(body).encode() if body is not None else None
+            try:
+                with opener.open(Request(origin + path, data=data, headers=sent), timeout=15) as response:
+                    return response.status, json.loads(response.read() or b"{}"), response.headers
+            except HTTPError as error:
+                return error.code, json.loads(error.read() or b"{}"), error.headers
+
+        status, _, headers = call("/api/auth/local", {})
+        check(status == 200, "This computer couldn't open FluidMessages Web for the contacts test")
+        cookie = headers.get_all("Set-Cookie")[0].split(";")[0]
+        check(call("/api/contacts")[0] == 401, "Contacts answered without signing in")
+        state = call("/api/contacts", bearer=True)[1]
+        check(state["supported"] == 1 and state["contacts"] == [], "A new server has contacts")
+        empty_revision = state["revision"]
+
+        # New contact
+        draft = {"name": "  Rowan   Hale ", "numbers": ["+1 202 555 0177", "+1 202 555 0177"],
+                 "addresses": [{"service": "matrix", "address": "@rowan:example.org"}, {"service": "xmpp", "address": "Rowan@Example.org"},
+                               {"service": "irc", "address": "rowan@irc.libera.chat"}, {"service": "sip", "address": "rowan@sip.example.org"}]}
+        status, made, _ = call("/api/contacts", draft, cookie=cookie)
+        check(status == 200, "Couldn't make a contact: " + json.dumps(made))
+        contact = made["contact"]
+        check(re.fullmatch(r"wc-[0-9a-f]{16}", contact["id"]) and contact["name"] == "Rowan Hale" and contact["numbers"] == ["+1 202 555 0177"]
+              and contact["addresses"][1] == {"service": "xmpp", "address": "rowan@example.org"} and contact["created"] == contact["updated"],
+              "The contact wasn't cleaned: " + json.dumps(contact))
+        check(made["web_contacts"] == [contact], "Saving doesn't answer with every contact")
+        # Checked, with what to fix
+        for bad, why in (({"name": " "}, "Enter a name"), ({"name": "x" * 101}, "up to 100"), ({"name": "Line\nbreak"}, "up to 100"),
+                         ({"name": "Rowan", "numbers": ["call me"]}, "digits"), ({"name": "Rowan", "numbers": ["+1"]}, "digits"),
+                         ({"name": "Rowan", "numbers": ["+1 202 555 0100"] * 11}, "10 phone"),
+                         ({"name": "Rowan", "addresses": [{"service": "matrix", "address": "rowan"}]}, "@maya:example.org"),
+                         ({"name": "Rowan", "addresses": [{"service": "email", "address": "rowan@example"}]}, "maya@example.org"),
+                         ({"name": "Rowan", "addresses": [{"service": "fax", "address": "rowan"}]}, "Choose a service"),
+                         ({"name": "Rowan", "addresses": "@rowan:example.org"}, "20 chat"), ([], "Expected an object")):
+            status, answer, _ = call("/api/contacts", bad, cookie=cookie)
+            check(status == 400 and why in answer.get("error", ""), "A bad contact wasn't refused (" + why + "): " + json.dumps(answer))
+        check(len(call("/api/contacts", cookie=cookie)[1]["contacts"]) == 1, "A refused contact was kept")
+
+        # Shown everywhere people.js lists people
+        check(call("/api/settings", cookie=cookie)[1]["web_contacts"] == [contact], "Settings don't carry web contacts")
+        check(call("/api/inbox", cookie=cookie)[1]["web_contacts"] == [contact], "The inbox doesn't carry web contacts")
+        people_js = (ROOT / "server/people.js").read_text()
+        for expected in ("function openContactEditor", "'+ New contact'", "'Edit contact'", "'Save as contact'", "webContactList()",
+                         "api('contacts'", "api('contacts/delete'", "'Add to contacts'", "function addressDialView"):
+            check(expected in people_js, "people.js is missing " + expected)
+
+        # The phone's fetch: on its own endpoint, with a revision, nothing secret.
+        phone = call("/api/contacts", bearer=True)[1]
+        check(phone["contacts"] == [contact] and phone["revision"] != empty_revision, "The phone doesn't see the new contact")
+        check(token not in json.dumps(phone) and "password" not in json.dumps(phone), "Something secret went to the phone with contacts")
+
+        # Edit
+        status, edited, _ = call("/api/contacts", {"id": contact["id"], "name": "Rowan Hale-Ortiz", "numbers": ["+1 202 555 0177", "+44 20 7946 0958"],
+                                                    "addresses": [{"service": "matrix", "address": "@rowan:example.org"}]}, cookie=cookie)
+        check(status == 200 and edited["contact"]["id"] == contact["id"] and edited["contact"]["name"] == "Rowan Hale-Ortiz"
+              and len(edited["contact"]["numbers"]) == 2 and len(edited["contact"]["addresses"]) == 1
+              and edited["contact"]["updated"] > contact["updated"] and edited["contact"]["created"] == contact["created"], "Edit didn't save")
+        after = call("/api/contacts", bearer=True)[1]
+        check(after["revision"] != phone["revision"] and after["contacts"][0]["name"] == "Rowan Hale-Ortiz", "The phone doesn't see the edit")
+        check(call("/api/contacts", {"id": "wc-0000000000000000", "name": "Nobody"}, cookie=cookie)[0] == 400, "Editing a missing contact worked")
+
+        # Never a merge item: older phones would read an unknown item as a deletion. The merge still works around them.
+        merge = call("/api/merge", bearer=True)[1]
+        check(not any(key.split(":", 1)[0] not in ("look", "fun", "folder", "muted", "sender", "timer", "wallpaper", "gif", "gifoff",
+                                                     "pay", "sticker", "account", "protocol") for key in merge["web"]),
+              "Contacts leaked into the merge items: " + json.dumps(merge["web"]))
+        status, merged, _ = call("/api/merge", {"revision": merge["revision"], "apply_web": {}, "baseline": merge["web"], "conflicts": []}, bearer=True)
+        check(status == 200 and merged["pair"], "A merge failed next to web contacts")
+        check(call("/api/contacts", bearer=True)[1]["contacts"] == after["contacts"], "A merge changed web contacts")
+        # An older server answers 404, which the phone treats as "no web contacts here" (WebContacts.kt).
+        check(call("/api/contacts/list", bearer=True)[0] in (400, 404), "Unknown contact endpoints answered")
+
+        # The phone's sync still sends contact names with its texts, as before.
+        named = [{"address": "+12025550177", "body": "Fictional hello", "type": 1, "date": int(time.time() * 1000), "title": "Rowan Hale"}]
+        check(call("/api/sync", {"messages": named}, bearer=True)[0] == 200, "The phone's sync failed")
+        check(call("/api/inbox", cookie=cookie)[1]["messages"][0].get("title") == "Rowan Hale", "Phone contact names stopped reaching the web")
+
+        # Delete
+        status, gone, _ = call("/api/contacts/delete", {"id": contact["id"]}, cookie=cookie)
+        check(status == 200 and gone["web_contacts"] == [], "Delete didn't work")
+        check(call("/api/contacts/delete", {"id": contact["id"]}, cookie=cookie)[0] == 400, "Deleting twice worked")
+        check(call("/api/contacts", bearer=True)[1]["contacts"] == [], "The phone still sees a deleted contact")
+    print("PASS  web contacts: new, edit, delete, checks, shown in lists, phone fetch with revision, kept out of the merge, phone names still sync")
 
 
 def find_apk(explicit):
@@ -1917,7 +2487,11 @@ def main():
         privacy_calls_test()
         protocol_accounts_test()
         multi_account_test()
+        server_directory_test()
+        communities_test()
         merge_test()
+        new_conversations_test()
+        web_contacts_test()
         android(args)
         if args.demo:
             demo(args.no_browser)

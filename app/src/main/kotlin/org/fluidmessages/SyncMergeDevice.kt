@@ -73,7 +73,12 @@ internal object PhoneSyncItems {
             for (address in MainActivity.addressList(prefs, folder)) places.getOrPut(address) { mutableSetOf() } += folder
         }
         for ((address, set) in places) SyncMerge.folderValue(set)?.let { chat("folder", address, it) }
-        for (address in MainActivity.addressList(prefs, "muted")) chat("muted", address, "on")
+        // Muted stays "on" for every version, timed or not; how long is its own item (SyncMergeRun.TIMED), only for a
+        // FluidMessages Web that understands it. Mutes whose time is up are no item at all, so both sides unmute.
+        for ((key, end) in Mutes.active(prefs)) {
+            chat("muted", key, "on")
+            if (end > 0) chat(SyncMergeRun.TIMED, key, end.toString())
+        }
         for ((key, value) in prefs.all) {
             when {
                 key.startsWith("senderType.") && (value == "automated" || value == "person") -> chat("sender", key.removePrefix("senderType."), value as String)
@@ -131,6 +136,7 @@ internal object PhoneSyncItems {
             }
         }
         val folders = listOf("pinned", "archived", "blocked", "muted").associateWith { MainActivity.addressList(prefs, it).toMutableSet() }
+        val muteEnds = Mutes.until(prefs).toMutableMap()
         var foldersChanged = false
         var timers = false
         val afterwards = mutableListOf<() -> Unit>()
@@ -163,7 +169,13 @@ internal object PhoneSyncItems {
                     foldersChanged = true
                 }
                 "muted" -> if (!privateChat(prefs, name)) {
-                    if (value == "on") folders.getValue("muted").add(name) else folders.getValue("muted").remove(name)
+                    if (value == "on") folders.getValue("muted").add(name) else { folders.getValue("muted").remove(name); muteEnds.remove(name) }
+                    foldersChanged = true
+                }
+                // When a timed mute ends; no value is forever, for as long as it stays muted.
+                SyncMergeRun.TIMED -> if (!privateChat(prefs, name)) {
+                    val end = value?.toLongOrNull()?.takeIf { it > 0 }
+                    if (end == null) muteEnds.remove(name) else muteEnds[name] = end
                     foldersChanged = true
                 }
                 "sender" -> if (!privateChat(prefs, name)) {
@@ -205,7 +217,10 @@ internal object PhoneSyncItems {
                 "protocol" -> internet.firstOrNull { it.name.lowercase(Locale.ROOT) == name }?.let { edit.putBoolean(it.key(), value != "off") }
             }
         }
-        if (foldersChanged) for ((folder, values) in folders) edit.putString(folder, JSONArray(values).toString())
+        if (foldersChanged) {
+            for ((folder, values) in folders) if (folder != "muted") edit.putString(folder, JSONArray(values).toString())
+            Mutes.write(edit, folders.getValue("muted") to muteEnds.filterKeys { it in folders.getValue("muted") })
+        }
         edit.commit()
         for (run in afterwards) run()
         if (timers) runCatching { SyncJob.reschedule(context) }
@@ -248,6 +263,14 @@ object SyncMergeRun {
     private const val APPLIED = "merge.applied"
     private const val SEEN = "merge.seen"
     private const val LIMIT = 8 * 1024 * 1024
+    /**
+     * Timed mutes: "muteuntil:<key>" = when the mute ends, beside "muted:<key>" = "on" that every version compares.
+     * Older FluidMessages Web refuses groups it doesn't know, and an older phone would take a missing item as a change,
+     * so these are only exchanged when both sides say so: this phone asks with [ITEMS_HEADER] and posts "mute_until": 1,
+     * and FluidMessages Web answers "mute_until": 1 (server/sync_merge.py TIMED).
+     */
+    const val TIMED = "muteuntil"
+    private const val ITEMS_HEADER = "X-Fluid-Merge-Items"
     @Volatile private var nextRun = 0L
 
     private class Unsupported : IOException("FluidMessages Web doesn't merge settings yet")
@@ -292,10 +315,12 @@ object SyncMergeRun {
                 all.optJSONObject(key)?.let { key to SyncDecision(it.text("phone"), it.text("web"), it.optString("pick")) }
             }.toMap()
         }.orEmpty()
-        val phone = PhoneSyncItems.read(context, prefs)
+        // Timed mutes travel only when FluidMessages Web understands them; otherwise a timed mute is just "muted".
+        val timed = state.optInt("mute_until") == 1
+        val phone = PhoneSyncItems.read(context, prefs).filterKeys { timed || SyncMerge.group(it) != TIMED }
         val stamps = stamps(prefs, phone)
         val result = SyncMerge.merge(phone, state.optJSONObject("web")?.strings().orEmpty(), baseline, decisions) { key ->
-            (follow || SyncMerge.group(key) !in SyncMerge.settingsGroups) && !chatKeyPrivate(prefs, key)
+            (follow || SyncMerge.group(key) !in SyncMerge.settingsGroups) && !chatKeyPrivate(prefs, key) && (timed || SyncMerge.group(key) != TIMED)
         }
         // This phone's share goes in first: if posting fails, the next run sees both sides already agree.
         PhoneSyncItems.apply(context, prefs, result.applyPhone) { download(context, prefs, it) }
@@ -323,7 +348,8 @@ object SyncMergeRun {
         for ((key, value) in agreed) baselineJson.put(key, value)
         val answer = try {
             request(prefs, "POST", "merge", JSONObject().put("revision", state.optString("revision"))
-                .put("apply_web", applyWeb).put("baseline", baselineJson).put("conflicts", conflicts))
+                .put("apply_web", applyWeb).put("baseline", baselineJson).put("conflicts", conflicts)
+                .apply { if (timed) put("mute_until", 1) })
         } catch (error: HttpProblem) { if (error.code == 409) throw Stale() else throw error }
         prefs.edit().putString(PAIR, answer.optString("pair")).apply()
         SyncPending.save(prefs, answer.optJSONObject("pending"))
@@ -331,7 +357,7 @@ object SyncMergeRun {
     }
 
     private fun chatKeyPrivate(prefs: SharedPreferences, key: String) =
-        SyncMerge.group(key) in setOf("folder", "muted", "sender", "timer", "wallpaper") && SyncMerge.name(key) != "*" &&
+        SyncMerge.group(key) in setOf("folder", "muted", TIMED, "sender", "timer", "wallpaper") && SyncMerge.name(key) != "*" &&
             PhoneSyncItems.privateChat(prefs, SyncMerge.name(key))
 
     /** When each item last changed on this phone, as far as merges noticed. */
@@ -393,6 +419,7 @@ object SyncMergeRun {
         val connection = open(prefs, endpoint)
         try {
             connection.requestMethod = method
+            if (endpoint == "merge" && method == "GET") connection.setRequestProperty(ITEMS_HEADER, TIMED)
             if (payload != null) {
                 val data = payload.toString().toByteArray(StandardCharsets.UTF_8)
                 connection.setRequestProperty("Content-Type", "application/json")

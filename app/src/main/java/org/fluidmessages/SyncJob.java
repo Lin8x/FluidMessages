@@ -86,6 +86,8 @@ public final class SyncJob extends JobService {
         if (!CloudBackup.paired(url, token)) return;
         // Settings first: combined with FluidMessages Web's (SyncMergeRun) before this sync sends the phone's copy.
         try { SyncMergeRun.run(context, false); } catch (Exception ignored) {}
+        // Contacts made on the web: shown in the Phone tab, and saved into Android's contacts once you allowed it.
+        try { WebContacts.refresh(context); } catch (Exception ignored) {}
         if (!preferences.getBoolean("syncSms", true)
             || !context.getSystemService(RoleManager.class).isRoleHeld(RoleManager.ROLE_SMS)) return;
         publishInbox(context, preferences, url, token);
@@ -171,9 +173,17 @@ public final class SyncJob extends JobService {
         // Hidden chats and protocols never leave the phone; the companion is told to hide its own copies too.
         var messages = new org.json.JSONArray();
         long now = System.currentTimeMillis();
+        // Each one-to-one text carries its contact's name, so the web's chat list and Contacts show who it is.
+        var contacts = ContactDirectory.shared(context);
+        var names = new java.util.HashMap<String, String>();
         for (int i = 0; i < all.length(); i++) {
             var row = all.getJSONObject(i);
             if (HiddenChats.rowHidden(prefs, row)) continue;
+            String address = row.optString("address");
+            if (!row.has("title") && contacts.allowed() && !Privacy.decoyMode(prefs) && SmsStore.validRecipient(address)) {
+                String name = names.computeIfAbsent(address, key -> { var match = contacts.find(key); return match == null ? "" : match.name(); });
+                if (!name.isEmpty() && !name.equals(address)) row.put("title", name);
+            }
             SmsCrypto.reveal(prefs, row);
             if (Disappearing.expired(prefs, row, row.optString("address"), now)) continue;
             long expires = Disappearing.expiry(prefs, row, row.optString("address"));

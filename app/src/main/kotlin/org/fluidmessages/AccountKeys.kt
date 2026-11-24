@@ -14,7 +14,7 @@ import java.util.Locale
  */
 internal object AccountKeys {
     val services = listOf("matrix", "xmpp", "email", "irc")
-    /** Services whose accounts are servers with channels or rooms, like Discord servers. */
+    /** Services whose accounts are servers with channels or rooms. */
     val serverServices = listOf("irc", "matrix", "xmpp")
     const val WEB = "web"
     const val PHONE = "phone"
@@ -60,26 +60,7 @@ internal object AccountKeys {
             "matrix" -> address.substringAfter(':', address)
             else -> address.substringAfterLast('@', address)
         }
-        return knownNetworks.firstOrNull { it.host == host }?.name ?: host
-    }
-
-    data class Network(val name: String, val host: String, val about: String)
-
-    /** Public IRC networks offered when adding one. Picking one only fills in the form. */
-    val knownNetworks = listOf(
-        Network("Libera.Chat", "irc.libera.chat", "Free and open-source projects"),
-        Network("OFTC", "irc.oftc.net", "Debian, Tor, and other projects"),
-    )
-
-    /** Channels and rooms first, then direct messages, keeping each group's order: (key, isGroup) pairs. */
-    fun <T> serverOrder(rows: List<T>, isGroup: (T) -> Boolean): List<T> = rows.filter(isGroup) + rows.filterNot(isGroup)
-
-    /** The heading over each part of a server's chat list. */
-    fun section(protocol: String, group: Boolean) = when {
-        !group -> "Direct messages"
-        protocol == "irc" -> "Channels"
-        protocol == "xmpp" -> "Group chats"
-        else -> "Rooms"
+        return (if (service(accountId) == "irc") ServerDirectory.ircName(host) else null) ?: host
     }
 
     // Phone and web merge
@@ -98,8 +79,8 @@ internal object AccountKeys {
 
     /** Plain-language help for adding another account or server. */
     fun help(protocol: String) = when (protocol) {
-        "irc" -> "Like a Discord server: a network such as Libera.Chat with many channels. Each network is its own account."
-        "matrix" -> "Your Matrix account lives on a homeserver. Its rooms, and Spaces that group rooms like a Discord server, can be on any homeserver."
+        "irc" -> "An IRC network such as Libera.Chat hosts many public chat rooms called channels. Each network is its own account."
+        "matrix" -> "Your Matrix account lives on a homeserver. You can join rooms on any homeserver, and Spaces collect related rooms together."
         "xmpp" -> "Your XMPP account lives on one server. Group chats live on group chat services such as conference.example.org."
         else -> "Each mailbox is its own account, such as a work and a personal address."
     }

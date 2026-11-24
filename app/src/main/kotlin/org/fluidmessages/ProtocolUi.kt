@@ -67,7 +67,7 @@ internal fun GroupAvatar(members: List<GroupMember>, size: Int, ring: Color) {
 
 /** Inbox tags: small outlined labels in each protocol's color, shaded so they stay readable on the inbox background. */
 @Composable
-internal fun ProtocolTags(thread: ThreadRow, appearance: Appearance) {
+internal fun ProtocolTags(thread: ThreadRow, appearance: Appearance, mutedColor: Color = Color.Gray) {
     val labels = thread.protocol.ifBlank { "SMS" }.split(" · ")
     Row(Modifier.padding(top = 3.dp, bottom = 1.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         for (label in labels) {
@@ -79,6 +79,8 @@ internal fun ProtocolTags(thread: ThreadRow, appearance: Appearance) {
                 .padding(horizontal = 5.dp), color = ink, fontSize = 10.sp, lineHeight = 14.sp,
                 fontWeight = FontWeight.Medium, maxLines = 1)
         }
+        // Muted: the bell with a slash, right after the tags.
+        if (thread.muted.isNotEmpty()) MutedMark(thread.muted, mutedColor, Modifier.align(Alignment.CenterVertically))
     }
 }
 

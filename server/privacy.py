@@ -267,6 +267,8 @@ class DecoyWorld:
             return 200, {"targets": []}
         if path == "/api/stickers":
             return 200, {"stickers": []}
+        if path == "/api/contacts":
+            return 200, {"supported": 1, "contacts": [], "revision": "0" * 16}
         if path == "/api/merge":
             return 200, {"supported": 1, "pair": None, "revision": "0" * 24, "follow_phone": True, "web": {}, "stamps": {},
                          "baseline": None, "decisions": {}, "pending": None, "resolved": None}

@@ -174,6 +174,7 @@ let heardFirst = false;
 
 /**
  * New messages from other people chime and show a notification (notify.js), except in muted or blocked chats. Muted
+ * means muted right now, by the chat or its whole server, until a timed mute runs out (chats.js chatMuted). Muted
  * chats chime only with "Sounds for muted chats" on; blocked ones never do. Private chats arrive here as type 2
  * (privacy.js), so they never chime or notify. The sample inbox never reaches this: its messages aren't synced.
  */

@@ -219,6 +219,18 @@ interface PhoneActions {
     fun allowContacts()
     /** The newest message in a conversation, for the contact page. Called off the main thread. */
     fun preview(address: String): String
+    /** New contact, with anything already known filled in (from the keypad or a contact page). */
+    fun newContact(name: String, numbers: List<String>, addresses: List<ChatAddress>)
+    /** Edit: "contact:<id>" edits a saved contact; "web:<id>" saves a contact from FluidMessages Web. */
+    fun editContact(key: String)
+    /** Saves every contact from FluidMessages Web into the phone's contacts, asking first. */
+    fun saveWebContacts()
+    /** Starts (or opens) a chat with a typed or saved address; service is matrix, xmpp, email, or irc. */
+    fun startChat(service: String, target: String)
+    /** "Muted until 3:40 PM" and the like when every one of [keys] (a person's addresses) is muted, or "" (Mutes). */
+    fun muteLabel(keys: List<String>): String
+    /** Opens the mute page for all of a person's chats and numbers; [done] runs after a choice. */
+    fun mute(keys: List<String>, name: String, done: Runnable)
 }
 
 /** A call in Recents. Phone calls come from Android's call history; protocol and address say how to call back. */
@@ -231,8 +243,9 @@ internal data class Account(val address: String, val protocol: MessageProtocol, 
 /** Someone you can call or message: an Android contact, a linked internet chat, or both. */
 internal data class Person(val key: String, val name: String, val photo: Uri?, val numbers: List<String>, val accounts: List<Account>,
                            val photoRes: Int = 0, val fields: List<ContactField> = emptyList()) {
-    val tags: List<String> get() = (if (numbers.isNotEmpty()) listOf("Phone") else emptyList()) +
-        accounts.map { it.protocol.label }.distinct()
+    val tags: List<String> get() = ((if (numbers.isNotEmpty()) listOf("Phone") else emptyList()) +
+        accounts.map { it.protocol.label } + fields.filter { it.kind == ContactField.Kind.CHAT }.map { it.label }).distinct() +
+        (if (key.startsWith("web:")) listOf("From web") else emptyList())
     val matrix: Account? get() = accounts.firstOrNull { it.protocol == MessageProtocol.MATRIX }
     fun matches(number: String) = numbers.any { PhoneNumberUtils.compare(it, number) }
 }
@@ -268,11 +281,31 @@ private fun loadPeople(context: Context, prefs: SharedPreferences): List<Person>
     }
     // Every saved number, email, and other detail, read in one pass for all contacts.
     val details = ContactFields.all(context)
-    return people.map { (key, draft) ->
+    // Contacts with only chat addresses, no number, are people too.
+    val chatOnly = details.filter { (id, fields) -> "contact:$id" !in people && fields.any { it.kind == ContactField.Kind.CHAT } }.keys
+    for ((id, named) in ContactWriter.names(context, chatOnly)) {
+        if (named.first.isNotBlank()) people["contact:$id"] = Draft(named.first, named.second)
+    }
+    val result = people.map { (key, draft) ->
         Person(key, draft.name, draft.photo, draft.numbers, draft.accounts,
             fields = key.removePrefix("contact:").toLongOrNull()?.let { details[it] }.orEmpty())
+    }.toMutableList()
+    // Contacts made in FluidMessages Web that aren't in the phone's contacts yet show until they're saved.
+    if (!Privacy.decoyMode(prefs)) for (entry in WebContacts.pending(context, prefs)) {
+        if (WebContacts.contactFor(context, prefs, entry.id) != null) continue
+        val draft = entry.draft
+        if (draft.numbers.isNotEmpty() && result.any { person -> person.key.startsWith("contact:") && draft.numbers.any(person::matches) }) continue
+        result += Person("web:" + entry.id, draft.name, null, draft.numbers, emptyList(), fields =
+            draft.numbers.map { ContactField(ContactField.Kind.PHONE, "Phone", it) } + draft.addresses.map { webField(it) })
     }
-        .sortedBy { it.name.lowercase() }
+    return result.sortedBy { it.name.lowercase() }
+}
+
+/** A web contact's chat address as a contact detail. */
+private fun webField(address: ChatAddress): ContactField = when (address.service) {
+    "email" -> ContactField(ContactField.Kind.EMAIL, "Email", address.address)
+    "sip" -> ContactField(ContactField.Kind.SIP, "SIP", address.address)
+    else -> ContactField(ContactField.Kind.CHAT, NewAddress.label(address.service), address.address)
 }
 
 private fun readCalls(context: Context, phoneCalls: Boolean): List<CallEntry> {
@@ -352,6 +385,11 @@ private fun favorites(prefs: SharedPreferences, sample: Boolean): Set<String> = 
  * page for each person. Colors and light or dark mode come from the current theme.
  */
 object PhoneTab {
+    /** A contact page to open when the Phone tab next shows, after saving it in the editor. */
+    @JvmField var reopen: String? = null
+    /** Whether the Phone tab next opens on Contacts. */
+    @JvmField var showContacts: Boolean = false
+
     /** The sample contact with this number, for the pretend call screen. */
     @JvmStatic
     fun sampleName(number: String): String = samplePeople().firstOrNull { it.matches(number) }?.name ?: number
@@ -416,7 +454,11 @@ object PhoneTab {
                     }
                     people = loaded.sortedBy { it.name.lowercase() }
                     calls = history
+                    // Back from New contact or Edit: the contact's page, or Contacts.
+                    reopen?.let { key -> opened = people?.firstOrNull { it.key == key } ?: people?.firstOrNull { it.name == key } }
+                    reopen = null
                 }
+                LaunchedEffect(Unit) { if (showContacts) { section = 2; showContacts = false } }
                 fun toggleFavorite(person: Person) {
                     starred = if (person.key in starred) starred - person.key else starred + person.key
                     prefs.edit().putString(if (sample) "samplePhoneFavorites" else "phoneFavorites", JSONArray(starred.toList()).toString()).apply()
@@ -429,7 +471,7 @@ object PhoneTab {
                     val person = opened
                     if (person != null) {
                         BackHandler { opened = null }
-                        PersonPage(prefs, sample, palette, person, person.key in starred, calls.orEmpty(), actions, { opened = null }) { toggleFavorite(person) }
+                        PersonPage(prefs, sample, palette, person, person.key in starred, calls.orEmpty(), actions, { opened = null }, restrictTo == null) { toggleFavorite(person) }
                     } else {
                         Segmented(palette, listOf("Favorites", "Recents", "Contacts"), if (keypad) -1 else section) {
                             section = it
@@ -450,7 +492,7 @@ object PhoneTab {
                                 when (section) {
                                     0 -> Favorites(palette, people, starred, actions) { opened = it }
                                     1 -> Recents(palette, calls, actions, sample || !prefs.getBoolean("showPhoneCalls", true), ::personFor) { opened = it }
-                                    else -> Contacts(palette, people, actions, sample) { opened = it }
+                                    else -> Contacts(palette, people, actions, sample, restrictTo != null) { opened = it }
                                 }
                                 // A floating keypad button, as in Google's Phone app, on every list.
                                 if (canCall) Box(Modifier.align(Alignment.BottomEnd).padding(18.dp).size(58.dp).clip(CircleShape)
@@ -651,7 +693,7 @@ private fun SearchField(palette: Palette, query: String, change: (String) -> Uni
 }
 
 @Composable
-private fun Contacts(palette: Palette, people: List<Person>?, actions: PhoneActions, sample: Boolean, open: (Person) -> Unit) {
+private fun Contacts(palette: Palette, people: List<Person>?, actions: PhoneActions, sample: Boolean, decoy: Boolean, open: (Person) -> Unit) {
     val context = LocalContext.current
     var query by rememberSaveable { mutableStateOf("") }
     val contactsAllowed = sample || context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
@@ -660,9 +702,26 @@ private fun Contacts(palette: Palette, people: List<Person>?, actions: PhoneActi
         words.isEmpty() || person.name.lowercase().contains(words) || person.numbers.any { it.filter(Char::isDigit).contains(words.filter(Char::isDigit).ifEmpty { "\u0000" }) }
             || person.accounts.any { it.target.lowercase().contains(words) }
     }
+    val fromWeb = people.orEmpty().count { it.key.startsWith("web:") }
     LazyColumn(Modifier.fillMaxSize()) {
-        item { LargeTitle(palette, "Contacts") }
+        item {
+            Row(Modifier.fillMaxWidth().padding(end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                LargeTitle(palette, "Contacts", Modifier.weight(1f))
+                if (!decoy) Text("New contact", Modifier.clip(RoundedCornerShape(18.dp)).background(palette.wash)
+                    .clickable(role = Role.Button) { actions.newContact("", emptyList(), emptyList()) }.padding(horizontal = 14.dp, vertical = 8.dp),
+                    color = palette.inboxAction, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
         item { SearchField(palette, query) { query = it } }
+        if (fromWeb > 0 && !sample) item {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                .background(palette.wash).clickable(role = Role.Button) { actions.saveWebContacts() }.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text((if (fromWeb == 1) "1 contact" else "$fromWeb contacts") + " from FluidMessages Web " +
+                    (if (fromWeb == 1) "isn't" else "aren't") + " in your phone's contacts yet.", Modifier.weight(1f), color = palette.ink, fontSize = 14.sp)
+                Text("Save", Modifier.padding(start = 10.dp), color = palette.inboxAction, fontWeight = FontWeight.SemiBold)
+            }
+        }
         if (!contactsAllowed) item {
             Permission(palette, "Your contacts", "Show the people saved on this phone, with their numbers and linked accounts.",
                 "Allow contacts") { actions.allowContacts() }
@@ -712,6 +771,16 @@ private fun UsernameCall(palette: Palette, actions: PhoneActions) {
         }
         if (id.isNotEmpty() && !valid) Text("Addresses look like @name:server.org, name@server.org, or sip:name@provider.com",
             color = MissedRed, fontSize = 13.sp)
+        // Message them, or save them as a contact, on the service the address is on.
+        val typed = remember(id) { NewAddress.detect(id).firstOrNull { !it.guess && it.service != "sms" } }
+        if (valid && typed != null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (typed.service != "sip") Text("Message", Modifier.clip(RoundedCornerShape(8.dp))
+                .clickable(role = Role.Button) { actions.startChat(typed.service, id.trim()) }.padding(horizontal = 8.dp, vertical = 4.dp),
+                color = palette.inboxAction, fontSize = 15.sp)
+            Text("Add to contacts", Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button) {
+                actions.newContact("", emptyList(), listOf(ChatAddress(typed.service, typed.target.removePrefix("sip:"))))
+            }.padding(horizontal = 8.dp, vertical = 4.dp), color = palette.inboxAction, fontSize = 15.sp)
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             for ((label, video) in listOf("Voice call" to false, "Video call" to true)) {
                 Row(Modifier.weight(1f).clip(RoundedCornerShape(24.dp)).background(if (valid) CallGreen else palette.wash)
@@ -737,7 +806,16 @@ private fun NumberPad(palette: Palette, people: List<Person>, actions: PhoneActi
             verticalArrangement = Arrangement.Bottom) {
             Text(number, Modifier.fillMaxWidth().padding(horizontal = 24.dp).heightIn(min = 48.dp), color = palette.ink,
                 fontSize = if (number.length > 13) 28.sp else 36.sp, fontWeight = FontWeight.Light, textAlign = TextAlign.Center, maxLines = 1)
-            Text(match?.name ?: " ", Modifier.clip(RoundedCornerShape(8.dp)).clickable(enabled = match != null) { match?.let(open) }
+            if (match == null && number.count(Char::isDigit) >= 3 && number.none { it == '*' || it == '#' }) {
+                // Someone new: text them, or save them as a contact.
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for ((label, run) in listOf<Pair<String, () -> Unit>>("Message" to { actions.openChat(number, "sms") },
+                            "Add to contacts" to { actions.newContact("", listOf(number), emptyList()) })) {
+                        Text(label, Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClick = run)
+                            .padding(horizontal = 8.dp, vertical = 2.dp), color = palette.inboxAction, fontSize = 15.sp)
+                    }
+                }
+            } else Text(match?.name ?: " ", Modifier.clip(RoundedCornerShape(8.dp)).clickable(enabled = match != null) { match?.let(open) }
                 .padding(horizontal = 8.dp, vertical = 2.dp), color = palette.inboxAction, fontSize = 15.sp)
             Spacer(Modifier.height(12.dp))
             for (row in listOf(listOf("1", "2", "3"), listOf("4", "5", "6"), listOf("7", "8", "9"), listOf("*", "0", "#"))) {
@@ -788,7 +866,7 @@ private fun DeleteGlyph(color: Color) {
 /** Everything about one person: how to reach them, their chats, and recent calls. */
 @Composable
 private fun PersonPage(prefs: SharedPreferences, sample: Boolean, palette: Palette, person: Person, favorite: Boolean, calls: List<CallEntry>, actions: PhoneActions,
-                       back: () -> Unit, toggleFavorite: () -> Unit) {
+                       back: () -> Unit, editable: Boolean, toggleFavorite: () -> Unit) {
     val number = person.numbers.firstOrNull()
     val matrix = person.matrix
     // Every conversation with this person: texts on each number, and each linked internet chat.
@@ -808,6 +886,17 @@ private fun PersonPage(prefs: SharedPreferences, sample: Boolean, palette: Palet
                 Text("‹ Back", Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClick = back).padding(8.dp),
                     color = palette.inboxAction, fontSize = 17.sp)
                 Spacer(Modifier.weight(1f))
+                // Edit a saved contact; save one from FluidMessages Web; or add anyone else to your contacts.
+                if (editable) Text(when {
+                    person.key.startsWith("contact:") -> "Edit"
+                    person.key.startsWith("web:") -> "Save to contacts"
+                    else -> "Add to contacts"
+                }, Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button) {
+                    if (person.key.startsWith("contact:") || person.key.startsWith("web:")) actions.editContact(person.key)
+                    else actions.newContact(if (person.name == number) "" else person.name, person.numbers, person.accounts
+                        .filter { NewAddress.protocol(it.protocol.name.lowercase()) != null && !it.target.startsWith("!") && !it.target.startsWith("#") }
+                        .map { ChatAddress(it.protocol.name.lowercase(), it.target) })
+                }.padding(8.dp), color = palette.inboxAction, fontSize = 17.sp)
                 Box(Modifier.size(44.dp).clip(CircleShape).clickable(role = Role.Button, onClick = toggleFavorite)
                     .semantics { contentDescription = if (favorite) "Remove from favorites" else "Add to favorites" }, contentAlignment = Alignment.Center) {
                     StarGlyph(palette.inboxAction, favorite)
@@ -828,6 +917,9 @@ private fun PersonPage(prefs: SharedPreferences, sample: Boolean, palette: Palet
                 person.numbers.map { ReachOption(ReachOption.MESSAGE, "SMS", it, Runnable { actions.openChat(it, "sms") }) } +
                     person.accounts.map { account -> ReachOption(ReachOption.MESSAGE, account.protocol.label, account.target,
                         Runnable { actions.openChat(account.address, account.protocol.name.lowercase()) }) } +
+                    // Saved chat addresses without a chat yet start one there.
+                    person.fields.filter { field -> field.kind == ContactField.Kind.CHAT && person.accounts.none { it.target.equals(field.value, true) } }
+                        .map { field -> ReachOption(ReachOption.MESSAGE, field.label, field.value, Runnable { actions.startChat(field.service, field.value) }) } +
                     person.numbers.filter { Calling.allowed(prefs, Calling.Method.PHONE) }.map { ReachOption(ReachOption.CALL, "Phone", it, Runnable { actions.call(it) }) } +
                     (if (Calling.allowed(prefs, Calling.Method.MEETING) && (person.numbers.isNotEmpty() || person.accounts.isNotEmpty())) {
                         // Every way to reach them, so the link can go wherever you choose.
@@ -857,6 +949,7 @@ private fun PersonPage(prefs: SharedPreferences, sample: Boolean, palette: Palet
                         when (field.kind) {
                             ContactField.Kind.PHONE -> actions.call(field.value)
                             ContactField.Kind.SIP -> actions.internetCall("sip:" + field.value.removePrefix("sip:"), person.name, false, "SIP")
+                            ContactField.Kind.CHAT -> actions.startChat(field.service, field.value)
                             else -> openField(context, field)
                         }
                     }
@@ -864,6 +957,22 @@ private fun PersonPage(prefs: SharedPreferences, sample: Boolean, palette: Palet
                 person.accounts.forEachIndexed { index, account ->
                     if (index > 0 || labelled.isNotEmpty()) HorizontalDivider(Modifier.padding(start = 14.dp), color = palette.edge, thickness = .5.dp)
                     InfoRow(palette, account.protocol.label, account.target) { actions.openChat(account.address, account.protocol.name.lowercase()) }
+                }
+            }
+        }
+        // Mute all of their chats and numbers at once: 1 hour to forever, or Unmute.
+        if (sample || person.numbers.isNotEmpty() || person.accounts.isNotEmpty()) item {
+            val keys = remember(person) { if (sample) listOf(person.key) else (person.numbers + person.accounts.map { it.address }).distinct() }
+            var muted by remember(person) { mutableStateOf(actions.muteLabel(keys)) }
+            Card(palette, "Notifications") {
+                Row(Modifier.fillMaxWidth().clickable(role = Role.Button) { actions.mute(keys, person.name) { muted = actions.muteLabel(keys) } }
+                    .padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (muted.isNotEmpty()) MutedMark(muted, palette.ink, Modifier.padding(end = 10.dp), 18)
+                    Column(Modifier.weight(1f)) {
+                        Text(muted.ifEmpty { "Mute ${person.name}" }, color = if (muted.isEmpty()) palette.inboxAction else palette.ink, fontSize = 16.sp)
+                        Text(if (muted.isEmpty()) "All of their chats and numbers" else "All of their chats and numbers · tap to change or unmute",
+                            color = palette.muted, fontSize = 13.sp)
+                    }
                 }
             }
         }

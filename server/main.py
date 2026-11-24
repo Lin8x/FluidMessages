@@ -42,6 +42,8 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/features.css": ("features.css", "text/css"), "/settings.js": ("settings.js", "text/javascript"),
          "/sync-merge.js": ("sync-merge.js", "text/javascript"), "/people.js": ("people.js", "text/javascript"),
          "/privacy.js": ("privacy.js", "text/javascript"), "/servers.js": ("servers.js", "text/javascript"),
+         "/server-directory.js": ("server-directory.js", "text/javascript"),
+         "/inbox-filters.js": ("inbox-filters.js", "text/javascript"),
          "/notify.js": ("notify.js", "text/javascript"),
          # The sample inbox's fictional portraits, the phone's own (res/drawable-nodpi/sample_*.webp).
          "/samples/maya.webp": ("samples/maya.webp", "image/webp"), "/samples/jordan.webp": ("samples/jordan.webp", "image/webp"),
@@ -52,15 +54,41 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/icons/maskable-512.png": ("icons/maskable-512.png", "image/png"),
          "/icons/apple-touch-icon.png": ("icons/apple-touch-icon.png", "image/png")}
 # Fun and effects, and counts on the tabs, kept for this server (every browser), never taken from the phone.
-PREFS = ("effects", "reactionEffects", "games", "random", "gifs", "linkPreviews", "tabCounts")
+PREFS = ("effects", "reactionEffects", "games", "random", "gifs", "linkPreviews", "tabCounts", "showCommunityChats")
+# Messages → Communities' sort order, and Settings → Messaging → Inbox filters: which filters the inbox filter menu
+# shows, in order. A hidden filter is kept with a "-" in front, so its place survives turning it back on.
+COMMUNITY_SORTS = ("recent", "name", "joined")
+INBOX_FILTERS = ("inbox", "unread", "favorites", "groups", "direct", "texts", "matrix", "xmpp", "email", "irc", "archived", "blocked")
+
+
+def clean_inbox_filters(value):
+    """An ordered list of filter ids, each shown or "-" hidden. Unknown or repeated ids, or hiding Inbox, are refused.
+    Filters missing from the list (added in a later version) are appended, shown."""
+    if not isinstance(value, list) or len(value) > len(INBOX_FILTERS) or not all(isinstance(item, str) for item in value):
+        raise ValueError("Invalid inbox filters")
+    ids = [item.removeprefix("-") for item in value]
+    if any(item not in INBOX_FILTERS for item in ids) or len(set(ids)) != len(ids) or "-inbox" in value:
+        raise ValueError("Invalid inbox filters")
+    return list(value) + [item for item in INBOX_FILTERS if item not in ids]
+
+
+def default_prefs():
+    return {**{key: True for key in PREFS}, "communitySort": "recent", "inboxFilters": list(INBOX_FILTERS)}
 
 def appearance_snapshot(value):
     if not isinstance(value, dict):
         return {}
     clean = {}
-    for key in ("dark", "exactTimes", "mmsReady", "protocolTags", "protocolPrivacy", "combineProtocols", "tabCounts", "announceSettings"):
+    for key in ("dark", "exactTimes", "mmsReady", "protocolTags", "protocolPrivacy", "combineProtocols", "tabCounts", "announceSettings",
+                "showCommunityChats"):
         if type(value.get(key)) is bool:
             clean[key] = value[key]
+    if value.get("communitySort") in COMMUNITY_SORTS:
+        clean["communitySort"] = value["communitySort"]
+    try:
+        clean["inboxFilters"] = clean_inbox_filters(value["inboxFilters"])
+    except (KeyError, ValueError):
+        pass
     for key, lower, upper in (("radius", 2, 30), ("size", 12, 28), ("padding", 6, 24)):
         if type(value.get(key)) is int and lower <= value[key] <= upper:
             clean[key] = value[key]
@@ -166,7 +194,7 @@ def clean_look_extras(value):
 def web_chats(db):
     """Pinned, archived, blocked, and muted chats, and chat codes, kept by FluidMessages Web for every browser."""
     row = db.execute("SELECT value FROM protocol_state WHERE key='web_chats'").fetchone()
-    return json.loads(row[0]) if row else {"pinned": [], "archived": [], "blocked": [], "muted": [], "locks": {}}
+    return json.loads(row[0]) if row else {"pinned": [], "archived": [], "blocked": [], "muted": [], "mute_until": {}, "locks": {}}
 
 
 def clean_web_chats(value):
@@ -178,6 +206,17 @@ def clean_web_chats(value):
         if not isinstance(items, list) or len(items) > 2000 or any(not isinstance(item, str) or len(item) > 300 for item in items):
             raise ValueError("Invalid chat settings")
         clean[key] = list(dict.fromkeys(items))
+    # When each timed mute ends (epoch milliseconds). A muted chat without one is muted forever, as every mute from
+    # before was. Mutes whose time is up are dropped here, lazily: nothing has to run when they end.
+    until = value.get("mute_until", {})
+    if not isinstance(until, dict) or len(until) > 2000 or any(
+            not isinstance(key, str) or len(key) > 300 or type(ends) is not int or ends < 0 for key, ends in until.items()):
+        raise ValueError("Invalid chat settings")
+    now = int(time.time() * 1000)
+    clean["muted"] = [key for key in clean["muted"] if not 0 < until.get(key, 0) <= now]
+    until = {key: ends for key, ends in until.items() if ends > now and key in clean["muted"]}
+    if until:
+        clean["mute_until"] = until
     locks = value.get("locks", {})
     if not isinstance(locks, dict) or len(locks) > 2000:
         raise ValueError("Invalid chat codes")
@@ -211,6 +250,117 @@ def clean_web_favorites(value):
     return list(dict.fromkeys(value))
 
 
+# Contacts made in FluidMessages Web: a name, phone numbers, and chat addresses, kept for every browser and fetched by
+# the phone (GET /api/contacts), which shows them and, once you allow it, saves them into Android's contacts. They
+# never become merge items: older phones would read unknown items as deletions, so they travel on their own endpoint,
+# which older phones never call and older servers answer with 404. Nothing secret is part of a contact.
+CONTACT_SERVICES = ("matrix", "xmpp", "email", "irc", "sip")
+CONTACT_NUMBER = re.compile(r"(?=(?:[^0-9]*[0-9]){3})\+?[0-9][0-9 ().-]{2,39}")
+CONTACT_ADDRESS = {
+    "matrix": accounts.MXID,
+    "xmpp": accounts.JID,
+    "email": re.compile(r"[^@\s<>\"'\x00-\x1f]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}\.)+[A-Za-z]{2,63}"),
+    # A nickname, optionally on a network: riley or riley@irc.libera.chat.
+    "irc": re.compile(accounts.NICK.pattern + r"(?:@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)?"),
+    "sip": re.compile(r"(?:sip:)?[^@\s<>\"'\x00-\x1f]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?"),
+}
+CONTACT_ID = re.compile(r"wc-[0-9a-f]{16}")
+CONTACT_LIMIT = 2000
+
+
+def web_contacts(db):
+    row = db.execute("SELECT value FROM protocol_state WHERE key='web_contacts'").fetchone()
+    return json.loads(row[0]) if row else []
+
+
+def clean_contact(value):
+    """A contact's name, numbers, and chat addresses, checked. Raises ValueError with what to fix."""
+    if not isinstance(value, dict):
+        raise ValueError("Invalid contact")
+    name = value.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Enter a name")
+    if re.search(r"[\x00-\x1f\x7f]", name):
+        raise ValueError("Names are up to 100 characters, on one line")
+    name = " ".join(name.split())
+    if len(name) > 100:
+        raise ValueError("Names are up to 100 characters")
+    numbers = value.get("numbers") or []
+    if not isinstance(numbers, list) or len(numbers) > 10:
+        raise ValueError("Add up to 10 phone numbers")
+    clean_numbers = []
+    for number in numbers:
+        if not isinstance(number, str) or not CONTACT_NUMBER.fullmatch(number.strip()):
+            raise ValueError("Enter phone numbers with digits, like +1 202 555 0143")
+        if number.strip() not in clean_numbers:
+            clean_numbers.append(number.strip())
+    addresses = value.get("addresses") or []
+    if not isinstance(addresses, list) or len(addresses) > 20:
+        raise ValueError("Add up to 20 chat addresses")
+    clean_addresses = []
+    for item in addresses:
+        service = item.get("service") if isinstance(item, dict) else None
+        address = item.get("address") if isinstance(item, dict) else None
+        if service not in CONTACT_SERVICES or not isinstance(address, str):
+            raise ValueError("Choose a service for each chat address")
+        address = address.strip()
+        if service in ("xmpp", "email"):
+            address = address.lower()
+        if not CONTACT_ADDRESS[service].fullmatch(address):
+            raise ValueError({"matrix": "Matrix addresses look like @maya:example.org",
+                              "xmpp": "XMPP addresses look like maya@example.org",
+                              "email": "Email addresses look like maya@example.org",
+                              "irc": "IRC nicknames look like riley, or riley@irc.libera.chat for a network",
+                              "sip": "SIP addresses look like maya@sip.example.org"}[service])
+        entry = {"service": service, "address": address}
+        if entry not in clean_addresses:
+            clean_addresses.append(entry)
+    return {"name": name, "numbers": clean_numbers, "addresses": clean_addresses}
+
+
+def save_contact(db, data, hide=None):
+    """New contact (no id) or Edit (the contact's id). The server picks ids and times. [hide] is set for a browser that
+    hasn't opened the private folder: it never saw those numbers and addresses, so its edit keeps them."""
+    contacts = web_contacts(db)
+    clean = clean_contact(data)
+    now = int(time.time() * 1000)
+    ident = data.get("id")
+    if ident is None or ident == "":
+        if len(contacts) >= CONTACT_LIMIT:
+            raise ValueError("That's the most contacts FluidMessages Web keeps")
+        contact = {"id": "wc-" + os.urandom(8).hex(), **clean, "created": now, "updated": now}
+        contacts.append(contact)
+    else:
+        found = next((item for item in contacts if item["id"] == ident), None) if isinstance(ident, str) else None
+        if found is None:
+            raise ValueError("That contact was deleted. Go back and try again.")
+        if hide:
+            clean["numbers"] += [number for number in found.get("numbers", []) if hide(number) and number not in clean["numbers"]]
+            clean["addresses"] += [entry for entry in found.get("addresses", []) if hide(entry["address"]) and entry not in clean["addresses"]]
+        found.update(clean)
+        found["updated"] = max(now, found.get("updated", 0) + 1)
+        contact = found
+    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_contacts', ?)", (json.dumps(contacts),))
+    return {"contact": contact, "web_contacts": contacts}
+
+
+def delete_contact(db, data):
+    contacts = web_contacts(db)
+    ident = data.get("id")
+    left = [item for item in contacts if item["id"] != ident]
+    if not isinstance(ident, str) or len(left) == len(contacts):
+        raise ValueError("That contact is already gone")
+    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_contacts', ?)", (json.dumps(left),))
+    return {"deleted": ident, "web_contacts": left}
+
+
+def contacts_view(db):
+    """What the phone fetches: every web contact and a revision, so it can tell when something changed."""
+    contacts = web_contacts(db)
+    return {"supported": 1, "contacts": contacts,
+            "revision": hashlib.sha256(json.dumps(contacts, sort_keys=True).encode()).hexdigest()[:16]}
+
+
 def web_appearance(db):
     row = db.execute("SELECT value FROM protocol_state WHERE key='web_appearance'").fetchone()
     return json.loads(row[0]) if row else {"theme": "fluid", "mode": "system"}
@@ -219,13 +369,29 @@ def web_appearance(db):
 def web_prefs(db):
     row = db.execute("SELECT value FROM protocol_state WHERE key='prefs'").fetchone()
     stored = json.loads(row[0]) if row else {}
-    return {key: stored.get(key, True) is not False for key in PREFS}
+    prefs = {key: stored.get(key, True) is not False for key in PREFS}
+    prefs["communitySort"] = stored.get("communitySort") if stored.get("communitySort") in COMMUNITY_SORTS else "recent"
+    try:
+        prefs["inboxFilters"] = clean_inbox_filters(stored["inboxFilters"])
+    except (KeyError, ValueError):
+        prefs["inboxFilters"] = list(INBOX_FILTERS)
+    return prefs
 
 
 def clean_prefs(value, current):
-    if not isinstance(value, dict) or any(key not in PREFS or type(item) is not bool for key, item in value.items()):
+    if not isinstance(value, dict):
         raise ValueError("Invalid preferences")
-    return {**current, **value}
+    clean = {}
+    for key, item in value.items():
+        if key in PREFS and type(item) is bool:
+            clean[key] = item
+        elif key == "communitySort" and item in COMMUNITY_SORTS:
+            clean[key] = item
+        elif key == "inboxFilters":
+            clean[key] = clean_inbox_filters(item)
+        else:
+            raise ValueError("Invalid preferences")
+    return {**current, **clean}
 
 
 def delete_for_me(db, data):
@@ -257,7 +423,7 @@ def settings_view(db):
     """FluidMessages Web's own settings, and whether a phone has synced, so the browser works with or without one."""
     row = db.execute("SELECT updated FROM inbox WHERE id=1").fetchone()
     return {**gateway.settings(db), "web_appearance": web_appearance(db), "prefs": web_prefs(db), "welcomed": welcomed(db),
-            "web_chats": web_chats(db), "web_favorites": web_favorites(db), "phone":{"paired": row is not None, "last_sync": row[0] if row else None},
+            "web_chats": web_chats(db), "web_favorites": web_favorites(db), "web_contacts": web_contacts(db), "phone":{"paired": row is not None, "last_sync": row[0] if row else None},
             **merge_snapshot(db)}
 
 
@@ -553,7 +719,7 @@ class Handler(BaseHTTPRequestHandler):
     def decoy_reply(self):
         parts = urlsplit(self.path)
         defaults = {"settings": protocol_gateway.Gateway.DEFAULT_SETTINGS, "web_appearance": {"theme": "fluid", "mode": "system"},
-                    "prefs": {key: True for key in PREFS}, "enabled": sorted(sync_merge.INTERNET)}
+                    "prefs": default_prefs(), "enabled": sorted(sync_merge.INTERNET)}
         with closing(connect()) as db:
             if self.command == "GET":
                 status, payload = DECOYS.get(db, self.session_key, parts.path, parts.query, defaults, {
@@ -872,7 +1038,8 @@ class Handler(BaseHTTPRequestHandler):
                                  "prefs": web_prefs(db), "welcomed": welcomed(db), "web_chats": web_chats(db),
                                  # The private folder's chats, once this session opened it with its passcode.
                                  "private_chats": privacy.private_addresses(db) if self.private_open else [],
-                                 "web_favorites": web_favorites(db), **merge_snapshot(db)}, self.private_check(db)))
+                                 "web_favorites": web_favorites(db), "web_contacts": web_contacts(db), **merge_snapshot(db)},
+                                 self.private_check(db)))
             elif self.path == "/api/privacy":
                 self.reply(200, self.privacy_status(db))
             elif self.path.startswith("/api/calls?since="):
@@ -885,7 +1052,12 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/merge":
                 with db:
                     # The phone keeps the full baseline; a browser that hasn't opened the private folder doesn't.
-                    self.reply(200, merger.view(db) if self.kind == "token" else privacy.scrub(merger.view(db), self.private_check(db)))
+                    # A phone that understands timed mutes says so; older phones never see their "muteuntil:" items.
+                    timed = self.headers.get("X-Fluid-Merge-Items", "") == "muteuntil"
+                    self.reply(200, merger.view(db, timed) if self.kind == "token" else privacy.scrub(merger.view(db), self.private_check(db)))
+            elif self.path == "/api/contacts":
+                # The phone fetches these to show and save them; a browser that hasn't opened the private folder doesn't see its numbers.
+                self.reply(200, contacts_view(db) if self.kind == "token" else privacy.scrub(contacts_view(db), self.private_check(db)))
             elif self.path == "/api/stickers":
                 self.reply(200, {"stickers": [{"id": key, **entry} for key, entry in merger.stickers(db).items()]})
             elif self.path == "/api/protocols/accounts":
@@ -1147,6 +1319,12 @@ class Handler(BaseHTTPRequestHandler):
                 return privacy.scrub(settings_view(db), hide)
             if self.path == "/api/protocols/routes/delete":
                 return gateway.delete_route(db, data)
+            if self.path == "/api/contacts":
+                hide = self.private_check(db) if self.kind == "session" else None
+                return privacy.scrub(save_contact(db, data, hide), hide)
+            if self.path == "/api/contacts/delete":
+                hide = self.private_check(db) if self.kind == "session" else None
+                return privacy.scrub(delete_contact(db, data), hide)
             if self.path == "/api/sync":
                 messages = data["messages"]
                 if not isinstance(messages, list) or len(messages) > 2000:

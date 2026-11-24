@@ -546,80 +546,179 @@ function phoneConnect(state, changed) {
 
 // Starting internet chats from the browser
 
-/** New chat on any account you have, or a text through your phone. [prefill] waits in the new chat's message box. */
-function openNewChat(prefill = '') {
-  const sheet = dialog('New chat');
-  const form = element('form', '', 'settings-section');
-  const have = new Set(chatAccounts.map((account) => account.protocol));
-  const choices = ['matrix', 'xmpp', 'email', 'irc'].filter((value) => have.has(value)).concat('sms');
-  const protocol = element('select', '');
-  for (const value of choices) {
-    const option = element('option', value === 'sms' ? (phonePaired() ? 'Text message (through your phone)' : 'Text message (needs your phone)') : labels[value]);
-    option.value = value;
-    protocol.append(option);
+/**
+ * Opens the chat with [target] on [service], making it first if it's new: a person through a new link, a channel or
+ * room by joining it on that account's server. Returns the chat's key. [account] picks the account (the most
+ * recently used one otherwise).
+ */
+async function startInternetChat({service, target, name = '', account = '', group = false}) {
+  const same = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+  const existing = routes.find((route) => route.protocol === service && (!account || !route.account || route.account === account)
+    && (same(route.target, target) || service === 'matrix' && !route.group && same(route.title, target)));
+  if (existing) return threadKey({address: existing.address, protocol: existing.protocol});
+  let result;
+  if (group && service !== 'email') {
+    const id = account || chatAccounts.find((item) => item.protocol === service && item.id)?.id;
+    if (!id) throw new Error('Add a ' + labels[service] + ' account to join ' + target + '.');
+    result = await api('protocols/join', {account: id, target, title: name});
+  } else {
+    result = await api('protocols/routes', {address: 'web-' + fluidCallId().slice(0, 16), protocol: service, target,
+      title: name || target, group, ...(account ? {account} : {})});
   }
-  const target = Object.assign(element('input', ''), {required: true, autocomplete: 'off', spellcheck: false});
-  const name = Object.assign(element('input', ''), {placeholder: 'Shown in your chat list', autocomplete: 'off'});
+  if (!routes.some((route) => route.address === result.route.address && route.protocol === result.route.protocol)) routes.push(result.route);
+  return threadKey({address: result.route.address, protocol: result.route.protocol});
+}
+
+/**
+ * New chat, as a full page: one "To" box for a name, a phone number, or an address on any service. The service is
+ * read from the format (people.js detectAddress); when it could be more than one, or you have more than one account
+ * there, you pick. [prefill] waits in the new chat's message box; [to] fills the "To" box.
+ */
+function openNewChat(prefill = '', {to = '', back} = {}) {
+  const leave = back || (() => closeDetailsPage());
+  const form = element('form', '', 'settings-section new-chat-form');
+  form.noValidate = true;
+  const target = Object.assign(element('input', ''), {autocomplete: 'off', spellcheck: false, value: to,
+    placeholder: 'Name, phone number, or address'});
+  target.setAttribute('autocapitalize', 'off');
+  target.setAttribute('aria-describedby', 'new-chat-formats');
+  const formats = element('small', 'Phone number · Matrix @name:server · XMPP or email name@server · IRC nickname, riley@irc.network, or #channel', 'hint');
+  formats.id = 'new-chat-formats';
+  const toField = element('label', 'To');
+  toField.append(target, formats);
+  const people = element('div', '', 'new-chat-people');
+  const choices = element('fieldset', '', 'choices new-chat-choices');
+  const account = element('select', '');
+  const accountField = field('Account', account, 'You have more than one account on this service.');
+  const name = Object.assign(element('input', ''), {placeholder: 'Shown in your chat list', autocomplete: 'off', maxLength: 120});
+  const nameField = field('Name (optional)', name);
   const group = Object.assign(element('input', ''), {type: 'checkbox'});
   const groupLabel = element('label', '', 'check');
   groupLabel.append(group, element('span', 'This is a group chat'));
-  const hints = {sms: 'Phone number', matrix: '@maya:example.org or !room:example.org', xmpp: 'maya@example.org or room@conference.example.org',
-    email: 'maya@example.org', irc: '#channel or nickname'};
   const note = element('p', '', 'hint');
-  const nameField = field('Name (optional)', name);
-  // With more than one account on a service, the chat goes through the one picked here (the most recent by default).
-  const account = element('select', '');
-  const accountField = field('Account', account);
-  const fillAccounts = () => {
-    const mine = chatAccounts.filter((item) => item.id && item.protocol === protocol.value);
-    account.replaceChildren(Object.assign(element('option', 'Most recently used'), {value: ''}),
-      ...mine.map((item) => Object.assign(element('option', item.name), {value: item.id})));
-    accountField.hidden = mine.length < 2;
-  };
-  const update = () => {
-    fillAccounts();
-    target.placeholder = hints[protocol.value];
-    target.type = protocol.value === 'sms' ? 'tel' : 'text';
-    groupLabel.hidden = protocol.value !== 'xmpp';
-    nameField.hidden = protocol.value === 'sms';
-    note.textContent = protocol.value === 'sms' && !phonePaired()
-      ? 'Texts wait here until you connect your phone in Settings → Phone and other devices.' : '';
-  };
-  protocol.addEventListener('change', update);
   const status = element('p', '', 'error');
   status.setAttribute('role', 'alert');
-  if (!have.size) {
-    const add = element('button', 'Add a chat account', 'wide');
-    add.type = 'button';
-    add.addEventListener('click', () => { sheet.close(); openSettings('settings-accounts').catch(showError); });
-    form.append(element('p', 'Add a Matrix, XMPP, Email, or IRC account to chat with anyone on it.', 'notice'), add);
-  }
-  form.append(field('Chat on', protocol), accountField, note, field('To', target), nameField, groupLabel, status,
-    element('button', 'Start chat', 'primary'));
-  update();
+  const start = element('button', 'Start chat', 'primary');
+  let options = [];
+  let picked = 0;
+  const accountsFor = (service) => chatAccounts.filter((item) => item.protocol === service && item.id);
+  const hasService = (service) => chatAccounts.some((item) => item.protocol === service);
+  const describe = (option) => {
+    if (option.service === 'sms') return ['Text ' + (typeof displayNumber === 'function' ? displayNumber(option.target) : option.target),
+      phonePaired() ? 'SMS through your phone' : 'SMS · waits here until you connect your phone'];
+    const label = labels[option.service] || option.service;
+    if (option.service === 'sip') return ['Call ' + option.target, 'SIP calls are made from FluidMessages for Android'];
+    const what = option.group ? (option.service === 'irc' ? 'Join and message ' : 'Join and message the room ') : 'Message ';
+    const network = option.network ? ' on ' + option.network : '';
+    return [what + option.target + network, label + (option.guess ? ' nickname' : '') + (hasService(option.service) ? '' : ' · add an account first')];
+  };
+  const draw = () => {
+    const text = target.value.trim();
+    options = (typeof detectAddress === 'function' ? detectAddress(text) : []).filter((option) => option.service !== 'irc' || !option.guess || hasService('irc'));
+    picked = Math.min(picked, Math.max(0, options.length - 1));
+    // People you already know, by name, number, or address.
+    people.replaceChildren();
+    const words = text.toLowerCase();
+    if (words && typeof knownPeople === 'function') {
+      const digits = words.replace(/\D/g, '');
+      const found = knownPeople().filter((person) => person.name.toLowerCase().includes(words)
+        || digits.length >= 3 && person.numbers.some((number) => number.replace(/\D/g, '').includes(digits))
+        || person.accounts.some((item) => String(item.target).toLowerCase().includes(words))).slice(0, 6);
+      if (found.length) people.append(element('h3', 'Contacts'));
+      for (const person of found) {
+        const row = element('button', '', 'member-row');
+        row.type = 'button';
+        const detail = element('span', '', 'detail-words');
+        detail.append(element('strong', person.name), element('small', [...person.numbers.map((number) => displayNumber(number)),
+          ...person.accounts.map((item) => item.target)].slice(0, 3).join(' · ') || 'Contact'));
+        row.append(typeof avatarFor === 'function' ? avatarFor(person.name) : element('span', initials(person.name), 'avatar'), detail,
+          element('span', '›', 'chevron'));
+        row.addEventListener('click', () => messagePerson(person, prefill).catch((error) => { status.textContent = error.message; }));
+        people.append(row);
+      }
+    }
+    choices.replaceChildren();
+    choices.hidden = !options.length;
+    if (options.length) {
+      choices.append(element('legend', options.length > 1 ? 'Which service?' : 'Start'));
+      options.forEach((option, index) => {
+        const [title, detail] = describe(option);
+        const input = Object.assign(element('input', ''), {type: 'radio', name: 'new-chat-service', value: String(index), checked: index === picked});
+        const row = element('label', '', 'choice');
+        const words = element('span', '');
+        words.append(element('strong', title), element('small', detail, 'hint'));
+        row.append(input, words);
+        input.addEventListener('change', () => { if (input.checked) { picked = index; drawOptions(); } });
+        choices.append(row);
+      });
+    }
+    drawOptions();
+  };
+  const drawOptions = () => {
+    const option = options[picked];
+    const service = option?.service;
+    const mine = service ? accountsFor(service) : [];
+    // An IRC nickname on a network goes through your account there.
+    const preferred = option?.network ? mine.find((item) => String(item.name).toLowerCase().endsWith('@' + option.network)) : null;
+    account.replaceChildren(Object.assign(element('option', 'Most recently used'), {value: ''}),
+      ...mine.map((item) => Object.assign(element('option', item.name), {value: item.id, selected: item === preferred})));
+    accountField.hidden = mine.length < 2;
+    const chat = option && !['sms', 'sip'].includes(service);
+    nameField.hidden = !chat || !!option.group;
+    groupLabel.hidden = service !== 'xmpp';
+    group.checked = !!option?.group;
+    note.replaceChildren();
+    start.textContent = !option ? 'Start chat' : service === 'sip' ? 'Open the keypad' : option.group ? 'Join and open' : 'Start chat';
+    start.disabled = !option;
+    if (chat && !hasService(service) && !sampleOn) {
+      start.disabled = true;
+      const add = element('button', 'Add a ' + labels[service] + ' account', 'quiet');
+      add.type = 'button';
+      add.addEventListener('click', () => openSettings('settings-accounts').catch(showError));
+      note.append(document.createTextNode('There’s no ' + labels[service] + ' account on FluidMessages Web yet. '), add);
+    } else if (service === 'sms' && !phonePaired() && !sampleOn) {
+      note.textContent = 'Texts wait here until you connect your phone in Settings → Phone and other devices.';
+    } else if (option?.network && mine.length && !preferred) {
+      note.textContent = 'None of your IRC accounts is on ' + option.network + '. Pick one, or add that network in Settings → Accounts.';
+    } else if (!option && target.value.trim() && !people.children.length) {
+      note.textContent = 'That doesn’t look like a phone number or an address yet.';
+    }
+  };
+  target.addEventListener('input', () => { picked = 0; status.textContent = ''; draw(); });
+  form.append(toField, people, choices, accountField, nameField, groupLabel, note, status, start);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
+    const option = options[picked];
+    if (!option) {
+      status.textContent = target.value.trim() ? 'Enter a phone number or an address, like +1 202 555 0143 or @maya:example.org.' : 'Enter who to message.';
+      return;
+    }
+    status.textContent = '';
     const fill = () => { if (prefill) { get('body').value = prefill; drafts.set(active, prefill); } get('body').focus(); };
-    if (protocol.value === 'sms') {
-      sheet.close();
-      select('');
-      get('address').value = target.value.trim();
+    if (option.service === 'sip') {
+      closeDetailsPage(false);
+      if (typeof openKeypad === 'function') openKeypad({address: option.target});
+      return;
+    }
+    if (option.service === 'sms') {
+      openThread(threadKey({address: option.target, protocol: 'sms'}));
       fill();
       return;
     }
-    const address = 'web-' + fluidCallId().slice(0, 16);
+    if (sampleOn) { status.textContent = 'Sample inbox · nothing was sent. Exit the sample inbox to start a chat.'; return; }
+    start.disabled = true;
     try {
-      const result = await api('protocols/routes', {address, protocol: protocol.value, target: target.value.trim(),
-        title: name.value.trim() || target.value.trim(), group: group.checked, ...(account.value ? {account: account.value} : {})});
-      routes.push(result.route);
-      sheet.close();
-      select(result.route.address + '\u001f' + protocol.value);
+      const key = await startInternetChat({service: option.service, target: option.target, name: name.value.trim(),
+        account: account.value, group: group.checked});
+      openThread(key);
       fill();
     } catch (error) { status.textContent = error.message; }
+    finally { start.disabled = false; }
   });
+  const nodes = [];
   // People (this form) or Channels: every server's joined channels and rooms, to open one or join another (servers.js).
   if (typeof newChatChannels === 'function') {
-    const channels = newChatChannels(sheet);
+    const channels = newChatChannels({close: () => closeDetailsPage(false)});
     channels.hidden = true;
     const tabs = element('div', '', 'segmented-buttons new-chat-switch');
     tabs.setAttribute('role', 'radiogroup');
@@ -637,10 +736,31 @@ function openNewChat(prefill = '') {
       });
       tabs.append(button);
     }
-    sheet.append(tabs, form, channels);
-  } else sheet.append(form);
-  sheet.showModal();
+    nodes.push(tabs, form, channels);
+  } else nodes.push(form);
+  detailsPage(prefill ? 'Forward to' : 'New chat', nodes, leave);
+  draw();
   target.focus();
+}
+
+/** Opens a chat in Messages, from wherever New chat or a contact page was opened. */
+function openThread(key) {
+  if (section !== 'messages') showSection('messages');
+  select(key);
+}
+
+/** Messages someone you know: their newest chat, their number, or a new chat on their first address. */
+async function messagePerson(person, prefill = '') {
+  const fill = () => { if (prefill) { get('body').value = prefill; drafts.set(active, prefill); } get('body').focus(); };
+  const chat = person.chats.find((key) => threads.has(key)) || person.chats[0];
+  if (chat) { openThread(chat); fill(); return; }
+  if (person.numbers.length) { openThread(threadKey({address: person.numbers[0], protocol: 'sms'})); fill(); return; }
+  const account = person.accounts.find((item) => ['matrix', 'xmpp', 'email', 'irc'].includes(item.protocol));
+  if (!account) throw new Error('There’s no number or chat address for ' + person.name + ' yet.');
+  if (sampleOn) throw new Error('Sample inbox · nothing was sent.');
+  openThread(account.address ? threadKey({address: account.address, protocol: account.protocol})
+    : await startInternetChat({service: account.protocol, target: account.target.replace(/@irc\..*$/i, ''), name: person.name}));
+  fill();
 }
 
 function routeFor(key) {

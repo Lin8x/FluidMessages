@@ -27,7 +27,9 @@
 <script src="/sync-merge.js" defer></script>
 <script src="/people.js" defer></script>
 <script src="/privacy.js" defer></script>
+<script src="/server-directory.js" defer></script>
 <script src="/servers.js" defer></script>
+<script src="/inbox-filters.js" defer></script>
 <script src="/notify.js" defer></script>
 </head>
 <body>
@@ -91,6 +93,7 @@
         </span>
         <p id="inbox-status" class="inbox-status" role="status" hidden></p>
       </div>
+      <div id="inbox-view" class="inbox-view" role="group" aria-label="Show chats or communities" hidden></div>
       <nav id="threads" aria-label="Conversations"></nav>
       <div class="search-dock">
         <input id="search" type="search" placeholder="Search" aria-label="Search conversations">

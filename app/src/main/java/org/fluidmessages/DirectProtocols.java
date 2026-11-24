@@ -268,6 +268,7 @@ final class DirectProtocols {
             store.put(record);
             MmsTransport.changed(context);
             if (record.optInt("type") == 1 && !record.optBoolean("event")) {
+                if (Mutes.isMuted(prefs(context), record.getString("address"))) return;  // Muted: stored and unread, but quiet.
                 if (HiddenChats.rowHidden(prefs(context), record)) SmsDelivery.notifyHidden(context);
                 else SmsDelivery.notify(context, "New " + MessageProtocol.parse(record.getString("protocol")).label
                     + " message", record.getString("address"));

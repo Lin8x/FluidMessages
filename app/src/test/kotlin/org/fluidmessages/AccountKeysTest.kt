@@ -39,15 +39,10 @@ class AccountKeysTest {
         assertEquals("", AccountKeys.via("", "", 3))
     }
 
-    @Test fun serversAreNamedAndListChannelsFirst() {
+    @Test fun serversAreNamed() {
         assertEquals("Libera.Chat", AccountKeys.serverName("irc:alice@irc.libera.chat"))
         assertEquals("alpha.example.test", AccountKeys.serverName("matrix:@alice:alpha.example.test"))
         assertEquals("example.test", AccountKeys.serverName("xmpp:alice@example.test"))
-        val rows = listOf("jordan" to false, "#radio" to true, "maya" to false, "#garden" to true)
-        assertEquals(listOf("#radio", "#garden", "jordan", "maya"), AccountKeys.serverOrder(rows) { it.second }.map { it.first })
-        assertEquals("Channels", AccountKeys.section("irc", true))
-        assertEquals("Rooms", AccountKeys.section("matrix", true))
-        assertEquals("Direct messages", AccountKeys.section("xmpp", false))
     }
 
     @Test fun perAccountMergeKeys() {

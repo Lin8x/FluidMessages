@@ -25,6 +25,8 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.function.Consumer
@@ -125,13 +127,28 @@ object SettingsPages {
     }
 
     @JvmStatic
-    fun mountMessaging(root: LinearLayout, prefs: SharedPreferences, showSample: Runnable) {
+    fun mountInboxFilters(root: LinearLayout, prefs: SharedPreferences) {
+        val view = ComposeView(root.context)
+        view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+        view.setContent {
+            AppTheme(remember { Appearance.read(prefs) }) {
+                // FluidMessages Web follows the phone's menu (appearance.inboxFilters).
+                InboxFiltersPage(prefs) { SyncJob.syncSoon(root.context) }
+            }
+        }
+        root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+    }
+
+    @JvmStatic
+    fun mountMessaging(root: LinearLayout, prefs: SharedPreferences, showSample: Runnable, inboxFilters: Runnable) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
             val appearance = remember { Appearance.read(prefs) }
             var exactTimes by remember { mutableStateOf(prefs.getBoolean("exactTimes", false)) }
             var tabCounts by remember { mutableStateOf(prefs.getBoolean(TabBadges.PREF, true)) }
+            var communityChats by remember { mutableStateOf(Communities.show(prefs)) }
+            val filters = remember { InboxFilters.menu(InboxFilters.read(prefs), InboxFilters.ALL.map { it.service }.toSet()).size }
             AppTheme(appearance) {
                 val scheme = MaterialTheme.colorScheme
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp),
@@ -142,6 +159,25 @@ object SettingsPages {
                                 exactTimes) {
                                 exactTimes = it
                                 prefs.edit().putBoolean("exactTimes", it).apply()
+                            }
+                        }
+                    }
+                    item {
+                        PreferencesCard("Inbox") {
+                            Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = inboxFilters::run),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                PreferenceText("Inbox filters", "$filters of ${InboxFilters.ALL.size} shown in the filter menu. Choose and reorder them.",
+                                    Modifier.weight(1f).padding(15.dp))
+                                Text("›", Modifier.padding(end = 18.dp), color = scheme.onSurfaceVariant, fontSize = 22.sp)
+                            }
+                            HorizontalDivider(Modifier.padding(start = 15.dp), color = scheme.outlineVariant)
+                            SettingsSwitch("Show community chats in Chats",
+                                "Channels and rooms on your servers also show in Chats, like group chats. Off, they show only under Communities, " +
+                                    "which then counts their unread messages itself. Direct messages on those services always show in Chats.",
+                                communityChats) {
+                                communityChats = it
+                                prefs.edit().putBoolean(Communities.SHOW_PREF, it).apply()
+                                SyncJob.syncSoon(root.context)
                             }
                         }
                     }
@@ -174,6 +210,46 @@ object SettingsPages {
             }
         }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+    }
+}
+
+/** Settings → Messaging → Inbox filters: a switch for each filter, with Move up and Move down. Inbox is always shown. */
+@Composable
+private fun InboxFiltersPage(prefs: SharedPreferences, changed: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    var order by remember { mutableStateOf(InboxFilters.read(prefs)) }
+    fun save(next: List<InboxFilters.Entry>) {
+        order = next
+        InboxFilters.save(prefs, next)
+        changed()
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        item {
+            Text("Choose which filters the inbox's filter menu shows, and their order. Inbox is always there. A service shows once you " +
+                "have chats or an account there. They work the same in the private folder, decoy mode, and the sample inbox.",
+                Modifier.padding(horizontal = 12.dp), color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+        }
+        item {
+            PreferencesCard("Filter menu") {
+                order.forEachIndexed { index, entry ->
+                    val filter = InboxFilters.of(entry.id)!!
+                    if (index > 0) HorizontalDivider(Modifier.padding(start = 15.dp), color = scheme.outlineVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) {
+                            if (entry.id == "inbox") PreferenceText(filter.label, "Always shown")
+                            else SettingsSwitch(filter.label, filter.about, entry.shown) { save(InboxFilters.show(order, entry.id, it)) }
+                        }
+                        IconButton(onClick = { save(InboxFilters.move(order, index, -1)) }, enabled = index > 0,
+                            modifier = Modifier.semantics { contentDescription = "Move ${filter.label} up" }) { Text("↑", fontSize = 18.sp) }
+                        IconButton(onClick = { save(InboxFilters.move(order, index, 1)) }, enabled = index < order.size - 1,
+                            modifier = Modifier.semantics { contentDescription = "Move ${filter.label} down" }) { Text("↓", fontSize = 18.sp) }
+                    }
+                }
+            }
+        }
+        item {
+            OutlinedButton(onClick = { save(InboxFilters.parse(emptyList())) }, modifier = Modifier.fillMaxWidth()) { Text("Restore the default order") }
+        }
     }
 }
 

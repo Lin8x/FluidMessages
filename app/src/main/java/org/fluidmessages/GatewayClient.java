@@ -146,6 +146,8 @@ final class GatewayClient {
             }
             store.putBatch(messages);
             for (var message : IncomingAlerts.newestPerChat(arrived)) {
+                // Muted chats (for now, or by their server) stay quiet; SmsDelivery.notify checks the rest too.
+                if (Mutes.isMuted(prefs, message.optString("address"))) continue;
                 if (HiddenChats.rowHidden(prefs, message)) SmsDelivery.notifyHidden(context);
                 else SmsDelivery.notify(context, "New " + MessageProtocol.parse(message.optString("protocol")).label + " message",
                     message.optString("address"));
@@ -362,7 +364,7 @@ final class GatewayClient {
         return false;
     }
 
-    /** Server connections for the inbox's server strip: accounts on IRC, Matrix, and XMPP. */
+    /** Servers for Messages → Communities: accounts on IRC, Matrix, and XMPP. */
     static List<JSONObject> servers(SharedPreferences prefs) {
         var result = new ArrayList<JSONObject>();
         for (var account : accountList(prefs)) {
@@ -537,6 +539,18 @@ final class GatewayClient {
                 return reply.getString("access_token");
             }
         } finally { connection.disconnect(); }
+    }
+
+    /**
+     * Contacts made in FluidMessages Web (WebContacts), or null from a server too old to keep them, which answers
+     * "Unknown endpoint". They're on their own endpoint rather than in the settings merge, so older phones never see them.
+     */
+    static JSONObject contacts(SharedPreferences prefs) throws Exception {
+        try { return send(prefs, "GET", "contacts", null); }
+        catch (IOException error) {
+            if (String.valueOf(error.getMessage()).contains("Unknown endpoint")) return null;
+            throw error;
+        }
     }
 
     private static JSONObject request(SharedPreferences prefs, String endpoint, JSONObject payload) throws Exception {

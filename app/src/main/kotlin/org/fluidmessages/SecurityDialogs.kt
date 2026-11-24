@@ -313,6 +313,44 @@ object SecurityDialogs {
         }, dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } })
     }
 
+    /**
+     * The mute page, a full page of choices: 1 hour, 6 hours, 1 day, 1 week, or Forever, and Unmute while muted.
+     * [what] says what it covers (a chat, all of a person's chats, or a whole server). [current] is the mute's end
+     * (Mutes.ends: 0 forever, -1 not muted). pick gets the duration in milliseconds, 0 for forever, or -1 to unmute.
+     */
+    @JvmStatic
+    fun mute(activity: ComponentActivity, prefs: SharedPreferences, title: String, what: String, current: Long,
+             pick: java.util.function.LongConsumer) = present(activity, prefs) { dismiss ->
+        FormPage(onDismissRequest = dismiss, title = { Text(if (current < 0) "Mute $title" else "Muted · $title") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (current >= 0) Row(verticalAlignment = Alignment.CenterVertically) {
+                    DrawGlyph(Glyph.Muted, MaterialTheme.colorScheme.onSurface, Modifier.size(20.dp))
+                    Text(Mutes.label(current), Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleMedium)
+                }
+                Text("$what No notifications, sounds, or vibration while muted. Messages still arrive and show as unread, " +
+                    "and muted chats don’t count on the tabs.", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (current >= 0) FilledTonalButton(onClick = { pick.accept(-1); dismiss() }, Modifier.padding(top = 4.dp)) { Text("Unmute") }
+                Text(if (current < 0) "Mute for" else "Change to", Modifier.padding(top = 12.dp, bottom = 2.dp),
+                    style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                    Mutes.CHOICES.forEachIndexed { index, (label, duration) ->
+                        if (index > 0) HorizontalDivider(Modifier.padding(start = 16.dp))
+                        Row(Modifier.fillMaxWidth().clickable(onClickLabel = "Mute for $label") { pick.accept(duration); dismiss() }
+                            .heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(label, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                                Text(Mutes.choiceDetail(duration), style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            DrawGlyph(Glyph.Forward, MaterialTheme.colorScheme.onSurfaceVariant, Modifier.size(14.dp))
+                        }
+                    }
+                }
+            }
+        }, confirmButton = { TextButton(onClick = dismiss) { Text("Cancel") } })
+    }
+
     private fun customAmount(seconds: Int): Pair<Int, Int> = when {
         seconds % (7 * 86400) == 0 -> seconds / (7 * 86400) to 3
         seconds % 86400 == 0 -> seconds / 86400 to 2

@@ -51,7 +51,7 @@ const leaveSettingsThen = (run) => () => { showSection('messages'); run(); };
 const SETTINGS_GROUPS = [
   ['Look and feel', [
     {id: 'appearance', icon: 'palette', title: 'Themes and appearance', summary: 'Colors, wallpapers, bubbles, and motion', page: (settings) => [appearanceSection(settings)]},
-    {id: 'messaging', icon: 'messaging', title: 'Messaging', summary: 'Timestamps, sending, scheduled messages, and gestures', page: messagingPage},
+    {id: 'messaging', icon: 'messaging', title: 'Messaging', summary: 'Timestamps, inbox filters, communities, sending, and gestures', page: messagingPage},
     // The phone's page of the same name. Sounds, their volume, and this browser's notifications (notify.js).
     {id: 'sounds', icon: 'sounds', title: 'Sounds and notifications', page: (settings) => soundsPage(settings),
       summary: () => typeof notifySummary === 'function' ? notifySummary() : 'Send and receive sounds, volume, and notifications'}]],
@@ -262,8 +262,16 @@ function messagingPage(settings) {
   sample.type = 'button';
   sample.addEventListener('click', () => startSample());
   gestures.append(sample);
+  // The inbox: its filter menu (inbox-filters.js) and where community chats show (servers.js).
+  const inbox = settingsCard('Inbox');
+  inbox.id = 'settings-inbox';
+  if (typeof inboxFiltersPage === 'function') {
+    const shown = inboxFilterMenu(inboxFilterPrefs(), new Set(INBOX_FILTERS.map((filter) => filter.service).filter(Boolean)));
+    inbox.append(settingsLink('inbox-filters', shown.length + ' of ' + INBOX_FILTERS.length + ' shown in the filter menu · choose and reorder them'));
+  }
+  if (typeof communityChatsSwitch === 'function') inbox.append(communityChatsSwitch());
   // Counts on the Calls and Chats tabs (people.js).
-  return [display, ...(typeof tabCountsCard === 'function' ? [tabCountsCard()] : []), sending, privacy, gestures];
+  return [display, inbox, ...(typeof tabCountsCard === 'function' ? [tabCountsCard()] : []), sending, privacy, gestures];
 }
 
 // Accounts and calls

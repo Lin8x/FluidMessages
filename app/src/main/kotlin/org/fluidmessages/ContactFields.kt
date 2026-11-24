@@ -15,7 +15,11 @@ import android.telephony.PhoneNumberUtils
 
 /** One saved detail on a contact: a phone number, email, SIP address, website, address, or birthday. */
 data class ContactField(val kind: Kind, val label: String, val value: String) {
-    enum class Kind { PHONE, EMAIL, SIP, WEBSITE, ADDRESS, BIRTHDAY }
+    /** CHAT is a chat address (Matrix, XMPP, IRC); its label is the service's name (NewAddress.label). */
+    enum class Kind { PHONE, EMAIL, SIP, WEBSITE, ADDRESS, BIRTHDAY, CHAT }
+
+    /** The service of a chat address (matrix, xmpp, irc), from its label. */
+    val service: String get() = ContactMapping.SERVICES.firstOrNull { NewAddress.label(it) == label } ?: ""
 }
 
 /** Every detail saved on an Android contact, with Android's own labels (mobile, work, home…). */
@@ -24,6 +28,7 @@ object ContactFields {
         Phone.CONTENT_ITEM_TYPE to ContactField.Kind.PHONE, Email.CONTENT_ITEM_TYPE to ContactField.Kind.EMAIL,
         SipAddress.CONTENT_ITEM_TYPE to ContactField.Kind.SIP, Website.CONTENT_ITEM_TYPE to ContactField.Kind.WEBSITE,
         StructuredPostal.CONTENT_ITEM_TYPE to ContactField.Kind.ADDRESS, Event.CONTENT_ITEM_TYPE to ContactField.Kind.BIRTHDAY,
+        ContactMapping.IM to ContactField.Kind.CHAT,
     )
 
     /** Details for everyone at once, by contact id, in one query. */
@@ -48,12 +53,15 @@ object ContactFields {
         val selection = "${Data.MIMETYPE} IN (${types.joinToString(",") { "?" }})" + (if (contact != null) " AND ${Data.CONTACT_ID} = ?" else "")
         val args = (types + listOfNotNull(contact?.toString())).toTypedArray()
         try {
-            context.contentResolver.query(Data.CONTENT_URI, arrayOf(Data.CONTACT_ID, Data.MIMETYPE, Data.DATA1, Data.DATA2, Data.DATA3, Data.IS_PRIMARY),
+            context.contentResolver.query(Data.CONTENT_URI, arrayOf(Data.CONTACT_ID, Data.MIMETYPE, Data.DATA1, Data.DATA2, Data.DATA3, Data.IS_PRIMARY, Data.DATA5, Data.DATA6),
                 selection, args, "${Data.IS_SUPER_PRIMARY} DESC, ${Data.IS_PRIMARY} DESC")?.use { cursor ->
                 while (cursor.moveToNext()) {
                     val kind = kinds[cursor.getString(1)] ?: continue
                     val value = cursor.getString(2)?.trim().orEmpty()
                     if (value.isEmpty()) continue
+                    // Chat addresses FluidMessages can message: Matrix, XMPP, and IRC rows, with the service as their label.
+                    val chat = if (kind == ContactField.Kind.CHAT) ContactMapping.address(ContactRow(ContactMapping.IM, value, 0,
+                        if (cursor.isNull(6)) null else cursor.getInt(6), cursor.getString(7))) ?: continue else null
                     val type = cursor.getInt(3)
                     val custom = cursor.getString(4)
                     val resources = context.resources
@@ -64,6 +72,7 @@ object ContactFields {
                         ContactField.Kind.WEBSITE -> "Website"
                         ContactField.Kind.ADDRESS -> StructuredPostal.getTypeLabel(resources, type, custom).toString() + " address"
                         ContactField.Kind.BIRTHDAY -> if (type == Event.TYPE_BIRTHDAY) "Birthday" else Event.getTypeLabel(resources, type, custom).toString()
+                        ContactField.Kind.CHAT -> NewAddress.label(chat!!.service)
                     }.replaceFirstChar { it.uppercase() }
                     val list = result.getOrPut(cursor.getLong(0)) { mutableListOf() }
                     val duplicate = list.any { it.kind == kind && (it.value.equals(value, true) ||

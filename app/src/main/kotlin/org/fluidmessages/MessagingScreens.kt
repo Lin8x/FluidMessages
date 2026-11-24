@@ -99,12 +99,24 @@ internal data class ThreadRow @JvmOverloads constructor(
     val protocol: String = "",
     val automated: Boolean = false,
     val members: List<GroupMember> = emptyList(),
-    /** With a server picked in the inbox: "Channels", "Rooms", or "Direct messages", shown above the first of each. */
-    val section: String = "",
+    /** A channel or room on a server: the server's account id, for Messages → Communities. */
+    val server: String = "",
+    /** The newest message's time (epoch millis), for Communities' Recent activity order. */
+    val lastAt: Long = 0L,
+    /** When it was joined, or its place in the link list for older links (bigger is newer), for Date joined. */
+    val joinedAt: Long = 0L,
+    /** Muted right now, by itself or its server: "Muted", "Muted until 3:40 PM"…; empty when it isn't (Mutes). */
+    val muted: String = "",
 )
 
-/** A server in the inbox's strip: an IRC network, Matrix account, or XMPP account (ServersScreen). */
-internal data class ServerChip(val id: String, val name: String, val service: String)
+/**
+ * A server in Messages → Communities: an IRC network, Matrix account, or XMPP account (ServersScreen). [order] counts
+ * up as servers are added; [account] is the address you're signed in as.
+ */
+internal data class ServerChip @JvmOverloads constructor(val id: String, val name: String, val service: String, val order: Int = 0,
+    val account: String = "",
+    /** "Muted", "Muted until 3:40 PM"… while the whole server is muted (Mutes); empty when it isn't. */
+    val muted: String = "")
 
 internal data class ChatLine @JvmOverloads constructor(
     val id: String,
@@ -193,12 +205,14 @@ internal class InboxScreen(
     private val resetSample: Runnable? = null,
     /** The live inbox only: opens the Calls tab from the bottom tab bar. */
     private val calls: Runnable? = null,
-    /** Inbox folders in the filter menu; Hidden chats appears when it's set up and not left out of Settings. */
-    private val folders: List<String> = listOf("Inbox", "Archived", "Blocked"),
+    /** The inbox filter menu (Settings → Messaging → Inbox filters), then Private folder and Quick hide. */
+    folders: List<String> = listOf("Inbox", "Archived", "Blocked"),
     /** Missed calls and unread chats for the tab bar's badges. */
     private val counts: TabCounts? = null,
 ) {
     private var search by mutableStateOf(initialSearch)
+    /** The filter menu; it grows a service's filter once that service has chats. */
+    var folders by mutableStateOf(folders)
     /** Clears the search field, e.g. after it was used to open hidden chats. */
     fun clearSearch() { search = "" }
     var threads by mutableStateOf(emptyList<ThreadRow>())
@@ -207,13 +221,23 @@ internal class InboxScreen(
     /** Decoy mode only: holding the title asks for the passcode to show the real inbox. Nothing on screen hints at it. */
     var titleHold: Runnable? = null
     var error by mutableStateOf<String?>(null)
-    /** Server connections for the strip above the chats; empty hides it. */
+    /** Messages → Chats | Communities shows (the live inbox, not decoy mode or the private folder). */
+    var communitiesOffered by mutableStateOf(false)
+    /** Communities is the side showing. */
+    var showingCommunities by mutableStateOf(false)
+    var pickView: Consumer<Boolean>? = null
+    /** Servers for Communities: each IRC network, Matrix account, and XMPP account. */
     var servers by mutableStateOf(emptyList<ServerChip>())
-    /** The picked server's account id, or "" for All. */
-    var activeServer by mutableStateOf("")
-    var pickServer: Consumer<String>? = null
-    /** "join", "browse", or "add", with the picked server's account id. */
+    /** Channels and rooms for Communities, each with its server. */
+    var communityRows by mutableStateOf(emptyList<ThreadRow>())
+    var communitySort by mutableStateOf(Communities.Sort.RECENT)
+    var sortChanged: Consumer<String>? = null
+    /** "join", "browse", "details", or "add", with the server's account id. */
     var serverAction: BiConsumer<String, String>? = null
+    /** Inside the open private folder: the filter applied to its chats, and the filters the menu offers there. */
+    var privateFilter by mutableStateOf<String?>(null)
+    var privateFilters by mutableStateOf(emptyList<String>())
+    var pickPrivateFilter: Consumer<String>? = null
 
     init {
         mount(root, prefs) { palette ->
@@ -241,10 +265,23 @@ internal class InboxScreen(
                         Box {
                             ActionIcon("Filters", Glyph.Filter, palette.inboxAction) { expanded = true }
                             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                // Inside the open private folder, its own filters come first; any other filter leaves it.
+                                privateFilter?.let { current ->
+                                    Text("In the private folder", Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                        color = palette.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                    for (option in privateFilters) {
+                                        DropdownMenuItem(
+                                            text = { Text(if (option == "Inbox") "All private chats" else option) },
+                                            trailingIcon = if (option == current) ({ Text("✓", color = palette.inboxAction) }) else null,
+                                            onClick = { expanded = false; pickPrivateFilter?.accept(option) },
+                                        )
+                                    }
+                                    HorizontalDivider()
+                                }
                                 for (option in folders) {
                                     DropdownMenuItem(
                                         text = { Text(option) },
-                                        trailingIcon = if (option == folder) ({ Text("✓", color = palette.inboxAction) }) else null,
+                                        trailingIcon = if (option == folder && privateFilter == null) ({ Text("✓", color = palette.inboxAction) }) else null,
                                         onClick = { expanded = false; filters.accept(option) },
                                     )
                                 }
@@ -258,7 +295,7 @@ internal class InboxScreen(
                 }
                 Column(Modifier.padding(horizontal = 22.dp)) {
                     Text(
-                        if (folder == "Inbox") "Messages" else folder,
+                        if (folder == "Inbox") "Messages" else privateFilter?.takeIf { it != "Inbox" } ?: folder,
                         Modifier.then(titleHold?.let { hold -> Modifier.pointerInput(Unit) { detectTapGestures(onLongPress = { hold.run() }) } } ?: Modifier),
                         color = palette.ink,
                         fontSize = 37.sp,
@@ -277,20 +314,36 @@ internal class InboxScreen(
                             }
                         }
                     }
+                    if (privateFilter.let { it != null && it != "Inbox" }) Text("Private folder", Modifier.padding(top = 3.dp),
+                        color = palette.muted, fontSize = 14.sp)
                     if (connected && !canSend) Text("Read-only · sending is off in Settings → Chat services",
                         Modifier.padding(top = 3.dp, bottom = 4.dp), color = palette.muted, fontSize = 14.sp)
-                    if (!dock && (sample || connected)) SearchBox(search, palette, change = editSearch)
+                    // Chats | Communities: the phone has no room for a third tab, so Communities lives here.
+                    if (communitiesOffered && !sample && connected) InboxSwitch(palette, showingCommunities,
+                        if (Communities.show(prefs)) 0 else counts?.communities ?: 0) { side ->
+                        showingCommunities = side
+                        pickView?.accept(side)
+                    }
+                    if (!dock && (sample || connected)) SearchBox(search, palette,
+                        placeholder = if (communitiesOffered && showingCommunities) "Search communities" else "Search", change = editSearch)
                 }
-                if (!sample && connected && folder == "Inbox" && servers.isNotEmpty()) ServerStrip(palette)
                 if (!sample && !connected) {
                     WelcomeCard(palette, connect, compose)
                 } else {
                     Box(Modifier.weight(1f).fillMaxWidth()) {
-                        if (threads.isEmpty()) {
+                        if (communitiesOffered && showingCommunities) {
+                            val showTags = remember(communityRows) { DisplayRules.showTags(prefs, communityRows) }
+                            CommunitiesList(prefs, palette, servers, communityRows, communitySort, search, showTags, if (dock) 87 else 16,
+                                CommunityActions({ open.accept(it) }, { details.accept(it) }, { more.accept(it) },
+                                    { action, id -> serverAction?.accept(action, id) },
+                                    { choice -> communitySort = choice; sortChanged?.accept(choice.id) }))
+                        } else if (threads.isEmpty()) {
                             Text(
                                 error ?: if (search.isNotEmpty()) "No matches for “$search”"
                                     else if (folder == TabBadges.UNREAD_FOLDER) "No unread conversations"
-                                    else if (activeServer.isNotEmpty()) "No chats on this server yet. Join a channel or room above."
+                                    else if (folder == "Favorites") "No chats with favorites yet. Star people in Phone → Contacts to see their chats here."
+                                    else if (privateFilter != null && privateFilter != "Inbox") "No ${privateFilter!!.lowercase()} in the private folder"
+                                    else if (folder != "Inbox" && InboxFilters.byLabel(folder) != null) "Nothing in $folder"
                                     else "No conversations yet",
                                 Modifier.padding(horizontal = 22.dp, vertical = 28.dp),
                                 color = palette.muted,
@@ -308,10 +361,6 @@ internal class InboxScreen(
                                 overscrollEffect = stretch,
                             ) {
                                 itemsIndexed(threads, key = { _, thread -> thread.id }) { index, thread ->
-                                    if (thread.section.isNotEmpty() && (index == 0 || threads[index - 1].section != thread.section)) {
-                                        Text(thread.section.uppercase(), Modifier.padding(start = 8.dp, top = if (index == 0) 2.dp else 12.dp, bottom = 2.dp),
-                                            color = palette.muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = .5.sp)
-                                    }
                                     Box(Modifier.elasticRow(stretch, listState, index)) {
                                         ConversationRow(thread, palette, showTags, { open.accept(thread.id) }, { details.accept(thread.id) },
                                             if (sample) null else ({ more.accept(thread.id) }))
@@ -329,7 +378,8 @@ internal class InboxScreen(
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Box(Modifier.weight(1f)) {
-                                        SearchBox(search, palette, inDock = true, change = editSearch)
+                                        SearchBox(search, palette, inDock = true,
+                                            placeholder = if (communitiesOffered && showingCommunities) "Search communities" else "Search", change = editSearch)
                                     }
                                     if (connected && canSend) ActionIcon("Compose", Glyph.Compose, palette.toolbarAction) { compose.run() }
                                 }
@@ -360,7 +410,7 @@ private fun WelcomeCard(palette: Palette, connect: Runnable, sample: Runnable) {
 }
 
 @Composable
-internal fun SearchBox(search: String, palette: Palette, inDock: Boolean = false, change: (String) -> Unit) {
+internal fun SearchBox(search: String, palette: Palette, inDock: Boolean = false, placeholder: String = "Search", change: (String) -> Unit) {
     val ink = if (inDock) palette.toolbarInk else palette.ink
     val muted = ink.copy(alpha = .70f)
     BasicTextField(
@@ -370,7 +420,7 @@ internal fun SearchBox(search: String, palette: Palette, inDock: Boolean = false
         textStyle = TextStyle(color = ink, fontSize = 16.sp),
         cursorBrush = SolidColor(palette.action),
         modifier = Modifier.fillMaxWidth().padding(top = if (inDock) 0.dp else 13.dp, bottom = if (inDock) 0.dp else 5.dp)
-            .semantics { contentDescription = "Search messages" },
+            .semantics { contentDescription = if (placeholder == "Search") "Search messages" else placeholder },
         decorationBox = { inner ->
             Row(
                 Modifier.fillMaxWidth().heightIn(min = if (inDock) 50.dp else 44.dp)
@@ -381,7 +431,7 @@ internal fun SearchBox(search: String, palette: Palette, inDock: Boolean = false
             ) {
                 DrawGlyph(Glyph.Search, muted, Modifier.size(18.dp))
                 Box(Modifier.weight(1f)) {
-                    if (search.isEmpty()) Text("Search", color = muted, fontSize = 16.sp)
+                    if (search.isEmpty()) Text(placeholder, color = muted, fontSize = 16.sp)
                     inner()
                 }
                 if (search.isNotEmpty()) ActionIcon("Clear search", Glyph.Close, palette.muted) { change("") }
@@ -426,58 +476,13 @@ internal fun ConversationRow(thread: ThreadRow, palette: Palette, showProtocol: 
                     Spacer(Modifier.width(6.dp))
                     DrawGlyph(Glyph.Forward, palette.muted, Modifier.size(12.dp))
                 }
-                if (showProtocol) ProtocolTags(thread, palette.appearance)
+                if (showProtocol) ProtocolTags(thread, palette.appearance, palette.muted)
+                else if (thread.muted.isNotEmpty()) MutedMark(thread.muted, palette.muted, Modifier.padding(top = 3.dp, bottom = 1.dp))
                 Text(thread.preview, Modifier.padding(top = 3.dp, end = 15.dp), color = palette.muted,
                     fontSize = 15.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
         HorizontalDivider(Modifier.padding(start = 74.dp, end = 6.dp), color = palette.edge)
-    }
-}
-
-/** Servers above the inbox, like Discord's: All, then each IRC network, Matrix account, and XMPP account. */
-@Composable
-private fun InboxScreen.ServerStrip(palette: Palette) {
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-        @Composable
-        fun chip(label: String, value: String, service: String?) {
-            val on = activeServer == value
-            Row(Modifier.clip(RoundedCornerShape(50)).background(if (on) palette.inboxAction.copy(alpha = .14f) else palette.wash)
-                .border(1.dp, if (on) palette.inboxAction else palette.edge, RoundedCornerShape(50))
-                .clickable(onClickLabel = "Show $label") { pickServer?.accept(value) }
-                .padding(start = if (service == null) 13.dp else 5.dp, end = 13.dp, top = 5.dp, bottom = 5.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                if (service != null) {
-                    val format = MessageProtocol.parse(service)
-                    Box(Modifier.size(22.dp).clip(RoundedCornerShape(7.dp)).background(format.tint(palette.appearance)),
-                        contentAlignment = Alignment.Center) {
-                        Text(format.label.take(1), color = Color(MessageStyle.textOn(format.tint(palette.appearance).toArgb())),
-                            fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Spacer(Modifier.width(6.dp))
-                }
-                Text(label, color = palette.ink, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
-            }
-        }
-        chip("All", "", null)
-        for (server in servers) chip(server.name, server.id, server.service)
-        Text("+", Modifier.clip(RoundedCornerShape(50)).border(1.dp, palette.edge, RoundedCornerShape(50))
-            .clickable(onClickLabel = "Add server") { serverAction?.accept("add", "") }.padding(horizontal = 13.dp, vertical = 3.dp),
-            color = palette.inboxAction, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-    }
-    val server = servers.firstOrNull { it.id == activeServer } ?: return
-    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp).clip(RoundedCornerShape(14.dp)).background(palette.wash)
-        .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(server.name, color = palette.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(MessageProtocol.parse(server.service).label + " · " + AccountKeys.address(server.id), color = palette.muted, fontSize = 12.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        TextButton(onClick = { serverAction?.accept("join", server.id) }) {
-            Text(if (server.service == "irc") "Join channel" else "Join room", color = palette.inboxAction)
-        }
-        TextButton(onClick = { serverAction?.accept("browse", server.id) }) { Text("Browse", color = palette.inboxAction) }
     }
 }
 
@@ -509,6 +514,10 @@ internal class ConversationScreen @JvmOverloads constructor(
     private val removeFailed: Consumer<ChatLine>? = null,
 ) {
     var draft by mutableStateOf("")
+    /** "Muted until 3:40 PM" and the like while this chat or its server is muted (Mutes); empty when it isn't. */
+    var muted by mutableStateOf("")
+    /** Opens the mute page from the header's mark: how long, or Unmute. */
+    var openMute: Runnable? = null
     var draftAttachment by mutableStateOf<Attachment?>(null)
     /** Opens Settings → GIFs and stickers from the picker; set by the live chat. */
     var openGifSettings: Runnable? = null
@@ -717,6 +726,9 @@ internal class ConversationScreen @JvmOverloads constructor(
                                     SecurityLock(protection, palette.toolbarBackground, Modifier.padding(start = 5.dp)
                                         .clickable(onClickLabel = "Encryption details") { details.run() })
                                 }
+                                // Muted: the bell with a slash; tapping it says until when, with Unmute.
+                                if (muted.isNotEmpty()) MutedMark(muted, chromeInk.copy(alpha = .72f), Modifier.padding(start = 2.dp), 14,
+                                    openMute?.let { action -> { action.run() } })
                             }
                             }
                         }
@@ -1560,7 +1572,9 @@ internal fun Avatar(initials: String, seed: String, size: Int, photo: Int = 0, p
 }
 
 internal enum class Glyph { Settings, Filter, Compose, Search, Close, Back, Forward, More, Send, Person,
-    Plus, Photo, Camera, Document, Music, Pin, Mic, Play, Pause, Video, Stop, Money, Gif, Sticker, Poll, Calendar, Chess, Brush, Sparkle, Dice }
+    Plus, Photo, Camera, Document, Music, Pin, Mic, Play, Pause, Video, Stop, Money, Gif, Sticker, Poll, Calendar, Chess, Brush, Sparkle, Dice,
+    /** An outlined bell with a slash: a muted chat or server. */
+    Muted }
 
 @Composable
 internal fun ActionIcon(label: String, glyph: Glyph, color: Color, action: () -> Unit) {
@@ -1714,8 +1728,35 @@ internal fun DrawGlyph(glyph: Glyph, color: Color, modifier: Modifier) {
                 drawCircle(color, size.minDimension * .12f, point(.5f, .28f), style = Stroke(stroke))
                 line(.38f, .46f, .62f, .46f); line(.43f, .46f, .37f, .74f); line(.57f, .46f, .63f, .74f); line(.28f, .8f, .72f, .8f)
             }
+            Glyph.Muted -> {
+                // The same outline as FluidMessages Web's (chats.js muteMark), on a 16-unit grid: a bell with a flared
+                // base, its clapper, and a slash across.
+                fun at(x: Float, y: Float) = Offset(x / 16f * size.width, y / 16f * size.height)
+                val bell = Path().apply {
+                    moveTo(at(4f, 10.8f).x, at(4f, 10.8f).y)
+                    lineTo(at(4f, 7.5f).x, at(4f, 7.5f).y)
+                    cubicTo(at(4f, 5.1f).x, at(4f, 5.1f).y, at(5.8f, 3.5f).x, at(5.8f, 3.5f).y, at(8f, 3.5f).x, at(8f, 3.5f).y)
+                    cubicTo(at(10.2f, 3.5f).x, at(10.2f, 3.5f).y, at(12f, 5.1f).x, at(12f, 5.1f).y, at(12f, 7.5f).x, at(12f, 7.5f).y)
+                    lineTo(at(12f, 10.8f).x, at(12f, 10.8f).y)
+                    lineTo(at(13.3f, 12.2f).x, at(13.3f, 12.2f).y)
+                    lineTo(at(2.7f, 12.2f).x, at(2.7f, 12.2f).y)
+                    close()
+                }
+                drawPath(bell, color, style = Stroke(stroke, cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                drawArc(color, 0f, 180f, false, at(6.5f, 12.2f), Size(3f / 16f * size.width, 3f / 16f * size.height),
+                    style = Stroke(stroke, cap = StrokeCap.Round))
+                drawLine(color, at(2.2f, 2.2f), at(13.8f, 13.8f), stroke, StrokeCap.Round)
+            }
         }
     }
+}
+
+/** The muted mark beside a header's lock, a row's protocol tags, and a server's heading. Tappable when [open] is set. */
+@Composable
+internal fun MutedMark(label: String, color: Color, modifier: Modifier = Modifier, size: Int = 13, open: (() -> Unit)? = null) {
+    val base = if (open == null) modifier.semantics { contentDescription = label }
+        else modifier.clip(RoundedCornerShape(6.dp)).clickable(onClickLabel = "Change or unmute") { open() }.semantics { contentDescription = label }
+    Box(base.padding(if (open == null) 0.dp else 3.dp)) { DrawGlyph(Glyph.Muted, color, Modifier.size(size.dp)) }
 }
 
 internal fun accessibleBubbleFill(color: Color): Color {

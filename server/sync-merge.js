@@ -123,7 +123,7 @@ function mergeDescribe(key) {
   const [group, ...rest] = key.split(':');
   const name = rest.join(':');
   return {look: ['Appearance', MERGE_LOOK[name] || name], fun: ['Fun and effects', MERGE_FUN[name] || name],
-    folder: ['Chat folders', mergePerson(name)], muted: ['Muted chats', mergePerson(name)], sender: ['Automated senders', mergePerson(name)],
+    folder: ['Chat folders', mergePerson(name)], muted: ['Muted chats', mergePerson(name)], muteuntil: ['How long chats are muted', mergePerson(name)], sender: ['Automated senders', mergePerson(name)],
     timer: ['Disappearing messages', name === '*' ? 'Default timer' : mergePerson(name)], wallpaper: ['Chat wallpaper', mergePerson(name)],
     gif: ['GIF sites', name], gifoff: ['GIF sites', capital(name)], pay: ['Payments', name === '*' ? 'Default way to pay' : name],
     sticker: ['Stickers', 'Sticker'], account: ['Chat accounts', name.includes(':') ? capital(name.split(':')[0]) + ' · ' + name.split(':').slice(1).join(':') : capital(name)], protocol: ['Chat services', capital(name)]}[group]
@@ -153,6 +153,7 @@ function mergeValue(key, value) {
       return set.length ? ['pinned', 'archived', 'blocked'].filter((item) => set.includes(item)).map(capital).join(', ') : 'Inbox';
     }
     case 'muted': return value === 'on' ? 'Muted' : 'Alerts on';
+    case 'muteuntil': return value == null ? 'Until you unmute' : 'Until ' + new Date(Number(value)).toLocaleString();
     case 'sender': return value === 'automated' ? 'Automated' : value === 'person' ? 'A person' : 'Automatic';
     case 'timer': return value == null ? (name === '*' ? 'Off' : 'Follows the default') : mergeTimer(Number(value));
     case 'wallpaper': return value == null || value === 'none' ? 'Solid' : value === 'photo' ? 'A photo' : capital(value);

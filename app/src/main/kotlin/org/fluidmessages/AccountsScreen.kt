@@ -182,7 +182,10 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
     var asking by remember { mutableStateOf(false) }
     var always by remember { mutableStateOf(DirectProtocols.stayConnected(prefs, protocol)) }
     val readOnly = !onPhone && existing?.optString("source") == "compose"
-    val stored = if (onPhone) JSONObject().apply {
+    // Add server's pick fills in the form wherever it connects; an XMPP server leaves only the name to type.
+    val xmppDomain = editing.preset[ServerDirectory.XMPP_DOMAIN]
+    val stored = if (adding) JSONObject().apply { for ((key, value) in editing.preset) put(key, value) }
+    else if (onPhone) JSONObject().apply {
         direct?.let { account -> for (key in account.keys()) {
             val secret = forms.getValue(protocol).any { it.key == key && it.secret }
             put(key, if (secret) JSONObject().put("set", true) else account.get(key))
@@ -190,7 +193,6 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
     } else existing?.optJSONObject("fields") ?: JSONObject().apply { for ((key, value) in editing.preset) put(key, value) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    if (asking) BatteryConsent(protocol, { asking = false }) { consent = true; onPhone = true; asking = false }
     val values = remember(onPhone) {
         mutableStateMapOf<String, String>().apply {
             for (field in forms.getValue(protocol)) {
@@ -208,14 +210,13 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
             style = MaterialTheme.typography.headlineSmall) }
         if (adding) item { Text(AccountKeys.help(protocol.name.lowercase()), color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (adding && protocol == MessageProtocol.IRC) item {
-            // Well-known public networks: picking one fills in the form. Nothing connects until Save.
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Popular networks", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (network in AccountKeys.knownNetworks) FilterChip(selected = values["server"] == network.host,
-                        onClick = { values["server"] = network.host; if (values["port"].isNullOrBlank()) values["port"] = "6697" },
-                        label = { Text(network.name) })
+            // TLS is always on: FluidMessages never sends IRC passwords or messages in plain text.
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Use TLS", style = MaterialTheme.typography.bodyLarge)
+                    Text("Always on. FluidMessages doesn’t connect to IRC without it.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 }
+                Switch(checked = true, onCheckedChange = null, enabled = false)
             }
         }
         item { Text(notes.getValue(protocol), color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -247,12 +248,15 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
                 }
             }
         }
+        // The battery notice opens in place, under the choice, instead of in a pop-up.
+        if (asking) item { BatteryConsent(protocol, { asking = false }) { consent = true; onPhone = true; asking = false } }
         if (readOnly) item { Text("This account is set in Docker Compose. Change it in your compose environment.", color = MaterialTheme.colorScheme.primary) }
         for (field in forms.getValue(protocol)) item {
             val isSet = stored.optJSONObject(field.key)?.optBoolean("set") == true
             OutlinedTextField(values[field.key].orEmpty(), { values[field.key] = it }, Modifier.fillMaxWidth(),
                 enabled = !readOnly && !busy, singleLine = true, label = { Text(field.label + if (field.optional) " (optional)" else "") },
-                placeholder = { Text(if (field.secret && isSet) "Saved · leave blank to keep" else field.hint) },
+                placeholder = { Text(if (field.secret && isSet) "Saved · leave blank to keep" else if (field.key == "jid" && xmppDomain != null) "you" else field.hint) },
+                suffix = if (field.key == "jid" && xmppDomain != null && !values[field.key].orEmpty().contains('@')) ({ Text("@$xmppDomain") }) else null,
                 visualTransformation = if (field.secret) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
                 keyboardOptions = KeyboardOptions(keyboardType = when {
                     field.secret -> KeyboardType.Password
@@ -287,6 +291,7 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
                                     when (key) {
                                         "port", "poll_minutes" -> fields.put(key, value.trim().toInt())
                                         "channels" -> fields.put(key, JSONArray(value.split(",").map { it.trim() }.filter { it.isNotEmpty() }))
+                                        "jid" -> fields.put(key, ServerDirectory.xmppAddress(value, xmppDomain))
                                         else -> fields.put(key, value.trim())
                                     }
                                 }
@@ -336,18 +341,22 @@ private fun checkDirect(protocol: MessageProtocol, fields: JSONObject) {
 @Composable
 private fun BatteryConsent(protocol: MessageProtocol, dismiss: () -> Unit, accept: () -> Unit) {
     var understood by remember { mutableStateOf(false) }
-    AlertDialog(onDismissRequest = dismiss, title = { Text("Connect ${protocol.label} from this phone?") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(when (protocol) {
-                    MessageProtocol.IRC, MessageProtocol.XMPP -> "${protocol.label} needs an open connection to receive messages. On this phone that keeps the radio awake while FluidMessages is open, or all the time if you choose Stay connected, which drains the battery noticeably faster."
-                    else -> "Your phone will check ${protocol.label} itself on your Battery and sync schedule, which uses more battery and data than letting FluidMessages Web do it."
-                })
-                Text("Your account details are encrypted on this phone and aren’t included in backups.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                SettingsSwitch("I understand this uses more battery", "", understood) { understood = it }
+    // Shown in the form itself, under "Connect through", rather than as a dialog.
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.large) {
+        Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Connect ${protocol.label} from this phone?", style = MaterialTheme.typography.titleMedium)
+            Text(when (protocol) {
+                MessageProtocol.IRC, MessageProtocol.XMPP -> "${protocol.label} needs an open connection to receive messages. On this phone that keeps the radio awake while FluidMessages is open, or all the time if you choose Stay connected, which drains the battery noticeably faster."
+                else -> "Your phone will check ${protocol.label} itself on your Battery and sync schedule, which uses more battery and data than letting FluidMessages Web do it."
+            })
+            Text("Your account details are encrypted on this phone and aren’t included in backups.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SettingsSwitch("I understand this uses more battery", "", understood) { understood = it }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = dismiss) { Text("Cancel") }
+                Spacer(Modifier.weight(1f))
+                AppButton(enabled = understood, onClick = accept) { Text("Continue") }
             }
-        },
-        confirmButton = { TextButton(enabled = understood, onClick = accept) { Text("Continue") } },
-        dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } })
+        }
+    }
 }

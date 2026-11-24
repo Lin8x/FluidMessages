@@ -787,6 +787,8 @@ function select(key) {
   showMessages();
   showThreads();
   if (typeof updateCallButtons === 'function') updateCallButtons();
+  // The bell with a slash beside the lock, while this chat or its server is muted (chats.js).
+  if (typeof updateMuteMark === 'function') updateMuteMark();
 }
 
 // Opening an internet conversation reads it everywhere. Texts are marked read when you open them on the phone.
@@ -828,80 +830,99 @@ function messageMatcher(query) {
   };
 }
 
+/** One chat row, the same in Chats and Communities: name, tags, preview, time, and its unread dot. */
+function threadButton(key, messages, showTags) {
+  const address = key;
+  const message = messages.at(-1) || {body: 'No messages yet', protocol: threadProtocol(key), type: 2, read: 1, date: 0, empty: true};
+  const button = element('button', '', 'thread');
+  button.type = 'button';
+  button.setAttribute('aria-current', String(address === active));
+  button.dataset.unread = String(message.type === 1 && message.read === 0);
+  const copy = element('span', '', 'thread-copy');
+  copy.append(element('strong', threadTitle(key)));
+  if (showTags) {
+    const tags = element('span', '', 'tags');
+    const formats = appearance.combineProtocols ? [...new Set(messages.map((row) => row.protocol || 'sms'))] : [message.protocol || 'sms'];
+    for (const format of formats) {
+      // Automated senders' tag takes the automated color, as on the phone (ProtocolTags).
+      const auto = automatedThread(key) && ['sms', 'mms'].includes(format);
+      tags.append(element('span', auto ? 'Automated' : labels[format] || 'SMS', 'tag p-' + format + (auto ? ' automated' : '')));
+    }
+    copy.append(tags);
+  }
+  const meetingLine = (typeof meetingPreview === 'function' ? meetingPreview(message.body || '') : null)
+    || (typeof cardPreview === 'function' ? cardPreview(message.body || '') : null);
+  copy.append(element('small', /^FM1:/.test(message.body || '') ? '🔒 Encrypted with FluidMessages' : meetingLine || message.body));
+  const time = timeOf(message);
+  // Photos where one is known, like the sample contacts' (people.js), otherwise tinted initials.
+  const face = setAvatar(element('span', '', 'avatar'), threadTitle(key));
+  if (typeof paintAvatar === 'function') paintAvatar(face, threadTitle(key));
+  button.append(element('span', '', 'indicator'), face, copy,
+    element('time', message.empty ? '' : day(time) === 'Today' ? clock(time) : day(time) + (appearance.exactTimes ? ' ' + clock(time) : '')));
+  button.addEventListener('click', () => select(address));
+  // Pinned, muted, and locked marks, and the pin/archive/mute menu (chats.js).
+  if (typeof decorateThread === 'function') decorateThread(key, button, copy);
+  return button;
+}
+
 function showThreads() {
   const list = get('threads');
   list.replaceChildren();
   const filter = get('search').value.trim();
   const matches = messageMatcher(filter);
-  const folder = get('folder').value;
-  get('inbox-title').textContent = folder === 'Inbox' ? 'Messages' : folder;
+  // The filter menu from Settings → Messaging → Inbox filters (inbox-filters.js).
+  if (typeof syncInboxFilterMenu === 'function') syncInboxFilterMenu();
+  const selection = typeof inboxSelection === 'function' ? inboxSelection() : {folder: get('folder').value, filter: 'inbox'};
+  const folder = selection.folder;
+  get('inbox-title').textContent = typeof inboxTitle === 'function' ? inboxTitle(selection) : folder === 'Inbox' ? 'Messages' : folder;
+  // Chats | Communities under the title (servers.js); not in the sample inbox, a decoy session, or the private folder.
+  const view = typeof inboxViewNow === 'function' ? inboxViewNow(folder) : 'chats';
+  if (typeof drawInboxSwitch === 'function') drawInboxSwitch(folder);
+  get('search').placeholder = view === 'communities' ? 'Search communities' : 'Search';
   // The private folder's passcode prompt, or its open bar (privacy.js).
   if (typeof privateFolderGate === 'function' && privateFolderGate(list, folder)) return;
   const selected = typeof chatFolders === 'function' ? chatFolders() : appearance.folders || {};
   // Unread: the chats the Chats tab counts (people.js), plus the one open now, so it doesn't vanish as it's read.
-  const unread = folder === 'Unread' && typeof unreadChats === 'function' ? unreadChats() : null;
-  const rows = [...threads].filter(([address, messages]) => messages.length).filter(([address, messages]) => {
-    const blocked = selected.blocked?.includes(threadAddress(address));
-    const archived = selected.archived?.includes(threadAddress(address));
-    // Private chats show only in the Private folder, and only once this session has opened it.
-    const hidden = typeof privateFolderHas === 'function' && privateFolderHas(threadAddress(address));
-    const inFolder = folder === 'Private folder' ? hidden
-      : unread ? !hidden && (unread.has(address) || address === active && !blocked && !archived)
-      : !hidden && (folder === 'Blocked' ? blocked : !blocked && (folder === 'Archived' ? archived : !archived));
+  const unread = typeof unreadChats === 'function' ? unreadChats() : new Set();
+  const scope = folder === (typeof PRIVATE_FOLDER === 'undefined' ? '' : PRIVATE_FOLDER) ? 'private' : '';
+  const showCommunity = typeof showCommunityChats === 'function' ? showCommunityChats() : true;
+  // Channels and rooms joined on a server show straight away, before their first message (servers.js).
+  const joinedEmpty = typeof emptyServerRows === 'function' ? emptyServerRows((key) => !!threads.get(key)?.length) : [];
+  const rows = [...[...threads].filter(([address, messages]) => messages.length), ...joinedEmpty].filter(([address, messages]) => {
+    const place = {blocked: !!selected.blocked?.includes(threadAddress(address)), archived: !!selected.archived?.includes(threadAddress(address)),
+      // Private chats show only in the Private folder, and only once this session has opened it.
+      hidden: typeof privateFolderHas === 'function' && privateFolderHas(threadAddress(address))};
+    const placed = typeof inboxFilterPlaces === 'function' ? inboxFilterPlaces(scope, selection.filter, place)
+      : !place.hidden && !place.blocked && !place.archived;
+    if (!placed) return false;
+    // Communities lists channels and rooms only; Chats leaves them out when they're set to show only there.
+    if (view === 'communities' ? !isCommunityChat(address) : typeof chatsShows === 'function' && !chatsShows(address, showCommunity)) return false;
+    if (typeof inboxFilterMatches === 'function' && !inboxFilterMatches(selection.filter,
+      inboxChatFacts(address, messages, unread.has(address) || address === active && !place.blocked && !place.archived))) return false;
     // A chat with a code is found by its name only, never by what it says.
     const sealed = typeof chatLocked === 'function' && chatLocked(address);
-    // A server picked in the strip at the top shows only its channels and direct messages (servers.js).
-    if (typeof serverShows === 'function' && !serverShows(address)) return false;
-    return inFolder && (matches(threadTitle(address), '') || !sealed && messages.some((message) => matches(threadTitle(address), message.body)));
+    return matches(threadTitle(address), '') || !sealed && messages.some((message) => matches(threadTitle(address), message.body));
   });
   const pinned = new Set(selected.pinned || []);
   rows.sort(([a], [b]) => Number(pinned.has(threadAddress(b))) - Number(pinned.has(threadAddress(a))));
-  if (typeof serverOrder === 'function') rows.sort(serverOrder);
-  if (typeof serverStrip === 'function') serverStrip(list);
-  let previousKey = null;
   // Same rule as the phone: Automatic shows tags once more than one kind of conversation is present.
   const mode = appearance.tagMode || (appearance.protocolTags ? 'always' : 'auto');
   const families = new Set([...threads.values()].flatMap((messages) => messages.map((row) => family(row.protocol || 'sms'))));
   const showTags = mode === 'always' || (mode === 'auto' && families.size > 1);
-  for (const [key, messages] of rows) {
-    const address = key;
-    const message = messages.at(-1);
-    const button = element('button', '', 'thread');
-    button.type = 'button';
-    button.setAttribute('aria-current', String(address === active));
-    button.dataset.unread = String(message.type === 1 && message.read === 0);
-    const copy = element('span', '', 'thread-copy');
-    copy.append(element('strong', threadTitle(key)));
-    if (showTags) {
-      const tags = element('span', '', 'tags');
-      const formats = appearance.combineProtocols ? [...new Set(messages.map((row) => row.protocol || 'sms'))] : [message.protocol || 'sms'];
-      for (const format of formats) {
-        // Automated senders' tag takes the automated color, as on the phone (ProtocolTags).
-        const auto = automatedThread(key) && ['sms', 'mms'].includes(format);
-        tags.append(element('span', auto ? 'Automated' : labels[format] || 'SMS', 'tag p-' + format + (auto ? ' automated' : '')));
-      }
-      copy.append(tags);
-    }
-    const meetingLine = (typeof meetingPreview === 'function' ? meetingPreview(message.body || '') : null)
-      || (typeof cardPreview === 'function' ? cardPreview(message.body || '') : null);
-    copy.append(element('small', /^FM1:/.test(message.body || '') ? '🔒 Encrypted with FluidMessages' : meetingLine || message.body));
-    const time = timeOf(message);
-    // Photos where one is known, like the sample contacts' (people.js), otherwise tinted initials.
-    const face = setAvatar(element('span', '', 'avatar'), threadTitle(key));
-    if (typeof paintAvatar === 'function') paintAvatar(face, threadTitle(key));
-    button.append(element('span', '', 'indicator'), face, copy,
-      element('time', day(time) === 'Today' ? clock(time) : day(time) + (appearance.exactTimes ? ' ' + clock(time) : '')));
-    button.addEventListener('click', () => select(address));
-    // Pinned, muted, and locked marks, and the pin/archive/mute menu (chats.js).
-    if (typeof decorateThread === 'function') decorateThread(key, button, copy);
-    if (typeof serverHeading === 'function') serverHeading(list, key, previousKey);
-    previousKey = key;
-    list.append(button);
+  if (view === 'communities') {
+    drawCommunities(list, rows, (key, messages) => threadButton(key, messages, showTags));
+    if (typeof updateTabBadges === 'function') updateTabBadges();
+    return;
   }
+  for (const [key, messages] of rows) list.append(threadButton(key, messages, showTags));
   if (!rows.length) {
+    const label = typeof inboxFilter === 'function' ? inboxFilter(selection.filter)?.label : '';
     if (filter) list.append(element('p', 'No chats match “' + excerpt(filter, 40) + '”', 'placeholder'));
-    else if (typeof activeServer === 'string' && activeServer) list.append(element('p', 'No chats on this server yet. Join a channel or room above.', 'placeholder'));
-    else if (folder !== 'Inbox') list.append(element('p', folder === 'Private folder' ? 'Nothing in the private folder.' : 'Nothing ' + folder.toLowerCase() + '.', 'placeholder'));
+    else if (selection.filter === 'favorites') list.append(element('p', inboxDecoy() || scope ? 'No favorites here.'
+      : 'No chats with favorites yet. Star people in Calls → Contacts to see their chats here.', 'placeholder'));
+    else if (scope && selection.filter !== 'inbox') list.append(element('p', 'No ' + label.toLowerCase() + ' in the private folder.', 'placeholder'));
+    else if (folder === (typeof PRIVATE_FOLDER === 'undefined' ? '' : PRIVATE_FOLDER)) list.append(element('p', 'Nothing in the private folder.', 'placeholder'));
+    else if (folder !== 'Inbox') list.append(element('p', 'Nothing in ' + (label || folder) + '.', 'placeholder'));
     else {
       const empty = element('div', '', 'empty-list');
       empty.append(element('strong', 'No chats yet'), element('p', chatAccounts.length

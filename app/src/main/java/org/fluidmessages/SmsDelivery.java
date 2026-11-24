@@ -19,7 +19,7 @@ public final class SmsDelivery extends BroadcastReceiver {
         if (HiddenChats.addressHidden(preferences, address)) {
             // Hidden conversations skip Android's SMS store and show only a plain alert.
             HiddenChats.receive(context, address, body.toString(), System.currentTimeMillis(), intent.getIntExtra("subscription", -1));
-            notifyHidden(context);
+            if (!Mutes.isMuted(preferences, address)) notifyHidden(context);
             return;
         }
         SmsStore.insert(context, address, body.toString(), System.currentTimeMillis(),
@@ -43,7 +43,9 @@ public final class SmsDelivery extends BroadcastReceiver {
     static void notify(Context context, String label, String address) {
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         var preferences = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
-        if (MainActivity.addressList(preferences, "muted").contains(address)) return;
+        // Muted right now, by this chat or its whole server (Mutes): no notification, sound, or vibration. The message
+        // is already stored and shows unread.
+        if (Mutes.isMuted(preferences, address)) return;
         if (HiddenChats.addressHidden(preferences, address)) { notifyHidden(context); return; }
         String channelId = MessageFeedback.notificationChannel(context, manager, preferences);
         Intent open = new Intent(context, MainActivity.class).putExtra("address", address);
@@ -75,8 +77,12 @@ public final class SmsDelivery extends BroadcastReceiver {
         return status(context).getAllowed();
     }
 
-    /** A call that rang here and stopped before anyone answered. Opens the app; the Phone tab shows it in Recents. */
-    static void notifyMissedCall(Context context, String title, String protocol) {
+    /**
+     * A call that rang here and stopped before anyone answered. Opens the app; the Phone tab shows it in Recents.
+     * Nothing for a muted chat: the call still shows as missed in Recents.
+     */
+    static void notifyMissedCall(Context context, String title, String protocol, String address) {
+        if (Mutes.isMuted(context.getSharedPreferences("fluid", Context.MODE_PRIVATE), address)) return;
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         var channel = new NotificationChannel("missed-calls", "Missed calls", NotificationManager.IMPORTANCE_DEFAULT);
         channel.setDescription("Matrix, XMPP, and SIP calls you didn't answer");

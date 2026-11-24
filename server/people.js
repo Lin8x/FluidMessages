@@ -24,7 +24,7 @@ const SAMPLE_STARRED = ['+12025550123', '+12025550142', '+12025550111'];
 let webFavorites = [];
 let sampleStarred = null;
 // Like the phone, the tab opens on Recents.
-const phoneTab = {view: 'recents', keypad: false, dialed: '', query: '', missedOnly: false, note: null, jobs: []};
+const phoneTab = {view: 'recents', keypad: false, dialed: '', query: '', missedOnly: false, note: null, jobs: [], mode: 'number', typed: ''};
 
 // Avatars: a photo where one is known, otherwise initials.
 
@@ -55,6 +55,52 @@ function avatarFor(name, extra = '') {
   node.setAttribute('aria-hidden', 'true');
   return paintAvatar(node, name);
 }
+
+// Starting something new: what a typed number or address is. The phone's NewAddress.detect follows the same rules
+// (NewAddressTest.kt), and scripts/test-local runs this block with the same cases.
+// address-detect:start
+const IRC_NICK = /^[A-Za-z[\]\\`_^{|}][A-Za-z0-9[\]\\`_^{|}-]{0,31}$/;
+/**
+ * Every service [text] could be, best guess first: [{service, target, group?, network?, guess?}]. service is sms,
+ * matrix, xmpp, email, irc, or sip. Several entries mean it's ambiguous (name@example.org is email or XMPP); guess
+ * marks a bare word that might be an IRC nickname or just a name being searched.
+ */
+function detectAddress(text) {
+  const value = String(text || '').trim();
+  if (!value || value.length > 320 || /[\u0000-\u001f]/.test(value)) return [];
+  if (/^\+?[\d ().-]+$/.test(value)) return value.replace(/\D/g, '').length >= 3 ? [{service: 'sms', target: value}] : [];
+  let match = /^sip:([^@\s]{1,64}@[A-Za-z0-9.:-]{1,253})$/i.exec(value);
+  if (match) return [{service: 'sip', target: 'sip:' + match[1]}];
+  if (/^@[a-z0-9._=\-/+]{1,255}:[A-Za-z0-9.:-]{1,255}$/.test(value)) return [{service: 'matrix', target: value}];
+  if (/^[!#][^\s:]{1,250}:[A-Za-z0-9.:-]{1,255}$/.test(value)) return [{service: 'matrix', target: value, group: true}];
+  if (/^[#&][^\s,:\u0007]{1,49}$/.test(value)) return [{service: 'irc', target: value, group: true}];
+  match = /^irc:(?:\/\/([A-Za-z0-9.-]+)\/)?(\S+)$/i.exec(value);
+  if (match && (IRC_NICK.test(match[2]) || /^[#&][^\s,:]{1,49}$/.test(match[2]))) {
+    return [{service: 'irc', target: match[2], ...(match[1] ? {network: match[1].toLowerCase()} : {}), ...(/^[#&]/.test(match[2]) ? {group: true} : {})}];
+  }
+  match = /^([^@\s<>"']{1,64})@([A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)$/.exec(value);
+  if (match) {
+    const [, user, host] = match;
+    const lower = value.toLowerCase();
+    // riley@irc.libera.chat: a nickname on that IRC network.
+    if (/^irc\./i.test(host) && IRC_NICK.test(user)) return [{service: 'irc', target: user, network: host.toLowerCase()}];
+    if (!host.includes('.')) return [{service: 'xmpp', target: lower}];
+    // Group chats live on conference servers; everything else could be email or XMPP.
+    if (/^(conference|muc|chat|rooms?)\./i.test(host)) return [{service: 'xmpp', target: lower, group: true}, {service: 'email', target: lower}];
+    return [{service: 'email', target: lower}, {service: 'xmpp', target: lower}];
+  }
+  if (IRC_NICK.test(value)) return [{service: 'irc', target: value, guess: true}];
+  return [];
+}
+// address-detect:end
+
+const SERVICE_LABELS = {sms: 'SMS', matrix: 'Matrix', xmpp: 'XMPP', email: 'Email', irc: 'IRC', sip: 'SIP'};
+
+// Contacts made here (main.py web_contacts): kept for every browser and fetched by the phone, which saves them into
+// its contacts once you allow it. In the sample inbox, new contacts stay on this page only.
+let webContacts = [];
+let sampleContacts = [];
+const webContactList = () => (sampleOn ? sampleContacts : webContacts);
 
 // Everyone known here
 
@@ -110,6 +156,16 @@ function knownPeople() {
     if (group && !person.groups.includes(group)) person.groups.push(group);
     return person;
   };
+  // Contacts made here first, so their names win and their numbers and addresses find their chats.
+  for (const contact of webContactList()) {
+    let person = null;
+    for (const number of contact.numbers || []) person = add({name: contact.name, number}) || person;
+    for (const item of contact.addresses || []) {
+      person = add({name: contact.name, account: {protocol: item.service, target: item.address, address: ''}}) || person;
+    }
+    if (!person) person = add({name: contact.name});
+    if (person) Object.assign(person, {name: contact.name, named: true, webId: contact.id});
+  }
   if (sampleOn) {
     for (const [name, number, accounts = []] of SAMPLE_BOOK) {
       add({name, number});
@@ -182,7 +238,7 @@ function personFor({name = '', address = '', protocol = ''}) {
 function personTags(person) {
   const tags = person.numbers.length ? ['SMS'] : [];
   for (const account of person.accounts) {
-    const label = labels[account.protocol] || account.protocol;
+    const label = labels[account.protocol] || SERVICE_LABELS[account.protocol] || account.protocol;
     if (!tags.includes(label)) tags.push(label);
   }
   return tags;
@@ -247,6 +303,7 @@ function starButton(person, after) {
 /** The snapshot's favorites, and a fresh Calls tab when it's open (app.js refresh). */
 function noticePeople(snapshot) {
   webFavorites = Array.isArray(snapshot.web_favorites) ? snapshot.web_favorites : [];
+  if (Array.isArray(snapshot.web_contacts)) webContacts = snapshot.web_contacts;
   const list = get('calls-list');
   if (typeof section !== 'undefined' && section === 'calls' && list && !list.contains(document.activeElement)) showPhoneTab(list);
 }
@@ -541,7 +598,10 @@ function recentsView(body, list) {
 }
 
 function contactsView(body, list) {
-  body.append(largeTitle('Contacts'));
+  const create = element('button', '+ New contact', 'primary new-contact');
+  create.type = 'button';
+  create.addEventListener('click', () => openContactEditor(null, {back: () => { closeDetailsPage(false); showPhoneTab(list); }}));
+  body.append(largeTitle('Contacts', create));
   const search = Object.assign(element('input', ''), {type: 'search', placeholder: 'Search', value: phoneTab.query, autocomplete: 'off'});
   search.className = 'phone-search';
   search.setAttribute('aria-label', 'Search contacts');
@@ -555,7 +615,7 @@ function contactsView(body, list) {
       || person.accounts.some((account) => account.target.toLowerCase().includes(words)));
     if (!people.length) {
       results.append(element('p', words ? 'No matches for “' + excerpt(phoneTab.query.trim(), 40) + '”'
-        : 'No contacts yet. People you text, chat with, and meet in groups show up here.', 'placeholder'));
+        : 'No contacts yet. People you text, chat with, and meet in groups show up here, and so do contacts you make with New contact.', 'placeholder'));
       return;
     }
     // A–Z sections, with # for names that don't start with a letter.
@@ -583,6 +643,19 @@ function contactsView(body, list) {
 const KEY_LETTERS = {2: 'ABC', 3: 'DEF', 4: 'GHI', 5: 'JKL', 6: 'MNO', 7: 'PQRS', 8: 'TUV', 9: 'WXYZ', 0: '+'};
 
 function keypadView(body, list) {
+  // Call a phone number through your phone, or call or message anyone by their address, like the phone's keypad.
+  const modes = element('div', '', 'phone-filter keypad-modes');
+  modes.setAttribute('role', 'group');
+  modes.setAttribute('aria-label', 'Dial');
+  for (const [mode, label] of [['number', 'Number'], ['address', 'Address']]) {
+    const button = element('button', label);
+    button.type = 'button';
+    button.setAttribute('aria-pressed', String(phoneTab.mode === mode));
+    button.addEventListener('click', () => { phoneTab.mode = mode; showPhoneTab(list); });
+    modes.append(button);
+  }
+  body.append(modes);
+  if (phoneTab.mode === 'address') { addressDialView(body, list); return; }
   const pad = element('div', '', 'dialpad');
   const display = element('output', phoneTab.dialed, 'dial-display');
   display.tabIndex = 0;
@@ -590,6 +663,13 @@ function keypadView(body, list) {
   const match = element('button', '', 'dial-match');
   match.type = 'button';
   const status = element('div', '', 'dial-status');
+  // Someone new: text them, or save them as a contact.
+  const extras = element('div', '', 'button-row dial-new');
+  const message = element('button', 'Message', 'quiet');
+  message.type = 'button';
+  const save = element('button', 'Add to contacts', 'quiet');
+  save.type = 'button';
+  extras.append(message, save);
   const people = knownPeople();
   const matched = () => (digitsOf(phoneTab.dialed).length >= 4 ? people.find((person) => person.numbers.some((number) => sameNumber(number, phoneTab.dialed))) : null);
   const update = () => {
@@ -601,8 +681,15 @@ function keypadView(body, list) {
     match.hidden = !person;
     erase.hidden = !phoneTab.dialed;
     call.disabled = !phoneTab.dialed;
+    const fresh = !person && /^\+?[\d]{3,}$/.test(phoneTab.dialed);
+    extras.hidden = !fresh;
+    message.setAttribute('aria-label', 'Message ' + phoneTab.dialed);
+    save.setAttribute('aria-label', 'Add ' + phoneTab.dialed + ' to contacts');
   };
   match.addEventListener('click', () => { const person = matched(); if (person) openPersonPage(person).catch(showError); });
+  message.addEventListener('click', () => openChat(keyOf(phoneTab.dialed, 'sms')));
+  save.addEventListener('click', () => openContactEditor(null, {prefill: {numbers: [phoneTab.dialed]},
+    back: () => { closeDetailsPage(false); showPhoneTab(list); }}));
   const type = (value) => {
     if (phoneTab.dialed.length >= 32) return;
     phoneTab.dialed += value;
@@ -629,10 +716,14 @@ function keypadView(body, list) {
   }
   const actions = element('div', '', 'dial-actions');
   const report = (text, number, error) => {
-    if (text === null) { status.replaceChildren(noPhoneNote(number, matched())); return; }
-    const line = element('p', text, 'phone-status' + (error ? ' error' : ''));
-    line.setAttribute('role', error ? 'alert' : 'status');
-    status.replaceChildren(line);
+    if (text === null) status.replaceChildren(noPhoneNote(number, matched()));
+    else {
+      const line = element('p', text, 'phone-status' + (error ? ' error' : ''));
+      line.setAttribute('role', error ? 'alert' : 'status');
+      status.replaceChildren(line);
+    }
+    // Below the keys on short screens: bring what happened into view.
+    status.scrollIntoView?.({block: 'nearest', behavior: 'smooth'});
   };
   const call = roundButton('voice', 'Call', 'dial-call', () => { if (phoneTab.dialed) callFromPhone(phoneTab.dialed, report); });
   const erase = roundButton('backspace', 'Delete', 'dial-erase', () => { phoneTab.dialed = phoneTab.dialed.slice(0, -1); status.replaceChildren(); update(); });
@@ -645,12 +736,89 @@ function keypadView(body, list) {
   const close = element('button', 'Hide keypad', 'quiet dial-close');
   close.type = 'button';
   close.addEventListener('click', () => { phoneTab.keypad = false; showPhoneTab(list); });
-  pad.append(display, match, keys, actions, status, element('p', 'Type a number on your keyboard too. Enter calls, Esc closes.', 'dial-hint'), close);
+  const hint = sampleOn || phonePaired() ? 'Type a number on your keyboard too. Enter calls, Esc closes.'
+    : 'Calls to numbers ring through your phone once it’s paired. Type a number on your keyboard too.';
+  pad.append(display, match, extras, keys, actions, status, element('p', hint, 'dial-hint'), close);
   pad.typeKey = type;
   pad.callNow = () => call.click();
   pad.eraseKey = () => erase.click();
   body.append(pad);
   update();
+}
+
+/** Keypad → Address: call a Matrix address from this browser, or message anyone by their address on any service. */
+function addressDialView(body, list) {
+  const box = element('form', '', 'settings-section address-dial');
+  box.noValidate = true;
+  const input = Object.assign(element('input', ''), {value: phoneTab.typed, autocomplete: 'off', spellcheck: false,
+    placeholder: '@name:example.org'});
+  input.setAttribute('autocapitalize', 'off');
+  const label = element('label', 'Address');
+  label.append(input, element('small', 'Matrix @name:server, XMPP name@server, SIP sip:name@provider, or a phone number', 'hint'));
+  const line = element('p', '', 'hint');
+  line.setAttribute('aria-live', 'polite');
+  const status = element('div', '', 'dial-status');
+  const row = element('div', '', 'button-row wrap');
+  const button = (text, run, primary) => {
+    const node = element('button', text, primary ? 'primary' : '');
+    node.type = 'button';
+    node.addEventListener('click', run);
+    row.append(node);
+    return node;
+  };
+  const report = (text, error) => {
+    const note = element('p', text, 'phone-status' + (error ? ' error' : ''));
+    note.setAttribute('role', error ? 'alert' : 'status');
+    status.replaceChildren(note);
+  };
+  const callMatrix = async (target, video) => {
+    if (sampleOn) { report('Sample inbox · nothing was sent. With a real Matrix account, this calls ' + target + '.'); return; }
+    if (!chatAccounts.some((item) => item.protocol === 'matrix')) { report('Add a Matrix account in Settings → Accounts to call Matrix addresses.', true); return; }
+    try {
+      const key = await startInternetChat({service: 'matrix', target});
+      openChat(key);
+      await startCall(video);
+    } catch (error) { report(error.message, true); }
+  };
+  const draw = () => {
+    row.replaceChildren();
+    status.replaceChildren();
+    const [option] = detectAddress(input.value);
+    const service = option?.service;
+    if (!input.value.trim()) line.textContent = 'Type an address to call or message someone new.';
+    else if (!option || option.guess) line.textContent = 'That doesn’t look like an address yet.';
+    else line.textContent = (SERVICE_LABELS[service] || service) + (option.group ? ' room or channel' : ' address');
+    if (service === 'matrix' && !option.group) {
+      button('Voice call', () => callMatrix(option.target, false), true);
+      button('Video call', () => callMatrix(option.target, true));
+    }
+    if (service === 'sms') button('Call through your phone', () => { phoneTab.mode = 'number'; phoneTab.dialed = option.target.replace(/[^\d+*#]/g, ''); showPhoneTab(list); }, true);
+    if (['xmpp', 'sip'].includes(service)) {
+      status.append(element('p', (service === 'sip' ? 'SIP' : 'XMPP') + ' calls are made from FluidMessages for Android: open its Phone tab → Keypad → Username.'
+        + (service === 'xmpp' ? ' You can message XMPP addresses from here.' : ''), 'muted'));
+    }
+    if (option && !option.guess && service !== 'sip') button('Message', () => { phoneTab.typed = input.value; openNewChat('', {to: input.value.trim()}); }, service !== 'matrix' && service !== 'sms');
+    if (option && !option.guess) button('Add to contacts', () => openContactEditor(null, {prefill: service === 'sms' ? {numbers: [option.target]}
+      : {addresses: [{service, address: service === 'irc' && option.network ? option.target + '@' + option.network : option.target.replace(/^sip:/, '')}]},
+    back: () => { closeDetailsPage(false); showPhoneTab(list); }}));
+  };
+  input.addEventListener('input', () => { phoneTab.typed = input.value; draw(); });
+  box.addEventListener('submit', (event) => { event.preventDefault(); row.querySelector('button')?.click(); });
+  const close = element('button', 'Hide keypad', 'quiet dial-close');
+  close.type = 'button';
+  close.addEventListener('click', () => { phoneTab.keypad = false; showPhoneTab(list); });
+  box.append(label, line, row, status, close);
+  body.append(box);
+  draw();
+  requestAnimationFrame(() => input.focus({preventScroll: true}));
+}
+
+/** Opens the Calls tab's keypad, on Address with [address] typed in when there is one (New chat → a SIP address). */
+function openKeypad({address = ''} = {}) {
+  showSection('calls');
+  phoneTab.keypad = true;
+  if (address) { phoneTab.mode = 'address'; phoneTab.typed = address; }
+  showPhoneTab(get('calls-list'));
 }
 
 // Typing on the keyboard while the keypad is open.
@@ -757,9 +925,26 @@ async function openPersonPage(person, {back} = {}) {
   if (phonePaired() || sampleOn) {
     for (const number of person.numbers) options.push({kind: 'voice', via: 'From your phone', target: displayNumber(number), run: () => callFromPhone(number, report)});
   }
+  // Saved addresses without a chat yet: Message starts one there.
   for (const account of person.accounts) {
-    if (account.protocol !== 'matrix' || !(account.address || sampleOn)) continue;
-    const run = (video) => () => (sampleOn ? report('Sample inbox · nothing was sent.') : callOnMatrix(account, video));
+    if (account.address || !['matrix', 'xmpp', 'email', 'irc'].includes(account.protocol)) continue;
+    if (chats.some((key) => threadProtocol(key) === account.protocol)) continue;
+    options.push({kind: 'message', via: protocolName(account.protocol), target: account.target, run: () => {
+      if (sampleOn) { report('Sample inbox · nothing was sent.'); return; }
+      const [nick, network] = account.protocol === 'irc' ? account.target.split('@') : [account.target];
+      startInternetChat({service: account.protocol, target: nick, name: person.name}).then(openChat)
+        .catch((error) => report(network ? error.message + ' (' + network + ')' : error.message, '', true));
+    }});
+  }
+  for (const account of person.accounts) {
+    if (account.protocol !== 'matrix') continue;
+    const run = (video) => () => {
+      if (sampleOn) { report('Sample inbox · nothing was sent.'); return; }
+      if (account.address) { callOnMatrix(account, video); return; }
+      // A Matrix address from a contact, with no chat yet: start the chat, then call in it.
+      startInternetChat({service: 'matrix', target: account.target, name: person.name})
+        .then((key) => { openChat(key); return startCall(video); }).catch((error) => report(error.message, '', true));
+    };
     options.push({kind: 'voice', via: 'Matrix', target: account.target, run: run(false)}, {kind: 'video', via: 'Matrix', target: account.target, run: run(true)});
   }
   if (!options.some((option) => option.kind === 'video') && chats.length) {
@@ -782,7 +967,19 @@ async function openPersonPage(person, {back} = {}) {
   };
   favorite.addEventListener('click', () => { toggleFavorite(person); drawFavorite(); });
   drawFavorite();
-  hero.append(favorite);
+  // Edit a contact made here, or save anyone else as one, with every number and address known for them.
+  const reopen = () => openPersonPage(person, {back});
+  const stored = person.webId ? webContactList().find((contact) => contact.id === person.webId) : null;
+  const edit = element('button', stored ? 'Edit contact' : 'Save as contact', 'favorite-toggle contact-edit');
+  edit.type = 'button';
+  edit.addEventListener('click', () => (stored ? openContactEditor(stored, {back: reopen})
+    : openContactEditor(null, {back: reopen, prefill: {name: person.named ? person.name : '', numbers: person.numbers,
+      addresses: person.accounts.filter((account) => SERVICE_LABELS[account.protocol] && account.protocol !== 'sms'
+        && !/^[!#]/.test(account.target)).map((account) => ({service: account.protocol, address: account.target}))}})));
+  const tools = element('div', '', 'button-row contact-tools');
+  tools.append(favorite, edit);
+  hero.append(tools);
+  if (stored) hero.append(element('p', sampleOn ? 'Made on this page · not saved' : 'Saved on FluidMessages Web · your phone can save it to its contacts', 'muted'));
   const nodes = [hero, personTiles(options), status];
   // Every address, with its protocol and how private it is.
   const info = element('section', '', 'settings-section');
@@ -795,7 +992,8 @@ async function openPersonPage(person, {back} = {}) {
   for (const account of person.accounts) {
     const key = accountKey(account) || keyOf(account.target, account.protocol);
     const [tone, label] = protection(key);
-    info.append(detailRow(protocolName(account.protocol) + ' · ' + label, account.target, lockBadge(tone, label, 'large')));
+    info.append(detailRow((SERVICE_LABELS[account.protocol] && !labels[account.protocol] ? SERVICE_LABELS[account.protocol] : protocolName(account.protocol))
+      + ' · ' + label, account.target, lockBadge(tone, label, 'large')));
   }
   if (!person.numbers.length && !person.accounts.length) info.append(element('p', 'Only their name is known here.', 'muted'));
   if (person.numbers.length && !phonePaired() && !sampleOn) {
@@ -858,6 +1056,8 @@ async function openPersonPage(person, {back} = {}) {
     box.append(...conversationSettings(key, settings));
     nodes.push(box);
   }
+  // Mute all of their chats and numbers for a while or for good (chats.js).
+  if (typeof personMuteSection === 'function') nodes.push(personMuteSection(person, chats));
   nodes.push(blockSection(person, chats));
   detailsPage(person.name, nodes, back);
 }
@@ -895,6 +1095,143 @@ function blockSection(person, chats) {
   return section;
 }
 
+// New contact and Edit: a full page, like the phone's contact editor (ContactEditor.kt). Contacts are kept on the
+// server for every browser (main.py web_contacts); the phone fetches them and saves them into Android's contacts once
+// you allow it. In the sample inbox they stay on this page.
+
+const CONTACT_SERVICES = ['matrix', 'xmpp', 'email', 'irc', 'sip'];
+
+/** [contact] is a stored contact to edit, or null for a new one; [prefill] fills a new one (from the keypad, say). */
+function openContactEditor(contact = null, {back, prefill = {}} = {}) {
+  const editing = !!contact?.id;
+  const form = element('form', '', 'settings-section contact-form');
+  form.noValidate = true;
+  const name = Object.assign(element('input', ''), {value: contact?.name ?? prefill.name ?? '', autocomplete: 'off', maxLength: 100,
+    placeholder: 'Maya Chen', required: true});
+  const numbers = element('div', '', 'contact-rows');
+  const addresses = element('div', '', 'contact-rows');
+  const status = element('p', '', 'error');
+  status.setAttribute('role', 'alert');
+  const remove = (row, list, focus) => {
+    row.remove();
+    if (!list.children.length) focus();
+  };
+  const numberRow = (value = '') => {
+    const row = element('div', '', 'contact-row');
+    const input = Object.assign(element('input', ''), {type: 'tel', value, autocomplete: 'off', maxLength: 40, placeholder: '+1 202 555 0143'});
+    input.setAttribute('aria-label', 'Phone number');
+    const drop = element('button', 'Remove', 'quiet');
+    drop.type = 'button';
+    drop.setAttribute('aria-label', 'Remove this phone number');
+    drop.addEventListener('click', () => remove(row, numbers, () => addNumber.focus()));
+    row.append(input, drop);
+    numbers.append(row);
+    return input;
+  };
+  const addressRow = (item = {service: '', address: ''}) => {
+    const row = element('div', '', 'contact-row contact-address');
+    const input = Object.assign(element('input', ''), {value: item.address || '', autocomplete: 'off', spellcheck: false, maxLength: 320,
+      placeholder: '@maya:example.org'});
+    input.setAttribute('autocapitalize', 'off');
+    input.setAttribute('aria-label', 'Chat address');
+    const service = element('select', '');
+    service.setAttribute('aria-label', 'Service');
+    for (const key of CONTACT_SERVICES) service.append(Object.assign(element('option', SERVICE_LABELS[key]), {value: key}));
+    service.value = item.service || 'matrix';
+    // The service follows what's typed until you pick one yourself.
+    let chosen = !!item.service;
+    service.addEventListener('change', () => { chosen = true; });
+    input.addEventListener('input', () => {
+      if (chosen) return;
+      const [guess] = detectAddress(input.value);
+      if (guess && CONTACT_SERVICES.includes(guess.service) && !guess.guess) service.value = guess.service;
+    });
+    const drop = element('button', 'Remove', 'quiet');
+    drop.type = 'button';
+    drop.setAttribute('aria-label', 'Remove this chat address');
+    drop.addEventListener('click', () => remove(row, addresses, () => addAddress.focus()));
+    row.append(input, service, drop);
+    row.read = () => {
+      let value = input.value.trim();
+      if (service.value === 'sip') value = value.replace(/^sip:/i, '');
+      return {service: service.value, address: value};
+    };
+    addresses.append(row);
+    return input;
+  };
+  const addNumber = element('button', '+ Add phone number', 'quiet');
+  addNumber.type = 'button';
+  addNumber.addEventListener('click', () => numberRow().focus());
+  const addAddress = element('button', '+ Add chat address', 'quiet');
+  addAddress.type = 'button';
+  addAddress.addEventListener('click', () => addressRow().focus());
+  for (const number of contact?.numbers || prefill.numbers || []) numberRow(number);
+  for (const item of contact?.addresses || prefill.addresses || []) addressRow(item);
+  if (!numbers.children.length) numberRow();
+  const numberSet = element('fieldset', '', 'contact-set');
+  numberSet.append(element('legend', 'Phone numbers'), numbers, addNumber);
+  const addressSet = element('fieldset', '', 'contact-set');
+  addressSet.append(element('legend', 'Chat addresses'),
+    element('p', 'Matrix @name:server, XMPP or email name@server, IRC nickname (riley@irc.libera.chat for a network), or SIP name@provider. '
+      + 'The service is picked from what you type; change it if it’s wrong.', 'hint'), addresses, addAddress);
+  const save = element('button', editing ? 'Save changes' : 'Save contact', 'primary');
+  const cancel = element('button', 'Cancel', 'quiet');
+  cancel.type = 'button';
+  const leave = back || (() => closeDetailsPage());
+  cancel.addEventListener('click', leave);
+  const actions = element('div', '', 'button-row');
+  actions.append(save, cancel);
+  form.append(field('Name', name), numberSet, addressSet, status, actions);
+  const where = element('p', sampleOn ? 'Sample inbox · contacts you make here stay on this page and aren’t saved.'
+    : 'Saved on FluidMessages Web for every browser. Your phone shows it after its next sync, and saves it to its contacts once you allow it there.',
+  'muted contact-where');
+  const opened = (saved) => {
+    const person = knownPeople().find((item) => item.webId === saved.id);
+    if (person) openPersonPage(person, {back}).catch(showError);
+    else leave();
+  };
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    status.textContent = '';
+    const draft = {name: name.value.trim(), numbers: [...numbers.querySelectorAll('input')].map((input) => input.value.trim()).filter(Boolean),
+      addresses: [...addresses.children].map((row) => row.read()).filter((item) => item.address)};
+    // The same checks as the server, so mistakes show right away; the server checks again.
+    if (!draft.name) { status.textContent = 'Enter a name.'; name.focus(); return; }
+    const badNumber = draft.numbers.find((number) => !/^\+?[0-9][0-9 ().-]{2,39}$/.test(number) || digitsOf(number).length < 3);
+    if (badNumber) { status.textContent = '“' + excerpt(badNumber, 40) + '” isn’t a phone number. Use digits, like +1 202 555 0143.'; return; }
+    if (sampleOn) {
+      const saved = {id: contact?.id || 'sample-' + Date.now().toString(16), ...draft};
+      sampleContacts = [...sampleContacts.filter((item) => item.id !== saved.id), saved];
+      opened(saved);
+      return;
+    }
+    save.disabled = true;
+    try {
+      const result = await api('contacts', {...(editing ? {id: contact.id} : {}), ...draft});
+      webContacts = result.web_contacts;
+      opened(result.contact);
+    } catch (error) { status.textContent = error.message; }
+    finally { save.disabled = false; }
+  });
+  const nodes = [where, form];
+  if (editing) {
+    const danger = element('section', '', 'settings-section');
+    danger.append(element('h3', 'Delete contact'), element('p', sampleOn ? 'Removes it from this page.'
+      : 'Removes it from FluidMessages Web. Chats with them stay, and a copy your phone already saved stays in its contacts.', 'muted'),
+    confirmButton('Delete ' + contact.name, 'Tap again to delete', async () => {
+      if (sampleOn) sampleContacts = sampleContacts.filter((item) => item.id !== contact.id);
+      else {
+        try { webContacts = (await api('contacts/delete', {id: contact.id})).web_contacts; } catch (error) { status.textContent = error.message; return; }
+      }
+      closeDetailsPage(false);
+      if (section === 'calls') { phoneTab.view = 'contacts'; phoneTab.keypad = false; showPhoneTab(get('calls-list')); }
+    }, 'danger-text'));
+    nodes.push(danger);
+  }
+  detailsPage(editing ? 'Edit contact' : 'New contact', nodes, leave);
+  requestAnimationFrame(() => (name.value ? numbers.querySelector('input') || name : name).focus({preventScroll: true}));
+}
+
 // Counts on the tabs: missed calls on Calls and unread chats on Chats, on both the side rail and the bottom tabs,
 // on the installed app's icon, and as "(N)" in the title. Muted, archived, blocked, and private chats never count,
 // and the sample inbox's fictional messages never do either: while it's open, the last real counts stay.
@@ -920,8 +1257,13 @@ function markCallsSeen() {
 function quietChats() {
   const own = (sampleOn && typeof sampleChats !== 'undefined' ? sampleChats : webChats) || {};
   const phone = sampleOn || (typeof mergeActive === 'function' && mergeActive()) ? {} : appearance.folders || {};
-  const quiet = new Set(['muted', 'archived', 'blocked', 'private', 'hidden'].flatMap((key) => [...(own[key] || []), ...(phone[key] || [])])
-    .filter((item) => typeof item === 'string'));
+  const quiet = new Set(['archived', 'blocked', 'private', 'hidden'].flatMap((key) => [...(own[key] || []), ...(phone[key] || [])])
+    .concat(phone.muted || []).filter((item) => typeof item === 'string'));
+  // Muted right now, by the chat itself or its whole server; a timed mute that has run out counts again (chats.js).
+  const muted = typeof chatMuteEnds === 'function' ? (address) => chatMuteEnds(address, own) !== null
+    : (address) => (own.muted || []).includes(address);
+  for (const item of own.muted || []) if (typeof item === 'string' && muted(item)) quiet.add(item);
+  for (const message of inbox) if (!quiet.has(message.address) && muted(message.address)) quiet.add(message.address);
   if (typeof privateFolderHas === 'function') for (const message of inbox) if (privateFolderHas(message.address)) quiet.add(message.address);
   return quiet;
 }
@@ -956,6 +1298,8 @@ function countTabs() {
     }
     if (unreadIncoming(message, quiet, now)) unread.add(threadKey(message));
   }
+  // Channels and rooms shown only under Communities count there instead (servers.js).
+  if (typeof chatsShows === 'function' && !showCommunityChats()) for (const key of unread) if (!chatsShows(key, false)) unread.delete(key);
   tabCount.calls = section === 'calls' ? 0 : missed;
   tabCount.messages = unread.size;
 }

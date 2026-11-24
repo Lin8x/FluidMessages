@@ -82,7 +82,7 @@ import kotlin.math.sin
  * formatting and spoilers, edits, effects, dice and other random picks, contact cards, and game links to other sites.
  */
 
-// Formatting: *bold*, _italic_, ~strike~, `code`, ```code blocks```, and ||spoilers||, the way WhatsApp and Discord write them.
+// Formatting: *bold*, _italic_, ~strike~, `code`, ```code blocks```, and ||spoilers||, the way popular chat apps write them.
 
 private val formatPattern = Regex(
     """```\n?([\s\S]+?)```|\|\|([\s\S]+?)\|\||`([^`\n]+)`|(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])""" +

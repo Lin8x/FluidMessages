@@ -37,7 +37,8 @@ final class Backup {
     private static final long FILE_BUDGET = 24L * 1024 * 1024, FILE_LIMIT = 2L * 1024 * 1024;
     static final String[] EFFECTS = {"speed", "sound", "receiveSound", "haptics", "sendTone", "receiveTone", "sendHaptics",
         "soundVolume", "soundStream"};
-    static final String[] SETTINGS = {"pinned", "archived", "blocked", "muted", "exactTimes", BackupNames.KEY, "automaticUpdateChecks"};
+    // "mutedUntil": when timed mutes end (Mutes). Older versions skip it when they restore, so those mutes become forever.
+    static final String[] SETTINGS = {"pinned", "archived", "blocked", "muted", Mutes.UNTIL, "exactTimes", BackupNames.KEY, "automaticUpdateChecks"};
     private static final int MAX = 64 * 1024 * 1024;
     static final String SENDER_TYPES = "senderTypes";
 

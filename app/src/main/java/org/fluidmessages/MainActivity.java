@@ -63,8 +63,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     };
     private String filter = "";
     private String folder = "Inbox";
-    /** The server picked in the inbox's strip (an account id), or "" for all chats. */
-    private volatile String activeServer = "";
+    /** Inside the open private folder: the filter applied to its chats, by its label ("Inbox" for all of them). */
+    private volatile String privateFilter = "Inbox";
+    /** Messages → Communities is showing instead of Chats. */
+    private volatile boolean communitiesShowing;
+    /** Services the inbox has chats or accounts on, for the filter menu's per-service filters. */
+    private volatile Set<String> menuServices;
     private String page = "inbox";
     private int setupStep;
     private String sampleSearch = "";
@@ -244,9 +248,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     /** Runs on the inbox worker. */
     private void countTabBadges() {
+        int[] split;
+        try { split = unreadConversations(); } catch (Exception error) { split = new int[2]; }
+        // Communities' own count shows whether or not the tabs show counts.
+        int communities = split[1];
+        runOnUiThread(() -> { if (!isDestroyed()) tabCounts.setCommunities(communities); });
         if (!prefs.getBoolean(TabBadges.PREF, true)) return;
-        int unread;
-        try { unread = unreadConversations(); } catch (Exception error) { unread = 0; }
+        int unread = split[0];
         // The first time, only calls missed from now on count, not the whole call history.
         if (!prefs.contains(TabBadges.PHONE_SEEN)) markPhoneSeen();
         long since = prefs.getLong(TabBadges.PHONE_SEEN, System.currentTimeMillis());
@@ -264,11 +272,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
      * Unread conversations, counted the way the inbox marks them: a conversation whose newest message is unread.
      * Muted, archived, blocked, private-folder, and decoy chats are left out.
      */
-    private int unreadConversations() throws Exception {
+    private int[] unreadConversations() throws Exception {
         var data = messageRows();
         boolean combine = prefs.getBoolean("combineProtocols", false);
         boolean vault = Privacy.vaultOpen();
+        boolean decoy = Privacy.decoyMode(prefs);
+        var direct = decoy ? Map.<String, String>of() : directServers();
+        var serverIds = new HashSet<String>();
+        if (!decoy) for (var chip : communityServers(direct)) serverIds.add(chip.getId());
         Map<String, String> identities = new HashMap<>();
+        Map<String, Boolean> community = new HashMap<>();
         List<BadgeMessage> rows = new ArrayList<>(data.size());
         for (JSONObject message : data) {
             if (Thread.currentThread().isInterrupted()) break;
@@ -277,9 +290,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             var format = MessageProtocol.parse(message.optString("protocol"));
             String thread = combine ? number : number + "\u001f" + format.family().name();
             boolean hidden = raw.startsWith(Privacy.DECOY) || vault && HiddenChats.rowHidden(prefs, message);
-            rows.add(new BadgeMessage(thread, number, message.optInt("read", 1) == 0, hidden));
+            boolean onServer = community.computeIfAbsent(number, ignored -> !communityServer(number, format, direct, serverIds).isEmpty());
+            rows.add(new BadgeMessage(thread, number, message.optInt("read", 1) == 0, hidden, onServer));
         }
-        return TabBadges.unreadConversations(rows, list("muted"), list("archived"), list("blocked"));
+        return TabBadges.unreadSplit(rows, Mutes.mutedAddresses(prefs), list("archived"), list("blocked"), Communities.show(prefs));
     }
 
     /** The sample inbox's badges, from its own unread chats and missed calls. */
@@ -289,7 +303,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             String name = SAMPLES[index][0];
             rows.add(new BadgeMessage(name, "demo:" + name, sampleUnread(SAMPLES[index]), false));
         }
-        tabCounts.setMessages(TabBadges.unreadConversations(rows, Set.of(),
+        tabCounts.setMessages(TabBadges.unreadConversations(rows, sampleMutedAddresses(),
             Set.of("demo:" + SAMPLES[2][0]), Set.of("demo:" + SAMPLES[3][0])));
         tabCounts.setPhone(sampleCallsSeen || page.equals("samplePhone") ? 0 : PhoneTab.sampleMissedCalls());
     }
@@ -429,6 +443,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "setup" -> { if (setupStep > 0) onboarding(setupStep - 1); else finish(); }
             case "sampleChat" -> sampleInbox();
             case "contact", "chatAppearance", "decoy" -> contactBack.run();
+            case "contactEditor", "webContacts" -> { if (contactEditorBack != null) contactEditorBack.run(); else phone(); }
             case "sample" -> inbox();
             case "theme", "backups", "messaging", "about", "protocols", "privacy", "reset", "calls", "gifs", "payments", "sounds" -> settings();
             case "recording" -> callsSettings();
@@ -636,6 +651,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     private void chooseFolder(String folder) {
         if (folder.equals(QUICK_HIDE_LABEL)) { startDecoyMode(); return; }
+        privateFilter = "Inbox";
         // Leaving the open private folder asks for the passcode again, then locks it.
         if (this.folder.equals(HIDDEN_FOLDER) && !folder.equals(HIDDEN_FOLDER) && Privacy.vaultOpen() && closeNeedsCode()) {
             confirmPrivate("Close the private folder", () -> {
@@ -656,12 +672,52 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         inbox();
     }
 
-    /** The folders in the inbox filter menu. Hidden chats shows only when set up, shown in Settings, and not in decoy mode. */
+    /**
+     * The inbox filter menu: the filters chosen in Settings → Messaging → Inbox filters, in their order (a service's
+     * only once there are chats or an account there), then Private folder and Quick hide.
+     */
     private List<String> inboxFolders() {
-        // Every inbox has Hidden chats in this menu, set up or not, so its presence gives nothing away.
-        var folders = new ArrayList<>(List.of("Inbox", TabBadges.UNREAD_FOLDER, "Archived", "Blocked", HIDDEN_FOLDER));
+        var services = menuServices;
+        return inboxFolders(services != null ? services : guessedServices());
+    }
+
+    private List<String> inboxFolders(Set<String> services) {
+        var folders = new ArrayList<>(InboxFilters.menu(InboxFilters.read(prefs), services));
+        // Every inbox has Private folder in this menu, set up or not, so its presence gives nothing away.
+        folders.add(HIDDEN_FOLDER);
         if (Privacy.vaultExists(prefs) && !Privacy.decoyMode(prefs)) folders.add(QUICK_HIDE_LABEL);
         return folders;
+    }
+
+    /** Services the menu offers before the inbox has loaded: texts, and internet services with an account. Decoy mode: texts. */
+    private Set<String> guessedServices() {
+        var services = new HashSet<String>();
+        services.add(MessageProtocol.SMS.name());
+        if (!Privacy.decoyMode(prefs)) for (var format : reachableProtocols(true)) services.add(format.family().name());
+        return services;
+    }
+
+    /** The filter (by id) the inbox applies: the private folder's own filter there, otherwise the folder's. */
+    private String filterId(String selectedFolder) {
+        return InboxFilters.INSTANCE.idOf(selectedFolder.equals(HIDDEN_FOLDER) ? privateFilter : selectedFolder);
+    }
+
+    private InboxFilters.Scope inboxScope(String selectedFolder) {
+        if (selectedFolder.equals(HIDDEN_FOLDER)) return InboxFilters.Scope.PRIVATE;
+        return Privacy.decoyMode(prefs) ? InboxFilters.Scope.DECOY : InboxFilters.Scope.INBOX;
+    }
+
+    /** Phone → Favorites, as the chats they reach: contacts' numbers and linked chat addresses. None in decoy mode. */
+    private List<String> favoriteAddresses() {
+        if (Privacy.decoyMode(prefs)) return List.of();
+        return InboxFiltersKt.favoriteAddresses(this, InboxFiltersKt.favoriteKeys(prefs, false));
+    }
+
+    /** Settings → Messaging → Inbox filters. */
+    private void inboxFiltersSettings() {
+        render("inbox-filters");
+        heading("Inbox filters", "Messaging", this::messagingSettings);
+        SettingsPages.mountInboxFilters(root, prefs);
     }
 
     /** True while the Hidden chats folder is showing empty after a passcode that didn't open anything. */
@@ -744,22 +800,35 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         inboxScreen = new InboxScreen(root, prefs, true, false, sampleFolder, sampleSearch,
             query -> { sampleSearch = query; fillSampleInbox(); }, this::settings,
             selected -> { sampleFolder = selected; sampleInbox(); }, this::inbox, this::requestSmsRole, this::openSampleThread, ignored -> {},
-            name -> contactDetails("demo:" + name, name, this::sampleInbox), this::confirmSampleReset, this::sampleCalls, List.of("Inbox", TabBadges.UNREAD_FOLDER, "Archived", "Blocked"),
-            tabCounts);
+            name -> contactDetails("demo:" + name, name, this::sampleInbox), this::confirmSampleReset, this::sampleCalls,
+            InboxFilters.menu(InboxFilters.read(prefs), sampleServices()), tabCounts);
         fillSampleInbox();
+    }
+
+    /** The sample chats' services, for the sample inbox's filter menu. */
+    private Set<String> sampleServices() {
+        var services = new HashSet<String>();
+        for (String[] contact : SAMPLES) for (var format : sampleFormats(contact)) services.add(format.family().name());
+        return services;
     }
 
     private void fillSampleInbox() {
         var search = new MessageSearch(sampleSearch);
         List<ThreadRow> threads = new ArrayList<>();
+        String filterId = InboxFilters.INSTANCE.idOf(sampleFolder);
+        // The sample inbox's own favorites, starred in its Phone tab; never your real ones.
+        var favorites = InboxFiltersKt.favoriteKeys(prefs, true);
         for (int index = 0; index < SAMPLES.length; index++) {
             String[] contact = SAMPLES[index];
             String folder = sampleFolderOf(index);
+            var services = new HashSet<String>();
+            for (var format : sampleFormats(contact)) services.add(format.family().name());
             // Unread: the inbox's sample chats that the Messages badge counts.
-            boolean shown = sampleFolder.equals(TabBadges.UNREAD_FOLDER)
-                ? folder.equals("Inbox") && TabBadges.unreadThread(sampleUnread(contact), "demo:" + contact[0], Set.of())
-                : sampleFolder.equals(folder);
-            if (!shown) continue;
+            var facts = new InboxFilters.Chat(!sampleGroupMembers(contact[0]).isEmpty() || "Group".equals(contact[5]),
+                favorites.contains("demo:" + contact[0]), services,
+                TabBadges.unreadThread(sampleUnread(contact), "demo:" + contact[0], sampleMutedAddresses()),
+                folder.equals("Archived"), folder.equals("Blocked"), false, false);
+            if (!InboxFilters.shows(InboxFilters.Scope.SAMPLE, filterId, facts)) continue;
             List<ChatLine> lines = sampleLines(contact, sampleReplies.getOrDefault(contact[0], List.of()));
             if (!search.matches(contact[0]) && lines.stream().noneMatch(line ->
                     search.matches(contact[0], line.getText(), Objects.toString(line.getAuthor(), "")))) continue;
@@ -776,7 +845,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 sampleUnread(contact), false,
                 samplePhoto(contact[0]), null, 0, sampleFormats(contact).stream().map(format -> format.label)
                     .collect(java.util.stream.Collectors.joining(" · ")),
-                sampleStyle(contact[0]) == SenderStyle.AUTOMATED, sampleGroupMembers(contact[0])));
+                sampleStyle(contact[0]) == SenderStyle.AUTOMATED, sampleGroupMembers(contact[0]), "", 0L, 0L,
+                Mutes.label(sampleMuteEnds("demo:" + contact[0]))));
         }
         inboxScreen.setThreads(threads);
         refreshTabBadges();
@@ -840,6 +910,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             (text, author, relation, attachment, via) -> addSampleMessage(contact, replies, author,
                 new OutgoingMessage(key, List.of(), text, attachment, -1, relation), via),
             samplePhoto(contact[0]), null, routing, sampleGroupMembers(contact[0]));
+        conversationScreen.setMuted(Mutes.label(sampleMuteEnds(key)));
+        ConversationScreen screen = conversationScreen;
+        conversationScreen.setOpenMute(() -> openSampleMute(key, contact[0], () -> screen.setMuted(Mutes.label(sampleMuteEnds(key)))));
         showSampleLines(contact, replies);
         animateIn(root.getChildAt(0), 10);
     }
@@ -866,7 +939,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         conversationScreen.setAnimatedId(id);
         showSampleLines(contact, replies);
         if (author == null) feedback(root);
-        else MessageFeedback.play(this, prefs, true);
+        else if (sampleMuteEnds("demo:" + contact[0]) < 0) MessageFeedback.play(this, prefs, true);
         return true;
     }
 
@@ -1004,6 +1077,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     private void inbox() {
         if (folder.equals(HIDDEN_FOLDER) && !Privacy.vaultOpen() && !emptyHidden) folder = "Inbox";
+        // A filter turned off in Settings → Inbox filters goes back to Inbox.
+        if (!folder.equals(HIDDEN_FOLDER) && !InboxFilters.menu(InboxFilters.read(prefs), Set.of("SMS", "MATRIX", "XMPP", "EMAIL", "IRC")).contains(folder)) folder = "Inbox";
         render("inbox");
         prefs.edit().putString("lastTab", "messages").apply();
         // An internet account alone is enough to start chats, even without the SMS role.
@@ -1016,17 +1091,31 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         // The counts themselves update once the inbox has loaded.
         tabCounts.setShown(prefs.getBoolean(TabBadges.PREF, true));
         if (Privacy.decoyMode(prefs)) inboxScreen.setTitleHold(this::endDecoyMode);
-        if (connected && CloudBackup.paired(this)) {
-            // Servers, like Discord's: each IRC network, Matrix account, and XMPP account on FluidMessages Web.
-            var chips = new ArrayList<ServerChip>();
-            for (var account : GatewayClient.servers(prefs)) {
-                String id = account.optString("id");
-                chips.add(new ServerChip(id, AccountKeys.INSTANCE.serverName(id), account.optString("protocol")));
-            }
-            if (chips.stream().noneMatch(chip -> chip.getId().equals(activeServer))) activeServer = "";
-            inboxScreen.setServers(chips);
-            inboxScreen.setActiveServer(activeServer);
-            inboxScreen.setPickServer(id -> { activeServer = id; inbox(); });
+        if (folder.equals(HIDDEN_FOLDER) && Privacy.vaultOpen()) {
+            // Filters inside the open private folder apply to its chats only.
+            var filters = new ArrayList<>(InboxFilters.menu(InboxFilters.read(prefs), menuServices != null ? menuServices : guessedServices()));
+            inboxScreen.setPrivateFilter(privateFilter);
+            inboxScreen.setPrivateFilters(filters);
+            inboxScreen.setPickPrivateFilter(choice -> { privateFilter = choice; inbox(); });
+        }
+        // Messages → Chats | Communities, in the real inbox only: not decoy mode or the private folder.
+        boolean offered = connected && !Privacy.decoyMode(prefs) && !folder.equals(HIDDEN_FOLDER);
+        communitiesShowing = offered && "communities".equals(prefs.getString(Communities.VIEW_PREF, "chats"));
+        if (offered) {
+            inboxScreen.setCommunitiesOffered(true);
+            inboxScreen.setShowingCommunities(communitiesShowing);
+            inboxScreen.setServers(communityServers());
+            inboxScreen.setCommunitySort(Communities.sort(prefs));
+            inboxScreen.setPickView(side -> {
+                prefs.edit().putString(Communities.VIEW_PREF, side ? "communities" : "chats").apply();
+                communitiesShowing = side;
+                fillInbox();
+            });
+            inboxScreen.setSortChanged(choice -> {
+                prefs.edit().putString(Communities.SORT_PREF, choice).apply();
+                // FluidMessages Web follows the phone's choice (appearance.communitySort).
+                SyncJob.syncSoon(this);
+            });
             inboxScreen.setServerAction(this::serverAction);
         }
         if (connected) {
@@ -1034,7 +1123,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             // asked right after choosing FluidMessages as the SMS app. Ask once here too.
             if (!prefs.getBoolean("lock", false) || unlocked) askNotificationsOnce();
             inboxScreen.setResync(this::resync);
-            seedInbox(inboxScreen);
+            if (!communitiesShowing) seedInbox(inboxScreen);
             fillInbox();
         }
         // Ask once, for people who made FluidMessages their SMS app before group MMS used it.
@@ -1086,6 +1175,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 } catch (Exception ignored) {}
                 return "";
             }
+            @Override public void newContact(String name, List<String> numbers, List<ChatAddress> addresses) {
+                contactEditor(new ContactDraft(name, numbers, addresses, "", 0), null, null, false, MainActivity.this::phone);
+            }
+            @Override public void editContact(String key) { editPhoneContact(key); }
+            @Override public void saveWebContacts() { webContactsPage(); }
+            @Override public void startChat(String service, String target) { startTypedChat(service, target); }
+            @Override public String muteLabel(List<String> keys) { return Mutes.label(Mutes.endsForAll(prefs, keys)); }
+            @Override public void mute(List<String> keys, String name, Runnable done) {
+                openMute(keys, name, "All of " + name + "’s chats and numbers.", done);
+            }
         }, false, restrict, decoyNames, tabCounts);
     }
 
@@ -1130,6 +1229,17 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 String name = address.startsWith("demo:") ? address.substring(5) : address;
                 for (String[] contact : SAMPLES) if (contact[0].equals(name) || samplePhone(contact[0]).equals(address)) return contact[3];
                 return "";
+            }
+            // Sample contacts open the real editor, and nothing is saved.
+            @Override public void newContact(String name, List<String> numbers, List<ChatAddress> addresses) {
+                contactEditor(new ContactDraft(name, numbers, addresses, "", 0), null, null, true, MainActivity.this::sampleCalls);
+            }
+            @Override public void editContact(String key) {}
+            @Override public void saveWebContacts() {}
+            @Override public void startChat(String service, String target) { toast("Sample contact: nothing is sent"); }
+            @Override public String muteLabel(List<String> keys) { return keys.isEmpty() ? "" : Mutes.label(sampleMuteEnds(keys.get(0))); }
+            @Override public void mute(List<String> keys, String name, Runnable done) {
+                if (!keys.isEmpty()) openSampleMute(keys.get(0), name, done);
             }
         }, true, null, List.of(), tabCounts);
     }
@@ -1481,6 +1591,48 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         inbox();
     }
 
+    /**
+     * The mute page for [keys]: one chat, all of a person's addresses, or a server's key (Mutes). [done] runs after a
+     * choice, to redraw where it was opened.
+     */
+    void openMute(List<String> keys, String title, String what, Runnable done) {
+        SecurityDialogs.mute(this, prefs, title, what, Mutes.endsForAll(prefs, keys), duration -> {
+            if (duration < 0) Mutes.unmute(prefs, keys); else Mutes.mute(prefs, keys, duration);
+            toast(duration < 0 ? "Unmuted" : Mutes.label(duration == 0 ? 0 : System.currentTimeMillis() + duration));
+            refreshTabBadges();
+            done.run();
+        });
+    }
+
+    private void openChatMute(String key, Runnable done) {
+        String server = Mutes.serverOf(prefs, key);
+        boolean serverMuted = !server.isEmpty() && Mutes.endsForAll(prefs, List.of(Mutes.serverKey(server))) >= 0;
+        openMute(List.of(key), threadTitle(key), serverMuted
+            ? "Just this chat. Its whole server is muted too; unmute the server from its card above the inbox." : "Just this chat.", done);
+    }
+
+    /** The sample chats' mutes: key → end (0 forever), on this screen only, never saved or synced. */
+    private final Map<String, Long> sampleMutes = new HashMap<>();
+
+    private long sampleMuteEnds(String key) {
+        return Mutes.INSTANCE.ends(sampleMutes.keySet(), sampleMutes, key, System.currentTimeMillis());
+    }
+
+    private Set<String> sampleMutedAddresses() {
+        Set<String> result = new HashSet<>();
+        for (String key : sampleMutes.keySet()) if (sampleMuteEnds(key) >= 0) result.add(key);
+        return result;
+    }
+
+    private void openSampleMute(String key, String name, Runnable done) {
+        SecurityDialogs.mute(this, prefs, name, "Sample chat: this is kept on this screen only.", sampleMuteEnds(key), duration -> {
+            if (duration < 0) sampleMutes.remove(key); else sampleMutes.put(key, duration == 0 ? 0L : System.currentTimeMillis() + duration);
+            toast(duration < 0 ? "Unmuted" : Mutes.label(sampleMutes.get(key)));
+            refreshTabBadges();
+            done.run();
+        });
+    }
+
     private void toggleAddress(String key, String number) {
         Set<String> values = list(key);
         if (!values.remove(number)) values.add(number);
@@ -1496,7 +1648,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         java.util.function.BiConsumer<String, Runnable> add = (label, run) -> { labels.add(label); runs.add(run); };
         String name = threadTitle(number);
         add.accept(list("pinned").contains(number) ? "Unpin" : "Pin", () -> toggle("pinned", number));
-        add.accept(list("muted").contains(number) ? "Unmute" : "Mute", () -> toggle("muted", number));
+        long muteEnds = Mutes.endsFor(prefs, number);
+        add.accept(muteEnds < 0 ? "Mute…" : Mutes.label(muteEnds) + " · change or unmute", () -> openChatMute(number, this::inbox));
         add.accept(list("archived").contains(number) ? "Unarchive" : "Archive", () -> toggle("archived", number));
         add.accept(list("blocked").contains(number) ? "Unblock" : "Block", () -> toggle("blocked", number));
         if (!number.startsWith(Privacy.DECOY) && !Privacy.decoyMode(prefs)) {
@@ -1560,6 +1713,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     /** The inbox screen that has shown a full load, rather than only the remembered rows. */
     private InboxScreen filledInbox;
+    /** Marks the stand-in row for a joined channel or room that has no messages yet. */
+    private static final String EMPTY_CHANNEL = "emptyChannel";
 
     /**
      * Shows the inbox as it last looked straight away, while the full list loads behind it. Rows are checked against
@@ -1630,42 +1785,95 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     return;
                 }
                 var data = messageRows();
-                Set<String> pinned = list("pinned"), archived = list("archived"), blocked = list("blocked"), muted = list("muted");
-                boolean unreadOnly = selectedFolder.equals(TabBadges.UNREAD_FOLDER);
+                Set<String> pinned = list("pinned"), archived = list("archived"), blocked = list("blocked"), muted = Mutes.mutedAddresses(prefs);
+                // Running mutes, for each row's bell-with-a-slash mark (Mutes); read once for the whole list.
+                Map<String, Long> mutes = Mutes.active(prefs, System.currentTimeMillis());
+                boolean serverMutes = mutes.keySet().stream().anyMatch(item -> item.startsWith(Mutes.SERVER));
+                // The inbox filter (Settings → Messaging → Inbox filters) within its scope: the inbox, the open
+                // private folder, or decoy mode's chats.
+                String filterId = filterId(selectedFolder);
+                var scope = inboxScope(selectedFolder);
+                boolean decoy = scope == InboxFilters.Scope.DECOY;
+                boolean unreadOnly = filterId.equals("unread");
+                boolean communities = communitiesShowing && scope == InboxFilters.Scope.INBOX;
+                boolean showCommunity = Communities.show(prefs);
+                var direct = decoy ? Map.<String, String>of() : directServers();
+                var serverIds = new HashSet<String>();
+                if (scope == InboxFilters.Scope.INBOX) for (var chip : communityServers(direct)) serverIds.add(chip.getId());
+                List<String> favorites = filterId.equals("favorites") ? favoriteAddresses() : List.of();
                 // Unread: threads whose newest message (the first one seen, newest first) isn't unread are left out.
                 Set<String> seenThreads = new HashSet<>(), readThreads = new HashSet<>();
                 Map<String, JSONObject> threads = new LinkedHashMap<>();
                 Map<String, String> identities = new HashMap<>();
+                Map<String, String> servers = new HashMap<>();
+                Set<String> services = new HashSet<>();
                 for (JSONObject message : data) {
                     if (Thread.currentThread().isInterrupted()) return;
                     String number = identities.computeIfAbsent(message.optString("address"), raw -> rowAddress(message));
                     var format = MessageProtocol.parse(message.optString("protocol"));
                     String thread = prefs.getBoolean("combineProtocols", false) ? number : number + "\u001f" + format.family().name();
-                    // Hidden chats only ever show in their own folder, never mixed into the inbox.
+                    // Private chats only ever show in their own folder, never mixed into the inbox.
                     boolean hiddenChat = Privacy.vaultOpen() && HiddenChats.rowHidden(prefs, message);
-                    boolean visible = switch (selectedFolder) {
-                        case HIDDEN_FOLDER -> hiddenChat;
-                        case "Archived" -> !hiddenChat && archived.contains(number) && !blocked.contains(number);
-                        case "Blocked" -> !hiddenChat && blocked.contains(number);
-                        default -> !hiddenChat && !archived.contains(number) && !blocked.contains(number);
-                    };
-                    if (!visible) continue;
-                    if (unreadOnly && seenThreads.add(thread)
-                            && !TabBadges.unreadThread(message.optInt("read", 1) == 0, number, muted)) readThreads.add(thread);
+                    if (hiddenChat == (scope == InboxFilters.Scope.PRIVATE)) services.add(format.family().name());
+                    // The service filters pick their own messages, so a combined chat shows that service's newest one.
+                    if (!InboxFilters.keepsMessage(filterId, format.family().name())) continue;
                     if (threads.containsKey(thread) || readThreads.contains(thread)) continue;
+                    String server = servers.computeIfAbsent(number, ignored -> communityServer(number, format, direct, serverIds));
+                    boolean community = !server.isEmpty();
+                    // Communities lists only channels and rooms; Chats leaves them out when they're set to show only there.
+                    if (communities ? !community : !Communities.showsInChats(community, showCommunity || scope != InboxFilters.Scope.INBOX)) continue;
+                    boolean unread = TabBadges.unreadThread(message.optInt("read", 1) == 0, number, muted);
+                    var facts = new InboxFilters.Chat(filterId.equals("groups") || filterId.equals("direct") ? isGroupChat(number) : false,
+                        // One-to-one chats only, as on FluidMessages Web: a group with a favorite in it isn't theirs.
+                        !favorites.isEmpty() && InboxFiltersKt.favoriteChat(number, favorites) && !isGroupChat(number),
+                        Set.of(format.family().name()), unread,
+                        archived.contains(number), blocked.contains(number), hiddenChat, decoy);
+                    if (unreadOnly && seenThreads.add(thread) && !unread) { readThreads.add(thread); continue; }
+                    if (!InboxFilters.shows(scope, filterId, facts)) continue;
                     boolean codeLocked = Privacy.locked(prefs, number, format);
                     if (query.empty() || query.matches(number, threadTitle(number), codeLocked ? "" : message.getString("body"))) {
                         threads.put(thread, message);
                     }
                 }
+                // Channels and rooms joined on a server show straight away, before their first message.
+                if (scope == InboxFilters.Scope.INBOX && (communities || showCommunity)) {
+                    for (var route : GatewayClient.allRoutes(prefs)) {
+                        String account = route.optString("account");
+                        if (!route.optBoolean("group") || !serverIds.contains(account)) continue;
+                        var placeholder = new JSONObject().put("address", route.optString("address")).put("protocol", route.optString("protocol"))
+                            .put("body", "No messages yet").put("date", 0L).put("type", 1).put("read", 1).put(EMPTY_CHANNEL, true);
+                        String number = rowAddress(placeholder);
+                        var format = MessageProtocol.parse(route.optString("protocol"));
+                        String thread = prefs.getBoolean("combineProtocols", false) ? number : number + "\u001f" + format.family().name();
+                        var facts = new InboxFilters.Chat(true, false, Set.of(format.family().name()), false,
+                            archived.contains(number), blocked.contains(number), HiddenChats.rowHidden(prefs, placeholder), false);
+                        if (threads.containsKey(thread) || !InboxFilters.shows(scope, filterId, facts)) continue;
+                        servers.putIfAbsent(number, account);
+                        if (query.empty() || query.matches(number, threadTitle(number), "")) threads.put(thread, placeholder);
+                    }
+                }
+                // The menu's per-service filters follow the services this inbox (or the open private folder) has.
+                if (!decoy) for (var format : reachableProtocols(true)) if (scope == InboxFilters.Scope.INBOX) services.add(format.family().name());
+                if (!services.equals(menuServices)) {
+                    menuServices = Set.copyOf(services);
+                    var menu = inboxFolders(services);
+                    var inside = InboxFilters.menu(InboxFilters.read(prefs), services);
+                    runOnUiThread(() -> {
+                        if (inboxScreen != target || isDestroyed()) return;
+                        target.setFolders(menu);
+                        if (target.getPrivateFilter() != null) target.setPrivateFilters(inside);
+                    });
+                }
                 var numbers = new ArrayList<>(threads.keySet());
                 numbers.sort(Comparator.comparing(number -> !pinned.contains(threadAddress(number))));
-                // A server picked in the strip: only its chats, channels and rooms first, then direct messages.
-                String server = selectedFolder.equals("Inbox") ? activeServer : "";
-                if (!server.isEmpty()) {
-                    numbers.removeIf(number -> !server.equals(GatewayClient.serverOf(prefs, threadAddress(number))));
-                    var ordered = AccountKeys.INSTANCE.serverOrder(numbers, number -> GatewayClient.groupChat(prefs, threadAddress(number)));
-                    numbers = new ArrayList<>(ordered);
+                // Communities: when each channel was joined, or its place in the link list for older links.
+                Map<String, Long> joined = new HashMap<>();
+                if (communities) {
+                    var links = GatewayClient.allRoutes(prefs);
+                    for (int index = 0; index < links.size(); index++) {
+                        var link = links.get(index);
+                        joined.putIfAbsent(link.optString("address"), link.optLong("joined", 0) > 0 ? link.optLong("joined") : index);
+                    }
                 }
                 List<ThreadRow> entries = new ArrayList<>();
                 List<InboxSnapshot.Entry> remembered = new ArrayList<>();
@@ -1683,26 +1891,30 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     if (meetingLine == null) meetingLine = RichCardsKt.cardPreview(message.getString("body"));
                     String preview = Privacy.locked(prefs, number, format) ? "Locked · enter the passcode to read"
                         : meetingLine != null ? meetingLine : message.getString("body");
+                    boolean empty = message.optBoolean(EMPTY_CHANNEL);
                     var row = new ThreadRow(rowKey, name, initials(name), preview,
-                        inboxDate(displayedTimestamp(message)), message.optInt("read", 1) == 0,
+                        empty ? "" : inboxDate(displayedTimestamp(message)), message.optInt("read", 1) == 0,
                         pinned.contains(number), 0, contact == null ? null : contact.photo(), contactRevision, label,
                         (format == MessageProtocol.SMS || format == MessageProtocol.MMS) && !number.startsWith("mms:")
                             && SenderStyle.forAddress(prefs, number) == SenderStyle.AUTOMATED,
                         number.startsWith("mms:") ? groupMembers(number) : GatewayClient.members(prefs, number),
-                        server.isEmpty() ? "" : AccountKeys.INSTANCE.section(AccountKeys.INSTANCE.service(server), GatewayClient.groupChat(prefs, number)));
+                        servers.getOrDefault(number, ""), empty ? 0L : displayedTimestamp(message), joined.getOrDefault(number, 0L),
+                        mutes.isEmpty() ? "" : Mutes.label(Mutes.INSTANCE.chatEnds(mutes.keySet(), mutes, number,
+                            serverMutes ? Mutes.serverOf(prefs, number) : "", System.currentTimeMillis())));
                     entries.add(row);
-                    remembered.add(new InboxSnapshot.Entry(row, number, message.optString("protocol"), displayedTimestamp(message),
+                    if (!empty) remembered.add(new InboxSnapshot.Entry(row, number, message.optString("protocol"), displayedTimestamp(message),
                         Disappearing.expiry(prefs, message, message.optString("address"))));
                 }
                 if (!Thread.currentThread().isInterrupted()) runOnUiThread(() -> {
                     if (inboxScreen == target && version == inboxVersion && !isDestroyed()) {
                         filledInbox = target;
                         target.setError(null);
-                        target.setThreads(entries);
+                        if (communities) target.setCommunityRows(entries);
+                        else target.setThreads(entries);
                     }
                 });
                 // The next time the inbox opens, this shows at once while the full list loads.
-                if (!Thread.currentThread().isInterrupted() && server.isEmpty()) {
+                if (!Thread.currentThread().isInterrupted() && !communities && !selectedFolder.equals(HIDDEN_FOLDER)) {
                     InboxSnapshot.remember(getApplicationContext(), InboxSnapshot.key(prefs, selectedFolder, typed), remembered);
                 }
             } catch (Exception error) {
@@ -1715,6 +1927,67 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 });
             }
     }
+
+    /** A group text, or a channel, room, or group chat on an internet service. */
+    private boolean isGroupChat(String number) {
+        if (number.startsWith("mms:") || GatewayClient.groupChat(prefs, number)) return true;
+        for (var format : List.of(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.IRC)) {
+            var route = DirectProtocols.route(prefs, number, format);
+            if (route != null && route.optBoolean("group")) return true;
+        }
+        return false;
+    }
+
+    /**
+     * The server a chat is a channel or room on (an account id in [servers]), or "" for any other chat, including
+     * direct messages on those services. [direct] maps services connected from this phone to their account ids.
+     */
+    private String communityServer(String number, MessageProtocol format, Map<String, String> direct, Set<String> servers) {
+        if (servers.isEmpty()) return "";
+        String account = GatewayClient.serverOf(prefs, number);
+        if (!account.isEmpty() && servers.contains(account) && GatewayClient.groupChat(prefs, number)) return account;
+        String mine = direct.get(format.name().toLowerCase(Locale.ROOT));
+        var route = mine == null ? null : DirectProtocols.route(prefs, number, format);
+        return route != null && route.optBoolean("group") && servers.contains(mine) ? mine : "";
+    }
+
+    /** Servers connected from this phone (IRC, Matrix, XMPP), as service → account id. */
+    private Map<String, String> directServers() {
+        var result = new LinkedHashMap<String, String>();
+        for (var format : List.of(MessageProtocol.IRC, MessageProtocol.MATRIX, MessageProtocol.XMPP)) {
+            if (!DirectProtocols.on(prefs, format)) continue;
+            var account = DirectProtocols.account(this, format);
+            if (account == null) continue;
+            String service = format.name().toLowerCase(Locale.ROOT);
+            var fields = new HashMap<String, String>();
+            for (var names = account.keys(); names.hasNext(); ) { String name = names.next(); fields.put(name, account.optString(name)); }
+            String identity = AccountKeys.INSTANCE.identity(service, fields);
+            if (!identity.isEmpty()) result.put(service, service + ":" + identity);
+        }
+        return result;
+    }
+
+    private List<ServerChip> communityServers() { return communityServers(directServers()); }
+
+    /** Messages → Communities' servers: those on FluidMessages Web (when paired), then any connected from this phone. */
+    private List<ServerChip> communityServers(Map<String, String> direct) {
+        var chips = new ArrayList<ServerChip>();
+        var seen = new HashSet<String>();
+        if (CloudBackup.paired(this)) for (var account : GatewayClient.servers(prefs)) {
+            String id = account.optString("id");
+            if (seen.add(id)) chips.add(new ServerChip(id, AccountKeys.INSTANCE.serverName(id), account.optString("protocol"), chips.size(),
+                AccountKeys.INSTANCE.address(id), serverMuted(id)));
+        }
+        for (var entry : direct.entrySet()) {
+            String id = entry.getValue();
+            if (seen.add(id)) chips.add(new ServerChip(id, AccountKeys.INSTANCE.serverName(id), entry.getKey(), chips.size(),
+                AccountKeys.INSTANCE.address(id) + " · on this phone", serverMuted(id)));
+        }
+        return chips;
+    }
+
+    /** "Muted until 3:40 PM" and the like while a whole server is muted (Mutes), or "". */
+    private String serverMuted(String id) { return Mutes.label(Mutes.endsForAll(prefs, List.of(Mutes.serverKey(id)))); }
 
     private static String threadAddress(String key) { return key.split("\u001f", 2)[0]; }
 
@@ -1930,7 +2203,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void openAddress(String encoded, String draft) {
         int split = encoded.indexOf(':');
         var format = MessageProtocol.parse(encoded.substring(0, split));
-        String target = encoded.substring(split + 1);
+        String typed = encoded.substring(split + 1);
+        // An IRC nickname typed as riley@irc.libera.chat goes through your account on that network.
+        int at = format == MessageProtocol.IRC ? typed.indexOf('@') : -1;
+        String target = at > 0 ? typed.substring(0, at) : typed;
+        String network = at > 0 ? typed.substring(at + 1).toLowerCase(Locale.ROOT) : "";
         var existing = GatewayClient.routeForTarget(prefs, format, target);
         if (existing != null) {
             chat(existing, format);
@@ -1940,6 +2217,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         String address = "chat-" + Integer.toHexString((format.name() + target.toLowerCase(Locale.ROOT)).hashCode());
         // With more than one account on FluidMessages Web for this service, pick which one the chat goes through.
         var choices = DirectProtocols.on(prefs, format) ? List.<JSONObject>of() : GatewayClient.accountsFor(prefs, format.name().toLowerCase(Locale.ROOT));
+        if (!network.isEmpty()) {
+            for (var account : choices) {
+                if (account.optString("name").toLowerCase(Locale.ROOT).endsWith("@" + network)) {
+                    startAddress(address, format, target, account.optString("id"), draft);
+                    return;
+                }
+            }
+        }
         if (choices.size() > 1) {
             List<String[]> items = new ArrayList<>();
             for (var account : choices) items.add(new String[]{account.optString("name"), AccountKeys.INSTANCE.serverName(account.optString("id"))});
@@ -1947,7 +2232,15 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 which -> startAddress(address, format, target, choices.get(which).optString("id"), draft));
             return;
         }
-        startAddress(address, format, target, "", draft);
+        startAddress(address, format, target, choices.isEmpty() ? "" : choices.get(0).optString("id"), draft);
+    }
+
+    /** A Matrix room (#name:server or !id:server) or an XMPP group chat, which is joined rather than linked. */
+    private static boolean roomAddress(MessageProtocol format, String target) {
+        for (var typed : NewAddress.INSTANCE.detect(target)) {
+            if (typed.getGroup() && MessageProtocol.parse(typed.getService()) == format) return true;
+        }
+        return false;
     }
 
     private void startAddress(String address, MessageProtocol format, String target, String account, String draft) {
@@ -1955,7 +2248,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             try {
                 String opened = address;
                 if (DirectProtocols.on(prefs, format)) DirectProtocols.link(this, address, format, target, target, false);
-                else {
+                else if (!account.isEmpty() && format != MessageProtocol.IRC && roomAddress(format, target)) {
+                    // Message a room: join it on that account's server, like New message → Channels → Join.
+                    var route = GatewayClient.join(prefs, account, target, "");
+                    if (route != null) opened = route.optString("address", address);
+                    GatewayClient.refresh(this, prefs);
+                } else {
                     opened = GatewayClient.link(prefs, address, format, target, target, false, account);
                     GatewayClient.refresh(this, prefs);
                 }
@@ -2098,6 +2396,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 } catch (Exception ignored) {}
             });
         conversationScreen.setOpenGifSettings(this::gifSettings);
+        // The bell with a slash beside the lock while this chat or its server is muted; tapping it opens the mute page.
+        conversationScreen.setMuted(Mutes.label(Mutes.endsFor(prefs, number)));
+        ConversationScreen screen = conversationScreen;
+        conversationScreen.setOpenMute(() -> openChatMute(number, () -> screen.setMuted(Mutes.label(Mutes.endsFor(prefs, number)))));
         fillChat();
         animateIn(root.getChildAt(0), 10);
     }
@@ -2381,18 +2683,19 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         }).setNegativeButton("Cancel", null));
     }
 
-    private void confirmLeave(String key, MessageProtocol format, String noun) {
-        showDialog(dialogBuilder().setTitle("Leave this " + noun + "?")
-            .setMessage("You stop getting its messages. Earlier messages stay here.")
-            .setNegativeButton("Cancel", null).setPositiveButton("Leave", (dialog, which) -> new Thread(() -> {
-                try {
-                    GatewayClient.leave(prefs, key, format);
-                    GatewayClient.refresh(this, prefs);
-                    runOnUiThread(() -> { toast("Left"); inbox(); });
-                } catch (Exception error) {
-                    runOnUiThread(() -> toast(error.getMessage()));
-                }
-            }, "fluid-leave").start()));
+    /** Leaving a channel or room, confirmed on its own page; Cancel goes back to its details. */
+    private void confirmLeave(String key, MessageProtocol format, String noun, String server, Runnable back) {
+        render("server-leave");
+        heading("Leave this " + noun, "Back", back);
+        ServersScreen.leave(root, prefs, noun, threadTitle(key), server, () -> new Thread(() -> {
+            try {
+                GatewayClient.leave(prefs, key, format);
+                GatewayClient.refresh(this, prefs);
+                runOnUiThread(() -> { toast("Left"); inbox(); });
+            } catch (Exception error) {
+                runOnUiThread(() -> { toast(error.getMessage()); back.run(); });
+            }
+        }, "fluid-leave").start(), back);
     }
 
     private void confirmUnlink(String key, MessageProtocol format, Runnable done) {
@@ -2443,18 +2746,28 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     returnToDetails.run();
                 })));
         }
+        if (sample) {
+            // The sample chats mute like real ones, kept on this screen only.
+            long muteEnds = sampleMuteEnds(key);
+            actions.add(action(muteEnds < 0 ? "Mute notifications" : "Muted", muteEnds < 0
+                ? "1 hour, 6 hours, 1 day, 1 week, or forever" : Mutes.label(muteEnds) + " · change or unmute",
+                () -> openSampleMute(key, name, returnToDetails)));
+        }
         if (!sample) {
             if (!contacts.allowed()) actions.add(action("Allow contacts", "Show saved names and photos",
                 () -> requestPermissions(new String[]{Manifest.permission.READ_CONTACTS}, PICKER_CONTACT_PERMISSION)));
-            for (String setting : List.of("muted", "pinned", "archived")) {
+            // Mute opens its own page: 1 hour, 6 hours, 1 day, 1 week, or forever, and Unmute.
+            long muteEnds = Mutes.endsFor(prefs, key);
+            actions.add(action(muteEnds < 0 ? "Mute notifications" : "Muted", muteEnds < 0
+                ? "1 hour, 6 hours, 1 day, 1 week, or forever" : Mutes.label(muteEnds) + " · change or unmute",
+                () -> openChatMute(key, returnToDetails)));
+            for (String setting : List.of("pinned", "archived")) {
                 boolean active = list(setting).contains(key);
                 String label = switch (setting) {
-                    case "muted" -> active ? "Unmute notifications" : "Mute notifications";
                     case "pinned" -> active ? "Unpin conversation" : "Pin conversation";
                     default -> active ? "Unarchive conversation" : "Archive conversation";
                 };
                 String detail = switch (setting) {
-                    case "muted" -> active ? "Alerts are off" : "Alerts are on";
                     case "pinned" -> active ? "Shown at the top of your inbox" : "Keep this chat at the top";
                     default -> active ? "In Archived" : "Move this chat out of your inbox";
                 };
@@ -2482,10 +2795,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 String via = GatewayClient.via(prefs, key, format);
                 if (link.optBoolean("group") && !link.optString("account").isEmpty()
                         && AccountKeys.INSTANCE.getServerServices().contains(format.name().toLowerCase(Locale.ROOT))) {
-                    // A channel or room on a server: leave it there, like leaving a Discord channel.
+                    // A channel or room on a server: leave it there, on its own page.
                     String noun = format == MessageProtocol.IRC ? "channel" : format == MessageProtocol.MATRIX ? "room" : "group chat";
-                    actions.add(action("Leave this " + noun, format.label + " · " + AccountKeys.INSTANCE.serverName(link.optString("account"))
-                        + (via.isEmpty() ? "" : " · " + via), () -> confirmLeave(key, format, noun)));
+                    String server = format.label + " · " + AccountKeys.INSTANCE.serverName(link.optString("account")) + (via.isEmpty() ? "" : " · " + via);
+                    actions.add(action("Leave this " + noun, server, () -> confirmLeave(key, format, noun, server, returnToDetails)));
                     continue;
                 }
                 actions.add(action(format.label + " · " + link.optString("target"), (via.isEmpty() ? "" : via + " · ") + "Linked · tap to unlink",
@@ -3160,13 +3473,176 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         } else openContactEditor(number);
     }
 
+    /** Conversation details → Edit contact: FluidMessages' own editor, for the saved contact or a new one with this number. */
     private void openContactEditor(String number) {
         var contact = contacts.find(number);
-        Intent editor = contact != null && contact.uri() != null ? new Intent(Intent.ACTION_EDIT, contact.uri())
-            : new Intent(Intent.ACTION_INSERT_OR_EDIT).setType(ContactsContract.Contacts.CONTENT_ITEM_TYPE)
-                .putExtra(ContactsContract.Intents.Insert.PHONE, number);
-        try { startActivityForResult(editor, CONTACT_EDITOR); }
-        catch (ActivityNotFoundException error) { toast("No Android Contacts editor is available"); }
+        Long id = null;
+        if (contact != null && contact.uri() != null) {
+            try {
+                var found = ContactsContract.Contacts.lookupContact(getContentResolver(), contact.uri());
+                if (found != null) id = android.content.ContentUris.parseId(found);
+            } catch (RuntimeException ignored) {}
+        }
+        Runnable back = contactBack != null && page.equals("contact") && refreshContact != null ? refreshContact : this::inbox;
+        var draft = id == null ? null : ContactWriter.read(this, id);
+        if (draft == null) contactEditor(new ContactDraft("", List.of(number), List.of(), "", 0), null, null, false, back);
+        else contactEditor(draft, id, ContactWriter.photo(this, id), false, back);
+    }
+
+    // New contact and Edit (ContactEditor.kt): a full page that saves into Android's contacts. WRITE_CONTACTS is asked
+    // for when you save, after the page says why; without it, the Contacts app opens with everything filled in.
+
+    private static final int CONTACT_SAVE_PERMISSION = 51, CONTACT_PHOTO = 52;
+    private ContactEditorState contactEditorState;
+    private Runnable contactEditorBack, contactSaveLater;
+    private ContactDraft contactSaveDraft;
+    private Long contactSaveId;
+
+    /** [contactId] edits that contact; null makes a new one. [back] runs for Cancel and after saving. */
+    private void contactEditor(ContactDraft draft, Long contactId, Uri photo, boolean sample, Runnable back) {
+        render("contactEditor");
+        contactEditorBack = back;
+        boolean fromWeb = !draft.getWebId().isEmpty();
+        heading(contactId != null ? "Edit contact" : fromWeb ? "Save contact" : "New contact", "Cancel", back);
+        var state = new ContactEditorState(draft, photo);
+        contactEditorState = state;
+        ContactEditor.mount(root, prefs, state, sample, () -> {
+            try { startActivityForResult(new Intent(android.provider.MediaStore.ACTION_PICK_IMAGES).setType("image/*"), CONTACT_PHOTO); }
+            catch (ActivityNotFoundException error) { toast("No photo picker is available"); }
+        }, saved -> {
+            if (sample) { toast("Sample contact · nothing was saved"); back.run(); return; }
+            saveContact(saved, contactId, state, back);
+        });
+    }
+
+    private void saveContact(ContactDraft draft, Long contactId, ContactEditorState state, Runnable back) {
+        if (!ContactWriter.allowed(this)) {
+            // Asked now, at the moment of saving; the page already said what it's for.
+            contactSaveDraft = draft;
+            contactSaveId = contactId;
+            contactSaveLater = () -> saveContact(draft, contactId, state, back);
+            var wanted = new ArrayList<String>(List.of(Manifest.permission.WRITE_CONTACTS));
+            if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) wanted.add(Manifest.permission.READ_CONTACTS);
+            requestPermissions(wanted.toArray(new String[0]), CONTACT_SAVE_PERMISSION);
+            return;
+        }
+        state.setSaving(true);
+        byte[] photo = state.getPhotoBytes();
+        new Thread(() -> {
+            try {
+                long raw = ContactWriter.save(this, draft, photo, contactId);
+                if (!draft.getWebId().isEmpty()) WebContacts.remember(prefs, new WebContacts.Entry(draft.getWebId(), draft.getWebUpdated(), draft), raw);
+                Long saved = ContactWriter.contactOf(this, raw);
+                contacts.invalidate();
+                runOnUiThread(() -> {
+                    toast(contactId == null ? "Saved to your contacts" : "Contact saved");
+                    if (saved != null) PhoneTab.reopen = "contact:" + saved;
+                    back.run();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    state.setSaving(false);
+                    // A contact from an account that can't be changed here, for example: the Contacts app can.
+                    state.setStatus("Couldn't save here. Opening your Contacts app instead.");
+                    contactsAppFallback(draft, contactId, back);
+                });
+            }
+        }, "fluid-save-contact").start();
+    }
+
+    /** Without permission to write contacts: the Contacts app's own new-contact or edit screen, filled in. */
+    private void contactsAppFallback(ContactDraft draft, Long contactId, Runnable back) {
+        contactEditorBack = back;
+        Intent intent = contactId != null ? ContactWriter.editIntent(this, contactId, draft) : ContactWriter.insertIntent(draft);
+        try { startActivityForResult(intent, CONTACT_EDITOR); }
+        catch (ActivityNotFoundException error) { toast("No Android Contacts app is available to save this contact"); }
+    }
+
+    /** Phone tab → Edit on a saved contact, or Save to contacts on one from FluidMessages Web. */
+    private void editPhoneContact(String key) {
+        if (key.startsWith("contact:")) {
+            long id;
+            try { id = Long.parseLong(key.substring(8)); } catch (NumberFormatException error) { return; }
+            var draft = ContactWriter.read(this, id);
+            if (draft == null) { toast("Allow contacts to edit this contact"); return; }
+            contactEditor(draft, id, ContactWriter.photo(this, id), false, this::phone);
+        } else if (key.startsWith("web:")) {
+            var entry = WebContacts.find(prefs, key.substring(4));
+            if (entry == null) { phone(); return; }
+            Long existing = WebContacts.contactFor(this, prefs, entry.getId());
+            if (existing == null) existing = ContactWriter.findByNumber(this, entry.getDraft().getNumbers());
+            contactEditor(entry.getDraft(), existing, existing == null ? null : ContactWriter.photo(this, existing), false, this::phone);
+        }
+    }
+
+    /** Contacts from FluidMessages Web, as a full page: what they are, and saving them into the phone's contacts. */
+    private void webContactsPage() {
+        render("webContacts");
+        contactEditorBack = this::phone;
+        heading("From FluidMessages Web", "Back", this::phone);
+        var pending = WebContacts.pending(this, prefs);
+        List<SettingsAction> rows = new ArrayList<>();
+        rows.add(new SettingsAction("Contacts you made on the web", "They show in the Phone tab now. Saving puts them in your phone's contacts, "
+            + "so your dialer and other apps see them too, and later edits on the web update them. Deleting one on the web keeps your phone's copy.",
+            () -> {}, true));
+        rows.add(action(ContactWriter.allowed(this) ? "Save all to your contacts" : "Allow and save all",
+            ContactWriter.allowed(this) ? pending.size() + " to save · new ones from the web will be saved too"
+                : "Android asks once to let FluidMessages change your contacts", this::saveAllWebContacts));
+        for (var entry : pending) {
+            var draft = entry.getDraft();
+            String detail = String.join(" · ", draft.getNumbers());
+            for (var address : draft.getAddresses()) detail += (detail.isEmpty() ? "" : " · ") + address.getAddress();
+            rows.add(action(draft.getName(), detail.isEmpty() ? "Review and save" : detail, () -> editPhoneContact("web:" + entry.getId())));
+        }
+        SettingsPages.mount(root, prefs, List.of(new SettingsSection(pending.size() == 1 ? "1 contact" : pending.size() + " contacts", rows)));
+    }
+
+    private void saveAllWebContacts() {
+        if (!ContactWriter.allowed(this)) {
+            contactSaveDraft = null;
+            contactSaveLater = this::saveAllWebContacts;
+            var wanted = new ArrayList<String>(List.of(Manifest.permission.WRITE_CONTACTS));
+            if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) wanted.add(Manifest.permission.READ_CONTACTS);
+            requestPermissions(wanted.toArray(new String[0]), CONTACT_SAVE_PERMISSION);
+            return;
+        }
+        // Allowed and asked for: contacts made on the web later are saved on their own, during sync.
+        prefs.edit().putBoolean(WebContacts.AUTO, true).apply();
+        new Thread(() -> {
+            int count = WebContacts.saveAll(this);
+            contacts.invalidate();
+            runOnUiThread(() -> {
+                toast(count == 1 ? "Saved 1 contact" : "Saved " + count + " contacts");
+                PhoneTab.showContacts = true;
+                phone();
+            });
+        }, "fluid-save-web-contacts").start();
+    }
+
+    /** A chat address from a contact or the keypad: opens its chat, starting one first if it's new. */
+    private void startTypedChat(String service, String target) {
+        var format = NewAddress.INSTANCE.protocol(service);
+        if (format == null) return;
+        if (!format.enabled(prefs)) { toast(format.label + " is turned off in Settings → Chat services"); return; }
+        if (!DirectProtocols.on(prefs, format) && !GatewayClient.hasAccount(prefs, format)) {
+            toast("Add a " + format.label + " account in Settings → Accounts to message " + target);
+            return;
+        }
+        openAddress(format.name().toLowerCase(Locale.ROOT) + ":" + target, "");
+    }
+
+    /** A picked picture as a contact photo: at most 720 pixels across, as JPEG. */
+    private byte[] contactPhoto(Uri uri) {
+        try (var input = getContentResolver().openInputStream(uri)) {
+            var bitmap = android.graphics.BitmapFactory.decodeStream(input);
+            if (bitmap == null) return null;
+            float scale = Math.min(1f, 720f / Math.max(bitmap.getWidth(), bitmap.getHeight()));
+            var sized = android.graphics.Bitmap.createScaledBitmap(bitmap, Math.max(1, Math.round(bitmap.getWidth() * scale)),
+                Math.max(1, Math.round(bitmap.getHeight() * scale)), true);
+            var output = new java.io.ByteArrayOutputStream();
+            sized.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, output);
+            return output.toByteArray();
+        } catch (Exception | OutOfMemoryError error) { return null; }
     }
 
     private void dialContact(String number) {
@@ -3415,11 +3891,27 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         catch (ActivityNotFoundException error) { toast("No browser is available"); }
     }
 
-    /** The inbox's server strip: join a channel or room, browse the server's directory, or add a server. */
+    /** Messages → Communities: join a channel or room, browse the server's directory, see its details, or add a server. */
     private void serverAction(String action, String id) {
         if (action.equals("add")) { addServer(); return; }
+        if (action.equals("mute")) {
+            String name = AccountKeys.INSTANCE.serverName(id);
+            openMute(List.of(Mutes.serverKey(id)), name, "Every channel, room, and direct message on " + name + ".", this::inbox);
+            return;
+        }
         var account = GatewayClient.servers(prefs).stream().filter(item -> item.optString("id").equals(id)).findFirst().orElse(null);
-        if (account == null) { inbox(); return; }
+        if (account == null) {
+            // Connected from this phone: its account lives in Settings → Chat services.
+            if (directServers().containsValue(id)) {
+                if (!action.equals("details")) toast("Browse and join work for servers on FluidMessages Web. Add channels in this account's settings.");
+                protocolSettings();
+            } else inbox();
+            return;
+        }
+        if (action.equals("details")) {
+            serverDetails(account);
+            return;
+        }
         if (action.equals("join")) {
             render("server-join");
             heading("Join", "Back", this::inbox);
@@ -3431,13 +3923,40 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         }
     }
 
+    /** A server's details: its account, Browse and Join, and Remove for one added from the phone or the web app. */
+    private void serverDetails(JSONObject account) {
+        String id = account.optString("id");
+        String service = account.optString("protocol");
+        String noun = Communities.INSTANCE.noun(service);
+        long joined = GatewayClient.allRoutes(prefs).stream().filter(route -> id.equals(route.optString("account")) && route.optBoolean("group")).count();
+        render("server-details");
+        heading(AccountKeys.INSTANCE.serverName(id), "Back", this::inbox);
+        var actions = new ArrayList<SettingsAction>();
+        actions.add(action("Browse " + AccountKeys.INSTANCE.serverName(id), "Find public " + noun + "s to join", () -> serverAction("browse", id)));
+        actions.add(action("Join a " + noun, "By name or address", () -> serverAction("join", id)));
+        var account2 = new ArrayList<SettingsAction>();
+        account2.add(action(AccountKeys.INSTANCE.address(id), ServersScreen.INSTANCE.serviceTitle(service) + " · " + joined + " " + noun + (joined == 1 ? "" : "s")
+            + " joined. Leave one from its chat details.", this::accounts));
+        account2.add(action("Remove server", "Signs out in Settings → Accounts. Earlier messages stay.", this::accounts));
+        SettingsPages.mount(root, prefs, List.of(new SettingsSection("Server", account2), new SettingsSection("Channels and rooms", actions)));
+    }
+
     private void addServer() {
         render("server-add");
         heading("Add server", "Back", this::inbox);
-        ServersScreen.add(root, prefs, protocol -> {
+        ServersScreen.add(root, prefs, this::serverDirectory);
+    }
+
+    /** Add server, step 2: the service's well-known public servers, then the sign-in form, all full pages. */
+    private void serverDirectory(MessageProtocol protocol) {
+        render("server-directory");
+        String title = ServersScreen.INSTANCE.serviceTitle(protocol.name().toLowerCase(Locale.ROOT));
+        heading(title, "Back", this::addServer);
+        ServersScreen.directory(root, prefs, protocol, (name, preset) -> {
             render("server-add-form");
-            heading(protocol.label, "Back", this::addServer);
-            AccountsScreen.mount(root, prefs, this::companion, protocol, java.util.Map.of(), this::inbox);
+            heading(name.isEmpty() ? "Other " + title : name, "Back", () -> serverDirectory(protocol));
+            // Nothing connects until Save.
+            AccountsScreen.mount(root, prefs, this::companion, protocol, preset, this::inbox);
         });
     }
 
@@ -3589,7 +4108,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void messagingSettings() {
         render("messaging");
         heading("Messaging", "Settings", this::settings);
-        SettingsPages.mountMessaging(root, prefs, this::sampleInbox);
+        SettingsPages.mountMessaging(root, prefs, this::sampleInbox, this::inboxFiltersSettings);
     }
 
     private static final int NOTIFICATION_PERMISSION = 44;
@@ -4307,9 +4826,19 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 pendingInstaller = null;
                 updateStatus("Installation permission was not granted.");
             }
+        } else if (request == CONTACT_PHOTO) {
+            if (result == RESULT_OK && data != null && data.getData() != null && contactEditorState != null) {
+                var state = contactEditorState;
+                var picked = data.getData();
+                new Thread(() -> {
+                    byte[] bytes = contactPhoto(picked);
+                    runOnUiThread(() -> { if (bytes != null) state.setPhotoBytes(bytes); else toast("That picture couldn't be used"); });
+                }, "fluid-contact-photo").start();
+            }
         } else if (request == CONTACT_EDITOR) {
             contacts.invalidate();
             if (page.equals("contact") && refreshContact != null) refreshContact.run();
+            else if (page.equals("contactEditor") && contactEditorBack != null) contactEditorBack.run();
         } else if (request == ROLE) {
             // The prompt below asks for notifications together with the phone number, so the inbox doesn't ask too.
             if (hasRole() && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -4358,6 +4887,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             watchContacts();
             if (page.equals("recipients")) loadRecipients();
             else if (page.equals("contact") && refreshContact != null) refreshContact.run();
+        }
+        if (request == CONTACT_SAVE_PERMISSION) {
+            Runnable later = contactSaveLater;
+            contactSaveLater = null;
+            contacts.invalidate();
+            watchContacts();
+            if (ContactWriter.allowed(this) && later != null) later.run();
+            else if (contactSaveDraft != null) contactsAppFallback(contactSaveDraft, contactSaveId, contactEditorBack == null ? this::phone : contactEditorBack);
+            else if (page.equals("webContacts")) toast("Without that, save each one from its contact page with your Contacts app");
+            return;
         }
         if (request == CONTACT_PERMISSION && contactToEdit != null) {
             String number = contactToEdit;
@@ -4408,6 +4947,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             true, () -> syncConflicts(() -> companion(back), () -> companion(back))));
         if (connected) item(root, button("Disconnect phone", false, () -> {
             prefs.edit().remove("server").remove("token").apply();
+            WebContacts.forget(prefs);
             // Keeps the background job only if disappearing timers or phone-direct accounts still need it.
             SyncJob.reschedule(this);
             back.run();

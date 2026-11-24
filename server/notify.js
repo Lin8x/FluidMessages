@@ -112,6 +112,8 @@ function notifyIncoming(messages, played) {
     for (const message of messages) {
       if (message.expires && message.expires <= now) continue;
       if (typeof privateFolderHas === 'function' && privateFolderHas(message.address)) continue;
+      // Muted (for now, or by its server) or blocked: never a notification, whatever the caller passed.
+      if (typeof chatMuted === 'function' && chatMuted(message.address)) continue;
       const key = threadKey(message);
       if (watchingChat(key)) continue;
       if (!latest.has(key) || latest.get(key).date < message.date) latest.set(key, message);

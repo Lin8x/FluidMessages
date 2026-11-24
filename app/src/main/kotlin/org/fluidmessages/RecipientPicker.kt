@@ -41,21 +41,16 @@ internal data class AddressOption(val protocol: MessageProtocol, val target: Str
     val encoded: String get() = protocol.name.lowercase() + ":" + target
 }
 
-private val emailOrJid = Regex("[^@\\s<>]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
-private val matrixId = Regex("@[a-z0-9._=\\-/+]{1,255}:[A-Za-z0-9.:-]{1,255}")
-private val ircChannel = Regex("[#&][^\\s,]{1,49}")
-
-internal fun addressOptions(query: String, available: Set<MessageProtocol>): List<AddressOption> {
-    val text = query.trim()
-    val options = mutableListOf<AddressOption>()
-    if (matrixId.matches(text)) options += AddressOption(MessageProtocol.MATRIX, text)
-    else if (emailOrJid.matches(text)) {
-        options += AddressOption(MessageProtocol.EMAIL, text.lowercase())
-        options += AddressOption(MessageProtocol.XMPP, text.lowercase())
-    } else if (ircChannel.matches(text)) options += AddressOption(MessageProtocol.IRC, text)
-    else if (text.startsWith("irc:", ignoreCase = true) && text.length > 4) options += AddressOption(MessageProtocol.IRC, text.substring(4))
-    return options.filter { it.protocol in available }
-}
+/**
+ * Each service a typed address could be on, from NewAddress.detect (the same rules as FluidMessages Web). An IRC
+ * nickname typed as riley@irc.libera.chat keeps its network, so the chat goes through your account there; a bare
+ * word is offered as an IRC nickname only alongside contacts it matches.
+ */
+internal fun addressOptions(query: String, available: Set<MessageProtocol>): List<AddressOption> =
+    NewAddress.detect(query).mapNotNull { typed ->
+        val protocol = NewAddress.protocol(typed.service) ?: return@mapNotNull null
+        AddressOption(protocol, if (typed.network.isEmpty()) typed.target else typed.target + "@" + typed.network)
+    }.filter { it.protocol in available }
 
 internal class RecipientPicker(
     root: LinearLayout, prefs: SharedPreferences, allowContacts: Runnable, keyForNumber: Function<String, String>,
@@ -212,9 +207,21 @@ internal object ChannelDirectory {
             .sortedBy { it.title.trimStart('#', '&', '!').lowercase() }
         ServerChannels(id, AccountKeys.serverName(id), service, joined)
     }
+
+    /**
+     * The servers whose channels match every word of [query] (by name or the server's name), each with only its
+     * matching channels. A blank query keeps everything, including servers with nothing joined yet.
+     */
+    @JvmStatic
+    fun filter(servers: List<ServerChannels>, query: String): List<ServerChannels> {
+        if (query.isBlank()) return servers
+        return servers.map { server ->
+            server.copy(channels = server.channels.filter { ServerDirectory.matches(query, it.title, server.name) })
+        }.filter { it.channels.isNotEmpty() }
+    }
 }
 
-/** "People" and "Channels", like the new-message screen in Slack, Discord, and Element. */
+/** "People" and "Channels" on the new-message screen. */
 @Composable
 private fun RecipientTabs(selected: Int, pick: (Int) -> Unit) {
     val scheme = MaterialTheme.colorScheme
@@ -236,7 +243,17 @@ private fun RecipientTabs(selected: Int, pick: (Int) -> Unit) {
 @Composable
 private fun ChannelList(servers: List<ServerChannels>, modifier: Modifier, open: (String, String) -> Unit, action: (String, String) -> Unit) {
     val scheme = MaterialTheme.colorScheme
+    var query by rememberSaveable { mutableStateOf("") }
+    val shown = remember(servers, query) { ChannelDirectory.filter(servers, query) }
     LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        if (servers.isNotEmpty()) item(key = "search") {
+            OutlinedTextField(query, { query = it.take(100) }, Modifier.fillMaxWidth(), singleLine = true,
+                label = { Text("Search channels and rooms") }, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search))
+        }
+        if (servers.isNotEmpty() && shown.isEmpty()) item(key = "nothing") {
+            Text("No joined channels or rooms match “${query.trim()}”. Browse a server to find more.",
+                Modifier.padding(12.dp), color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+        }
         if (servers.isEmpty()) item {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("No servers yet", style = MaterialTheme.typography.titleMedium, color = scheme.onSurface)
@@ -245,7 +262,7 @@ private fun ChannelList(servers: List<ServerChannels>, modifier: Modifier, open:
                     color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
             }
         }
-        for (server in servers) {
+        for (server in shown) {
             item(key = "server:" + server.id) {
                 Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(server.name, Modifier.weight(1f), color = scheme.onSurfaceVariant, style = MaterialTheme.typography.titleSmall,

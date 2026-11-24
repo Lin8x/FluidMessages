@@ -392,6 +392,9 @@ class Gateway:
                   "members": [bounded(name, 120) for name in members if isinstance(name, str)]}
         if account:
             result["account"] = account
+        # When it was linked or joined (epoch ms), for Communities' "Date joined" order.
+        if type(route.get("joined")) is int and route["joined"] > 0:
+            result["joined"] = route["joined"]
         return result
 
     def add_route(self, db, data):
@@ -410,10 +413,18 @@ class Gateway:
             # The same contact through another account is a chat of its own.
             data["address"] = address.partition("~")[0] + "~" + account_tag(account)
         data["account"] = account
+        data.setdefault("joined", int(time.time() * 1000))
         route = self.validate_route(data, existing)
         if route["via"] == "matrix" and route["target"].startswith("@"):
             with self.using(account):
                 route["target"] = self.matrix_direct_room(route["target"])
+            # Starting a new chat again with someone you already have a direct room with opens that chat. Linking the
+            # room to a phone number's conversation (conversation details → Link an address) still links it there.
+            same = None if NUMBER.fullmatch(route["address"].partition("~")[0]) else next(
+                (r for r in existing if r.get("via", r["protocol"]) == "matrix" and r["target"] == route["target"]
+                 and (r.get("account") or "") == (route.get("account") or "")), None)
+            if same:
+                return {"route": {key: value for key, value in same.items() if key != "via"}, "existing": True}
         db.execute("INSERT INTO protocol_routes (address, protocol, payload) VALUES (?, ?, ?)",
                    (route["address"], route["protocol"], json.dumps(route)))
         self.refresh_clients()
@@ -1444,7 +1455,7 @@ class Gateway:
             raise ConnectionError(protocol.upper() + " isn’t connected. Check the account on FluidMessages Web.")
         return entry[1]
 
-    # Servers: each IRC network, Matrix account, and XMPP account is a "server", like a Discord server, with its
+    # Servers: each IRC network, Matrix account, and XMPP account is a "server" with its
     # channels or rooms and its direct messages. Browsing uses each protocol's own directory.
 
     def servers(self):
@@ -1558,12 +1569,20 @@ class Gateway:
                 joined = self.matrix_request("join/" + quote(target, safe=""), {}, method="POST") or {}
             if not isinstance(joined.get("room_id"), str) or not ROOM.fullmatch(joined["room_id"]):
                 raise ValueError("The homeserver didn’t let you join that room")
+            if not title and not target.startswith("#"):
+                # Joined by room ID: show the room's own name rather than "!abc:example.org".
+                with self.using(entry["id"]):
+                    named = self.matrix_request("rooms/" + quote(joined["room_id"], safe="") + "/state/m.room.name",
+                                                allow_missing=True) or {}
+                title = named.get("name") if isinstance(named.get("name"), str) else ""
             title = title or (target if target.startswith("#") else "")
             target = joined["room_id"]
         else:
             if not JID.fullmatch(target):
                 raise ValueError("Enter a group chat address like room@conference.example.org")
             target = target.lower()
+            # A group chat's name is its address before the @ unless the directory gave a better one.
+            title = title or target.split("@", 1)[0]
         existing = next((r for r in self.routes if r["account"] == entry["id"] and r.get("via") == protocol
                          and r["target"].lower() == target.lower()), None)
         if existing:

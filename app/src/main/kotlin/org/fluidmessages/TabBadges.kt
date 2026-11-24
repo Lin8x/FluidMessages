@@ -7,7 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
 /** One message as the inbox reads it, newest first, for counting the Messages tab's badge. */
-internal data class BadgeMessage(
+internal data class BadgeMessage @JvmOverloads constructor(
     /** The inbox row it belongs to (address, plus protocol family unless chats are combined). */
     val thread: String,
     /** The conversation's address, as pinned, archived, blocked, and muted lists store it. */
@@ -15,6 +15,8 @@ internal data class BadgeMessage(
     val unread: Boolean,
     /** In the private folder. */
     val hidden: Boolean = false,
+    /** A channel or room on a server, listed in Messages → Communities. */
+    val community: Boolean = false,
 )
 
 /** One call as Recents reads it, for counting the Phone tab's badge. */
@@ -47,17 +49,27 @@ internal object TabBadges {
      * archived, blocked, private-folder, and decoy chats don't count. Rows must be newest first.
      */
     @JvmStatic
-    fun unreadConversations(newestFirst: Iterable<BadgeMessage>, muted: Set<String>, archived: Set<String>, blocked: Set<String>): Int {
+    fun unreadConversations(newestFirst: Iterable<BadgeMessage>, muted: Set<String>, archived: Set<String>, blocked: Set<String>): Int =
+        unreadSplit(newestFirst, muted, archived, blocked, true)[0]
+
+    /**
+     * Unread conversations as [Messages badge, Communities count]. Community chats count on the Messages badge while
+     * "Show community chats in Chats" is on; while it's off they count on Communities instead.
+     */
+    @JvmStatic
+    fun unreadSplit(newestFirst: Iterable<BadgeMessage>, muted: Set<String>, archived: Set<String>, blocked: Set<String>,
+                    showCommunityChats: Boolean): IntArray {
         val seen = HashSet<String>()
-        var count = 0
+        val counts = IntArray(2)
         for (message in newestFirst) {
             // The same rows the main inbox leaves out before it picks each conversation's newest message.
             if (message.hidden || message.address.startsWith(Privacy.DECOY)) continue
             if (message.address in archived || message.address in blocked) continue
             if (!seen.add(message.thread)) continue
-            if (unreadThread(message.unread, message.address, muted)) count++
+            if (!unreadThread(message.unread, message.address, muted)) continue
+            if (Communities.showsInChats(message.community, showCommunityChats)) counts[0]++ else counts[1]++
         }
-        return count
+        return counts
     }
 
     /** Missed calls after since. allowed, when set (decoy mode), keeps only calls Recents would show. */
@@ -86,5 +98,7 @@ internal object TabBadges {
 class TabCounts {
     var phone by mutableIntStateOf(0)
     var messages by mutableIntStateOf(0)
+    /** Unread channels and rooms shown only under Communities. */
+    var communities by mutableIntStateOf(0)
     var shown by mutableStateOf(true)
 }
