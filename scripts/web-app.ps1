@@ -46,8 +46,8 @@ for ($i = 0; $i -lt 50; $i++) {
 
 Write-Host ""
 Write-Host "  FluidMessages Web is running at $url"
-Write-Host "  Access token: $token"
-Write-Host "  (Copy it into the sign-in page. It's also saved in $tokenFile)"
+Write-Host "  The window it opens signs you in automatically. From another browser, use"
+Write-Host "  'Use an access token instead' with the token saved in $tokenFile."
 Write-Host ""
 Write-Host "  To install it as an app: in Edge or Chrome, use the Install button in the address bar or the menu."
 Write-Host "  Press Ctrl+C to stop."
@@ -57,6 +57,6 @@ if (-not $NoOpen) {
   $browsers = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
     "$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")
   $browser = $browsers | Where-Object { Test-Path $_ } | Select-Object -First 1
-  if ($browser) { Start-Process $browser "--app=$url" } else { Start-Process $url }
+  if ($browser) { Start-Process $browser "--app=$url/#token=$token" } else { Start-Process "$url/#token=$token" }
 }
 try { Wait-Process -Id $server.Id } finally { if (-not $server.HasExited) { Stop-Process -Id $server.Id } }

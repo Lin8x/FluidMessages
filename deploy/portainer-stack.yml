@@ -1,11 +1,12 @@
-# FluidMessages Web for Portainer: Stacks → Add stack → Web editor, paste this, and add the environment
-# variable FLUID_TOKEN (a long random string; it's your sign-in). Uses the published image, so nothing is built.
+# FluidMessages Web for Portainer: Stacks → Add stack → Web editor, and paste this. Uses the published image, so nothing
+# is built. On first visit you create a password, using the one-time setup code shown in the container's log.
+# Optional: add an environment variable FLUID_TOKEN (openssl rand -hex 32) for a fixed token for your phone or scripts.
 # Then put an HTTPS reverse proxy in front of port 8080 so your phone can connect.
 services:
   fluidmessages:
     image: ghcr.io/lin8x/fluidmessages-web:latest
     environment:
-      FLUID_TOKEN: ${FLUID_TOKEN:?Set FLUID_TOKEN in the stack's environment variables}
+      FLUID_TOKEN: ${FLUID_TOKEN:-}
       RCLONE_CONFIG: /data/rclone.conf
     ports:
       - "127.0.0.1:8080:8080"

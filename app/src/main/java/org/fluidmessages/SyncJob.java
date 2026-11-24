@@ -33,6 +33,20 @@ public final class SyncJob extends JobService {
         }
     }
 
+    private static final int SOON = 201;
+
+    /**
+     * Runs one sync as soon as there's a network, e.g. after disappearing messages were deleted with the app closed,
+     * so FluidMessages Web drops its copies on this sync rather than the next periodic one.
+     */
+    static void syncSoon(Context context) {
+        var prefs = SyncPolicy.prefs(context);
+        if (!CloudBackup.paired(prefs.getString("server", ""), Privacy.token(prefs)) || !prefs.getBoolean("syncSms", true)) return;
+        context.getSystemService(JobScheduler.class).schedule(new JobInfo.Builder(SOON, new ComponentName(context, SyncJob.class))
+            .setRequiredNetworkType(SyncPolicy.wifiOnly(prefs) ? JobInfo.NETWORK_TYPE_UNMETERED : JobInfo.NETWORK_TYPE_ANY)
+            .build());
+    }
+
     /** Applies the current battery and sync settings to the background job. */
     static void reschedule(Context context) {
         var prefs = SyncPolicy.prefs(context);
@@ -121,7 +135,7 @@ public final class SyncJob extends JobService {
         var rows = new java.util.ArrayList<JSONObject>();
         for (int i = 0; i < texts.length(); i++) rows.add(texts.optJSONObject(i));
         try {
-            var contacts = new ContactDirectory(context);
+            var contacts = ContactDirectory.shared(context);
             for (JSONObject item : ProtocolStore.get(context).read()) {
                 if (!"mms".equals(item.optString("protocol"))) continue;
                 var row = new JSONObject().put("id", item.optString("id")).put("address", item.optString("address"))

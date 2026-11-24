@@ -1,0 +1,46 @@
+name: 🐛 Report a bug
+description: Something doesn't work the way it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping! Please don't paste real messages, phone numbers, emails, tokens, or keys. Use made-up examples.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to try it
+      placeholder: |
+        1. Open a chat
+        2. Tap + → Poll
+        3. ...
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      multiple: true
+      options: [Android app, FluidMessages Web, Desktop app]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Settings → Help shows it on Android.
+      placeholder: "0.34.1"
+  - type: input
+    id: device
+    attributes:
+      label: Phone or computer
+      placeholder: "Pixel 7, Android 15 · or · Firefox on Windows"
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Optional. Please blur anything private.

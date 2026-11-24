@@ -54,7 +54,7 @@ internal fun newId() = java.util.UUID.randomUUID().toString().replace("-", "").t
 internal data class PictureLink(val url: String, val sticker: Boolean)
 
 private val pictureUrl = Regex("""^https://[^\s]+?\.(gif|webp|png|jpe?g)(\?[^\s#]*)?(#sticker)?$""", RegexOption.IGNORE_CASE)
-private val gifHost = Regex("""^https://(media\d*\.giphy\.com|i\.giphy\.com|media\.tenor\.com|c\.tenor\.com)/[^\s]+$""", RegexOption.IGNORE_CASE)
+private val gifHost = Regex("""^https://(media\d*\.giphy\.com|i\.giphy\.com|media\.tenor\.com|c\.tenor\.com)/[^\s]+(?<!\.mp4)(?<!\.webm)$""", RegexOption.IGNORE_CASE)
 
 /** A message that is only a picture or GIF link. "#sticker" at the end marks a sticker. */
 internal fun parsePictureLink(text: String): PictureLink? {
@@ -149,8 +149,9 @@ internal fun PollDialog(dismiss: () -> Unit, post: (String) -> Unit) {
     var question by remember { mutableStateOf("") }
     val options = remember { mutableStateListOf("", "") }
     var problem by remember { mutableStateOf<String?>(null) }
-    AlertDialog(onDismissRequest = dismiss, title = { Text("New poll") }, text = {
-        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    FormPage(onDismissRequest = dismiss, title = { Text("New poll") }, text = {
+        // The full page scrolls already; a second scrolling area inside it would crash.
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(question, { question = it.take(140); problem = null }, label = { Text("Question") })
             options.forEachIndexed { index, value ->
                 OutlinedTextField(value, { options[index] = it.take(60); problem = null }, singleLine = true,
@@ -489,8 +490,9 @@ internal fun EventDialog(dismiss: () -> Unit, post: (String) -> Unit) {
     }
     val dateFormat = DateFormat.getDateInstance(DateFormat.MEDIUM)
     val timeFormat = DateFormat.getTimeInstance(DateFormat.SHORT)
-    AlertDialog(onDismissRequest = dismiss, title = { Text("Share an event") }, text = {
-        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    FormPage(onDismissRequest = dismiss, title = { Text("Share an event") }, text = {
+        // The full page scrolls already; a second scrolling area inside it would crash.
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(title, { title = it.take(100); problem = null }, singleLine = true, label = { Text("What") })
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Switch(allDay, { allDay = it })

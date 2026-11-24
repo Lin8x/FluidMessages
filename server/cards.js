@@ -8,7 +8,7 @@ const cardBlobs = new Map();
 
 async function authorizedBlob(path) {
   if (cardBlobs.has(path)) return cardBlobs.get(path);
-  const pending = fetch(path, {headers: {Authorization: 'Bearer ' + token}})
+  const pending = fetch(path, {headers: REQUEST_HEADERS})
     .then((response) => (response.ok ? response.blob() : null)).then((blob) => (blob ? URL.createObjectURL(blob) : null))
     .catch(() => null);
   cardBlobs.set(path, pending);
@@ -62,7 +62,7 @@ function pictureElement(path, alt, sticker) {
 // Pictures, GIFs, and stickers sent as links
 
 const PICTURE_URL = /^https:\/\/\S+?\.(gif|webp|png|jpe?g)(\?[^\s#]*)?(#sticker)?$/i;
-const GIF_HOST = /^https:\/\/(media\d*\.giphy\.com|i\.giphy\.com|media\.tenor\.com|c\.tenor\.com)\/\S+$/i;
+const GIF_HOST = /^https:\/\/(media\d*\.giphy\.com|i\.giphy\.com|media\.tenor\.com|c\.tenor\.com)\/\S+(?<!\.mp4)(?<!\.webm)$/i;
 
 function pictureLink(text) {
   const trimmed = (text || '').trim();
@@ -605,7 +605,7 @@ const previews = new Map();
 
 function linkPreview(link, bubble) {
   if (localStorage.getItem('linkPreviews') === 'off') return;
-  if (!previews.has(link)) previews.set(link, fetch('/api/preview?url=' + encodeURIComponent(link), {headers: {Authorization: 'Bearer ' + token}})
+  if (!previews.has(link)) previews.set(link, fetch('/api/preview?url=' + encodeURIComponent(link), {headers: REQUEST_HEADERS})
     .then((response) => (response.ok ? response.json() : {})).then((data) => data.preview || null).catch(() => null));
   previews.get(link).then((preview) => {
     if (!preview || !bubble.isConnected) return;
@@ -649,6 +649,8 @@ function richCard(message, bubble, history) {
   if (random) { bubble.replaceChildren(randomCard(random, message.type !== 1)); return true; }
   const gameLink = parseGameLink(body);
   if (gameLink) { bubble.replaceChildren(gameLinkCard(gameLink, message.type !== 1)); return true; }
+  const place = LOCATION.exec(body.trim());
+  if (place) { bubble.replaceChildren(locationCard(place)); return true; }
   const link = previewableLink(body);
   if (link && !/^FM1:/.test(body)) linkPreview(link, bubble);
   return false;
@@ -678,6 +680,7 @@ function cardPreview(body) {
   const link = parseGameLink(body);
   if (link) return '🎮 ' + link.game + ' on ' + link.site;
   if (parseRandom(body)) return body.split('\n')[0];
+  if (LOCATION.test((body || '').trim())) return '📍 Location';
   const edit = EDIT.exec(body || '');
   if (edit) return '✏️ ' + plainPreview(edit[2]);
   if (parseEffect(body) || (body || '').includes('||')) { const plain = plainPreview(body); if (plain !== body) return plain; }
@@ -713,6 +716,7 @@ function openPoll() {
   });
   sheet.append(form);
   sheet.showModal();
+  question.focus();
 }
 
 function openEvent() {
@@ -745,6 +749,7 @@ function openEvent() {
   });
   sheet.append(form);
   sheet.showModal();
+  title.focus();
 }
 
 function openGames() {
@@ -752,29 +757,31 @@ function openGames() {
   const box = element('div', '', 'settings-section');
   const choice = (label, run, cls = 'game-choice') => { const button = element('button', label, cls); button.type = 'button'; button.addEventListener('click', run); box.append(button); return button; };
   const pick = () => {
+    sheet.back = null;
     box.replaceChildren(element('p', 'Take turns right in this chat. People on other apps see the board as text and reply with their move.', 'muted'));
     for (const kind of Object.values(GAME_KINDS)) choice(kind.icon + ' ' + kind.title, () => where(kind));
     choice('✊ Rock paper scissors · sealed picks, so it’s fair', rps);
   };
   const rps = () => {
+    sheet.back = pick;
     box.replaceChildren(element('p', 'Pick your hand. It’s sealed until they choose. People on other apps reply with rock, paper, or scissors.', 'muted'));
     for (const [hand, emoji] of Object.entries(HANDS)) choice(emoji + ' ' + capitalized(hand), () => { sheet.close(); startRps(hand).then(postToChat).catch(showError); });
-    choice('Back', pick, '');
   };
   const where = (kind) => {
+    sheet.back = pick;
     box.replaceChildren(element('p', 'Where do you want to play?', 'muted'));
     choice('💬 Here in this chat · works with anyone', () => sides(kind));
     for (const [name, url, detail, automatic] of GAME_SITES[kind.key] || []) choice('🌐 ' + name + ' · ' + detail, () => automatic ? lichess(kind) : paste(kind, name, url, detail));
-    choice('Back', pick, '');
   };
   const sides = (kind) => {
+    sheet.back = () => where(kind);
     box.replaceChildren(element('p', kind.key === 'chess' ? 'White moves first.' : 'Who makes the first move?', 'muted'));
     for (const [label, first] of kind.key === 'chess' ? [['Play white', true], ['Play black', false]] : [['I go first', true], ['They go first', false]]) {
-      choice(label, () => { sheet.close(); postToChat(newGameText(kind.key, first)).catch(showError); }, first ? 'primary' : '');
+      choice(label, () => { sheet.close(); postToChat(newGameText(kind.key, first)).catch(showError); }, first ? 'primary game-choice' : 'game-choice');
     }
-    choice('Back', () => where(kind), '');
   };
   const lichess = (kind) => {
+    sheet.back = () => where(kind);
     const status = element('p', 'Free, no account needed. Which side do you want?', 'muted');
     box.replaceChildren(status);
     for (const [label, white] of [['Play white', true], ['Play black', false]]) choice(label, () => {
@@ -784,10 +791,10 @@ function openGames() {
         sheet.close();
         return postToChat('🎮 Chess on Lichess · Join my game: ' + theirs + '\nYou play ' + (white ? 'black' : 'white') + '. Open the link to play in your browser, no account needed.');
       }).catch((error) => { status.textContent = error.message || 'Lichess didn’t answer. Try again.'; });
-    }, white ? 'primary' : '');
-    choice('Back', () => where(kind), '');
+    }, white ? 'primary game-choice' : 'game-choice');
   };
   const paste = (kind, name, url, detail) => {
+    sheet.back = () => where(kind);
     const link = Object.assign(element('input', ''), {type: 'url', placeholder: 'https://…', maxLength: 500});
     const status = element('p', '', 'muted');
     const open = Object.assign(element('a', 'Open ' + name), {href: url, target: '_blank', rel: 'noopener noreferrer'});
@@ -800,7 +807,6 @@ function openGames() {
       sheet.close();
       postToChat('🎮 ' + kind.title + ' on ' + name + ' · Join my game: ' + value + '\nOpen the link to play in your browser.').catch(showError);
     }, 'primary');
-    choice('Back', () => where(kind), '');
   };
   pick();
   sheet.append(box);
@@ -827,7 +833,7 @@ function openGifs() {
     if (!key.value.trim()) { grid.replaceChildren(); status.textContent = 'Add an API key from ' + (source.value === 'tenor' ? 'developers.google.com/tenor' : 'developers.giphy.com') + ' to search.'; return; }
     status.textContent = 'Searching…';
     const response = await fetch('/api/gifs?provider=' + source.value + '&stickers=' + (kind.value === 'stickers' ? 1 : 0) + '&q='
-      + encodeURIComponent(query.value.trim()) + '&key=' + encodeURIComponent(key.value.trim()), {headers: {Authorization: 'Bearer ' + token}});
+      + encodeURIComponent(query.value.trim()), {headers: {...REQUEST_HEADERS, 'X-Fluid-Gif-Key': key.value.trim()}});
     const data = response.ok ? await response.json() : {results: []};
     status.textContent = data.results.length ? '' : 'Nothing found.';
     grid.replaceChildren(...data.results.map((item) => {
@@ -872,27 +878,166 @@ function openGifs() {
   later();
 }
 
+// Files, locations, and contact cards from the browser. Internet chats carry files through FluidMessages Web;
+// texts with files (MMS) still go from the phone, which has the carrier connection.
+
+const MAX_UPLOAD = 25 * 1024 * 1024;
+
+async function uploadFile(blob, name) {
+  if (blob.size > MAX_UPLOAD) throw new Error('Files can be up to 25 MB.');
+  const response = await fetch('/api/protocols/upload', {method: 'POST', credentials: 'same-origin', body: blob,
+    headers: {...REQUEST_HEADERS, 'Content-Type': blob.type || 'application/octet-stream', 'X-Fluid-Name': encodeURIComponent(name)}});
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'The upload didn’t finish. Try again.');
+  return result.upload;
+}
+
+function internetChat() {
+  if (active && internet(threadProtocol(active))) return true;
+  showError(new Error('Photos, files, and contact cards go through internet chats here. To text a photo, send it from your phone.'));
+  return false;
+}
+
+async function sendFile(blob, name) {
+  const status = get('schedule-status');
+  status.textContent = 'Uploading ' + name + '…';
+  const upload = await uploadFile(blob, name);
+  const caption = get('body').value.trim();
+  await send(caption || name, caption || name, null, Date.now(), {upload});
+  if (caption) { get('body').value = ''; drafts.delete(active); }
+}
+
+function attachFile() {
+  if (!internetChat()) return;
+  const input = Object.assign(element('input', ''), {type: 'file'});
+  input.addEventListener('change', () => {
+    const file = input.files[0];
+    if (file) sendFile(file, file.name).catch(showError);
+  });
+  input.click();
+}
+
+// Locations: the same OpenStreetMap link as the phone, shown as a card with Open map.
+const LOCATION = /^📍 Location: https:\/\/www\.openstreetmap\.org\/\?mlat=(-?\d{1,2}(?:\.\d+)?)&mlon=(-?\d{1,3}(?:\.\d+)?)(?:#map=\S*)?\s*$/;
+
+function locationText(lat, lon) {
+  const a = lat.toFixed(5), b = lon.toFixed(5);
+  return '📍 Location: https://www.openstreetmap.org/?mlat=' + a + '&mlon=' + b + '#map=17/' + a + '/' + b;
+}
+
+function locationCard(match) {
+  const [, lat, lon] = match;
+  const card = element('div', '', 'location-card');
+  card.append(element('span', 'LOCATION', 'card-kind'), element('strong', '📍 ' + Number(lat).toFixed(4) + ', ' + Number(lon).toFixed(4)));
+  const actions = element('div', '', 'card-actions');
+  actions.append(Object.assign(element('a', 'Open map', 'primary'), {href: 'https://www.openstreetmap.org/?mlat=' + lat + '&mlon=' + lon + '#map=17/' + lat + '/' + lon,
+    target: '_blank', rel: 'noopener noreferrer'}));
+  card.append(actions);
+  return card;
+}
+
+function openLocation() {
+  const sheet = dialog('Share your location');
+  const box = element('div', '', 'settings-section');
+  const status = element('p', 'Your browser asks before sharing where you are. Nothing is sent until you choose Send.', 'muted');
+  status.setAttribute('role', 'status');
+  const preview = element('div', '');
+  const sendButton = element('button', 'Send location', 'primary');
+  sendButton.type = 'button';
+  sendButton.disabled = true;
+  let text = '';
+  sendButton.addEventListener('click', () => { sheet.close(); postToChat(text).catch(showError); });
+  const find = element('button', 'Find my location');
+  find.type = 'button';
+  find.addEventListener('click', () => {
+    if (!navigator.geolocation) { status.textContent = 'This browser can’t share a location.'; return; }
+    status.textContent = 'Finding you…';
+    navigator.geolocation.getCurrentPosition((position) => {
+      text = locationText(position.coords.latitude, position.coords.longitude);
+      preview.replaceChildren(locationCard(LOCATION.exec(text)));
+      status.textContent = 'Accurate to about ' + Math.round(position.coords.accuracy) + ' m. Check it, then send.';
+      sendButton.disabled = false;
+      sendButton.focus();
+    }, (error) => {
+      status.textContent = error.code === 1 ? 'Location is blocked for this site. Allow it in the browser’s site settings, then try again.'
+        : 'Your location isn’t available right now.';
+    }, {enableHighAccuracy: true, timeout: 15000, maximumAge: 60000});
+  });
+  const row = element('div', '', 'button-row');
+  row.append(find, sendButton);
+  box.append(status, preview, row);
+  sheet.append(box);
+  sheet.showModal();
+}
+
+// Contact cards: a vCard file, the standard every phone understands.
+function vcardEscape(value) { return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1'); }
+
+function openContact() {
+  if (!internetChat()) return;
+  const sheet = dialog('Share a contact');
+  const form = element('form', '', 'settings-section');
+  const name = Object.assign(element('input', ''), {required: true, maxLength: 100, autocomplete: 'off'});
+  const phone = Object.assign(element('input', ''), {type: 'tel', maxLength: 40, autocomplete: 'off'});
+  const email = Object.assign(element('input', ''), {type: 'email', maxLength: 120, autocomplete: 'off'});
+  const status = element('p', 'They can save it to their contacts. People on other apps get a standard .vcf file.', 'muted');
+  status.setAttribute('role', 'status');
+  form.append(field('Name', name), field('Phone (optional)', phone), field('Email (optional)', email), status, element('button', 'Send contact', 'primary'));
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!phone.value.trim() && !email.value.trim()) { status.textContent = 'Add a phone number or an email.'; return; }
+    const lines = ['BEGIN:VCARD', 'VERSION:3.0', 'FN:' + vcardEscape(name.value.trim())];
+    if (phone.value.trim()) lines.push('TEL;TYPE=CELL:' + vcardEscape(phone.value.trim()));
+    if (email.value.trim()) lines.push('EMAIL:' + vcardEscape(email.value.trim()));
+    lines.push('END:VCARD');
+    const file = (name.value.trim().replace(/[^\w .-]/g, '').slice(0, 40) || 'contact') + '.vcf';
+    sheet.close();
+    sendFile(new Blob([lines.join('\r\n') + '\r\n'], {type: 'text/vcard'}), file).catch(showError);
+  });
+  sheet.append(form);
+  sheet.showModal();
+  name.focus();
+}
+
 (() => {
   const row = document.querySelector('.compose-row');
   if (!row) return;
   const more = element('button', '＋', 'icon-button');
   more.type = 'button';
-  more.title = 'Polls, events, games, effects, and GIFs';
-  more.setAttribute('aria-label', 'More: polls, events, games, and GIFs');
+  more.title = 'Money, photos and files, polls, events, games, and more';
+  more.setAttribute('aria-label', 'More: money, files, location, polls, events, games, and GIFs');
+  more.setAttribute('aria-haspopup', 'true');
+  more.setAttribute('aria-expanded', 'false');
   const menu = element('div', '', 'compose-menu');
+  menu.id = 'compose-menu';
+  more.setAttribute('aria-controls', menu.id);
   menu.hidden = true;
-  for (const [label, run] of [['📊 Poll', openPoll], ['📅 Event', openEvent], ['🎮 Games', openGames], ['🎲 Dice and random', openRandom], ['✨ Send with effect', openEffects], ['GIF or sticker', openGifs]]) {
+  const toggle = (open) => {
+    menu.hidden = !open;
+    more.setAttribute('aria-expanded', String(open));
+    if (open) menu.querySelector('button')?.focus();
+  };
+  for (const [label, run] of [['💸 Money', openMoney], ['📎 Photo or file', attachFile], ['📍 Location', openLocation], ['👤 Contact', openContact],
+    ['📊 Poll', openPoll], ['📅 Event', openEvent], ['🎮 Games', openGames], ['🎲 Dice and random', openRandom],
+    ['✨ Send with effect', openEffects], ['🖼️ GIF or sticker', openGifs]]) {
     const item = element('button', label);
     item.type = 'button';
     item.addEventListener('click', () => {
-      menu.hidden = true;
+      toggle(false);
       if (!active && !get('address').value.trim()) { showError(new Error('Choose a conversation first')); return; }
       run();
     });
     menu.append(item);
   }
-  more.addEventListener('click', (event) => { event.stopPropagation(); menu.hidden = !menu.hidden; });
-  document.addEventListener('click', () => { menu.hidden = true; });
+  menu.addEventListener('keydown', (event) => {
+    const items = [...menu.querySelectorAll('button')];
+    const index = items.indexOf(document.activeElement);
+    if (event.key === 'Escape') { event.preventDefault(); toggle(false); more.focus(); }
+    else if (event.key === 'ArrowDown') { event.preventDefault(); items[(index + 1) % items.length].focus(); }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); items[(index - 1 + items.length) % items.length].focus(); }
+  });
+  more.addEventListener('click', (event) => { event.stopPropagation(); toggle(menu.hidden); });
+  document.addEventListener('click', (event) => { if (!menu.contains(event.target)) toggle(false); });
   row.prepend(more);
   row.style.position = 'relative';
   row.append(menu);

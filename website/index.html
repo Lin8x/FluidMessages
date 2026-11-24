@@ -82,8 +82,9 @@
   <section id="self-host" class="section">
     <h2>Host the web version yourself</h2>
     <p class="section-lead">FluidMessages Web runs on any Docker host, x86-64 or ARM, including a Raspberry Pi. Start it with Docker Compose, or paste the stack into Portainer.</p>
-    <pre><code>printf 'FLUID_TOKEN=%s\n' "$(openssl rand -hex 32)" &gt; .env
-docker compose up -d</code></pre>
+    <pre><code>docker compose up -d
+docker compose logs fluidmessages</code></pre>
+    <p class="section-lead">Open it in your browser, enter the one-time setup code from the log, and create a password.</p>
     <div class="actions center">
       <a class="button" href="https://github.com/Lin8x/FluidMessages/blob/main/docs/self-hosting.md">Read the self-hosting guide</a>
     </div>

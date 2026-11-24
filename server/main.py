@@ -1,25 +1,30 @@
 """Single-phone LAN FluidMessages Web. Run behind a TLS reverse proxy."""
-import hmac
 import json
 import os
 import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 from contextlib import closing
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import accounts
+import auth
 import cloud_backup
 import link_fetch
 import protocol_gateway
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get("FLUID_DB", "data/fluid.sqlite"))
-TOKEN = os.environ.get("FLUID_TOKEN", "")
+# Optional. Phones, desktop apps, and scripts can use it as a bearer token; browsers sign in with a password.
+TOKEN = os.environ.get("FLUID_TOKEN", "").strip()
+# Optional extra origins (like https://messages.example.org) for older browsers behind a proxy that rewrites Host.
+ORIGINS = {item.strip().rstrip("/") for item in os.environ.get("FLUID_ORIGINS", "").split(",") if item.strip()}
 FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
          "/style.css": ("style.css", "text/css"), "/icon.webp": ("icon.webp", "image/webp"),
          "/companion.js": ("companion.js", "text/javascript"), "/call.js": ("shared/call.js", "text/javascript"),
@@ -66,10 +71,42 @@ def appearance_snapshot(value):
     return clean
 
 
+THEMES = ("fluid", "midnight", "lavender", "evergreen", "tideline", "ember", "love", "rosewater")
+OWN_COLORS = ("sms", "rcs", "automated", "incoming", "matrix", "xmpp", "email", "irc")
+
+
+def clean_web_appearance(value):
+    """The web app's own look, used without a phone or when you choose it over the phone's settings."""
+    if not isinstance(value, dict):
+        raise ValueError("Invalid appearance")
+    clean = {"theme": value.get("theme") if value.get("theme") in THEMES else "fluid",
+             "mode": value.get("mode") if value.get("mode") in ("system", "light", "dark") else "system"}
+    for key in ("exactTimes", "combineProtocols"):
+        if type(value.get(key)) is bool:
+            clean[key] = value[key]
+    for key in ("tagMode", "encryptionMode"):
+        if value.get(key) in ("auto", "always", "off"):
+            clean[key] = value[key]
+    for key, lower, upper in (("radius", 2, 30), ("size", 12, 28), ("padding", 6, 24)):
+        if type(value.get(key)) is int and lower <= value[key] <= upper:
+            clean[key] = value[key]
+    colors = value.get("colors")
+    if isinstance(colors, dict):
+        clean["colors"] = {key: colors[key] for key in OWN_COLORS
+                           if isinstance(colors.get(key), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", colors[key])}
+    return clean
+
+
+def web_appearance(db):
+    row = db.execute("SELECT value FROM protocol_state WHERE key='web_appearance'").fetchone()
+    return json.loads(row[0]) if row else {"theme": "fluid", "mode": "system"}
+
+
 def settings_view(db):
     """FluidMessages Web's own settings, and whether a phone has synced, so the browser works with or without one."""
     row = db.execute("SELECT updated FROM inbox WHERE id=1").fetchone()
-    return {**gateway.settings(db), "phone": {"paired": row is not None, "last_sync": row[0] if row else None}}
+    return {**gateway.settings(db), "web_appearance": web_appearance(db),
+            "phone": {"paired": row is not None, "last_sync": row[0] if row else None}}
 
 
 def connect():
@@ -83,32 +120,194 @@ def protocol_settings(db):
     return json.loads(row["content"]) if row else {}
 
 
+CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://lichess.org; "
+       "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+COOKIE, SECURE_COOKIE = "fluid-session", "__Host-fluid-session"
+AUTH_OPEN = ("/api/auth/setup", "/api/auth/login", "/api/auth/token", "/api/auth/logout")
+
+
 class Handler(BaseHTTPRequestHandler):
-    def reply(self, status, payload, content_type="application/json"):
+    # A connection that sends nothing for a minute is dropped, so slow clients can't tie up the server.
+    timeout = 60
+    server_version = "FluidMessages"
+    sys_version = ""
+    session_key = None
+
+    def log_message(self, format, *args):
+        # Paths only: query strings can hold links from messages or a GIF key, and logs never show those.
+        sys.stderr.write("%s %s\n" % (self.command or "-", urlsplit(self.path or "").path[:120]))
+
+    def log_request(self, code="-", size="-"):
+        if isinstance(code, int) and code >= 400:
+            sys.stderr.write("%s %s %s\n" % (self.command or "-", urlsplit(self.path or "").path[:120], code))
+
+    def security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self), display-capture=(), usb=(), payment=()")
+        if self.https():
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+
+    def reply(self, status, payload, content_type="application/json", headers=()):
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(status)
         text = content_type.startswith(("text/", "application/json", "application/manifest"))
         self.send_header("Content-Type", content_type + ("; charset=utf-8" if text else ""))
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://lichess.org; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.security_headers()
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
 
-    def authorize(self):
-        header = self.headers.get("Authorization", "")
-        if not hmac.compare_digest(header.encode(), ("Bearer " + TOKEN).encode()):
-            self.reply(401, {"error": "Enter the server access token"})
+    # Signing in
+
+    def https(self):
+        return self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() == "https" \
+            or self.headers.get("Origin", "").startswith("https://")
+
+    def client(self):
+        return auth.client_key(self.client_address[0], self.headers.get("X-Forwarded-For", ""))
+
+    def cookie(self):
+        try:
+            jar = SimpleCookie(self.headers.get("Cookie", ""))
+        except CookieError:
+            return None
+        for name in (SECURE_COOKIE, COOKIE):
+            if name in jar:
+                return jar[name].value
+        return None
+
+    def set_cookie(self, value, persistent):
+        secure = self.https()
+        parts = [(SECURE_COOKIE if secure else COOKIE) + "=" + value, "Path=/", "HttpOnly", "SameSite=Strict"]
+        if secure:
+            parts.append("Secure")
+        if persistent:
+            parts.append("Max-Age=%d" % auth.REMEMBER_SECONDS)
+        return ("Set-Cookie", "; ".join(parts))
+
+    def clear_cookies(self):
+        return [("Set-Cookie", COOKIE + "=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"),
+                ("Set-Cookie", SECURE_COOKIE + "=; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=0")]
+
+    def same_origin(self):
+        """Cookie requests that change something must come from this app's own page (CSRF protection). The custom
+        header can't be sent from another site without a CORS preflight, which this server never allows."""
+        if self.headers.get("X-Fluid-Request") != "1":
             return False
-        return True
+        site = self.headers.get("Sec-Fetch-Site")
+        if site:
+            # Every current browser says where a request came from, even when a proxy rewrites the Host header.
+            return site == "same-origin"
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        hosts = {self.headers.get("Host", "").lower(), self.headers.get("X-Forwarded-Host", "").split(",")[0].strip().lower()}
+        return urlsplit(origin).netloc.lower() in hosts - {""} or origin.rstrip("/") in ORIGINS
+
+    def authorize(self, changing=False):
+        header = self.headers.get("Authorization", "")
+        with closing(connect()) as db, db:
+            if header.startswith("Bearer "):
+                if authority.check_token(db, header[7:]):
+                    return "token"
+                self.reply(401, {"error": "That access token isn't right", "signed_out": True})
+                return None
+            key = authority.session(db, self.cookie())
+        if key is None:
+            self.reply(401, {"error": "Sign in to FluidMessages Web", "signed_out": True},
+                       headers=self.clear_cookies() if self.cookie() else ())
+            return None
+        if changing and not self.same_origin():
+            self.reply(403, {"error": "This request didn't come from FluidMessages Web"})
+            return None
+        self.session_key = key
+        return "session"
+
+    def read_json(self, limit=64_000):
+        size = int(self.headers.get("Content-Length", "0"))
+        if not 0 < size <= limit:
+            raise ValueError("Invalid request size")
+        data = json.loads(self.rfile.read(size))
+        if not isinstance(data, dict):
+            raise ValueError("Expected an object")
+        return data
+
+    def auth_request(self, path):
+        """Sign-in endpoints, which work before you're signed in."""
+        if self.command == "GET":
+            with closing(connect()) as db, db:
+                signed_in = authority.session(db, self.cookie()) is not None
+                self.reply(200, {"owner": authority.has_owner(db), "signed_in": signed_in})
+            return
+        if not self.same_origin():
+            self.reply(403, {"error": "This request didn't come from FluidMessages Web"})
+            return
+        try:
+            # Signing out needs no body; anything sent with it is ignored.
+            data = {} if path == "/api/auth/logout" else self.read_json()
+            label = (self.headers.get("User-Agent") or "")[:120]
+            remember = data.get("remember") is True
+            with closing(connect()) as db, db:
+                if path == "/api/auth/setup":
+                    value, persistent = authority.setup(db, self.client(), data.get("code"), data.get("password"), remember, label)
+                elif path == "/api/auth/login":
+                    value, persistent = authority.login(db, self.client(), data.get("password"), remember, label)
+                elif path == "/api/auth/token":
+                    value, persistent = authority.login_with_token(db, self.client(), data.get("token"), remember, label)
+                else:
+                    authority.end_session(db, self.cookie())
+                    self.reply(200, {"signed_in": False}, headers=self.clear_cookies())
+                    return
+        except auth.Refused as error:
+            self.reply(error.status, {"error": str(error)})
+        except (ValueError, TypeError) as error:
+            self.reply(400, {"error": str(error)})
+        else:
+            self.reply(200, {"signed_in": True}, headers=[self.set_cookie(value, persistent)])
+
+    def account_security(self, data):
+        """Password, sessions, and the phone's pairing token, once signed in."""
+        with closing(connect()) as db, db:
+            if self.path == "/api/auth/password":
+                authority.change_password(db, self.client(), data.get("current"), data.get("password"))
+                authority.end_other_sessions(db, self.session_key)
+            elif self.path == "/api/auth/sessions/end-others":
+                authority.end_other_sessions(db, self.session_key)
+            elif self.path == "/api/auth/pairing":
+                token = authority.make_pairing(db)
+                return {**self.security_view(db), "token": token}
+            elif self.path == "/api/auth/pairing/delete":
+                authority.remove_pairing(db)
+            else:
+                raise ValueError("Unknown endpoint")
+            return self.security_view(db)
+
+    def security_view(self, db):
+        return {"owner": authority.has_owner(db), "sessions": authority.session_count(db),
+                "pairing": authority.pairing_status(db), "https": self.https()}
 
     def do_GET(self):
-        if self.path in FILES:
-            name, content_type = FILES[self.path]
+        path = urlsplit(self.path).path
+        if path in FILES:
+            name, content_type = FILES[path]
             self.reply(200, (ROOT / name).read_bytes(), content_type)
             return
+        if path == "/api/auth":
+            self.auth_request(path)
+            return
         if not self.authorize():
+            return
+        if path == "/api/auth/security":
+            with closing(connect()) as db:
+                self.reply(200, self.security_view(db))
             return
         if self.path == "/api/backups":
             self.reply(200, {"targets": list(cloud_backup.remotes())})
@@ -118,10 +317,11 @@ class Handler(BaseHTTPRequestHandler):
             self.backup_transfer(match[1], fetching=True)
             return
         if self.path.startswith("/api/gifs?"):
-            from urllib.parse import parse_qs, urlsplit
             query = parse_qs(urlsplit(self.path).query)
             pick = lambda name: (query.get(name) or [""])[0][:200]
-            self.reply(200, {"results": link_fetch.gif_search(pick("provider"), pick("q"), pick("key"), pick("stickers") == "1")})
+            # The key comes in a header, so it never sits in an address or a log.
+            key = (self.headers.get("X-Fluid-Gif-Key") or pick("key"))[:200]
+            self.reply(200, {"results": link_fetch.gif_search(pick("provider"), pick("q"), key, pick("stickers") == "1")})
             return
         if self.path.startswith(("/api/preview?url=", "/api/picture?url=")):
             target = unquote(self.path.split("?url=", 1)[1])
@@ -151,7 +351,9 @@ class Handler(BaseHTTPRequestHandler):
                 messages.sort(key=lambda message: message["date"], reverse=True)
                 self.reply(200, {"messages": messages, "routes": history["routes"], "enabled": history["enabled"],
                                  "updated": row["updated"] if row else None,
-                                 "appearance": json.loads(row["appearance"]) if row and row["appearance"] else {}})
+                                 "appearance": json.loads(row["appearance"]) if row and row["appearance"] else {},
+                                 # Which settings the browser uses: the phone's (the default) or its own.
+                                 "follow_phone": settings["follow_phone"], "web_appearance": web_appearance(db)})
             elif self.path.startswith("/api/calls?since="):
                 since = self.path.removeprefix("/api/calls?since=")
                 self.reply(200, gateway.call_events(int(since) if since.isdigit() else 0))
@@ -176,7 +378,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(404, {"error": "Unknown endpoint"})
 
     def do_PUT(self):
-        if not self.authorize():
+        if not self.authorize(changing=True):
             return
         match = re.fullmatch(r"/api/backups/(onedrive|drive|s3)", self.path)
         if match:
@@ -204,19 +406,19 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def do_POST(self):
-        if not self.authorize():
+        if self.path in AUTH_OPEN:
+            self.auth_request(self.path)
+            return
+        if not self.authorize(changing=True):
             return
         if self.path == "/api/protocols/upload":
             self.upload()
             return
         try:
-            size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 8_000_000:
-                raise ValueError("Invalid request size")
-            data = json.loads(self.rfile.read(size))
-            if not isinstance(data, dict):
-                raise ValueError("Expected an object")
-            response = self.mutate(data)
+            data = self.read_json(8_000_000)
+            response = self.account_security(data) if self.path.startswith("/api/auth/") else self.mutate(data)
+        except auth.Refused as error:
+            self.reply(error.status, {"error": str(error)})
         except (KeyError, ValueError, TypeError) as error:
             self.reply(400, {"error": str(error)})
         else:
@@ -252,7 +454,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(size))
         self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(attachment["name"]))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
+        self.security_headers()
         self.end_headers()
         with open(path, "rb") as source:
             shutil.copyfileobj(source, self.wfile)
@@ -280,6 +482,11 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/protocols/members":
                 return gateway.change_member(db, data)
             if self.path == "/api/settings":
+                if "web_appearance" in data:
+                    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_appearance', ?)",
+                               (json.dumps(clean_web_appearance(data.pop("web_appearance"))),))
+                if data.get("reset") is True:
+                    db.execute("DELETE FROM protocol_state WHERE key='web_appearance'")
                 gateway.save_settings(db, data)
                 return settings_view(db)
             if self.path == "/api/protocols/routes/delete":
@@ -374,8 +581,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    if len(TOKEN) < 32:
-        raise SystemExit("Set FLUID_TOKEN to a random string of at least 32 characters")
+    if TOKEN and len(TOKEN) < 32:
+        raise SystemExit("FLUID_TOKEN is optional. If you set it, use a random string of at least 32 characters.")
     DB.parent.mkdir(parents=True, exist_ok=True)
     with closing(connect()) as db, db:
         db.executescript("""
@@ -390,6 +597,20 @@ if __name__ == "__main__":
         if not any(column["name"] == "protocol" for column in db.execute("PRAGMA table_info(jobs)")):
             db.execute("ALTER TABLE jobs ADD COLUMN protocol TEXT NOT NULL DEFAULT 'sms'")
         db.executescript(protocol_gateway.SCHEMA)
+        db.executescript(auth.SCHEMA)
+    authority = auth.Auth(connect, DB.parent, TOKEN)
+    if sys.argv[1:] == ["reset-password"]:
+        with closing(connect()) as db, db:
+            code = authority.reset_owner(db)
+        print("FluidMessages Web: the password and every browser sign-in were removed.")
+        print("Open FluidMessages Web and enter this one-time setup code to choose a new password: " + authority.pretty(code))
+        raise SystemExit(0)
+    with closing(connect()) as db, db:
+        code = authority.setup_code(db)
+    if code:
+        # Shown until a password is set, then it stops working. It's also in the data folder's setup-code file.
+        print("FluidMessages Web: open it in your browser to create your password. One-time setup code: "
+              + authority.pretty(code), flush=True)
     files = Path(os.environ.get("FLUID_FILES") or DB.parent / "protocol-files")
     legacy = protocol_gateway.configured()
     account_store = accounts.AccountStore(DB.parent / "protocol-accounts.json", legacy=legacy)

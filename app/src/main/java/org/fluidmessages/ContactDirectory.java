@@ -14,13 +14,40 @@ final class ContactDirectory {
 
     private final Context context;
     private volatile Map<String, Optional<Match>> cache = new java.util.concurrent.ConcurrentHashMap<>();
-    private int revision;
+    private volatile int revision;
+    private volatile boolean watching;
+    private static ContactDirectory shared;
 
     ContactDirectory(Context context) { this.context = context; }
 
+    /**
+     * One directory for the whole app, kept while FluidMessages runs and cleared whenever a contact changes, so
+     * names and photos are looked up once instead of on every return to the inbox.
+     */
+    static synchronized ContactDirectory shared(Context context) {
+        if (shared == null) shared = new ContactDirectory(context.getApplicationContext());
+        shared.watch();
+        return shared;
+    }
+
+    /** Clears this directory whenever Android's contacts change. Needs the contacts permission; safe to repeat. */
+    synchronized void watch() {
+        if (watching || !allowed()) return;
+        try {
+            context.getContentResolver().registerContentObserver(ContactsContract.AUTHORITY_URI, true,
+                new android.database.ContentObserver(null) {
+                    @Override public void onChange(boolean selfChange) { invalidate(); }
+                });
+            watching = true;
+        } catch (SecurityException ignored) {}
+    }
+
+    /** Whether contact changes clear this directory by themselves. */
+    boolean watching() { return watching; }
+
     boolean allowed() { return context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED; }
 
-    void invalidate() {
+    synchronized void invalidate() {
         cache = new java.util.concurrent.ConcurrentHashMap<>();
         revision++;
     }

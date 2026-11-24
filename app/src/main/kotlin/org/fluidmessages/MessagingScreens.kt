@@ -796,7 +796,7 @@ internal class ConversationScreen @JvmOverloads constructor(
                     }
                     gifSheet?.let { stickersFirst ->
                         GifSheet(stickersFirst, filesAllowed, { gifSheet = null }, { url -> submit(url, replyTo?.let(MessageRelation::reply)); replyTo = null },
-                            { picked -> if (picked.isSticker()) submit("", null, picked) else draftAttachment = picked },
+                            { picked -> if (picked.isSticker() || picked.name == "GIF.mp4") { if (submit("", replyTo?.let(MessageRelation::reply), picked)) replyTo = null } else draftAttachment = picked },
                             openGifSettings?.let { open -> { open.run() } })
                     }
                     if (sheet) AttachmentSheet(sources, sendColor, when {
@@ -1097,7 +1097,7 @@ private fun MessageBubble(
                 }
                 if (editingMessage && editMessage != null) {
                     var words by remember { mutableStateOf(effect?.first ?: line.text) }
-                    AlertDialog(onDismissRequest = { editingMessage = false }, title = { Text("Edit message") }, text = {
+                    FormPage(onDismissRequest = { editingMessage = false }, title = { Text("Edit message") }, text = {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             OutlinedTextField(words, { words = it.take(1500) }, Modifier.fillMaxWidth(), minLines = 2, maxLines = 8)
                             Text("FluidMessages updates the message. People on other apps get the new text as a correction.",
@@ -1113,7 +1113,7 @@ private fun MessageBubble(
                     react(it)
                 }
                 if (selectedAction.isNotEmpty()) {
-                    AlertDialog(
+                    FormPage(
                         onDismissRequest = { selectedAction = "" },
                         title = { Text(selectedAction) },
                         text = {
@@ -1173,7 +1173,7 @@ private fun MessageBubble(
 private fun EmojiReactionDialog(close: () -> Unit, react: (String) -> Unit) {
     var input by remember { mutableStateOf("") }
     val emoji = input.trim()
-    AlertDialog(
+    FormPage(
         onDismissRequest = close,
         title = { Text("Choose an emoji") },
         text = {
@@ -1298,22 +1298,30 @@ private fun Composer(
     }
 }
 
+private object AvatarCache {
+    private val photos = android.util.LruCache<String, ImageBitmap>(120)
+    fun get(key: String): ImageBitmap? = photos.get(key)
+    fun put(key: String, photo: ImageBitmap) { photos.put(key, photo) }
+}
+
 @Composable
 internal fun Avatar(initials: String, seed: String, size: Int, photo: Int = 0, photoUri: Uri? = null, photoRevision: Int = 0) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val thumbnail by produceState<ImageBitmap?>(null, photoUri, photoRevision) {
+    // Decoded photos are kept for the whole app run, so scrolling and coming back never flash initials.
+    val cacheKey = photoUri?.let { "$it@$photoRevision" }
+    val thumbnail by produceState(cacheKey?.let { AvatarCache.get(it) }, photoUri, photoRevision) {
+        if (cacheKey == null) { value = null; return@produceState }
+        AvatarCache.get(cacheKey)?.let { value = it; return@produceState }
         value = null
-        value = photoUri?.let { uri ->
-            withContext(Dispatchers.IO) {
-                try {
-                    context.contentResolver.openInputStream(uri)?.use {
-                        android.graphics.BitmapFactory.decodeStream(it)?.asImageBitmap()
-                    }
-                } catch (_: java.io.IOException) { null }
-                  catch (_: SecurityException) { null }
-                  catch (_: IllegalArgumentException) { null }
-            }
-        }
+        value = withContext(Dispatchers.IO) {
+            try {
+                context.contentResolver.openInputStream(photoUri)?.use {
+                    android.graphics.BitmapFactory.decodeStream(it)?.asImageBitmap()
+                }
+            } catch (_: java.io.IOException) { null }
+              catch (_: SecurityException) { null }
+              catch (_: IllegalArgumentException) { null }
+        }?.also { AvatarCache.put(cacheKey, it) }
     }
     thumbnail?.let {
         Image(it, contentDescription = null, modifier = Modifier.size(size.dp).clip(CircleShape), contentScale = ContentScale.Crop)

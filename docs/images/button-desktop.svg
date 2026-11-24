@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="250" height="64" viewBox="0 0 250 64" role="img" aria-label="Desktop apps for Windows, macOS, and Linux">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5b6cff"/><stop offset="1" stop-color="#7a3fe0"/></linearGradient></defs>
+  <rect width="250" height="64" rx="32" fill="url(#g)"/>
+  <rect x="1" y="1" width="248" height="62" rx="31" fill="none" stroke="#fff" stroke-opacity=".25" stroke-width="2"/>
+  <g transform="translate(24 18)" fill="none" stroke="#fff" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="0" y="0" width="34" height="22" rx="3"/><path d="M11 29h12M17 22v7"/>
+  </g>
+  <text x="72" y="29" fill="#fff" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="20" font-weight="700">Desktop apps</text>
+  <text x="72" y="48" fill="#fff" fill-opacity=".88" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="13">Windows · macOS · Linux</text>
+</svg>

@@ -341,7 +341,7 @@ internal fun VisualColorDialog(title: String, current: Int, appearance: Appearan
     var saturation by remember(current) { mutableFloatStateOf(hsv[1]) }
     var brightness by remember(current) { mutableFloatStateOf(hsv[2]) }
     val color = android.graphics.Color.HSVToColor(floatArrayOf(hue, saturation, brightness))
-    AlertDialog(onDismissRequest = close, title = { Text(title) },
+    FormPage(onDismissRequest = close, title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Box(Modifier.fillMaxWidth().height(45.dp).background(Color(color), RoundedCornerShape(10.dp)))

@@ -127,6 +127,14 @@ final class GatewayClient {
                     readHere.put(message.getString("id"));
                 }
             }
+            // A message whose time is up here was deleted here; a companion that hasn't caught up can't bring it back.
+            var fresh = new JSONArray();
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < messages.length(); i++) {
+                var message = messages.optJSONObject(i);
+                if (message != null && !Disappearing.expired(prefs, message, message.optString("address"), now)) fresh.put(message);
+            }
+            messages = fresh;
             store.putBatch(messages);
             if (readHere.length() > 0) {
                 try { request(prefs, "protocols/read", new JSONObject().put("ids", readHere)); } catch (Exception ignored) {}

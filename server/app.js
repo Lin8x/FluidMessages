@@ -17,27 +17,133 @@ const verbs = [['Liked', '👍'], ['Loved', '❤️'], ['Disliked', '👎'], ['L
 const jobStates = {scheduled: 'Queued', claimed: 'Claimed by phone', submitted: 'Submitted by phone',
   failed: 'Phone submission failed', cancelled: 'Cancelled'};
 const drafts = new Map();
-let token = '';
+// Signed in with an HttpOnly session cookie, so no token is kept where page scripts could read it.
+let signedIn = false;
 let session = 0;
 let active = '';
 let appearance = {};
+let phoneLook = {};
+let webLook = {theme: 'fluid', mode: 'system'};
+let followPhone = true;
 let inbox = [];
 let threads = new Map();
 let updated = null;
 let reply = '';
 let refreshed = false;
 let refreshNumber = 0;
+let lastLook = '';
+
+// Every request says it comes from this page; the server refuses cookie requests that don't (CSRF protection).
+const REQUEST_HEADERS = {'X-Fluid-Request': '1'};
 
 async function api(path, body) {
   const response = await fetch('/api/' + path, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: {Authorization: 'Bearer ' + token, 'Content-Type': 'application/json'},
+    credentials: 'same-origin',
+    headers: body === undefined ? REQUEST_HEADERS : {...REQUEST_HEADERS, 'Content-Type': 'application/json'},
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || 'Request failed');
+  let result = {};
+  try { result = await response.json(); } catch (error) { /* not JSON */ }
+  if (response.status === 401 && result.signed_out && signedIn && !path.startsWith('auth/')) {
+    signOutHere('You were signed out. Sign in again to keep going.');
+  }
+  if (!response.ok) throw new Error(result.error || 'Something went wrong. Try again.');
   return result;
 }
+
+// Themes, the same named palettes as the phone (MessageStyle.java), light and dark.
+// [canvas, sms, rcs, controls, chrome, automated, [matrix, xmpp, email, irc]]
+const RCS_LIGHT = '#9643eb', RCS_DARK = '#a458f9';
+const THEMES = {
+  fluid: {label: 'Fluid', light: ['#ffffff', '#0088ff', RCS_LIGHT, '#007aff', '#f2f2f7', '#34c759', ['#ff2d55', '#ff2d55', '#ff8d28', '#ff383c']],
+    dark: ['#101012', '#0091ff', RCS_DARK, '#007aff', '#1c1c1e', '#30d158', ['#ff375f', '#ff375f', '#ff9230', '#ff4245']]},
+  midnight: {label: 'Midnight', light: ['#f8f9fe', '#0088ff', RCS_LIGHT, '#007aff', '#eceefa', '#34c759', ['#ff2d55', '#e0408a', '#ff8d28', '#ff383c']],
+    dark: ['#08080b', '#0091ff', RCS_DARK, '#007aff', '#23242c', '#30d158']},
+  lavender: {label: 'Lavender', light: ['#fcf8ff', '#7564d8', '#c88330', '#5c43b2', '#efe7fa', '#2f9e83', ['#c4508f', '#a955b8', '#4f86c6', '#cf4a4a']],
+    dark: ['#15111e', '#9481f4', '#e5ab65', '#c1a8ff', '#2e2441', '#4fc6a6']},
+  evergreen: {label: 'Evergreen', light: ['#f5fcf8', '#2d9e78', '#ac8126', '#176249', '#e6f4ec', '#3f72c4', ['#c2507a', '#9a5bb5', '#d9603a', '#d13f3f']],
+    dark: ['#0d1814', '#52c59a', '#d3a846', '#8bdabb', '#1b372d', '#74a3f0']},
+  tideline: {label: 'Tideline', light: ['#f5fbff', '#308fd3', '#d37548', '#225d97', '#e4f2fa', '#3a9a4a', ['#c24f86', '#8a62c9', '#c9a227', '#c8434a']],
+    dark: ['#0e1721', '#54b4f6', '#f5a370', '#9fdaff', '#21374a', '#5cc46d']},
+  ember: {label: 'Ember', light: ['#fff9f1', '#e28b48', '#ce6c6e', '#923c24', '#faeee0', '#5e8f2e', ['#b0508f', '#7d5fc0', '#3f86b8', '#2f9a8c']],
+    dark: ['#1c120e', '#f1aa68', '#f29194', '#ffbc8a', '#38241b', '#8fc25a']},
+  love: {label: 'Love', light: ['#fff4f8', '#c14770', '#947029', '#9b274f', '#ffe6ef', '#2c8a6e', ['#8a5cc4', '#5b6fd0', '#e0603a', '#3a8fbf']],
+    dark: ['#211018', '#cf507f', '#d6aa56', '#ffa6c2', '#3d2231', '#4fbf98']},
+  rosewater: {label: 'Rosewater', light: ['#fff8fa', '#d5779f', '#b7784d', '#a13567', '#fbe9f0', '#4f8a66', ['#8c67c7', '#5f7fce', '#d4c13a', '#3d93b8']],
+    dark: ['#1e1119', '#f59abf', '#d99d73', '#ffafd0', '#3a222d', '#7cbf93']},
+};
+const BUBBLES = ['incoming', 'sms', 'automated', 'rcs', 'matrix', 'xmpp', 'email', 'irc'];
+const LAYOUT = {radius: 18, size: 16, padding: 12};
+
+const rgb = (hex) => [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255);
+const hexOf = (values) => '#' + values.map((value) => Math.round(Math.max(0, Math.min(1, value)) * 255).toString(16).padStart(2, '0')).join('');
+const mixColor = (a, b, amount) => { const from = rgb(a), to = rgb(b); return hexOf(from.map((value, index) => value + (to[index] - value) * amount)); };
+function luminance(hex) {
+  const [r, g, b] = rgb(hex).map((value) => (value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4));
+  return .2126 * r + .7152 * g + .0722 * b;
+}
+const contrast = (a, b) => { const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m); return (x + .05) / (y + .05); };
+const chromatic = (hex) => { const values = rgb(hex); return Math.max(...values) - Math.min(...values) >= .12; };
+// Black or white, whichever reads better: for neutral bubbles and controls.
+const textOn = (hex) => (contrast(hex, '#ffffff') >= contrast(hex, '#000000') ? '#ffffff' : '#000000');
+// The phone's rule: colored bubbles get white text, and bright colors are shaded (same hue) until white reads at 4.5:1.
+function bubbleFill(hex) {
+  if (!chromatic(hex) || luminance(hex) <= .1833) return hex;
+  let light = 0, dark = 1;
+  for (let step = 0; step < 14; step++) {
+    const middle = (light + dark) / 2;
+    if (luminance(mixColor(hex, '#000000', middle)) <= .1833) dark = middle; else light = middle;
+  }
+  return mixColor(hex, '#000000', dark);
+}
+const bubbleInk = (hex) => (chromatic(hex) ? '#ffffff' : textOn(hex));
+// Moves a color toward the text color until it reaches the contrast asked for, for readable muted text and outlines.
+function readable(color, background, ink, ratio) {
+  let value = color;
+  for (let step = 0; step < 20 && contrast(value, background) < ratio; step++) value = mixColor(value, ink, .12);
+  return value;
+}
+const lift = (hex) => hexOf(rgb(hex).map((value) => value + (1 - value) * .22));
+
+function prefersDark() { return !!window.matchMedia?.('(prefers-color-scheme: dark)').matches; }
+
+/** The web app's own look: a named theme in light or dark, your color changes, and bubble layout. */
+function themeAppearance(look) {
+  const theme = THEMES[look.theme] || THEMES.fluid;
+  const dark = look.mode === 'dark' || (look.mode !== 'light' && prefersDark());
+  const [canvas, sms, rcs, controls, chrome, automated, protocols] = theme[dark ? 'dark' : 'light'];
+  const protocolColors = theme[dark ? 'dark' : 'light'][6] || theme.light[6].map(dark ? lift : (value) => value);
+  const ink = textOn(canvas);
+  const surface = mixColor(canvas, chrome, .72);
+  const own = look.colors || {};
+  const base = {incoming: own.incoming || (dark ? '#2c2c2e' : '#e5e5ea'), sms: own.sms || sms, automated: own.automated || automated,
+    rcs: own.rcs || rcs, matrix: own.matrix || protocolColors[0], xmpp: own.xmpp || protocolColors[1], email: own.email || protocolColors[2],
+    irc: own.irc || protocolColors[3]};
+  const colors = {canvas, ink, surface, raised: chrome,
+    muted: readable(mixColor(ink, surface, .4), surface, ink, 4.5),
+    line: mixColor(surface, ink, .14), outline: readable(mixColor(surface, ink, .3), canvas, ink, 3),
+    action: readable(controls, canvas, ink, 3), accent: bubbleFill(controls), accentInk: bubbleInk(controls)};
+  for (const key of BUBBLES) colors[key] = base[key];
+  return {dark, colors, exactTimes: !!look.exactTimes, combineProtocols: !!look.combineProtocols,
+    tagMode: look.tagMode || 'auto', encryptionMode: look.encryptionMode || 'auto',
+    radius: look.radius ?? LAYOUT.radius, size: look.size ?? LAYOUT.size, padding: look.padding ?? LAYOUT.padding};
+}
+
+// Facts about the phone that hold whichever settings you use: which protocols it has on, MMS, and its folders.
+const PHONE_FACTS = ['enabledProtocols', 'mmsReady', 'folders', 'protocolDefaults', 'protocolPrivacy'];
+
+/** The phone's settings when it's connected and you chose them (the default), otherwise the web app's own. */
+function usingPhoneLook() { return followPhone && !!phoneLook.colors && Object.keys(phoneLook.colors).length > 0; }
+function resolvedAppearance() {
+  if (usingPhoneLook()) return phoneLook;
+  const facts = {};
+  for (const key of PHONE_FACTS) if (key in phoneLook) facts[key] = phoneLook[key];
+  return {...facts, ...themeAppearance(webLook)};
+}
+window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+  if (signedIn && !usingPhoneLook()) { applyAppearance(resolvedAppearance()); showThreads(); showMessages(true); }
+});
 
 function element(tag, value, className) {
   const node = document.createElement(tag);
@@ -50,11 +156,22 @@ function applyAppearance(next) {
   appearance = next || {};
   const root = document.documentElement;
   root.dataset.mode = appearance.dark ? 'dark' : 'light';
+  const valid = (value) => typeof value === 'string' && /^#[a-f\d]{6}$/i.test(value);
+  const palette = {...(appearance.colors || {})};
+  // White text on colored bubbles, bright fills shaded, and black or white on neutral ones, whichever side set the colors.
+  for (const key of BUBBLES) {
+    if (!valid(palette[key])) continue;
+    palette[key + 'Ink'] = bubbleInk(palette[key]);
+    palette[key] = bubbleFill(palette[key]);
+  }
+  if (valid(palette.accent)) { palette.accentInk = bubbleInk(palette.accent); palette.accent = bubbleFill(palette.accent); }
   for (const [key, name] of Object.entries(colors)) {
-    const value = appearance.colors?.[key];
-    if (typeof value === 'string' && /^#[a-f\d]{6}$/i.test(value)) root.style.setProperty('--' + name, value);
+    const value = palette[key];
+    if (valid(value)) root.style.setProperty('--' + name, value);
     else root.style.removeProperty('--' + name);
   }
+  const themeColor = document.querySelector('meta[name="theme-color"]');
+  if (themeColor) themeColor.content = valid(palette.surface) ? palette.surface : (appearance.dark ? '#202126' : '#f2f3f6');
   for (const key of ['radius', 'size', 'padding']) {
     if (Number.isInteger(appearance[key])) root.style.setProperty('--bubble-' + key, appearance[key] + 'px');
     else root.style.removeProperty('--bubble-' + key);
@@ -274,9 +391,10 @@ function showMessages(preserve = false) {
       bubble.textContent = '🔒 Encrypted with FluidMessages. Read it on your phone.';
       bubble.classList.add('sealed');
     }
-    if (typeof moneyCard === 'function') moneyCard(message, bubble);
-    if (typeof meetingCard === 'function') meetingCard(message, bubble);
-    if (typeof richCard === 'function') richCard(message, bubble, history);
+    // One card per message: a money or call card already shows its link, so it gets no extra link preview.
+    const carded = (typeof moneyCard === 'function' && moneyCard(message, bubble))
+      || (typeof meetingCard === 'function' && meetingCard(message, bubble));
+    if (!carded && typeof richCard === 'function') richCard(message, bubble, history);
     if (typeof messageEffect === 'function' && !/^FM1:/.test(message.body || '')) setTimeout(() => messageEffect(message, bubble, position >= history.length - 3));
     if (message.attachment) {
       if (message.body === message.attachment.name || /^(Photo|sticker\.\w+)$/.test(message.body || '')) bubble.textContent = '';
@@ -320,10 +438,10 @@ function select(key) {
   get('schedule').hidden = off || !!address && !senderAddress(address) && !internet(protocol);
   get('send').textContent = internet(protocol) ? 'Send ' + labels[protocol] : 'Send SMS';
   get('body').placeholder = internet(protocol) ? labels[protocol] + ' message' : 'Text message';
-  get('later').hidden = internet(protocol);
+  get('later').hidden = false;  // Internet chats schedule on FluidMessages Web; texts wait on the phone.
   // Click-to-call: your phone shows a "Tap to call" notification with the number ready to dial.
   get('call').hidden = !key || internet(protocol) || !senderAddress(address) || automatedThread(key);
-  get('body').value = drafts.get(address) || '';
+  get('body').value = drafts.get(key) || '';
   get('schedule-status').textContent = '';
   setReply('');
   markRead(key);
@@ -442,8 +560,14 @@ async function refresh() {
   const request = ++refreshNumber;
   const [snapshot, jobs] = await Promise.all([api('inbox'), api('jobs')]);
   if (currentSession !== session || request !== refreshNumber) return;
-  if (!refreshed || updated !== snapshot.updated) {
-    applyAppearance(snapshot.appearance);
+  // Redraws when anything changed: a phone sync, new or updated internet messages, or the settings.
+  const look = JSON.stringify([snapshot.appearance, snapshot.follow_phone, snapshot.web_appearance, snapshot.routes, snapshot.messages]);
+  if (!refreshed || updated !== snapshot.updated || look !== lastLook) {
+    lastLook = look;
+    phoneLook = snapshot.appearance || {};
+    followPhone = snapshot.follow_phone !== false;
+    webLook = snapshot.web_appearance || webLook;
+    applyAppearance(resolvedAppearance());
     if (typeof routes !== 'undefined') routes = snapshot.routes || [];
     if (Array.isArray(snapshot.appearance?.enabledProtocols)) enabled = new Set(snapshot.appearance.enabledProtocols);
     updated = snapshot.updated;
@@ -460,20 +584,22 @@ async function refresh() {
 
 function showError(error) { get('schedule-status').textContent = error.message; }
 
-async function send(body, text, relation, due = Date.now()) {
+async function send(body, text, relation, due = Date.now(), attachment) {
   const protocol = threadProtocol(active);
   if (!internet(protocol)) return queueSms(body, threadAddress(active), due);
   const currentSession = session;
   const request = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
   await api('protocols/send', {address: threadAddress(active), protocol, body, text: text || body, request,
-    relation: relation && relation.target ? relation : undefined});
+    relation: relation && relation.target ? relation : undefined, due: due > Date.now() + 30000 ? due : undefined,
+    attachment: attachment || undefined});
   if (currentSession !== session) return;
-  get('schedule-status').textContent = 'Queued on FluidMessages Web.';
+  get('schedule-status').textContent = due > Date.now() + 30000 ? 'Scheduled on FluidMessages Web for ' + new Date(due).toLocaleString() + '.'
+    : 'Queued on FluidMessages Web.';
   refresh().catch(() => { get('status').textContent = 'Sync unavailable'; });
 }
 
 async function download(message) {
-  const response = await fetch('/api/protocols/file?id=' + encodeURIComponent(message.id), {headers: {Authorization: 'Bearer ' + token}});
+  const response = await fetch('/api/protocols/file?id=' + encodeURIComponent(message.id), {headers: REQUEST_HEADERS});
   if (!response.ok) throw new Error('The attachment is no longer on FluidMessages Web.');
   const url = URL.createObjectURL(await response.blob());
   const link = element('a', '');
@@ -487,45 +613,104 @@ async function queueSms(body, address, due) {
   const currentSession = session;
   await api('schedule', {address, body, due});
   if (currentSession !== session) return;
-  get('schedule-status').textContent = 'Queued for your phone.';
+  get('schedule-status').textContent = due > Date.now() + 30000 ? 'Scheduled. Your phone sends it after ' + new Date(due).toLocaleString() + '.'
+    : 'Queued for your phone.';
   refresh().catch(() => { get('status').textContent = 'Sync unavailable'; });
 }
 
-get('pair').addEventListener('submit', async (event) => {
-  event.preventDefault();
+// Signing in: a password you create on first visit, then a session cookie. No access token to type.
+
+let signInMode = 'login';
+
+function showSignIn(mode, message = '') {
+  signInMode = mode;
+  get('pair').hidden = false;
+  get('workspace').hidden = true;
+  for (const [id, name] of [['setup-form', 'setup'], ['login-form', 'login'], ['token-form', 'token']]) get(id).hidden = mode !== name;
+  get('sign-in-title').textContent = mode === 'setup' ? 'Welcome to FluidMessages Web' : 'Messages on the web';
+  get('sign-in-intro').textContent = mode === 'setup'
+    ? 'Create a password for this server. Matrix, XMPP, Email, and IRC work here on their own; texts go through your Android phone once it’s connected.'
+    : mode === 'token' ? 'Sign in with an access token: the server’s FLUID_TOKEN or a phone pairing token.'
+      : 'Sign in to read and send your messages.';
+  get('pair-error').textContent = message;
+  get('reset-help').hidden = mode === 'setup';
+  const first = {setup: 'setup-code', login: 'login-password', token: 'token'}[mode];
+  requestAnimationFrame(() => get(first)?.focus());
+}
+
+async function authCall(path, body) {
+  const response = await fetch('/api/auth/' + path, {method: 'POST', credentials: 'same-origin',
+    headers: {...REQUEST_HEADERS, 'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+  let result = {};
+  try { result = await response.json(); } catch (error) { /* not JSON */ }
+  if (!response.ok) throw new Error(result.error || 'Couldn’t sign in. Try again.');
+  return result;
+}
+
+async function enterWorkspace() {
   const currentSession = ++session;
-  token = get('token').value.trim();
-  const remember = get('remember').checked;
-  try {
-    await refresh();
-    if (currentSession !== session) return;
-    // Like "keep me signed in": the token stays in this browser until you choose Disconnect.
-    if (remember) localStorage.setItem('fluidToken', token);
-    get('pair').reset();
+  signedIn = true;
+  await refresh();
+  if (currentSession !== session) return;
+  for (const id of ['setup-form', 'login-form', 'token-form']) get(id).reset();
+  get('pair-error').textContent = '';
+  get('pair').hidden = true;
+  get('workspace').hidden = false;
+  get('disconnect').hidden = false;
+  get('open-queue').hidden = false;
+}
+
+function signInForm(id, run) {
+  get(id).addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = get(id).querySelector('button.primary');
+    button.disabled = true;
     get('pair-error').textContent = '';
-    get('pair').hidden = true;
-    get('workspace').hidden = false;
-    get('disconnect').hidden = false;
-    get('open-queue').hidden = false;
-  } catch (error) {
-    if (currentSession !== session) return;
-    token = '';
-    get('pair-error').textContent = error.message;
-  }
+    try {
+      await run();
+      await enterWorkspace();
+    } catch (error) {
+      signedIn = false;
+      get('pair-error').textContent = error.message;
+    } finally { button.disabled = false; }
+  });
+}
+
+signInForm('setup-form', async () => {
+  const password = get('setup-password').value;
+  if (password !== get('setup-confirm').value) throw new Error('The two passwords don’t match.');
+  await authCall('setup', {code: get('setup-code').value.trim(), password, remember: get('setup-remember').checked});
 });
-get('disconnect').addEventListener('click', () => {
+signInForm('login-form', () => authCall('login', {password: get('login-password').value, remember: get('login-remember').checked}));
+signInForm('token-form', () => authCall('token', {token: get('token').value.trim(), remember: get('remember').checked}));
+get('use-token').addEventListener('click', () => showSignIn('token'));
+get('setup-use-token').addEventListener('click', () => showSignIn('token'));
+get('use-password').addEventListener('click', () => start().catch(() => showSignIn('login')));
+for (const [button, input] of [['show-setup-password', 'setup-password'], ['show-login-password', 'login-password']]) {
+  get(button).addEventListener('click', () => {
+    const field = get(input);
+    const shown = field.type === 'text';
+    field.type = shown ? 'password' : 'text';
+    get(button).textContent = shown ? 'Show' : 'Hide';
+    get(button).setAttribute('aria-pressed', String(!shown));
+  });
+}
+
+/** Clears this page after signing out or when the session ends. */
+function signOutHere(message = '') {
   ++session;
-  localStorage.removeItem('fluidToken');
-  token = '';
+  signedIn = false;
   inbox = [];
   threads.clear();
   drafts.clear();
   updated = null;
   refreshed = false;
+  lastLook = '';
   active = '';
+  phoneLook = {};
   setReply('');
-  applyAppearance({});
-  get('queue').close();
+  applyAppearance(themeAppearance({theme: 'fluid', mode: 'system'}));
+  for (const open of document.querySelectorAll('dialog[open]')) open.close();
   get('jobs').replaceChildren();
   delete get('jobs').dataset.snapshot;
   get('threads').replaceChildren();
@@ -539,16 +724,21 @@ get('disconnect').addEventListener('click', () => {
   get('transport').textContent = '';
   get('avatar').textContent = '';
   delete get('workspace').dataset.thread;
-  get('status').textContent = 'Disconnected';
-  get('workspace').hidden = true;
+  get('status').textContent = 'Signed out';
   get('disconnect').hidden = true;
   get('open-queue').hidden = true;
-  get('pair').hidden = false;
+  fetch('/api/auth', {headers: REQUEST_HEADERS}).then((response) => response.json())
+    .then((state) => showSignIn(state.owner ? 'login' : 'setup', message)).catch(() => showSignIn('login', message));
+}
+
+get('disconnect').addEventListener('click', async () => {
+  await authCall('logout').catch(() => {});
+  signOutHere();
 });
 get('folder').addEventListener('change', showThreads);
 get('search').addEventListener('input', showThreads);
 get('new').addEventListener('click', () => { select(''); get('address').focus(); });
-get('back').addEventListener('click', () => { delete get('workspace').dataset.thread; });
+get('back').addEventListener('click', () => { delete get('workspace').dataset.thread; get('threads').querySelector('[aria-current="true"]')?.focus(); });
 get('open-queue').addEventListener('click', () => {
   get('queue-status').textContent = '';
   get('queue').showModal();
@@ -562,6 +752,13 @@ get('call').addEventListener('click', async () => {
     get('schedule-status').textContent = 'Sent to your phone. Tap the notification there to call.';
   } catch (error) { showError(error); }
   finally { setTimeout(() => { get('call').disabled = false; }, 3000); }
+});
+// Enter sends and Shift+Enter starts a new line, like the phone's keyboard Send.
+get('body').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && localStorage.getItem('enterSends') !== 'off') {
+    event.preventDefault();
+    get('schedule').requestSubmit();
+  }
 });
 get('schedule').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -581,6 +778,7 @@ get('schedule').addEventListener('submit', async (event) => {
       get('body').value = '';
       drafts.delete(current);
       setReply('');
+      get('later').open = false;
     }
   } catch (error) {
     if (currentSession === session) showError(error);
@@ -589,21 +787,32 @@ get('schedule').addEventListener('submit', async (event) => {
   }
 });
 setInterval(() => {
-  if (token && !get('workspace').hidden) refresh().catch(() => {
-    if (token) get('status').textContent = 'Sync unavailable';
+  if (signedIn && !get('workspace').hidden) refresh().catch(() => {
+    if (signedIn) get('status').textContent = 'Sync unavailable';
   });
 }, 5000);
 
-// The desktop app opens with its token after "#token=", which never leaves the browser: sign in and forget it.
-if (location.hash.startsWith('#token=')) {
-  const fromDesktop = decodeURIComponent(location.hash.slice(7));
-  history.replaceState(null, '', location.pathname);
-  if (/^[0-9a-f]{32,128}$/.test(fromDesktop)) localStorage.setItem('fluidToken', fromDesktop);
+/** Opens the app: signed in already, or a token handed over by the desktop app, or the password page. */
+async function start() {
+  // The desktop app opens with its token after "#token=", which never leaves the browser. It's swapped for a
+  // session cookie at once and forgotten. Browsers that kept the old token sign in the same way, once.
+  let handed = '';
+  if (location.hash.startsWith('#token=')) {
+    handed = decodeURIComponent(location.hash.slice(7));
+    history.replaceState(null, '', location.pathname);
+  }
+  const kept = localStorage.getItem('fluidToken') || '';
+  localStorage.removeItem('fluidToken');
+  for (const value of [handed, kept]) {
+    if (!/^[0-9A-Za-z_-]{32,256}$/.test(value)) continue;
+    try { await authCall('token', {token: value, remember: true}); break; } catch (error) { /* try the next one */ }
+  }
+  const state = await (await fetch('/api/auth', {headers: REQUEST_HEADERS})).json();
+  if (state.signed_in) {
+    try { await enterWorkspace(); return; } catch (error) { signedIn = false; }
+  }
+  showSignIn(state.owner ? 'login' : 'setup');
 }
 
-// Signs back in automatically when this browser was told to keep you signed in.
-if (localStorage.getItem('fluidToken')) {
-  get('token').value = localStorage.getItem('fluidToken');
-  get('remember').checked = true;
-  get('pair').requestSubmit();
-}
+applyAppearance(themeAppearance({theme: 'fluid', mode: 'system'}));
+document.addEventListener("DOMContentLoaded", () => start().catch(() => showSignIn('login', 'FluidMessages Web can’t be reached right now. Check your connection and reload.')));

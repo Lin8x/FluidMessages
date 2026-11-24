@@ -13,3 +13,6 @@ dist/*.exe
 dist/*.dmg
 dist/*.AppImage
 dist/*.tar.gz
+
+# Local tool folders
+.claude/

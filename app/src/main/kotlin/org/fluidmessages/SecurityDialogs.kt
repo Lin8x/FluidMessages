@@ -57,13 +57,64 @@ object SecurityDialogs {
         host.addView(view, ViewGroup.LayoutParams(0, 0))
     }
 
+    /**
+     * A form on its own full page, for settings that need typing. Each field is {label, value, hint, kind}, where kind is
+     * text, password, phone, email, uri, number, or check (a checkbox; value "true" or "false"). submit gets the values
+     * and returns a problem to show, or null to close the page. extra, when given, is a second button such as Remove.
+     */
+    @JvmStatic
+    fun form(activity: ComponentActivity, prefs: SharedPreferences, title: String, explanation: String, fields: List<Array<String>>,
+             actionLabel: String, extraLabel: String?, submit: java.util.function.Function<Array<String>, String?>, extra: Runnable?) =
+        present(activity, prefs) { dismiss ->
+            val values = remember { androidx.compose.runtime.mutableStateListOf(*fields.map { it.getOrElse(1) { "" } }.toTypedArray()) }
+            var problem by remember { mutableStateOf<String?>(null) }
+            FormPage(onDismissRequest = dismiss, title = { Text(title) }, text = {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    if (explanation.isNotEmpty()) Text(explanation, style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    fields.forEachIndexed { index, field ->
+                        val label = field[0]
+                        val hint = field.getOrElse(2) { "" }
+                        when (val kind = field.getOrElse(3) { "text" }) {
+                            "password" -> SecretField(values[index], { values[index] = it; problem = null }, label, copy = false)
+                            "check" -> Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                                .clickable(role = Role.Checkbox) { values[index] = (values[index] != "true").toString() }
+                                .padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                androidx.compose.material3.Checkbox(values[index] == "true", { values[index] = it.toString() })
+                                Text(label)
+                            }
+                            else -> OutlinedTextField(values[index], { values[index] = it.take(2000); problem = null }, Modifier.fillMaxWidth(),
+                                label = { Text(label) }, placeholder = if (hint.isEmpty()) null else ({ Text(hint) }), singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = when (kind) {
+                                    "phone" -> KeyboardType.Phone; "email" -> KeyboardType.Email; "uri" -> KeyboardType.Uri
+                                    "number" -> KeyboardType.Number; else -> KeyboardType.Text
+                                }))
+                        }
+                    }
+                    problem?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
+                }
+            }, confirmButton = {
+                TextButton(onClick = {
+                    val result = submit.apply(values.toTypedArray())
+                    if (result == null) dismiss() else problem = result
+                }) { Text(actionLabel) }
+            }, dismissButton = {
+                Row {
+                    if (extraLabel != null && extra != null) TextButton(onClick = { dismiss(); extra.run() }) {
+                        Text(extraLabel, color = MaterialTheme.colorScheme.error)
+                    }
+                    TextButton(onClick = dismiss) { Text("Cancel") }
+                }
+            })
+        }
+
     /** A shared key: shown hidden with an eye to reveal it, a copy button, and a button to make a new one. */
     @JvmStatic
     fun sharedKey(activity: ComponentActivity, prefs: SharedPreferences, title: String, explanation: String, current: String,
                   save: Consumer<String>, remove: Runnable?) = present(activity, prefs) { dismiss ->
         var key by remember { mutableStateOf(current) }
         var problem by remember { mutableStateOf<String?>(null) }
-        AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, text = {
+        FormPage(onDismissRequest = dismiss, title = { Text(title) }, text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(explanation, style = MaterialTheme.typography.bodyMedium)
                 SecretField(key, { key = it; problem = null }, "Encryption key", monospace = true, revealedAtStart = current.isEmpty())
@@ -96,7 +147,7 @@ object SecurityDialogs {
         var code by remember { mutableStateOf("") }
         var again by remember { mutableStateOf("") }
         var problem by remember { mutableStateOf<String?>(null) }
-        AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, text = {
+        FormPage(onDismissRequest = dismiss, title = { Text(title) }, text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (explanation.isNotEmpty()) Text(explanation, style = MaterialTheme.typography.bodyMedium)
                 SecretField(code, { code = it; problem = null }, if (allowEmpty) "New passcode (leave empty to turn off the lock)" else "Code", copy = false)
@@ -123,7 +174,7 @@ object SecurityDialogs {
         var wrong by remember { mutableStateOf(false) }
         var checking by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
-        AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, text = {
+        FormPage(onDismissRequest = dismiss, title = { Text(title) }, text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SecretField(code, { code = it; wrong = false }, "Code", copy = false)
                 if (wrong) Text("Incorrect passcode.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -166,7 +217,7 @@ object SecurityDialogs {
     @JvmStatic
     fun passcodeEntry(activity: ComponentActivity, prefs: SharedPreferences, title: String, submit: Consumer<String>) = present(activity, prefs) { dismiss ->
         var code by remember { mutableStateOf("") }
-        AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, text = {
+        FormPage(onDismissRequest = dismiss, title = { Text(title) }, text = {
             SecretField(code, { code = it }, "Passcode", copy = false)
         }, confirmButton = {
             TextButton(enabled = code.isNotEmpty(), onClick = { dismiss(); submit.accept(code) }) { Text("Open") }
@@ -183,11 +234,19 @@ object SecurityDialogs {
         var unit by remember { mutableIntStateOf(if (current > 0 && current !in presets) customAmount(current).second else 1) }
         var problem by remember { mutableStateOf<String?>(null) }
         val units = listOf("Minutes" to 60, "Hours" to 3600, "Days" to 86400, "Weeks" to 7 * 86400)
-        AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, text = {
+        FormPage(onDismissRequest = dismiss, title = { Text(title) }, text = {
             LazyColumn(Modifier.heightIn(max = 440.dp)) {
                 item {
-                    Text("Messages sent after you turn this on disappear from this phone and FluidMessages Web. Earlier messages stay.",
+                    Text("Messages sent or received after you turn this on are deleted from this phone and FluidMessages Web " +
+                        "when their time is up, even if FluidMessages is closed. Earlier messages stay.",
                         style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 8.dp))
+                }
+                item {
+                    Text("The other person may keep their copy. SMS, MMS, Email, and IRC can’t remove messages from their " +
+                        "device. Matrix and XMPP take back the messages you send, and texts with FluidMessages encryption " +
+                        "also disappear in their FluidMessages.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp))
                 }
                 if (defaultLabel != null) item { Choice("Use the default ($defaultLabel)", chosen == -1) { chosen = -1 } }
                 for (seconds in presets) item { Choice(Disappearing.label(seconds), chosen == seconds) { chosen = seconds } }
@@ -234,7 +293,7 @@ object SecurityDialogs {
         var key by remember { mutableStateOf(ownKey) }
         var problem by remember { mutableStateOf<String?>(null) }
         val on = selected == "on" || selected.isEmpty() && defaultOn
-        AlertDialog(onDismissRequest = dismiss, title = { Text("FluidMessages encryption") }, text = {
+        FormPage(onDismissRequest = dismiss, title = { Text("FluidMessages encryption") }, text = {
             LazyColumn(Modifier.heightIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 item {
                     Text("Scrambles messages with $name before they leave your phone. Works on texts and internet chats.",
@@ -286,7 +345,7 @@ object SecurityDialogs {
     fun chooseMany(activity: ComponentActivity, prefs: SharedPreferences, title: String, explanation: String,
                    items: List<Array<String>>, selected: List<Int>, action: String, save: Consumer<List<Int>>) = present(activity, prefs) { dismiss ->
         val chosen = remember { mutableStateListOf<Int>().apply { addAll(selected) } }
-        AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, text = {
+        FormPage(onDismissRequest = dismiss, title = { Text(title) }, text = {
             LazyColumn(Modifier.heightIn(max = 460.dp)) {
                 if (explanation.isNotEmpty()) item {
                     Text(explanation, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 10.dp))
@@ -323,7 +382,7 @@ object SecurityDialogs {
         val original = remember { SmsCrypto.defaultKey(prefs) }
         var key by remember { mutableStateOf(original) }
         var problem by remember { mutableStateOf<String?>(null) }
-        AlertDialog(onDismissRequest = dismiss, title = { Text("Encrypt with FluidMessages") }, text = {
+        FormPage(onDismissRequest = dismiss, title = { Text("Encrypt with FluidMessages") }, text = {
             LazyColumn(Modifier.heightIn(max = 540.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
                     Text("Turn on encryption for whole services at once. It only works with people who also use FluidMessages and the same key. A chat's own setting in its Security section always wins.",

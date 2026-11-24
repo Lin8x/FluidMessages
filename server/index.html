@@ -19,20 +19,52 @@
 <body>
 <header class="topbar">
   <span class="brand"><img class="brand-mark" src="/icon.webp" alt="" width="28" height="28">FluidMessages</span>
-  <span id="status" class="status" role="status">Disconnected</span>
+  <span id="status" class="status" role="status" aria-live="polite"></span>
   <button id="open-queue" type="button" hidden>Scheduled</button>
-  <button id="disconnect" type="button" hidden>Disconnect</button>
+  <button id="disconnect" type="button" hidden>Sign out</button>
 </header>
+<a class="skip" href="#conversation">Skip to messages</a>
 <main>
-  <form id="pair" class="pair">
-    <img class="app-icon" src="/icon.webp" alt="FluidMessages icon" width="96" height="96">
-    <h1>Messages on the web</h1>
-    <p>Sign in with your server’s access token (FLUID_TOKEN). Matrix, XMPP, Email, and IRC work here on their own; texts go through your Android phone once it’s connected.</p>
-    <label>Access token<input id="token" type="password" required autocomplete="off"></label>
-    <label class="remember"><input id="remember" type="checkbox"> Keep me signed in on this browser</label>
-    <button class="primary">Connect</button>
-    <p id="pair-error" role="alert"></p>
-  </form>
+  <section id="pair" class="pair" aria-labelledby="sign-in-title" hidden>
+    <img class="app-icon" src="/icon.webp" alt="" width="96" height="96">
+    <h1 id="sign-in-title">Messages on the web</h1>
+    <p id="sign-in-intro"></p>
+    <form id="setup-form" class="sign-in-form" hidden>
+      <label>Setup code
+        <input id="setup-code" required autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" maxlength="300" aria-describedby="setup-code-help">
+      </label>
+      <p id="setup-code-help" class="hint">It’s in the server’s log (Portainer: the container’s <strong>Logs</strong>; Docker: <code>docker compose logs fluidmessages</code>) and in its data folder as <code>setup-code</code>. It stops working once you’ve made a password, so nobody else can claim this server.</p>
+      <input type="text" name="username" autocomplete="username" value="FluidMessages Web" hidden>
+      <label>New password
+        <span class="password-row"><input id="setup-password" type="password" required minlength="8" maxlength="1024" autocomplete="new-password" aria-describedby="setup-password-help"><button id="show-setup-password" type="button" class="quiet" aria-pressed="false" aria-label="Show password">Show</button></span>
+      </label>
+      <p id="setup-password-help" class="hint">At least 8 characters. A few words together is easy to remember and hard to guess.</p>
+      <label>Type it again<input id="setup-confirm" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label>
+      <label class="remember"><input id="setup-remember" type="checkbox" checked> Keep me signed in on this browser for 30 days</label>
+      <button class="primary">Create password and open</button>
+      <button id="setup-use-token" type="button" class="quiet">I have an access token</button>
+    </form>
+    <form id="login-form" class="sign-in-form" hidden>
+      <input type="text" name="username" autocomplete="username" value="FluidMessages Web" hidden>
+      <label>Password
+        <span class="password-row"><input id="login-password" type="password" required maxlength="1024" autocomplete="current-password"><button id="show-login-password" type="button" class="quiet" aria-pressed="false" aria-label="Show password">Show</button></span>
+      </label>
+      <label class="remember"><input id="login-remember" type="checkbox"> Keep me signed in on this browser for 30 days</label>
+      <button class="primary">Sign in</button>
+      <button id="use-token" type="button" class="quiet">Use an access token instead</button>
+    </form>
+    <form id="token-form" class="sign-in-form" hidden>
+      <label>Access token<input id="token" type="password" required autocomplete="off" spellcheck="false"></label>
+      <label class="remember"><input id="remember" type="checkbox"> Keep me signed in on this browser for 30 days</label>
+      <button class="primary">Sign in</button>
+      <button id="use-password" type="button" class="quiet">Back</button>
+    </form>
+    <p id="pair-error" class="error" role="alert"></p>
+    <details id="reset-help" class="help">
+      <summary>Forgot your password?</summary>
+      <p>On the server, run <code>docker compose exec fluidmessages python main.py reset-password</code>. It signs out every browser and prints a new setup code, so you can choose a new password. Your messages and accounts stay. If your server has a <code>FLUID_TOKEN</code>, you can also sign in with it and change the password in Settings.</p>
+    </details>
+  </section>
   <section id="workspace" class="workspace" hidden>
     <aside class="sidebar" aria-label="Inbox">
       <div class="sidebar-head">
@@ -73,10 +105,13 @@
     </article>
   </section>
 </main>
-<dialog id="queue" aria-labelledby="queue-title">
-  <div class="sidebar-head"><h2 id="queue-title">Scheduled messages</h2><button id="close-queue" type="button">Done</button></div>
-  <div id="jobs"></div>
-  <p id="queue-status" role="status"></p>
+<dialog id="queue" class="sheet" aria-labelledby="queue-title">
+  <div class="sheet-head"><button id="close-queue" type="button" class="sheet-back" aria-label="Back"><span aria-hidden="true">‹</span> Back</button><h2 id="queue-title">Scheduled messages</h2></div>
+  <div class="sheet-body">
+    <p class="muted">Texts wait here until your phone sends them; internet messages send from FluidMessages Web at their time. Cancel any that haven’t gone yet.</p>
+    <div id="jobs"></div>
+    <p id="queue-status" role="status"></p>
+  </div>
 </dialog>
 </body>
 </html>

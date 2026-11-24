@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
@@ -133,6 +134,12 @@ internal object SavedStickers {
         }
     }.getOrNull()
 
+    /** Animated GIFs and WebPs are saved as they are; other pictures open in the editor first, to cut them out. */
+    fun animated(context: Context, uri: Uri): Boolean {
+        val type = context.contentResolver.getType(uri).orEmpty()
+        return type == "image/gif" || type == "image/webp" && isAnimated(context, uri)
+    }
+
     private fun isAnimated(context: Context, uri: Uri) = runCatching {
         ImageDecoder.decodeDrawable(ImageDecoder.createSource(context.contentResolver, uri)) is android.graphics.drawable.AnimatedImageDrawable
     }.getOrDefault(false)
@@ -167,7 +174,25 @@ internal fun GifSheet(startWithStickers: Boolean, filesAllowed: Boolean, dismiss
     val searchable = GifSettings.searchable(prefs)
     var browsing by remember { mutableStateOf(false) }
     val sites = remember { GifSites.enabled(prefs) }
-    if (browsing) { GifSiteBrowser(prefs, query, { browsing = false }) { url -> link(url); dismiss() }; return }
+    // A photo being made into a sticker: it opens in the editor with its background being removed.
+    var stickerPhoto by remember { mutableStateOf<Uri?>(null) }
+    val scope = rememberCoroutineScope()
+    if (browsing) {
+        GifSiteBrowser(prefs, query, { browsing = false }, { url -> link(url); dismiss() },
+            if (filesAllowed) { video -> file(video); dismiss() } else null)
+        return
+    }
+    stickerPhoto?.let { photo ->
+        MediaEditor(photo, { stickerPhoto = null }, sticker = true) { edited, _ ->
+            scope.launch {
+                withContext(Dispatchers.IO) { edited.uri?.let { SavedStickers.add(context, it) } }
+                saved = SavedStickers.list(context)
+                stickers = true
+                stickerPhoto = null
+            }
+        }
+        return
+    }
     LaunchedEffect(query, stickers) {
         if (!searchable) return@LaunchedEffect
         results = null
@@ -178,7 +203,9 @@ internal fun GifSheet(startWithStickers: Boolean, filesAllowed: Boolean, dismiss
         if (uri != null) runCatching { Attachment.describe(context, uri, AttachmentKind.PHOTO) }.getOrNull()?.let { file(it); dismiss() }
     }
     val addSticker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null && SavedStickers.add(context, uri) != null) saved = SavedStickers.list(context)
+        if (uri == null) return@rememberLauncherForActivityResult
+        if (SavedStickers.animated(context, uri)) { if (SavedStickers.add(context, uri) != null) saved = SavedStickers.list(context) }
+        else stickerPhoto = uri
     }
     ModalBottomSheet(onDismissRequest = dismiss) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(.82f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -209,7 +236,7 @@ internal fun GifSheet(startWithStickers: Boolean, filesAllowed: Boolean, dismiss
                 searchable && results == null && !(stickers && saved.isNotEmpty() && query.isEmpty()) ->
                     Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 cells.isEmpty() -> Text(when {
-                    stickers && !searchable -> "Tap Make a sticker to turn any photo into a sticker. Your keyboard's stickers work too."
+                    stickers && !searchable -> "Tap Make a sticker to turn any photo into a sticker: its background is removed, and you can touch it up before saving. Your keyboard's stickers work too."
                     !searchable -> "Tap a site above to browse GIFs, or pick one from your phone or keyboard. For search results right here, add a Tenor or GIPHY key in Settings → Media, GIFs, and links."
                     else -> "Nothing found."
                 }, color = MaterialTheme.colorScheme.onSurfaceVariant)

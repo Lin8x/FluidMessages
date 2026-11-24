@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.FileOutputStream
@@ -144,16 +145,76 @@ internal fun colorMatrix(filter: EditFilter, adjust: Adjustments): ColorMatrix? 
     return out
 }
 
+/**
+ * A removed background. [mask] (ALPHA_8, possibly smaller than the photo) says what is kept, and [source] is the
+ * photo with the background's color taken out of the soft outline; both are null until removal has run, which
+ * means everything is kept. [touches] are Erase strokes (brush ERASER) and Keep strokes (any other brush) on top,
+ * in picture coordinates. [taps] are spots you tapped as background, in photo pixels.
+ */
+internal data class Cutout(
+    val mask: Bitmap? = null, val source: Bitmap? = null, val touches: List<EditStroke> = emptyList(),
+    val tolerance: Float = .4f, val softness: Float = .35f, val fromEdges: Boolean = true, val taps: List<Pair<Int, Int>> = emptyList(),
+    val removed: Float = 0f,
+)
+
 /** One version of the picture. Edits make a new one, which is what undo goes back through. */
 internal data class EditState(
     val base: Bitmap, val stretchX: Float = 1f, val stretchY: Float = 1f,
     val padTop: Int = 0, val padBottom: Int = 0, val padSides: Int = 0, val padColor: Int = android.graphics.Color.WHITE,
     val filter: EditFilter = EditFilter.NONE, val adjust: Adjustments = Adjustments(), val strokes: List<EditStroke> = emptyList(), val layers: List<EditLayer> = emptyList(),
+    val cutout: Cutout? = null,
 ) {
     val imageWidth: Float get() = base.width * stretchX
     val imageHeight: Float get() = base.height * stretchY
     val width: Int get() = max(1, (imageWidth + padSides * 2).toInt())
     val height: Int get() = max(1, (imageHeight + padTop + padBottom).toInt())
+    val imageRect: RectF get() = RectF(padSides.toFloat(), padTop.toFloat(), padSides + imageWidth, padTop + imageHeight)
+}
+
+/**
+ * Background removal for the editor, on the phone (see BackgroundCut). The background is found at most
+ * [ANALYSIS] pixels on a side, which keeps memory and time in check, and the soft outline is applied at full size.
+ * Blocking; run it off the main thread.
+ */
+internal object EditCutouts {
+    private const val ANALYSIS = 1280
+
+    fun compute(base: Bitmap, cut: Cutout, progress: (Float) -> Unit, stop: () -> Boolean): Cutout {
+        val scale = min(1f, ANALYSIS.toFloat() / max(base.width, base.height))
+        val w = max(1, (base.width * scale).toInt())
+        val h = max(1, (base.height * scale).toInt())
+        val small = if (scale < 1f) Bitmap.createScaledBitmap(base, w, h, true) else base
+        val pixels = IntArray(w * h)
+        small.getPixels(pixels, 0, w, 0, 0, w, h)
+        if (small !== base) small.recycle()
+        val taps = cut.taps.map { (x, y) -> (x * scale).toInt() to (y * scale).toInt() }
+        val found = BackgroundCut.find(pixels, w, h, cut.tolerance, cut.softness, cut.fromEdges, taps, { progress(it * .8f) }, stop)
+        val mask = Bitmap.createBitmap(w, h, Bitmap.Config.ALPHA_8)
+        val rows = java.nio.ByteBuffer.allocate(mask.rowBytes * h)
+        for (y in 0 until h) { rows.position(y * mask.rowBytes); rows.put(found.alpha, y * w, w) }
+        rows.rewind()
+        mask.copyPixelsFromBuffer(rows)
+        if (stop()) throw BackgroundCut.CancellationException()
+        val full = IntArray(base.width * base.height)
+        base.getPixels(full, 0, base.width, 0, 0, base.width, base.height)
+        BackgroundCut.decontaminate(full, base.width, base.height, found)
+        val source = Bitmap.createBitmap(full, base.width, base.height, Bitmap.Config.ARGB_8888)
+        progress(1f)
+        return cut.copy(mask = mask, source = source, removed = found.removed)
+    }
+
+    /** A sticker trimmed to what's left of the picture, with a little room around it. */
+    fun trimmed(bitmap: Bitmap): Bitmap {
+        if (!bitmap.hasAlpha()) return bitmap
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        val box = BackgroundCut.opaqueBounds(pixels, bitmap.width, bitmap.height) ?: return bitmap
+        val room = (max(box[2] - box[0], box[3] - box[1]) * .03f).toInt()
+        val left = (box[0] - room).coerceAtLeast(0); val top = (box[1] - room).coerceAtLeast(0)
+        val right = (box[2] + room).coerceAtMost(bitmap.width); val bottom = (box[3] + room).coerceAtMost(bitmap.height)
+        if (left == 0 && top == 0 && right == bitmap.width && bottom == bitmap.height) return bitmap
+        return Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
+    }
 }
 
 private val shared = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -184,24 +245,49 @@ private fun pictureBounds(layer: PictureLayer): RectF {
 private fun bounds(layer: EditLayer) = when (layer) { is TextLayer -> textBounds(layer); is PictureLayer -> pictureBounds(layer) }
 
 /** Draws the whole picture onto a canvas in picture coordinates. Used for the preview and for the file that's sent. */
+private fun strokePath(stroke: EditStroke) = Path().apply {
+    moveTo(stroke.points[0].x, stroke.points[0].y)
+    if (stroke.points.size == 1) lineTo(stroke.points[0].x + .1f, stroke.points[0].y)
+    for (index in 1 until stroke.points.size) {
+        val previous = stroke.points[index - 1]
+        val point = stroke.points[index]
+        quadTo(previous.x, previous.y, (previous.x + point.x) / 2, (previous.y + point.y) / 2)
+    }
+}
+
 internal fun renderEdit(canvas: android.graphics.Canvas, state: EditState) {
-    if (state.padTop > 0 || state.padBottom > 0 || state.padSides > 0) canvas.drawColor(state.padColor)
+    val image = state.imageRect
+    if (state.padTop > 0 || state.padBottom > 0 || state.padSides > 0) {
+        // Only around the photo, so a removed background stays see-through.
+        canvas.save()
+        canvas.clipOutRect(image)
+        canvas.drawColor(state.padColor)
+        canvas.restore()
+    }
     val photo = Paint(shared).apply { colorFilter = colorMatrix(state.filter, state.adjust)?.let { ColorMatrixColorFilter(it) } }
-    canvas.drawBitmap(state.base, null, RectF(state.padSides.toFloat(), state.padTop.toFloat(), state.padSides + state.imageWidth,
-        state.padTop + state.imageHeight), photo)
+    val cut = state.cutout
+    if (cut == null) canvas.drawBitmap(state.base, null, image, photo)
+    else {
+        // What's kept is drawn as alpha first (the found mask, then Erase and Keep strokes), and the photo goes in through it.
+        val layer = canvas.saveLayer(image, null)
+        canvas.clipRect(image)
+        if (cut.mask != null) canvas.drawBitmap(cut.mask, null, image, shared) else canvas.drawColor(android.graphics.Color.BLACK)
+        for (touch in cut.touches) {
+            if (touch.points.isEmpty()) continue
+            canvas.drawPath(strokePath(touch), Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE; strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
+                strokeWidth = touch.width; color = android.graphics.Color.BLACK
+                if (touch.brush == EditBrush.ERASER) blendMode = BlendMode.CLEAR
+            })
+        }
+        canvas.drawBitmap(cut.source ?: state.base, null, image, Paint(photo).apply { blendMode = BlendMode.SRC_IN })
+        canvas.restoreToCount(layer)
+    }
     // Strokes go on their own layer, so the eraser and highlighter behave like real ones.
     val saved = canvas.saveLayer(0f, 0f, state.width.toFloat(), state.height.toFloat(), null)
     for (stroke in state.strokes) {
         if (stroke.points.isEmpty()) continue
-        val path = Path().apply {
-            moveTo(stroke.points[0].x, stroke.points[0].y)
-            if (stroke.points.size == 1) lineTo(stroke.points[0].x + .1f, stroke.points[0].y)
-            for (index in 1 until stroke.points.size) {
-                val previous = stroke.points[index - 1]
-                val point = stroke.points[index]
-                quadTo(previous.x, previous.y, (previous.x + point.x) / 2, (previous.y + point.y) / 2)
-            }
-        }
+        val path = strokePath(stroke)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeJoin = Paint.Join.ROUND
@@ -283,8 +369,13 @@ internal object EditFiles {
     }.getOrNull()
 
     fun save(context: Context, bitmap: Bitmap): Attachment {
-        val alpha = bitmap.hasAlpha() && (0 until 16).any { index ->
-            android.graphics.Color.alpha(bitmap.getPixel(index * (bitmap.width - 1) / 15, index * (bitmap.height - 1) / 15)) < 255
+        // Any see-through pixel (a removed background, or a transparent picture) keeps the picture a PNG.
+        val alpha = bitmap.hasAlpha() && run {
+            val row = IntArray(bitmap.width)
+            (0 until bitmap.height).any { y ->
+                bitmap.getPixels(row, 0, bitmap.width, 0, y, bitmap.width, 1)
+                row.any { (it ushr 24) < 255 }
+            }
         }
         val file = AttachmentFiles.scratch(context, if (alpha) "png" else "jpg")
         FileOutputStream(file).use { bitmap.compress(if (alpha) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG, 92, it) }
@@ -294,15 +385,21 @@ internal object EditFiles {
 }
 
 private enum class EditTool(val label: String) {
-    CROP("Crop"), ADJUST("Adjust"), FILTERS("Filters"), DRAW("Draw"), TEXT("Text"), IMAGES("Images"), SIZE("Size")
+    CROP("Crop"), ADJUST("Adjust"), FILTERS("Filters"), BACKGROUND("Background"), DRAW("Draw"), TEXT("Text"), IMAGES("Images"), SIZE("Size")
 }
 
 private val swatches = listOf(0xFFFFFFFF, 0xFF000000, 0xFFFF3B30, 0xFFFF9500, 0xFFFFCC00, 0xFF34C759, 0xFF00C7BE, 0xFF007AFF, 0xFF5856D6,
     0xFFAF52DE, 0xFFFF2D55, 0xFFA2845E).map { it.toInt() }
 
-/** The editor, full screen. [done] gets the edited picture and whether to send it right away. */
+/** How Background touches the picture: tap a spot of background, or brush parts away or back. */
+private enum class CutMode(val label: String) { TAP("Tap to remove"), ERASE("Erase"), KEEP("Keep") }
+
+/**
+ * The editor, full screen. [done] gets the edited picture and whether to send it right away. With [sticker], it
+ * opens on Background with the background already being removed, and its one button saves the sticker.
+ */
 @Composable
-internal fun MediaEditor(source: Uri, dismiss: () -> Unit, done: (Attachment, Boolean) -> Unit) {
+internal fun MediaEditor(source: Uri, dismiss: () -> Unit, sticker: Boolean = false, done: (Attachment, Boolean) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // Null while loading, then the picture or a failure (an unsupported file, or one that's gone).
@@ -320,7 +417,7 @@ internal fun MediaEditor(source: Uri, dismiss: () -> Unit, done: (Attachment, Bo
                 TextButton(onClick = dismiss) { Text("Close", color = Color.White) }
             }
             else if (first == null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            else EditorBody(first, dismiss) { bitmap, send ->
+            else EditorBody(first, sticker, dismiss) { bitmap, send ->
                 scope.launch {
                     val attachment = withContext(Dispatchers.IO) { runCatching { EditFiles.save(context, bitmap) }.getOrNull() }
                     if (attachment == null) { failed = true; return@launch }
@@ -332,17 +429,18 @@ internal fun MediaEditor(source: Uri, dismiss: () -> Unit, done: (Attachment, Bo
 }
 
 @Composable
-private fun EditorBody(original: Bitmap, dismiss: () -> Unit, finish: (Bitmap, Boolean) -> Unit) {
+private fun EditorBody(original: Bitmap, sticker: Boolean, dismiss: () -> Unit, finish: (Bitmap, Boolean) -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf(EditState(original)) }
     val undo = remember { mutableStateListOf<EditState>() }
     val redo = remember { mutableStateListOf<EditState>() }
     // Crops and turns make a new full-size photo, so undo keeps at most a few of those (and 30 steps in all).
     fun trim() {
-        while (undo.size > 30 || undo.map { it.base }.distinct().size > 5) undo.removeAt(0)
+        while (undo.size > 30 || undo.flatMap { listOfNotNull(it.base, it.cutout?.source) }.distinct().size > 6) undo.removeAt(0)
     }
     fun commit(next: EditState) { undo.add(state); trim(); redo.clear(); state = next }
-    var tool by remember { mutableStateOf(EditTool.CROP) }
+    var tool by remember { mutableStateOf(if (sticker) EditTool.BACKGROUND else EditTool.CROP) }
     var brush by remember { mutableStateOf(EditBrush.PEN) }
     var ink by remember { mutableIntStateOf(0xFFFF3B30.toInt()) }
     var thickness by remember { mutableFloatStateOf(12f) }
@@ -374,6 +472,44 @@ private fun EditorBody(original: Bitmap, dismiss: () -> Unit, finish: (Bitmap, B
     }
     val chosen = state.layers.firstOrNull { it.id == selected }
 
+    // Background removal runs off the main thread; a newer request replaces one still running.
+    var cutMode by remember { mutableStateOf(CutMode.TAP) }
+    var cutJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var cutProgress by remember { mutableStateOf<Float?>(null) }
+    var cutNote by remember { mutableStateOf("") }
+    var strength by remember { mutableFloatStateOf(.4f) }
+    var softness by remember { mutableFloatStateOf(.35f) }
+    fun runCut(params: Cutout) {
+        val base = state.base
+        cutJob?.cancel()
+        cutProgress = 0f
+        cutNote = ""
+        cutJob = scope.launch {
+            val result = withContext(Dispatchers.Default) {
+                try { Result.success(EditCutouts.compute(base, params, { cutProgress = it }, { !isActive })) }
+                catch (_: BackgroundCut.CancellationException) { null }
+                catch (_: OutOfMemoryError) { Result.failure(IllegalStateException("memory")) }
+            } ?: return@launch
+            cutProgress = null
+            val made = result.getOrNull()
+            when {
+                made == null -> cutNote = "There isn't enough memory to remove this picture's background. Try cropping it first."
+                state.base !== base -> {}
+                else -> {
+                    // Erase and Keep strokes made meanwhile stay.
+                    commit(state.copy(cutout = made.copy(touches = state.cutout?.touches.orEmpty())))
+                    cutNote = when {
+                        made.removed < .01f -> "No clear background found. Tap the background, or use Erase."
+                        made.removed > .97f -> "That took almost everything. Lower Strength, or use Keep to bring parts back."
+                        else -> ""
+                    }
+                }
+            }
+        }
+    }
+    fun cutParams() = (state.cutout ?: Cutout()).copy(tolerance = strength, softness = softness)
+    LaunchedEffect(Unit) { if (sticker) runCut(Cutout(tolerance = strength, softness = softness)) }
+
     Column(Modifier.fillMaxSize().systemBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = dismiss) { Text("Cancel", color = Color.White) }
@@ -385,8 +521,13 @@ private fun EditorBody(original: Bitmap, dismiss: () -> Unit, finish: (Bitmap, B
                 Text("↷", color = if (redo.isNotEmpty()) Color.White else Color.Gray, fontSize = 18.sp)
             }
             Spacer(Modifier.weight(1f))
-            TextButton(enabled = !working, onClick = { working = true; selected = null; finish(flatten(state), false) }) { Text("Done", color = Color.White) }
-            Button(enabled = !working, onClick = { working = true; selected = null; finish(flatten(state), true) }) { Text("Send") }
+            if (sticker) Button(enabled = !working && cutProgress == null, onClick = {
+                working = true; selected = null; finish(EditCutouts.trimmed(flatten(state)), false)
+            }) { Text("Save sticker") }
+            else {
+                TextButton(enabled = !working, onClick = { working = true; selected = null; finish(flatten(state), false) }) { Text("Done", color = Color.White) }
+                Button(enabled = !working, onClick = { working = true; selected = null; finish(flatten(state), true) }) { Text("Send") }
+            }
         }
         // The picture, fitted to the space, with every gesture mapped back to picture coordinates.
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
@@ -399,9 +540,36 @@ private fun EditorBody(original: Bitmap, dismiss: () -> Unit, finish: (Bitmap, B
             fun toPicture(point: Offset) = Offset(point.x / fit, point.y / fit)
             var drawing by remember { mutableStateOf<List<Offset>?>(null) }
             val live = state
+            val checkerCell = with(density) { 8.dp.toPx() }
+            val checker = remember {
+                Paint().apply {
+                    val tile = Bitmap.createBitmap(intArrayOf(0xFF9A9A9E.toInt(), 0xFF6B6B70.toInt(), 0xFF6B6B70.toInt(), 0xFF9A9A9E.toInt()), 2, 2, Bitmap.Config.ARGB_8888)
+                    shader = android.graphics.BitmapShader(tile, android.graphics.Shader.TileMode.REPEAT, android.graphics.Shader.TileMode.REPEAT)
+                }
+            }
             Canvas(Modifier.size(with(density) { viewW.toDp() }, with(density) { viewH.toDp() })
-                .pointerInput(tool, brush, ink, thickness, fit, scale, cropRatio) {
+                .pointerInput(tool, brush, ink, thickness, fit, scale, cropRatio, cutMode) {
                     when (tool) {
+                        EditTool.BACKGROUND -> if (cutMode == CutMode.TAP) detectTapGestures { point ->
+                            // Picture coordinates to photo pixels.
+                            val p = toPicture(point)
+                            val x = ((p.x - state.padSides) / state.stretchX).toInt()
+                            val y = ((p.y - state.padTop) / state.stretchY).toInt()
+                            if (x in 0 until state.base.width && y in 0 until state.base.height) {
+                                val current = cutParams()
+                                runCut(current.copy(taps = (current.taps + (x to y)).takeLast(40)))
+                            }
+                        } else detectDragGestures(
+                            onDragStart = { drawing = listOf(toPicture(it)) },
+                            onDragEnd = {
+                                drawing?.let { points ->
+                                    val cut = state.cutout ?: Cutout(fromEdges = false)
+                                    commit(state.copy(cutout = cut.copy(touches = cut.touches + cutTouch(points, cutMode, thickness * scale))))
+                                }
+                                drawing = null
+                            },
+                            onDragCancel = { drawing = null },
+                        ) { change, _ -> drawing = drawing.orEmpty() + toPicture(change.position) }
                         EditTool.DRAW -> detectDragGestures(
                             onDragStart = { drawing = listOf(toPicture(it)) },
                             onDragEnd = {
@@ -480,7 +648,15 @@ private fun EditorBody(original: Bitmap, dismiss: () -> Unit, finish: (Bitmap, B
                     val native = canvas.nativeCanvas
                     native.save()
                     native.scale(fit, fit)
-                    val preview = drawing?.let { live.copy(strokes = live.strokes + EditStroke(it, ink, thickness * scale, brush)) } ?: live
+                    checker.shader.setLocalMatrix(Matrix().apply { setScale(checkerCell / fit, checkerCell / fit) })
+                    val preview = drawing?.let { points ->
+                        if (tool == EditTool.BACKGROUND) {
+                            val cut = live.cutout ?: Cutout(fromEdges = false)
+                            live.copy(cutout = cut.copy(touches = cut.touches + cutTouch(points, cutMode, thickness * scale)))
+                        } else live.copy(strokes = live.strokes + EditStroke(points, ink, thickness * scale, brush))
+                    } ?: live
+                    // A checkerboard behind see-through parts, as photo apps show it.
+                    if (preview.cutout != null || preview.base.hasAlpha()) native.drawRect(0f, 0f, preview.width.toFloat(), preview.height.toFloat(), checker)
                     renderEdit(native, preview)
                     native.restore()
                 }
@@ -516,6 +692,33 @@ private fun EditorBody(original: Bitmap, dismiss: () -> Unit, finish: (Bitmap, B
         Column(Modifier.fillMaxWidth().background(Color(0xFF1C1C1F)).padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             when (tool) {
+                EditTool.BACKGROUND -> {
+                    val cut = state.cutout
+                    val busy = cutProgress
+                    if (busy != null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Removing the background…", fontSize = 13.sp)
+                        LinearProgressIndicator(progress = { busy }, Modifier.weight(1f))
+                        TextButton(onClick = { cutJob?.cancel(); cutProgress = null }) { Text("Stop", color = Color.White) }
+                    }
+                    if (cut?.mask == null && busy == null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Button(onClick = { runCut(cutParams().copy(fromEdges = true)) }) { Text("Remove background") }
+                        Text("Works best when the background is plain and runs along the picture's edges.", Modifier.weight(1f), fontSize = 12.sp, color = Color.LightGray)
+                    }
+                    ChipRow {
+                        for (mode in CutMode.entries) FilterChip(cutMode == mode, { cutMode = mode }, label = { Text(mode.label) })
+                        if (cut != null) EditChip("Bring back all") { commit(state.copy(cutout = null)); cutNote = "" }
+                    }
+                    Text(when (cutMode) {
+                        CutMode.TAP -> "Tap any background still showing, like a gap between arms, to remove it too."
+                        CutMode.ERASE -> "Brush over anything else to remove."
+                        CutMode.KEEP -> "Brush over parts that should stay, to bring them back."
+                    }, fontSize = 12.sp, color = Color.LightGray)
+                    if (cutMode == CutMode.TAP) {
+                        LabeledSlider("Strength", strength, 0f..1f, { if (cut?.mask != null) runCut(cutParams()) }) { strength = it }
+                        LabeledSlider("Soft edges", softness, 0f..1f, { if (cut?.mask != null) runCut(cutParams()) }) { softness = it }
+                    } else LabeledSlider("Brush size", thickness, 3f..60f) { thickness = it }
+                    if (cutNote.isNotEmpty()) Text(cutNote, fontSize = 12.sp, color = Color(0xFFFFD60A))
+                }
                 EditTool.ADJUST -> {
                     val a = state.adjust
                     LabeledSlider("Brightness", a.brightness, -1f..1f, { sliding = false }) { slide(state.copy(adjust = a.copy(brightness = it))) }
@@ -663,7 +866,7 @@ private fun EditorBody(original: Bitmap, dismiss: () -> Unit, finish: (Bitmap, B
     }
     editingText?.let { layer ->
         var words by remember(layer) { mutableStateOf(layer.text) }
-        AlertDialog(onDismissRequest = { editingText = null }, title = { Text(if (layer.id < 0) "Add text" else "Edit text") }, text = {
+        FormPage(onDismissRequest = { editingText = null }, title = { Text(if (layer.id < 0) "Add text" else "Edit text") }, text = {
             OutlinedTextField(words, { words = it.take(200) }, minLines = 1, maxLines = 4, placeholder = { Text("Type your text") })
         }, confirmButton = {
             TextButton(onClick = {
@@ -678,6 +881,10 @@ private fun EditorBody(original: Bitmap, dismiss: () -> Unit, finish: (Bitmap, B
 }
 
 private var dragCorner = -1
+
+/** An Erase or Keep stroke for Background. Erase is marked with the eraser brush. */
+private fun cutTouch(points: List<Offset>, mode: CutMode, width: Float) =
+    EditStroke(points, android.graphics.Color.BLACK, width * 2.4f, if (mode == CutMode.ERASE) EditBrush.ERASER else EditBrush.PEN)
 
 /** Keeps the crop box inside the picture, at least a little bigger than a fingertip, and at the chosen shape. */
 private fun constrainCrop(rect: RectF, width: Float, height: Float, ratio: Float?, corner: Int, center: Boolean = false): RectF {

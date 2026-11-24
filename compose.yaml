@@ -4,7 +4,12 @@ services:
     image: ghcr.io/lin8x/fluidmessages-web:latest
     build: ./server
     environment:
-      FLUID_TOKEN: ${FLUID_TOKEN:?Set a random access token in .env or Portainer}
+      # Optional. You sign in to the web app with a password you create on first visit (the one-time setup code is
+      # in this container's log). Set FLUID_TOKEN only if you want a fixed token for your phone or scripts:
+      # openssl rand -hex 32
+      FLUID_TOKEN: ${FLUID_TOKEN:-}
+      # Optional: your public address, like https://messages.example.org, for older browsers behind a proxy that rewrites Host.
+      FLUID_ORIGINS: ${FLUID_ORIGINS:-}
       FLUID_BACKUP_ONEDRIVE: ${FLUID_BACKUP_ONEDRIVE:-}
       FLUID_BACKUP_DRIVE: ${FLUID_BACKUP_DRIVE:-}
       FLUID_BACKUP_S3: ${FLUID_BACKUP_S3:-}

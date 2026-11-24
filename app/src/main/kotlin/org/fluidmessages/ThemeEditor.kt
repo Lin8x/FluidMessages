@@ -334,7 +334,7 @@ private fun Editor(prefs: SharedPreferences, recolor: (Int) -> Unit) {
             val existing = library.keys().asSequence().firstOrNull { it.equals(name, ignoreCase = true) }
             val builtIn = MessageStyle.Theme.values().any { it.label.equals(name, ignoreCase = true) }
             val limitReached = existing == null && library.length() >= 20
-            AlertDialog(onDismissRequest = { savePalette = false }, title = { Text("Save custom palette") },
+            FormPage(onDismissRequest = { savePalette = false }, title = { Text("Save custom palette") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(paletteName, { paletteName = it.take(34) }, singleLine = true,

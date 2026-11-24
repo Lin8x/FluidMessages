@@ -391,7 +391,7 @@ internal fun CustomMoneyDialog(dismiss: () -> Unit, added: (MoneyAsset) -> Unit)
     var name by remember { mutableStateOf("") }
     var template by remember { mutableStateOf("") }
     var problem by remember { mutableStateOf<String?>(null) }
-    AlertDialog(onDismissRequest = dismiss, title = { Text("Add a way to pay") },
+    FormPage(onDismissRequest = dismiss, title = { Text("Add a way to pay") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Any coin or service with a payment link works. Put {address}, {amount}, and {note} where they go.",

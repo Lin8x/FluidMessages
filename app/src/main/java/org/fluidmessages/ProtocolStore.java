@@ -23,7 +23,7 @@ final class ProtocolStore extends SQLiteOpenHelper {
     private final Context context;
 
     private ProtocolStore(Context context) {
-        super(context, "protocol-history.db", null, 2);
+        super(context, "protocol-history.db", null, 3);
         this.context = context;
     }
 
@@ -35,7 +35,7 @@ final class ProtocolStore extends SQLiteOpenHelper {
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE messages (id TEXT PRIMARY KEY, date INTEGER NOT NULL, payload TEXT NOT NULL)");
         db.execSQL("CREATE INDEX recent_messages ON messages (date DESC)");
-        db.execSQL("CREATE TABLE hidden (id TEXT PRIMARY KEY, date INTEGER NOT NULL, sealed TEXT NOT NULL)");
+        db.execSQL("CREATE TABLE hidden (id TEXT PRIMARY KEY, date INTEGER NOT NULL, sealed TEXT NOT NULL, expires INTEGER NOT NULL DEFAULT 0)");
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
@@ -51,6 +51,11 @@ final class ProtocolStore extends SQLiteOpenHelper {
                 }
             }
         }
+        if (oldVersion < 3) {
+            // When each hidden message disappears, so it can go while the private folder is closed. Only the time is
+            // kept outside the sealed copy. Messages hidden earlier go the next time the folder is opened.
+            db.execSQL("ALTER TABLE hidden ADD COLUMN expires INTEGER NOT NULL DEFAULT 0");
+        }
     }
 
     private android.content.SharedPreferences prefs() { return context.getSharedPreferences("fluid", Context.MODE_PRIVATE); }
@@ -64,8 +69,38 @@ final class ProtocolStore extends SQLiteOpenHelper {
         row.put("id", message.getString("id"));
         row.put("date", message.optLong("date"));
         row.put("sealed", Privacy.vaultSeal(prefs(), message.toString()));
+        long expires = hiddenExpiry(message);
+        row.put("expires", expires);
         getWritableDatabase().insertWithOnConflict("hidden", null, row, SQLiteDatabase.CONFLICT_REPLACE);
         revision.incrementAndGet();
+        Disappearing.wakeBy(context, expires);
+    }
+
+    /** When a hidden message disappears, worked out now because the sealed copy can't be read later. */
+    private long hiddenExpiry(JSONObject message) {
+        try {
+            var row = message;
+            if (message.optString("body").startsWith(SmsCrypto.PREFIX)) {
+                row = new JSONObject(message.toString());
+                SmsCrypto.reveal(prefs(), row);
+            }
+            return Disappearing.expiry(prefs(), row, row.optString("address"));
+        } catch (Exception error) { return 0; }
+    }
+
+    /** Deletes hidden messages whose time is up without opening them. Returns how many went. */
+    int removeExpiredHidden(long now) {
+        int gone = getWritableDatabase().delete("hidden", "expires > 0 AND expires <= ?", new String[]{Long.toString(now)});
+        if (gone > 0) revision.incrementAndGet();
+        return gone;
+    }
+
+    /** The next time a hidden message disappears, or 0. */
+    long nextHiddenExpiry(long now) {
+        try (var cursor = getReadableDatabase().rawQuery("SELECT MIN(expires) FROM hidden WHERE expires > ?",
+                new String[]{Long.toString(now)})) {
+            return cursor.moveToFirst() && !cursor.isNull(0) ? cursor.getLong(0) : 0;
+        }
     }
 
     List<JSONObject> readHidden() {
@@ -92,6 +127,7 @@ final class ProtocolStore extends SQLiteOpenHelper {
         row.put("payload", Privacy.seal(prefs(), message.toString()));
         getWritableDatabase().insertWithOnConflict("messages", null, row, SQLiteDatabase.CONFLICT_REPLACE);
         revision.incrementAndGet();
+        Disappearing.track(context, message);
     }
 
     void putBatch(JSONArray rows) throws Exception {
@@ -121,6 +157,8 @@ final class ProtocolStore extends SQLiteOpenHelper {
     void remove(String id) throws IOException {
         getWritableDatabase().delete("messages", "id = ?", new String[]{id});
         revision.incrementAndGet();
+        // Ids that can't name a file never had one stored.
+        if (!id.matches("[A-Za-z0-9_-]{1,100}")) return;
         Files.deleteIfExists(photoFile(id).toPath());
         Files.deleteIfExists(attachmentFile(id).toPath());
     }

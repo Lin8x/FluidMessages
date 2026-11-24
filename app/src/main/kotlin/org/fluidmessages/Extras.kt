@@ -288,7 +288,7 @@ private fun DrawScope.heart(color: Color, at: Offset, size: Float) {
 /** Choose an effect for the words in the message box. */
 @Composable
 internal fun EffectsDialog(dismiss: () -> Unit, send: (MessageEffect) -> Unit) {
-    AlertDialog(onDismissRequest = dismiss, title = { Text("Send with effect") }, text = {
+    FormPage(onDismissRequest = dismiss, title = { Text("Send with effect") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("On other apps, your message arrives as normal text with a note saying which effect you picked.", fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -394,7 +394,7 @@ internal fun RandomDialog(dismiss: () -> Unit, post: (String) -> Unit) {
     var sides by remember { mutableIntStateOf(6) }
     var options by remember { mutableStateOf("") }
     val choices = options.split('\n').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-    AlertDialog(onDismissRequest = dismiss, title = { Text("Dice and random") }, text = {
+    FormPage(onDismissRequest = dismiss, title = { Text("Dice and random") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                 listOf("Dice", "Coin", "Pick").forEachIndexed { index, label ->

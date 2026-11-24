@@ -16,6 +16,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.layout.size
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.semantics.contentDescription
@@ -122,6 +124,26 @@ object OnboardingScreen {
                                         Tip(TipIcon.PHONE, "Phone calls", "Use your phone number, from the Phone tab"),
                                         Tip(TipIcon.PEOPLE, "Internet calls", "Voice and video with Matrix contacts"),
                                         Tip(TipIcon.OPTIONAL, "Meeting links", "Optional: Settings → Chats and calls → Calls")), appearance.speed)
+                                }
+                            }
+                            "more" -> {
+                                item { ExtrasIllustration(listOf("📊", "📅", "🎮", "💸", "🖼️", "🎉"), appearance.speed) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.CHAT, "The + button", "Photos, polls, events, money, games, dice, GIFs, and effects"),
+                                        Tip(TipIcon.PEOPLE, "Works with everyone", "People on other apps get readable text and can reply to vote, RSVP, or play"),
+                                        Tip(TipIcon.PRACTICE, "Edit photos", "Crop, draw, add text, or remove the background before you send"),
+                                        Tip(TipIcon.TIMER, "Voice messages", "Tap the mic with nothing typed. Tap Show transcript to read one, made on your phone")), appearance.speed)
+                                }
+                            }
+                            "gestures" -> {
+                                item { ExtrasIllustration(listOf("👉", "👆", "✏️", "🙈", "✨", "❤️"), appearance.speed) }
+                                item {
+                                    Tips(listOf(
+                                        Tip(TipIcon.CHAT, "Swipe a message right", "Reply to it"),
+                                        Tip(TipIcon.FINGER, "Touch and hold a message", "React, edit, forward, copy, or replay its effect"),
+                                        Tip(TipIcon.MASK, "Spoilers", "Write ||secret|| and it stays hidden until tapped"),
+                                        Tip(TipIcon.TAG, "Formatting", "*bold*, _italic_, ~strike~, and `code`")), appearance.speed)
                                 }
                             }
                             "computer" -> {
@@ -249,6 +271,8 @@ object OnboardingScreen {
         Triple("protect", "Keep chats private", "Lock the app, a chat, or tuck chats away."),
         Triple("disappear", "Disappearing messages", "Messages can remove themselves after a while."),
         Triple("calls", "Calls", "Call from the Phone tab, or from a chat."),
+        Triple("more", "More than text", "Polls, events, games, money, and more, right in a chat."),
+        Triple("gestures", "Quick moves", "A few gestures that make chatting faster."),
         Triple("colors", "Pick your colors", "Choose a look and preview your bubbles. You can change it any time."),
         Triple("motion", "Motion, sound and haptics", "Decide how a message should feel when it arrives or sends."),
         Triple("backup", "Keep a backup", "Save your messages and settings to a file, so you don’t lose them if you change phones. Backups are password-protected."),
@@ -268,3 +292,21 @@ private fun SetupOptions(entries: List<Pair<String, String>>) {
         }
     }
 }
+
+/** A row of bright tiles that pop in one after another. */
+@Composable
+private fun ExtrasIllustration(symbols: List<String>, speed: Int) {
+    val colors = listOf(0xFF34C759, 0xFF007AFF, 0xFFAF52DE, 0xFFFF9500, 0xFFFF2D55, 0xFF00C7BE)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+        symbols.forEachIndexed { index, symbol ->
+            val shown = remember { androidx.compose.animation.core.Animatable(if (speed > 0) 0f else 1f) }
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                if (speed > 0) { kotlinx.coroutines.delay(index * 90L); shown.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = .55f)) }
+            }
+            Box(Modifier.size(48.dp).androidx_scale(shown.value).background(Color(colors[index % colors.size]), RoundedCornerShape(14.dp)),
+                contentAlignment = Alignment.Center) { Text(symbol, fontSize = 22.sp) }
+        }
+    }
+}
+
+private fun Modifier.androidx_scale(value: Float) = this.then(Modifier.graphicsLayer { scaleX = value; scaleY = value; alpha = value.coerceIn(0f, 1f) })

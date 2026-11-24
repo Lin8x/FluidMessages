@@ -37,7 +37,7 @@ GitHub Actions builds a debug APK for every push.
 
 ## Releasing
 
-`./scripts/release` builds a fresh APK and runs the local checks. It then commits any changes, tags `v<version>`, pushes the branch and tag, and creates a GitHub release with these files:
+`./scripts/release` builds a fresh APK and runs the local checks. It then commits any changes, tags `v<version>`, pushes the branch and tag, moves `main` up to the release, and creates a GitHub release with these files:
 
 - `FluidMessages-<version>.apk`: the Android app. **Check for updates** in the app picks it up.
 - `FluidMessages-Server-<version>.zip`: the FluidMessages Web server, with Docker Compose and the `web-app` scripts, for hosting it yourself.
@@ -51,6 +51,7 @@ GitHub Actions builds a debug APK for every push.
 - `--bump` raises the patch version first.
 - `--notes "..."` sets the release notes.
 - `--dry-run` previews the steps without changing anything.
+- `--no-main` leaves `main` where it is. Otherwise, releasing from another branch fast-forwards `main` to it, so the GitHub page, README, and website show the latest release. It never force-pushes: if `main` has commits your branch doesn't, it's left alone with a warning, and the release still goes out.
 
 It needs the GitHub CLI signed in (`gh auth login`). APKs are signed with this computer's debug key, so keep releasing from the same machine, or phones can't install the update over the old version.
 

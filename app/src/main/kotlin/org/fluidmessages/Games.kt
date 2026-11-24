@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -486,9 +489,11 @@ internal fun GameCard(view: GameView, foreground: Color, respond: ((String) -> U
 private fun GameDialog(view: GameView, respond: ((String) -> Unit)?, dismiss: () -> Unit, send: (String) -> Unit) {
     val playing = respond != null && view.myTurn
     var pending by remember { mutableStateOf<String?>(null) }
-    androidx.compose.ui.window.Dialog(onDismissRequest = dismiss) {
-        Surface(shape = RoundedCornerShape(22.dp), tonalElevation = 6.dp) {
-            BoxWithConstraints(Modifier.padding(16.dp)) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = dismiss, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false,
+        decorFitsSystemWindows = false)) {
+        // A full page, so the board is as big as the screen allows and Back closes it.
+        Surface(Modifier.fillMaxSize()) {
+            BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(16.dp), contentAlignment = Alignment.Center) {
                 val width = maxWidth
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(if (playing) "Your move" else view.kind.title, style = MaterialTheme.typography.titleMedium)
@@ -572,7 +577,7 @@ internal fun GamesDialog(dismiss: () -> Unit, post: (String) -> Unit) {
     val chosenSite = site
     fun open(url: String) = runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
     fun back() { when { here || chosenSite != null -> { here = false; site = null; link = ""; problem = null }; chosen != null || rps -> { kind = null; rps = false }; else -> dismiss() } }
-    AlertDialog(onDismissRequest = dismiss, title = { Text(when { rps -> "Rock paper scissors"; chosenSite != null -> "${chosen?.title} on ${chosenSite.name}"; else -> chosen?.title ?: "Games" }) }, text = {
+    FormPage(onDismissRequest = dismiss, title = { Text(when { rps -> "Rock paper scissors"; chosenSite != null -> "${chosen?.title} on ${chosenSite.name}"; else -> chosen?.title ?: "Games" }) }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             @Composable fun Choice(icon: String, title: String, detail: String, pick: () -> Unit) = Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant).clickable(onClick = pick).padding(14.dp),

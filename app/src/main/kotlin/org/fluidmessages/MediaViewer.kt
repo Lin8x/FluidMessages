@@ -128,6 +128,7 @@ internal object RemoteMedia {
                 connection.connectTimeout = 15_000
                 connection.readTimeout = 30_000
                 connection.setRequestProperty("User-Agent", "FluidMessages")
+                connection.setRequestProperty("Accept", "image/*, video/*")
                 connection.instanceFollowRedirects = false
                 val code = connection.responseCode
                 if (code !in 300..399) break

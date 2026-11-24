@@ -1,0 +1,16 @@
+name: 💡 Suggest an idea
+description: Something you'd like FluidMessages to do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: What would you like, and what would it help you do?
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: An example
+      description: Optional. How would you use it? Other apps that do it well are helpful too.

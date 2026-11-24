@@ -51,6 +51,9 @@ final class SmsStore {
         values.put("sub_id", sim);
         Uri uri = context.getContentResolver().insert(SMS, values);
         if (uri == null) throw new IllegalStateException("Android could not save the message");
+        // A text under a disappearing timer sets the alarm that deletes it, even if FluidMessages is closed by then.
+        try { Disappearing.track(context, new JSONObject().put("address", address).put("body", body).put("date", date)); }
+        catch (org.json.JSONException ignored) {}
         return uri;
     }
 

@@ -25,12 +25,28 @@ def _public_address(host, port):
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as error:
         raise Refused("unknown host") from error
+    if not infos:
+        raise Refused("unknown host")
     for family, _, _, _, address in infos:
-        ip = ipaddress.ip_address(address[0])
-        if not ip.is_global or ip.is_multicast:
+        if not public(ipaddress.ip_address(address[0].split("%")[0])):
             raise Refused("not a public address")
     family, _, _, _, address = infos[0]
     return family, address
+
+
+# IPv6 ranges that carry an IPv4 address inside them, which could point back at a private network.
+_EMBEDDING = [ipaddress.ip_network(net) for net in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "2001::/32", "::ffff:0:0/96")]
+
+
+def public(ip):
+    if ip.version == 6:
+        # NAT64 (IPv6-only networks) reaches IPv4 sites this way; it's as public as the address inside.
+        if any(ip in net for net in _EMBEDDING[:2]):
+            return public(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+        mapped = ip.ipv4_mapped or ip.sixtofour or (ip.teredo[1] if ip.teredo else None)
+        if mapped is not None and not public(mapped):
+            return False
+    return ip.is_global and not (ip.is_multicast or ip.is_reserved or ip.is_unspecified)
 
 
 class _Pinned(http.client.HTTPSConnection):
@@ -53,7 +69,13 @@ def fetch(url, limit, accept):
         parts = urlsplit(url)
         if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
             raise Refused("only https links")
-        port = parts.port or 443
+        try:
+            port = parts.port or 443
+        except ValueError as error:
+            raise Refused("invalid port") from error
+        # Ordinary web ports only, so links can't be used to probe other services.
+        if port not in (443, 8443):
+            raise Refused("only standard https ports")
         family, address = _public_address(parts.hostname, port)
         connection = _Pinned(parts.hostname, port, family, address, 10)
         path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
@@ -125,7 +147,8 @@ def picture(url):
         _, kind, body = fetch(url, 15 * 1024 * 1024, "image/*")
     except (Refused, OSError, http.client.HTTPException, ValueError):
         return None
-    if not kind.startswith("image/") or kind == "image/svg+xml":
+    # Only raster formats browsers decode as pictures; never SVG or anything that could run as a page.
+    if kind not in ("image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"):
         return None
     return kind, body
 

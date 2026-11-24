@@ -140,17 +140,27 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             int seconds = SyncPolicy.foregroundSeconds(prefs);
             if (seconds > 0 && SyncPolicy.allowed(MainActivity.this)) sync(false);
             if (resumed) checkUpdates(false);
-            if (Disappearing.anyTimers(prefs)) {
-                // Expired messages leave the screen right away and are deleted in the background.
-                invalidateRows();
-                refreshVisibleInbox();
-                if (page.equals("chat")) fillChat();
-                new Thread(() -> Disappearing.sweep(getApplicationContext()), "fluid-disappear").start();
-            }
             int next = seconds > 0 ? seconds : 60;
-            handler.postDelayed(this, (Disappearing.anyTimers(prefs) ? Math.min(next, 15) : next) * 1000L);
+            handler.postDelayed(this, next * 1000L);
         }
     };
+    /**
+     * Set for the next disappearing message among the loaded ones: it leaves the screen at its time and is deleted
+     * from storage straight away. With the app closed, {@link DisappearingAlarm} deletes it instead.
+     */
+    private final Runnable expireOnScreen = new Runnable() {
+        @Override public void run() {
+            invalidateRows();
+            refreshVisibleInbox();
+            if (page.equals("chat")) fillChat();
+            new Thread(() -> Disappearing.sweep(getApplicationContext()), "fluid-disappear").start();
+        }
+    };
+
+    private void expireAt(long at) {
+        handler.removeCallbacks(expireOnScreen);
+        if (at > 0) handler.postDelayed(expireOnScreen, Math.max(0, at - System.currentTimeMillis()) + 50);
+    }
     /** Companion-linked Matrix chats ring here while FluidMessages is open. */
     private final Runnable callPoll = new Runnable() {
         @Override public void run() {
@@ -186,6 +196,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private void watchContacts() {
+        contacts.watch();
         if (contacts.allowed() && !observingContacts) {
             try {
                 getContentResolver().registerContentObserver(ContactsContract.AUTHORITY_URI, true, contactObserver);
@@ -204,11 +215,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             int night = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
             prefs.edit().putBoolean("dark", night == android.content.res.Configuration.UI_MODE_NIGHT_YES).apply();
         }
-        contacts = new ContactDirectory(this);
+        // Shared with the rest of the app and kept between visits; it clears itself when a contact changes.
+        contacts = ContactDirectory.shared(this);
         new Thread(() -> {
             Privacy.migrate(prefs);
             DirectEmail.stripStoredQuotes(getApplicationContext());
         }, "fluid-email-cleanup").start();
+        // Catches disappearing messages whose alarm Android dropped (a force stop clears alarms) and sets it again.
+        // Waits until the inbox has loaded, so it doesn't slow the first screen.
+        if (Disappearing.anyTimers(prefs) || Disappearing.alarmSet(this)) handler.postDelayed(() ->
+            new Thread(() -> Disappearing.sweep(getApplicationContext()), "fluid-disappear-start").start(), 4000);
         if (state != null && state.containsKey("setupStep")) onboarding(state.getInt("setupStep"));
         else if (prefs.getBoolean("onboarded", false)) open(getIntent());
         else onboarding(0);
@@ -227,7 +243,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     @Override protected void onStart() {
         super.onStart();
         if (prefs.getBoolean("lock", false) && !unlocked) authenticate();
-        handler.post(poll);
+        // The first companion sync waits a moment, so it doesn't compete with the inbox for the message store.
+        handler.postDelayed(poll, 1500);
         handler.post(callPoll);
         SipAgent.setAppVisible(this, true);
         // Phone-direct connections run while FluidMessages is visible, unless set to stay connected.
@@ -241,9 +258,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
-        invalidateRows();
+        // Texts, internet messages, and settings changes already refresh the shared message list as they happen,
+        // and contacts clear themselves when they change, so coming back reuses what's loaded instead of reading
+        // every message and contact again.
         if (page.equals("chat")) fillChat();
-        if (contacts.allowed()) contacts.invalidate();
+        if (contacts.allowed() && !contacts.watching()) contacts.invalidate();
         watchContacts();
         refreshVisibleInbox();
         checkUpdates(false);
@@ -279,6 +298,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
     @Override protected void onDestroy() {
         handler.removeCallbacks(searchInbox);
+        handler.removeCallbacks(expireOnScreen);
         inboxWorker.shutdownNow();
         chatWorker.shutdownNow();
         if (observingContacts) getContentResolver().unregisterContentObserver(contactObserver);
@@ -865,6 +885,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         if (Privacy.decoyMode(prefs)) inboxScreen.setTitleHold(this::endDecoyMode);
         if (connected) {
             inboxScreen.setResync(this::resync);
+            seedInbox(inboxScreen);
             fillInbox();
         }
         // Ask once, for people who made FluidMessages their SMS app before group MMS used it.
@@ -1157,58 +1178,40 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         String[][] fields = {{"uri", "SIP address", "name@sip.example.com"}, {"password", "Password", ""},
             {"ws", "WebSocket address", "wss://sip.example.com:7443"}, {"user", "Username (if different)", ""},
             {"domain", "Domain for calling numbers (optional)", "sip.example.com"}, {"display", "Your name (optional)", ""}};
-        var layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(20), dp(8), dp(20), 0);
-        Map<String, EditText> inputs = new HashMap<>();
-        for (String[] field : fields) {
-            EditText input = field(field[2].isEmpty() ? field[1] : field[1] + " · " + field[2]);
-            if (field[0].equals("password")) {
-                input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-                if (current != null) input.setHint("Password · leave blank to keep");
-            } else if (current != null) input.setText(current.optString(field[0]));
-            inputs.put(field[0], input);
-            layout.addView(input, new LinearLayout.LayoutParams(-1, -2));
-        }
-        var scroll = new android.widget.ScrollView(this);
-        scroll.addView(layout);
-        var builder = dialogBuilder().setTitle("SIP account").setMessage("Your SIP provider gives you these. Calls from the app need a "
-                + "provider that accepts secure WebSocket connections (wss://).")
-            .setView(scroll).setNegativeButton("Cancel", null).setPositiveButton("Save", (dialog, which) -> {
-                try {
-                    var account = new JSONObject();
-                    for (String[] field : fields) account.put(field[0], inputs.get(field[0]).getText().toString().trim());
-                    if (account.optString("password").isEmpty() && current != null) account.put("password", current.optString("password"));
-                    String uri = account.optString("uri");
-                    if (!uri.startsWith("sip:")) uri = "sip:" + uri;
-                    account.put("uri", uri);
-                    if (!uri.matches("sip:[^@\\s]+@[A-Za-z0-9.-]+(:[0-9]+)?") || !account.optString("ws").matches("wss://\\S+")) {
-                        toast("Enter a SIP address like name@sip.example.com and a wss:// address");
-                        return;
-                    }
-                    if (account.optString("domain").isEmpty()) account.put("domain", uri.substring(uri.indexOf('@') + 1));
-                    Calling.saveSipAccount(prefs, account);
-                    callsSettings();
-                } catch (Exception error) { toast("Couldn't save the SIP account"); }
-            });
-        if (current != null) builder.setNeutralButton("Remove", (dialog, which) -> { Calling.saveSipAccount(prefs, null); callsSettings(); });
-        showDialog(builder);
+        List<String[]> form = new ArrayList<>();
+        for (String[] field : fields) form.add(new String[]{field[1], field[0].equals("password") || current == null ? "" : current.optString(field[0]),
+            field[0].equals("password") && current != null ? "Leave blank to keep" : field[2], field[0].equals("password") ? "password"
+            : field[0].equals("uri") || field[0].equals("ws") ? "uri" : "text"});
+        SecurityDialogs.form(this, prefs, "SIP account", "Your SIP provider gives you these. Calls from the app need a provider that "
+            + "accepts secure WebSocket connections (wss://).", form, "Save", current != null ? "Remove" : null, values -> {
+            try {
+                var account = new JSONObject();
+                for (int i = 0; i < fields.length; i++) account.put(fields[i][0], values[i].trim());
+                if (account.optString("password").isEmpty() && current != null) account.put("password", current.optString("password"));
+                String uri = account.optString("uri");
+                if (!uri.startsWith("sip:")) uri = "sip:" + uri;
+                account.put("uri", uri);
+                if (!uri.matches("sip:[^@\\s]+@[A-Za-z0-9.-]+(:[0-9]+)?") || !account.optString("ws").matches("wss://\\S+")) {
+                    return "Enter a SIP address like name@sip.example.com and a wss:// address.";
+                }
+                if (account.optString("domain").isEmpty()) account.put("domain", uri.substring(uri.indexOf('@') + 1));
+                Calling.saveSipAccount(prefs, account);
+                callsSettings();
+                return null;
+            } catch (Exception error) { return "Couldn't save the SIP account."; }
+        }, () -> { Calling.saveSipAccount(prefs, null); callsSettings(); });
     }
 
     private void chooseMeetingServer() {
-        EditText input = field("meet.jit.si");
-        input.setText(meetingServer());
-        var layout = new LinearLayout(this);
-        layout.setPadding(dp(20), dp(8), dp(20), 0);
-        layout.addView(input, new LinearLayout.LayoutParams(-1, -2));
-        showDialog(dialogBuilder().setTitle("Meeting links").setMessage("Meeting-link calls use Jitsi Meet, which works in any browser "
-                + "and the free Jitsi app. Use meet.jit.si, or your own Jitsi server. The meeting server can see who joins.")
-            .setView(layout).setNegativeButton("Cancel", null).setPositiveButton("Save", (dialog, which) -> {
-                String value = input.getText().toString().trim().replaceFirst("^https?://", "").replaceAll("/+$", "");
-                if (!value.matches("[A-Za-z0-9.-]{3,253}(:[0-9]{1,5})?")) { toast("Enter a server name like meet.jit.si"); return; }
+        SecurityDialogs.form(this, prefs, "Meeting links", "Meeting-link calls use Jitsi Meet, which works in any browser and the free "
+            + "Jitsi app. Use meet.jit.si, or your own Jitsi server. The meeting server can see who joins.",
+            List.<String[]>of(new String[]{"Meeting server", meetingServer(), "meet.jit.si", "uri"}), "Save", null, values -> {
+                String value = values[0].trim().replaceFirst("^https?://", "").replaceAll("/+$", "");
+                if (!value.matches("[A-Za-z0-9.-]{3,253}(:[0-9]{1,5})?")) return "Enter a server name like meet.jit.si.";
                 prefs.edit().putString("meetingServer", value).apply();
                 callsSettings();
-            }));
+                return null;
+            }, null);
     }
 
     /** A username from the keypad: @name:server is Matrix, sip:name@host is SIP, and name@server is XMPP. */
@@ -1394,7 +1397,35 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
      */
     private void fillInbox() {
         handler.removeCallbacks(inboxRefresh);
-        handler.postDelayed(inboxRefresh, inboxScreen != null && inboxScreen.getThreads().isEmpty() ? 0 : 90);
+        handler.postDelayed(inboxRefresh, inboxScreen != null && filledInbox != inboxScreen ? 0 : 90);
+    }
+
+    /** The inbox screen that has shown a full load, rather than only the remembered rows. */
+    private InboxScreen filledInbox;
+
+    /**
+     * Shows the inbox as it last looked straight away, while the full list loads behind it. Rows are checked against
+     * the current hidden, archived, blocked, locked, and disappearing state first. From memory this is ready for the
+     * first frame; after a cold start it's read from disk off the main thread.
+     */
+    private void seedInbox(InboxScreen target) {
+        String key = InboxSnapshot.key(prefs, folder, filter);
+        if (key == null) return;
+        int revision = contacts.revision();
+        if (InboxSnapshot.inMemory(key)) {
+            var rows = InboxSnapshot.recall(this, prefs, key, revision, this::inboxDate);
+            if (!rows.isEmpty()) target.setThreads(rows);
+            return;
+        }
+        inboxWorker.submit(() -> {
+            var rows = InboxSnapshot.recall(getApplicationContext(), prefs, key, revision, this::inboxDate);
+            if (rows.isEmpty()) return;
+            runOnUiThread(() -> {
+                if (inboxScreen == target && filledInbox != target && target.getThreads().isEmpty() && !isDestroyed()) {
+                    target.setThreads(rows);
+                }
+            });
+        });
     }
 
     private void loadInbox() {
@@ -1462,6 +1493,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 var numbers = new ArrayList<>(threads.keySet());
                 numbers.sort(Comparator.comparing(number -> !pinned.contains(threadAddress(number))));
                 List<ThreadRow> entries = new ArrayList<>();
+                List<InboxSnapshot.Entry> remembered = new ArrayList<>();
                 for (String thread : numbers) {
                     if (Thread.currentThread().isInterrupted()) return;
                     JSONObject message = threads.get(thread);
@@ -1476,22 +1508,31 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     if (meetingLine == null) meetingLine = RichCardsKt.cardPreview(message.getString("body"));
                     String preview = Privacy.locked(prefs, number, format) ? "Locked · enter the passcode to read"
                         : meetingLine != null ? meetingLine : message.getString("body");
-                    entries.add(new ThreadRow(rowKey, name, initials(name), preview,
+                    var row = new ThreadRow(rowKey, name, initials(name), preview,
                         inboxDate(displayedTimestamp(message)), message.optInt("read", 1) == 0,
                         pinned.contains(number), 0, contact == null ? null : contact.photo(), contactRevision, label,
                         (format == MessageProtocol.SMS || format == MessageProtocol.MMS) && !number.startsWith("mms:")
                             && SenderStyle.infer(number) == SenderStyle.AUTOMATED,
-                        number.startsWith("mms:") ? groupMembers(number) : GatewayClient.members(prefs, number)));
+                        number.startsWith("mms:") ? groupMembers(number) : GatewayClient.members(prefs, number));
+                    entries.add(row);
+                    remembered.add(new InboxSnapshot.Entry(row, number, message.optString("protocol"), displayedTimestamp(message),
+                        Disappearing.expiry(prefs, message, message.optString("address"))));
                 }
                 if (!Thread.currentThread().isInterrupted()) runOnUiThread(() -> {
                     if (inboxScreen == target && version == inboxVersion && !isDestroyed()) {
+                        filledInbox = target;
                         target.setError(null);
                         target.setThreads(entries);
                     }
                 });
+                // The next time the inbox opens, this shows at once while the full list loads.
+                if (!Thread.currentThread().isInterrupted()) {
+                    InboxSnapshot.remember(getApplicationContext(), InboxSnapshot.key(prefs, selectedFolder, typed), remembered);
+                }
             } catch (Exception error) {
                 if (!Thread.currentThread().isInterrupted()) runOnUiThread(() -> {
                     if (inboxScreen == target && version == inboxVersion && !isDestroyed()) {
+                        filledInbox = target;
                         target.setThreads(List.of());
                         target.setError("Unable to load the Android SMS inbox");
                     }
@@ -1536,10 +1577,15 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         else if (Privacy.vaultExists(prefs)) rows.removeIf(row -> HiddenChats.rowHidden(prefs, row));
         // Encrypted texts are stored scrambled; show what they say, and leave out anything whose time is up.
         long now = System.currentTimeMillis();
+        long[] due = {0};
         rows.removeIf(row -> {
             SmsCrypto.reveal(prefs, row);
-            return Disappearing.expired(prefs, row, row.optString("address"), now);
+            long at = Disappearing.expiry(prefs, row, row.optString("address"));
+            if (at > now) due[0] = Disappearing.earliest(due[0], at);
+            return at > 0 && at <= now;
         });
+        // The next one to go leaves the screen at its time, not at the next refresh.
+        expireAt(due[0]);
         rows.sort(Comparator.comparingLong((JSONObject row) -> row.optLong("date")).reversed());
         var result = java.util.Collections.unmodifiableList(rows);
         synchronized (rowsLock) {
@@ -1846,6 +1892,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         }
         else if (format == MessageProtocol.SMS) SmsStore.delete(this, Long.parseLong(id), number);
         else ProtocolStore.get(this).remove(id);
+        // A deleted message is never shown again, not even as the remembered preview while the inbox reloads.
+        InboxSnapshot.clear(this);
     }
 
     /** Asks for a chat's or protocol's code, then continues. A wrong code keeps the dialog open. */
@@ -2083,36 +2131,33 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         String[] labels = formats.stream().map(format -> format.label).toArray(String[]::new);
         showDialog(dialogBuilder().setTitle("Link an address").setItems(labels, (dialog, which) -> {
             var format = formats.get(which);
-            EditText input = field(switch (format) {
+            String hint = switch (format) {
                 case MATRIX -> "@maya:example.org";
                 case XMPP -> "maya@example.org or room@conference.example.org";
                 case EMAIL -> "maya@example.org";
                 default -> "nickname or #channel";
-            });
-            input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-            var group = new android.widget.CheckBox(this);
-            group.setText("This is a group chat");
-            var layout = new LinearLayout(this);
-            layout.setOrientation(LinearLayout.VERTICAL);
-            layout.setPadding(dp(20), dp(8), dp(20), 0);
-            layout.addView(input);
-            if (format == MessageProtocol.XMPP) layout.addView(group);
-            showDialog(dialogBuilder().setTitle(format.label + " for " + name).setView(layout)
-                .setNegativeButton("Cancel", null).setPositiveButton("Link", (inner, button) -> {
-                    String target = input.getText().toString().trim();
-                    new Thread(() -> {
-                        try {
-                            if (DirectProtocols.on(prefs, format)) DirectProtocols.link(this, key, format, target, name, group.isChecked());
-                            else {
-                                GatewayClient.link(prefs, key, format, target, name, group.isChecked());
-                                GatewayClient.refresh(this, prefs);
-                            }
-                            runOnUiThread(() -> { toast(format.label + " linked"); done.run(); });
-                        } catch (Exception error) {
-                            runOnUiThread(() -> toast(error.getMessage()));
+            };
+            List<String[]> form = new ArrayList<>();
+            form.add(new String[]{format.label + " address", "", hint, "email"});
+            if (format == MessageProtocol.XMPP) form.add(new String[]{"This is a group chat", "false", "", "check"});
+            SecurityDialogs.form(this, prefs, format.label + " for " + name, "", form, "Link", null, values -> {
+                String target = values[0].trim();
+                boolean group = values.length > 1 && values[1].equals("true");
+                if (target.isEmpty()) return "Enter an address.";
+                new Thread(() -> {
+                    try {
+                        if (DirectProtocols.on(prefs, format)) DirectProtocols.link(this, key, format, target, name, group);
+                        else {
+                            GatewayClient.link(prefs, key, format, target, name, group);
+                            GatewayClient.refresh(this, prefs);
                         }
-                    }, "fluid-link").start();
-                }));
+                        runOnUiThread(() -> { toast(format.label + " linked"); done.run(); });
+                    } catch (Exception error) {
+                        runOnUiThread(() -> toast(error.getMessage()));
+                    }
+                }, "fluid-link").start();
+                return null;
+            }, null);
         }).setNegativeButton("Cancel", null));
     }
 
@@ -2364,14 +2409,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         };
         actions.add(action("Add people", group.format() == MessageProtocol.MMS ? "Starts a new group text with everyone"
             : "Invite someone to this " + group.format().label + " group", () -> {
-            EditText input = field(hint);
-            input.setInputType(group.format() == MessageProtocol.MMS ? android.text.InputType.TYPE_CLASS_PHONE
-                : android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-            var layout = new LinearLayout(this);
-            layout.setPadding(dp(20), dp(8), dp(20), 0);
-            layout.addView(input, new LinearLayout.LayoutParams(-1, -2));
-            showDialog(dialogBuilder().setTitle("Add someone").setView(layout).setNegativeButton("Cancel", null)
-                .setPositiveButton("Add", (dialog, which) -> changeMember(key, group, true, input.getText().toString().trim(), refresh)));
+            SecurityDialogs.form(this, prefs, "Add someone", "", List.<String[]>of(new String[]{"Who to add", "", hint,
+                group.format() == MessageProtocol.MMS ? "phone" : "email"}), "Add", null, values -> {
+                if (values[0].trim().isEmpty()) return "Enter who to add.";
+                changeMember(key, group, true, values[0].trim(), refresh);
+                return null;
+            }, null);
         }));
         if (members.isEmpty() && group.format() != MessageProtocol.XMPP && group.format() != MessageProtocol.IRC) return;
         actions.add(action("Remove someone", switch (group.format()) {
@@ -2380,12 +2423,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             default -> "Needs moderator or operator rights";
         }, () -> {
             if (members.isEmpty()) {
-                EditText input = field(group.format() == MessageProtocol.XMPP ? "Their nickname in the room" : "Nickname");
-                var layout = new LinearLayout(this);
-                layout.setPadding(dp(20), dp(8), dp(20), 0);
-                layout.addView(input, new LinearLayout.LayoutParams(-1, -2));
-                showDialog(dialogBuilder().setTitle("Remove someone").setView(layout).setNegativeButton("Cancel", null)
-                    .setPositiveButton("Remove", (dialog, which) -> changeMember(key, group, false, input.getText().toString().trim(), refresh)));
+                SecurityDialogs.form(this, prefs, "Remove someone", "", List.<String[]>of(new String[]{
+                    group.format() == MessageProtocol.XMPP ? "Their nickname in the room" : "Nickname", "", "", "text"}), "Remove", null, values -> {
+                    if (values[0].trim().isEmpty()) return "Enter their nickname.";
+                    changeMember(key, group, false, values[0].trim(), refresh);
+                    return null;
+                }, null);
                 return;
             }
             String[] names = members.stream().map(GroupMember::getName).toArray(String[]::new);
@@ -2859,21 +2902,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             showDialog(dialogBuilder().setTitle("Remove " + name + "?").setNegativeButton("Cancel", null)
                 .setPositiveButton("Remove", (dialog, which) -> { GifSites.remove(prefs, name); gifSettings(); }))));
         sites.add(action("Add a GIF site", "Any site you like, with {query} where search words go", () -> {
-            EditText name = field("Name");
-            EditText link = field("Address, like https://example.com/search/{query}");
-            name.setSingleLine(true);
-            link.setSingleLine(true);
-            link.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
-            var layout = new LinearLayout(this);
-            layout.setOrientation(LinearLayout.VERTICAL);
-            layout.setPadding(dp(20), dp(8), dp(20), 0);
-            layout.addView(name);
-            layout.addView(link);
-            showDialog(dialogBuilder().setTitle("Add a GIF site").setMessage("It opens inside the GIF picker. Long-press a GIF there to send it.")
-                .setView(layout).setNegativeButton("Cancel", null).setPositiveButton("Add", (dialog, which) -> {
-                    if (!GifSites.add(prefs, name.getText().toString(), link.getText().toString())) toast("Enter a name and an https:// address");
+            SecurityDialogs.form(this, prefs, "Add a GIF site", "It opens inside the GIF picker, where you can send the GIFs you find.",
+                List.of(new String[]{"Name", "", "My GIF site", "text"}, new String[]{"Search address", "", "https://example.com/search/{query}", "uri"}),
+                "Add", null, values -> {
+                    if (!GifSites.add(prefs, values[0], values[1])) return "Enter a name and an https:// address.";
                     gifSettings();
-                }));
+                    return null;
+                }, null);
         }));
         List<SettingsAction> media = new ArrayList<>();
         String quality = MediaSanitizer.quality(this);
@@ -2898,18 +2933,15 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private void textSetting(String title, String message, String key, boolean secret, Runnable done) {
-        EditText input = field(title);
-        input.setSingleLine(true);
-        if (secret) input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        else input.setText(prefs.getString(key, ""));
-        showDialog(dialogBuilder().setTitle(title).setMessage(message).setView(input).setNegativeButton("Cancel", null)
-            .setPositiveButton("Save", (dialog, which) -> {
-                String value = input.getText().toString().trim();
-                if (key.equals("gifApi") && !value.isEmpty() && !value.startsWith("https://")) { toast("The address needs to start with https://"); return; }
-                if (secret && value.isEmpty()) return;
-                prefs.edit().putString(key, value).apply();
-                done.run();
-            }));
+        SecurityDialogs.form(this, prefs, title, message, List.<String[]>of(new String[]{title, secret ? "" : prefs.getString(key, ""),
+            "", secret ? "password" : key.equals("gifApi") ? "uri" : "text"}), "Save", null, values -> {
+            String value = values[0].trim();
+            if (key.equals("gifApi") && !value.isEmpty() && !value.startsWith("https://")) return "The address needs to start with https://.";
+            if (secret && value.isEmpty()) return "Enter a value, or press Back to leave it as it is.";
+            prefs.edit().putString(key, value).apply();
+            done.run();
+            return null;
+        }, null);
     }
 
     /** The way to pay that money requests start with, and payment methods you added yourself. */
@@ -2932,23 +2964,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             showDialog(dialogBuilder().setTitle("Remove " + name + "?").setNegativeButton("Cancel", null)
                 .setPositiveButton("Remove", (dialog, which) -> { CustomMoney.remove(prefs, name); paymentSettings(); }))));
         custom.add(action("Add a way to pay", "Any coin or service with a payment link", () -> {
-            EditText name = field("Name, like DOGE on Dogecoin");
-            EditText link = field("Payment link, like dogecoin:{address}?amount={amount}");
-            name.setSingleLine(true);
-            link.setSingleLine(true);
-            var layout = new LinearLayout(this);
-            layout.setOrientation(LinearLayout.VERTICAL);
-            layout.setPadding(dp(20), dp(8), dp(20), 0);
-            layout.addView(name);
-            layout.addView(link);
-            showDialog(dialogBuilder().setTitle("Add a way to pay")
-                .setMessage("Put {address}, {amount}, and {note} where they go in the link. FluidMessages can't check custom methods, so their cards show a warning.")
-                .setView(layout).setNegativeButton("Cancel", null).setPositiveButton("Add", (dialog, which) -> {
-                    String label = name.getText().toString().trim(), template = link.getText().toString().trim();
-                    if (label.isEmpty() || !CustomMoney.validTemplate(template)) { toast("Enter a name and a link with {address} in it"); return; }
+            SecurityDialogs.form(this, prefs, "Add a way to pay", "Put {address}, {amount}, and {note} where they go in the link. "
+                + "FluidMessages can't check custom methods, so their cards show a warning.",
+                List.of(new String[]{"Name", "", "DOGE on Dogecoin", "text"}, new String[]{"Payment link", "", "dogecoin:{address}?amount={amount}", "uri"}),
+                "Add", null, values -> {
+                    String label = values[0].trim(), template = values[1].trim();
+                    if (label.isEmpty() || !CustomMoney.validTemplate(template)) return "Enter a name and a link with {address} in it.";
                     CustomMoney.add(prefs, label, template);
                     paymentSettings();
-                }));
+                    return null;
+                }, null);
         }));
         List<SettingsAction> about = List.of(new SettingsAction("How paying works",
             "FluidMessages never holds money, keys, or card numbers. A request is a standard payment link (Monero, Bitcoin, Lightning, "
@@ -3411,19 +3436,15 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private void backupFileName() {
-        var entry = field("Leave blank to use the date");
-        entry.setSingleLine(true);
-        entry.setText(BackupNames.fixed(prefs));
-        var dialog = showDialog(dialogBuilder().setTitle("Backup file name")
-            .setMessage("A fixed name replaces that file in scheduled folders and on FluidMessages Web. File pickers and sharing apps manage their own copies.")
-            .setView(entry).setNegativeButton("Cancel", null).setPositiveButton("Save", null));
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+        SecurityDialogs.form(this, prefs, "Backup file name", "A fixed name replaces that file in scheduled folders and on FluidMessages Web. "
+            + "File pickers and sharing apps manage their own copies.", List.<String[]>of(new String[]{"File name", BackupNames.fixed(prefs),
+            "Leave blank to use the date", "text"}), "Save", null, values -> {
             try {
-                prefs.edit().putString(BackupNames.KEY, BackupNames.normalize(entry.getText().toString())).apply();
-                dialog.dismiss();
+                prefs.edit().putString(BackupNames.KEY, BackupNames.normalize(values[0])).apply();
                 backups();
-            } catch (IllegalArgumentException error) { entry.setError(error.getMessage()); }
-        });
+                return null;
+            } catch (IllegalArgumentException error) { return error.getMessage(); }
+        }, null);
     }
 
     private String phoneRouteKey(CloudBackup.Target target) { return "backupFromPhone." + target.id; }
@@ -3924,12 +3945,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 action("Set up FluidMessages Web", "", () -> companion(back, true))))));
             return;
         }
-        item(root, text("Pair over HTTPS for cloud backups. You can also enable browser messaging to sync the newest 2,000 texts and send queued SMS.", 16, uiColors().muted()));
+        item(root, text("In FluidMessages Web, open Settings → Your phone → Make a pairing token, then enter the web app's HTTPS address and that token here. "
+            + "Pairing turns on cloud backups. Browser messaging also syncs the newest 2,000 texts and sends texts you write on the web.", 16, uiColors().muted()));
         EditText url = field("https://messages.example.net");
         url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         url.setText(prefs.getString("server", ""));
         item(root, url);
-        EditText token = field("Server access token");
+        EditText token = field("Pairing token");
         token.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
         token.setText(Privacy.token(prefs));
         item(root, token);
@@ -3956,11 +3978,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 if (syncMessages.isChecked()) sync(true);
                 back.run();
                 toast("FluidMessages Web connection saved");
-            } catch (Exception error) { toast("Enter an HTTPS server origin and its access token"); }
+            } catch (Exception error) { toast("Enter the web app's https:// address and the pairing token from its Settings"); }
         }));
         if (connected) item(root, button("Disconnect phone", false, () -> {
             prefs.edit().remove("server").remove("token").apply();
-            SyncJob.configure(this, false);
+            // Keeps the background job only if disappearing timers or phone-direct accounts still need it.
+            SyncJob.reschedule(this);
             back.run();
         }));
     }
@@ -3968,6 +3991,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void resync() {
         toast("Resyncing…");
         invalidateRows();
+        InboxSnapshot.clear(this);
         if (contacts.allowed()) contacts.invalidate();
         new Thread(() -> {
             try { DirectProtocols.restart(getApplicationContext()); } catch (Exception ignored) {}
