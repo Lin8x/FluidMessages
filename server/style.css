@@ -289,6 +289,18 @@ dialog.sheet { border: 0; border-radius: 24px; box-shadow: 0 20px 60px rgb(0 0 0
 .meeting-text { display: grid; flex: 1; }
 .meeting-text small { opacity: .8; }
 .meeting-join { background: #34c759; color: #fff; text-decoration: none; font-weight: 650; border-radius: 999px; padding: .35rem .9rem; }
+/* "Join meeting · Zoom" under an everyday message with a meeting link, and the pages to pick a service and save your link (meetings.js). */
+.meeting-chip { display: flex; align-items: center; width: fit-content; min-height: 36px; margin-top: .45rem; padding: .3rem .9rem; border-radius: 999px;
+  background: rgb(127 127 127 / .22); color: inherit; font-weight: 650; font-size: .9rem; text-decoration: none; }
+.meeting-chip:hover { background: rgb(127 127 127 / .34); }
+.meeting-chip:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.meeting-picker, .meeting-setup { max-width: 560px; border-top: 0; }
+.meeting-setup > p { margin: 0; line-height: 1.5; }
+.meeting-steps { margin: 0; padding-inline-start: 1.4rem; display: grid; gap: .4rem; line-height: 1.45; }
+.meeting-open { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: .5rem 1rem; border-radius: 999px; text-decoration: none; }
+.meeting-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.meeting-problem { margin: 0; color: #c4141f; background: color-mix(in srgb, #c4141f 10%, transparent); }
+:root[data-mode="dark"] .meeting-problem { color: #ff7a72; }
 
 /* Cards: pictures, stickers, polls, events, games, link previews, and the full-screen viewer (cards.js). */
 .picture { display: block; padding: 0; border: 0; background: none; border-radius: 14px; overflow: hidden; cursor: zoom-in; max-width: 260px; }

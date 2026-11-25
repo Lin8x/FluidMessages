@@ -56,6 +56,7 @@
             <intent-filter><action android:name="android.provider.Telephony.SMS_DELIVER"/></intent-filter>
         </receiver>
         <receiver android:name=".SmsResult" android:exported="false"/>
+        <receiver android:name=".NotificationActions" android:exported="false"/>
         <receiver android:name=".DisappearingAlarm" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>

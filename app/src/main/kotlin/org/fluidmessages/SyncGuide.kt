@@ -49,8 +49,8 @@ object SyncGuideScreen {
     private val steps = listOf(
         Triple("what", "Your texts on a computer", "Read and send your texts from a browser, with FluidMessages Web. Optional."),
         Triple("start", "Start FluidMessages Web", "On your computer, start it one of these ways."),
-        Triple("token", "Copy the pairing token", "In FluidMessages Web, open Settings → Phone and other devices."),
-        Triple("enter", "Enter it here", "The address you open FluidMessages Web at, and the pairing token."),
+        Triple("token", "Copy the link code", "In FluidMessages Web, open Settings → Phone and other devices."),
+        Triple("enter", "Enter it here", "The address you open FluidMessages Web at, and the link code."),
         Triple("test", "Test the connection", "Checking that this phone can reach FluidMessages Web."),
         Triple("done", "You’re connected", "Your texts show up in FluidMessages Web within a few minutes."),
     )
@@ -131,7 +131,7 @@ object SyncGuideScreen {
                                 item {
                                     Tips(listOf(
                                         Tip(TipIcon.PHONE, "Connect your phone", "Under Your phone. It asks for a password first if there isn’t one."),
-                                        Tip(TipIcon.LOCK, "Copy the token", "Shown only once. Keep it private."),
+                                        Tip(TipIcon.LOCK, "Copy the link code", "Shown only once. Keep it private."),
                                         Tip(TipIcon.LAPTOP, "Note the address", "The guide there shows it too, with a Copy button")), appearance.speed)
                                 }
                             }
@@ -143,13 +143,13 @@ object SyncGuideScreen {
                                 }
                                 item {
                                     OutlinedTextField(token, { token = it.trim(); problem = null }, Modifier.fillMaxWidth(), singleLine = true,
-                                        label = { Text("Pairing token") }, visualTransformation = PasswordVisualTransformation(),
+                                        label = { Text("Link code") }, visualTransformation = PasswordVisualTransformation(),
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
                                 }
                                 item {
                                     PreferencesCard("Messages") {
                                         SettingsSwitch("Enable browser messaging", if (hasRole) "Syncs the newest 2,000 texts and sends texts you write on the web"
-                                            else "Needs FluidMessages as your default SMS app. Off still pairs for cloud backups.", messaging) {
+                                            else "Needs FluidMessages as your texting app. Off still links for cloud backups.", messaging) {
                                             messaging = it; problem = null
                                         }
                                     }
@@ -169,8 +169,8 @@ object SyncGuideScreen {
                                 if (!result.isNullOrEmpty()) item {
                                     Tips(listOf(
                                         Tip(TipIcon.LAPTOP, "Is FluidMessages Web running?", "And can this phone reach its address?"),
-                                        Tip(TipIcon.LOCK, "Is the address https://?", "With a certificate this phone trusts"),
-                                        Tip(TipIcon.FOLDER, "Change the address or token", "Go back a step") { back.run() }), appearance.speed)
+                                        Tip(TipIcon.LOCK, "Does the address start with https://?", "Your phone only connects to secure addresses"),
+                                        Tip(TipIcon.FOLDER, "Change the address or link code", "Go back a step") { back.run() }), appearance.speed)
                                 }
                             }
                             "done" -> {

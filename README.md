@@ -4,61 +4,76 @@
 
 # FluidMessages
 
-**Better texting for Android. Private messaging for every device.**
+**Take your messages back.**
 
-The texting app Android always deserved: real reactions, privacy you can see, backups, and your own style.<br>Plus open chat services you can use on any computer, with or without an Android phone.
+A free messaging app with no ads, no tracking, and no big company in the middle.<br>Better texting on Android. Private chat on every device.
 
-<a href="https://github.com/Lin8x/FluidMessages/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Lin8x/FluidMessages?label=release&color=3bb85f&style=for-the-badge"></a> <a href="https://github.com/Lin8x/FluidMessages/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Lin8x/FluidMessages/total?color=1f7fd6&style=for-the-badge"></a> <a href="LICENSE"><img alt="Free and open source" src="https://img.shields.io/badge/free-open%20source-7b4fe0?style=for-the-badge"></a> <img alt="No ads, no tracking" src="https://img.shields.io/badge/no%20ads-no%20tracking-ff2d55?style=for-the-badge">
+<a href="https://github.com/Lin8x/FluidMessages/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Lin8x/FluidMessages?label=release&color=3bb85f&style=for-the-badge"></a> <a href="LICENSE"><img alt="Free and open source" src="https://img.shields.io/badge/free-open%20source-7b4fe0?style=for-the-badge"></a> <img alt="No ads, no tracking" src="https://img.shields.io/badge/no%20ads-no%20tracking-ff2d55?style=for-the-badge">
 
 <br>
 
-<a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="#-on-any-computer"><img src="docs/images/button-desktop.svg" height="56" alt="Use it on any computer"></a>
+<a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="#-on-a-computer"><img src="docs/images/button-desktop.svg" height="56" alt="Use it on any computer"></a>
 
 **🌐 [fluidmessages.danieljalali.com](https://fluidmessages.danieljalali.com)**
-
-<br>
-
-| 🍎 **Coming from an iPhone?** | 🤖 **Already on Android?** | 💻 **No Android phone?** |
-|:---:|:---:|:---:|
-| [See what you keep, and what gets better →](#-the-problem-with-texting-today) | [See why your texting app falls short →](#-the-problem-with-texting-today) | [Use it on any computer →](#-phone-and-computer-in-sync) |
 
 </div>
 
 <br>
 
-# 😩 The problem with texting today
-
-## Texting on Android is stuck in the past
-
 <p align="center">
-  <img src="docs/images/story-problem.svg" width="100%" alt="A plain, gray texting app. A heart arrives as the sentence Loved “See you at 7”, and the problems pop up around it: reactions arrive as sentences, newer features depend on your carrier, every app is plain and the same, no idea who can read your messages, lose your phone and lose your texts, no way to text from your computer.">
+  <img src="docs/images/fm-devices.svg" width="600" alt="FluidMessages works on every device: an Android phone that sends and gets your texts, plus Windows, Mac, Linux, iPhone and iPad in the browser, and any web browser. Link an Android phone and your texts show up on all of them. Without one, everything except texting still works.">
 </p>
 
-Regular texting (SMS) is decades old, and most Android texting apps barely improve on it. Reactions arrive as sentences, the apps are plain, and backups and computer access are usually missing. The newer standard, RCS, only works if your carrier, your phone, and your app all happen to support it.
+**Jump to:** [The problem](#-who-can-read-your-texts) · [The fix](#-fluidmessages-opens-the-gate) · [For Android](#-on-android-the-texting-app-you-should-have-had) · [For iPhone and computers](#-on-iphone-or-a-computer-private-chat-nobody-owns) · [Get it](#-get-it)
 
 <br>
 
-## "Ew, green bubble"
+# 👀 Who can read your texts?
 
 <p align="center">
-  <img src="docs/images/story-green.svg" width="100%" alt="A group chat on an iPhone: blue messages from iPhone friends, then Sam's green one. A friend says ugh green bubble, Sam's reaction shows up as the sentence Laughed at, another friend laughs at it, and someone suggests moving to WhatsApp.">
+  <img src="docs/images/fm-postcard.svg" width="600" alt="A regular text travels like a postcard: the phone company and hackers along the way can read it. An encrypted message travels sealed and scrambled, and only your friend can open it.">
 </p>
 
-On an iPhone, messages between iPhones are **blue**. Messages to an Android phone turn **green**: plain, old-style texts. Reactions show up as sentences like *Laughed at "I'm in! 🔥"*, polls and effects don't work, and the Android person gets the blame. So groups give up and move everyone to WhatsApp, Discord, or "just get an iPhone."
+A regular text message is like a **postcard**. It is not sealed. Your phone company can read it, and so can anyone who breaks in along the way.
 
-**None of that is necessary.** Android can do all of it; the texting apps just never did.
+This is not a made-up fear:
+
+- **In 2024, hackers broke into major U.S. phone companies.** They were able to see who was texting and calling whom, and in some cases the calls and texts themselves.
+- **The FBI then told Americans to use encrypted messaging** instead of regular texts. ([NPR](https://www.npr.org/2024/12/17/nx-s1-5223490/text-messaging-security-fbi-chinese-hackers-security-encryption), [NBC News](https://www.nbcnews.com/tech/security/us-officials-urge-americans-use-encrypted-apps-cyberattack-rcna182694))
+- Phone companies keep records of who you text and when. Police and governments can ask for those records.
+
+**Encrypted** means your message is scrambled on your phone, so only the person you sent it to can read it. It is a **sealed letter** instead of a postcard.
+
+Most texting apps never tell you which one you are sending.
 
 <br>
 
-## Your texts are less private than you think
+# 🧱 Your phone came with walls
 
 <p align="center">
-  <img src="docs/images/story-encryption.svg" width="100%" alt="What encryption means. A regular text travels like a postcard through the phone company, and anyone along the way can read it. An encrypted message travels sealed and scrambled, and only your friend's phone can open it.">
+  <img src="docs/images/fm-walls.svg" width="600" alt="Two walled gardens. In Apple’s garden, blue bubbles only work on Apple devices. In Google’s or Samsung’s garden, your texts live in their app. A message that tries to cross the wall turns green and plain. Their app, their rules, their cloud.">
 </p>
 
-A regular text is like a **postcard**: your phone company, and anyone who gets hold of it on the way, can read it. **Encrypted** means a message is scrambled on your phone so only the person you sent it to can unscramble it, like a **sealed letter**.
+When you bought your phone, you also got a messaging app picked by a giant company.
 
-Most texting apps never tell you which one you're sending. You also can't lock them, hide a conversation, or protect your messages if someone grabs your unlocked phone.
+- **On an iPhone, it is Apple's.** Blue bubbles are nice, but they only work between Apple devices. Text someone outside the wall and the good parts go away.
+- **On Android, it is Google's or Samsung's.** The app that came with your phone decides what you can do, how it looks, and where your messages are kept.
+
+Either way, it is **their app, their rules, and their cloud**. You can't change it much. You can't easily take your messages with you. And you can't see what happens to them.
+
+People call this a **walled garden**. It is pretty inside. But you are not allowed to leave with your stuff.
+
+<br>
+
+## The wall has a color: green
+
+<p align="center">
+  <img src="docs/images/fm-green.svg" width="600" alt="A group chat on an iPhone. iPhone friends are blue. Sam, on Android, is green. Sam’s reaction shows up as the sentence Laughed at, and a friend says ugh, green bubble.">
+</p>
+
+On an iPhone, a text from an Android phone shows up **green**. Reactions turn into odd sentences. Group chats break. The Android person gets blamed, and friends say *"just get an iPhone."*
+
+That is the wall doing its job. **Android phones can do better. The texting apps just never tried.**
 
 <br>
 
@@ -66,49 +81,70 @@ Most texting apps never tell you which one you're sending. You also can't lock t
 
 <br>
 
-# 💚 FluidMessages fixes texting
+# 🔓 FluidMessages opens the gate
 
 <p align="center">
-  <img src="docs/images/story-solution.svg" width="100%" alt="The same chat in FluidMessages. The heart shows as a real heart, bubbles are in your colors, a lock shows who can read it, a poll fills in, confetti plays, and it lists real reactions and games, your colors, the privacy lock, encrypted backups, and texting from your computer.">
+  <img src="docs/images/fm-free.svg" width="600" alt="A wall with an open gate. A checklist: no ads, no tracking, no account to make, no company holding your messages, free with public code anyone can check, works on every device.">
 </p>
 
-FluidMessages replaces the texting app your Android phone came with. It uses your normal phone number and works with everyone you already text, on any phone. **No carrier deals, no sign-up, no account with us. Free, with no ads.**
+FluidMessages is a messaging app that **belongs to the people who use it**, not to a phone maker.
 
-| | |
-|---|---|
-| ❤️ **Fun is back** | Real reactions, effects, polls, plans, and games. *Loved "…"* sentences turn back into hearts. |
-| 🔒 **Privacy you can see** | A lock on every chat shows who could read it. Texts between FluidMessages users can be encrypted. |
-| 🎨 **Made to be yours** | Themes, bubble colors, wallpapers, sounds, and motion. |
-| 📦 **Never lose a text** | Password-locked backups, saved wherever you choose. |
-| 💻 **Text from your computer** | Link your phone and reply from any computer, in sync. |
-| 🌐 **More than texts** | Add open chat services like Matrix and XMPP to the same inbox. |
+- **No ads. No tracking.** Nobody is selling your attention.
+- **No account with us.** There is nothing to sign up for.
+- **No company holding your messages.** They stay on your own devices.
+- **Free, and the code is public.** Anyone can read it and check what it does.
+- **Your choice, always.** Change how it looks. Back up your messages where you want. Leave any time, and your texts stay on your phone.
 
 <br>
 
-## Friends without the app still get it
+---
+
+<br>
+
+# 🤖 On Android: the texting app you should have had
 
 <p align="center">
-  <img src="docs/images/story-flip.svg" width="100%" alt="The same poll seen two ways. In FluidMessages it's a card with vote bars. A friend without the app gets a plain text listing the choices and asking them to reply with a number. Their reply still counts as a vote.">
+  <img src="docs/images/fm-better.svg" width="600" alt="Your old texting app: reactions show up as sentences, no backups, no idea who can read it. FluidMessages: real hearts and reactions, locked backups, and a lock that shows who can read it.">
 </p>
 
-Everything you send still works for people without FluidMessages, on any phone. It just looks plainer on their end: polls, games, and plans arrive as text with simple instructions like *Reply with a number to vote*, and **their reply still counts**.
+FluidMessages takes the place of the texting app your phone came with. You keep **your same phone number**. You text **the same people**. Your old texts are already there when you open it.
+
+What gets better:
+
+- ❤️ **Real reactions.** Sentences like *Loved "See you at 7"* turn back into hearts, even from iPhone friends.
+- 📊 **Polls, plans, and games** right in the chat.
+- 🎉 **Effects** like confetti and fireworks.
+- 🔒 **A lock on every chat** that shows who could read it.
+- 📦 **Backups** locked with your password.
+- 💻 **Texting from your computer**, if you set up the link (see below).
+- 🎨 **Your colors, your style.**
 
 > [!NOTE]
-> **It's not perfect for them, but it works.** For once, the other side gets the plain version. Anyone on Android can get the full experience by installing FluidMessages, and two FluidMessages users get everything, including encrypted texts.
+> **What you give up, honestly.** FluidMessages does not do "RCS chats" yet (the newer kind of texting in Google Messages, with typing dots and sharper videos). Your texts go as regular texts and picture messages. If RCS chats is on in Google Messages, **turn it off there before you switch**, so no messages get stuck in the old app.
 
 <br>
 
----
-
-<br>
-
-# 🎨 Make it yours
+## Your friends don't need the app
 
 <p align="center">
-  <img src="docs/images/story-themes.svg" width="100%" alt="One chat shown in four themes in turn: Fluid, Ember, Midnight, and Love. Bubble colors, background, and wallpaper change with each theme.">
+  <img src="docs/images/fm-friends.svg" width="600" alt="You send a poll from FluidMessages. Your friend, on any phone with no app, gets a normal text that says Pizza or tacos, reply 1 for Pizza, reply 2 for Tacos. They reply 1 and your poll counts the vote.">
 </p>
 
-Pick one of eight themes, each in light and dark, then make it your own: bubble colors and shapes, wallpapers, send and receive sounds, and how much things move. Give a single chat its own look if you like. You can try every theme in a practice inbox before you switch.
+You can use every feature with **anyone**, on any phone. They do not have to install anything.
+
+Say you send a poll. A friend without FluidMessages gets a **normal text message** with the question and simple directions, like *"Reply 1 for Pizza. Reply 2 for Tacos."* They text back **1**, and your poll counts their vote.
+
+So nothing breaks for them. It just looks simple on their phone, and fancy on yours. If two people both have FluidMessages, they both get the fancy version. They can also **lock their texts to each other**: you both type in the same secret code once, and after that only your two phones can read those texts.
+
+<br>
+
+## Make it look like you
+
+<p align="center">
+  <img src="docs/images/fm-themes.svg" width="600" alt="One chat changing through four themes: Fluid, Ember, Midnight, and Love.">
+</p>
+
+Pick from 8 themes, each in light and dark. Then change the bubble colors, the wallpaper, the sounds, and how much things move. You can even give one chat its own look.
 
 <details>
 <summary><b>🖼️ See all eight themes</b></summary>
@@ -122,130 +158,93 @@ Pick one of eight themes, each in light and dark, then make it your own: bubble 
 
 <br>
 
-# 🔒 Privacy you can see and control
+# 🍎 On iPhone or a computer: private chat nobody owns
 
-## A lock on every chat
+No Android phone? FluidMessages still works for you, on **Windows, Mac, Linux, iPhone, and iPad**.
 
-<p align="center">
-  <img src="docs/images/story-locks.svg" width="100%" alt="Three locks: green means only you and the other person can read it, yellow means the service could read it, and red open means it's like a regular text.">
-</p>
-
-Every conversation shows a small lock, so you always know who could read it. Texts between two FluidMessages users can be encrypted, and then the lock turns green.
-
-<br>
-
-## Tools for real-life privacy
+One honest note first: **an iPhone can't send regular texts through FluidMessages.** Apple does not let any other app do that. Only Android does. So on an iPhone or a computer, you use FluidMessages for the other ways to chat below.
 
 <p align="center">
-  <img src="docs/images/story-privacy-tools.svg" width="100%" alt="Privacy tools: app lock with your fingerprint, a hidden folder for private chats, a decoy code that opens a harmless pretend inbox, an emergency erase code that wipes everything, and disappearing messages.">
+  <img src="docs/images/fm-services.svg" width="600" alt="Five ways to chat in one inbox: Texts with your phone number, Matrix for modern group chat no single company owns, XMPP for private chat that works like email, Email shown as chats, and IRC for big public chat rooms. All optional.">
 </p>
 
-- **App lock:** open FluidMessages with your fingerprint or code, or lock a single chat.
-- **Hidden folder:** private chats disappear from your inbox until you unlock them.
-- **Decoy mode:** a second code opens a harmless pretend inbox, for when someone forces you to unlock your phone.
-- **Emergency erase:** a special code quietly wipes everything and looks like a normal unlock.
-- **Disappearing messages:** messages remove themselves after an hour, a day, or a week.
+These are **open chat services**. No single company owns them, so no single company can lock you in.
 
-**What FluidMessages never does:** show ads, track you, or ask you to make an account with us. Every line of code is public, so anyone can check.
+- **Matrix:** modern group chat. Used by communities, schools, and workplaces.
+- **XMPP:** simple, private chat. It works like email: pick any provider and talk to people on all the others.
+- **Email:** your normal email, shown as chats.
+- **IRC:** big public chat rooms for hobbies and projects.
+
+You also get voice and video calls, meeting links for Zoom, Google Meet, Teams, and Jitsi, communities with many rooms, and the same themes, reactions, polls, and games. FluidMessages walks you through setting up each one, step by step.
+
+**How it works on each device**
+
+| Your device | How you use FluidMessages | Texting with your phone number |
+|---|---|:---:|
+| 🤖 Android phone | Install the app | ✅ |
+| 🪟 Windows, 🍎 Mac, 🐧 Linux | Install the computer app | ✅ if you link an Android phone (takes some setup) |
+| 📱 iPhone, iPad | Open it in your browser from a computer that runs FluidMessages, then add it to your home screen | ✅ if you link an Android phone (takes some setup) |
 
 <br>
 
 ---
+
+<br>
+
+# 🔒 Privacy you can see
+
+<p align="center">
+  <img src="docs/images/fm-locks.svg" width="600" alt="Three locks. Green: only you and the other person can read it. Yellow: protected on the way, but the service could read it. Red open lock: a regular text, not private.">
+</p>
+
+Every chat shows a small lock, so you never have to guess.
+
+<p align="center">
+  <img src="docs/images/fm-privacy-tools.svg" width="600" alt="Five privacy tools: app lock, hidden folder, decoy code, emergency erase, and disappearing messages.">
+</p>
+
+- **App lock:** opens only with your fingerprint or code.
+- **Hidden folder:** private chats vanish from your inbox until you unlock them.
+- **Decoy code:** a second code opens a harmless pretend inbox, for when someone makes you unlock your phone.
+- **Emergency erase:** a special code quietly wipes everything.
+- **Disappearing messages:** messages delete themselves after an hour, a day, or a week.
 
 <br>
 
 # 📦 Never lose a text again
 
 <p align="center">
-  <img src="docs/images/story-backup.svg" width="100%" alt="Backups: your messages are packed into a password-locked backup file and saved where you choose, to your phone, your own server, or a cloud service. On a new phone, the backup brings everything back.">
+  <img src="docs/images/fm-backup.svg" width="600" alt="Your messages are packed into a backup locked with your password, saved on your phone, your own computer, or a cloud you pick. On a new phone, everything comes back.">
 </p>
 
-Phones get lost, broken, and replaced. With most texting apps, your conversations go with them. FluidMessages packs your texts, photos, group chats, and settings into a **backup locked with your password**, then saves it where you choose: on your phone, on your own computer or home server, or in a cloud service like Google Drive or OneDrive. Set a schedule and it happens on its own. On your next phone, restore it and everything is back.
+Phones break. Phones get lost. With most texting apps, your messages go with them.
+
+FluidMessages saves your texts, photos, and settings in a **backup locked with your password**. You pick where it goes: your phone, your own computer, or a cloud like Google Drive. Set it once and it backs up on its own. Get a new phone, and everything comes back.
 
 <br>
 
----
-
-<br>
-
-# 🔗 Phone and computer, in sync
+# 💻 Text from your computer
 
 <p align="center">
-  <img src="docs/images/sync.svg" width="860" alt="Animated: messages travel between a phone and a computer, staying in sync">
+  <img src="docs/images/fm-sync.svg" width="600" alt="A phone and a laptop linked together. A message typed on the laptop shows up on the phone, and a reply on the phone shows up on the laptop.">
 </p>
 
-Typing long messages on a phone is slow, and you shouldn't have to pick up your phone at your desk. Link your Android phone to FluidMessages on your computer and your texts show up there. Read on one and it's read on both, and your settings stay in sync. If you changed the same thing in both places, it asks which one to keep.
+Typing on a phone is slow. Link your Android phone to FluidMessages on your computer, and your texts show up there too. Read a message on one, and it is marked read on both.
+
+> [!NOTE]
+> **Linking takes some setup today.** It is not one tap yet. FluidMessages has to run on a computer at home with a secure web address, and the app's guide walks you through it. If that sounds like too much, the phone app works great on its own.
 
 <br>
 
-## No Android phone? You're covered too
+# 🎉 And a lot more
 
-FluidMessages also runs **on its own on any computer**: Windows, Mac, Linux, or in a web browser, including on an iPhone or iPad. Without an Android phone you can't send texts, but you get the open chat services below, communities, voice and video calls, and the same themes, reactions, polls, and games.
-
-<p align="center">
-  <img src="docs/images/story-devices.svg" width="100%" alt="Three ways to use FluidMessages. On an Android phone: your texts plus your other chats. On any computer or browser, even without Android, including iPhone: chat services, communities, and calls, without texts. With both linked: everything on both, in sync, including texting from your computer.">
-</p>
-
-| | 📱 Android phone | 💻 Any computer, no phone | 🔗 Both, linked |
-|---|:---:|:---:|:---:|
-| Your texts and picture texts | ✅ | ➖ | ✅ on both |
-| Calls from your phone number | ✅ | ➖ | ✅ start them from your computer |
-| Open chat services and communities | ✅ | ✅ | ✅ |
-| Voice and video calls on chat services | ✅ | ✅ | ✅ |
-| Reactions, effects, polls, games, themes | ✅ | ✅ | ✅ |
-| Works on Windows, Mac, Linux, iPhone, iPad | ➖ | ✅ | ✅ |
-| Settings and reading kept in sync | ➖ | ➖ | ✅ |
-
-<br>
-
----
-
-<br>
-
-# 🌐 More than texts
-
-<p align="center">
-  <img src="docs/images/story-services.svg" width="100%" alt="Your texts plus four open chat services in one inbox. Matrix: modern open chat for groups, rooms, and communities, with encrypted calls. XMPP: a long-running open chat standard run by many independent servers, with encrypted calls. Email shown as conversations. IRC: classic public chat rooms about hobbies and open-source projects.">
-</p>
-
-Texts are tied to phone numbers and phone companies. **Open chat services** are free networks that no single company owns, and FluidMessages puts them in the same inbox as your texts, each with a small tag so you know where a chat lives.
-
-- **Matrix:** modern group chats, rooms, and communities, used by workplaces and projects.
-- **XMPP:** a long-running chat standard, run by many independent servers.
-- **Email:** chat with anyone who has an email address. Only the conversations you choose show up.
-- **IRC:** big public chat rooms about hobbies and open-source projects.
-
-Join **communities** with many rooms, browse public servers, and use as many accounts as you like. All of this is optional; FluidMessages is a complete texting app without it.
-
-<br>
-
----
-
-<br>
-
-# 🎉 Everything else you can do
-
-<table>
-<tr>
-<td align="center" width="33%">❤️<br><b>React with a heart</b><br><sub>Touch and hold a message to send ❤️, 👍 or 😆, each with its own animation.</sub></td>
-<td align="center" width="33%">↩️<br><b>Reply to one message</b><br><sub>In a busy group, answer the exact message you mean.</sub></td>
-<td align="center" width="33%">🎉<br><b>Message effects</b><br><sub>Send with confetti, hearts, fireworks, or a big slam.</sub></td>
-</tr>
-<tr>
-<td align="center">📊<br><b>Polls and plans</b><br><sub>Ask "which day works?" and watch the votes come in. Plan an event and see who's coming.</sub></td>
-<td align="center">🎮<br><b>Games in the chat</b><br><sub>Chess, tic-tac-toe, four in a row, and rock paper scissors.</sub></td>
-<td align="center">🤫<br><b>Hidden messages</b><br><sub>A message that stays blurred until your friend taps it.</sub></td>
-</tr>
-<tr>
-<td align="center">✏️<br><b>Edit and format</b><br><sub>Fix a typo after sending, or write <b>bold</b> and <i>italic</i>.</sub></td>
-<td align="center">🖼️<br><b>Photo editor</b><br><sub>Crop, filters, drawing, text, stickers, and background removal.</sub></td>
-<td align="center">🔕<br><b>Quiet a chat</b><br><sub>Mute someone for an hour, a day, or for good.</sub></td>
-</tr>
-</table>
-
-<p align="center">
-  <img src="docs/images/more-than-text.svg" width="860" alt="Animated: a poll filling in, a tic-tac-toe move, a message slamming in with confetti, and a hidden message revealing">
-</p>
+- ↩️ **Reply to one message** in a busy group.
+- ✏️ **Fix a typo** after you send.
+- 🤫 **Hidden messages** that stay blurry until your friend taps.
+- 🖼️ **Photo editor** with crop, filters, drawing, and stickers.
+- 🎙️ **Voice messages.**
+- 🔕 **Mute a chat** for an hour, a day, or for good.
+- 🚫 **Spam and unknown senders** kept out of your way.
 
 <details>
 <summary><b>📸 See real screenshots</b></summary>
@@ -270,16 +269,6 @@ Join **communities** with many rooms, browse public servers, and use as many acc
 
 # 🚀 Get it
 
-## 🍎 Switching from an iPhone
-
-1. **Turn off iMessage before you switch.** On your iPhone, go to **Settings → Apps → Messages** and turn off iMessage. If your iPhone is already gone, use Apple's *Deregister iMessage* page. Otherwise, texts from iPhone friends can keep going to iMessage instead of your new phone.
-2. **Install FluidMessages** on your Android phone (below) and make it your texting app.
-3. **Text your iPhone friends like always.** Their hearts and reactions show up properly, and they don't need to change anything.
-
-## 🤖 Already on Android
-
-Install FluidMessages and make it your texting app. Your existing texts stay right where they are, so you can switch back any time without losing anything.
-
 ## 📱 On an Android phone
 
 <p align="center">
@@ -287,29 +276,49 @@ Install FluidMessages and make it your texting app. Your existing texts stay rig
 </p>
 
 <p align="center">
-  <img src="docs/images/story-install.svg" width="100%" alt="Three steps: download the file, open it and tap Install, then pick your colors and set it as your texting app.">
+  <img src="docs/images/fm-install.svg" width="600" alt="Three steps: download, install, and make it your texting app.">
 </p>
 
-1. **Download** it with the button above, on your phone. It needs Android 13 or newer.
-2. **Install** it: open the downloaded file, then tap **Install**. Your phone may ask you to allow installing apps from your browser; that's normal for apps that aren't from the Play Store. The code is all public here on GitHub.
-3. **Set it up:** pick your colors, try the practice inbox if you like, then tap **Set as default SMS app**.
+1. **Download** it with the green button, on your phone. It needs Android 13 or newer.
+2. **Install** it. Open the file and tap **Install**. Your phone may ask if it is okay to install an app from your browser. That is normal for apps that are not in the Play Store.
+3. **Make it your texting app.** The app walks you through it and asks for the few permissions it needs. Your old texts are already there.
+
+You can switch back to your old app any time. Nothing is lost.
 
 > [!TIP]
-> On Android 15, if setting it as your texting app is blocked, go to **Settings → Apps → FluidMessages → ⋮ → Allow restricted settings** and try again.
+> On Android 15, if your phone blocks the last step, go to **Settings → Apps → FluidMessages → ⋮ → Allow restricted settings** and try again.
 
-The app tells you when there's an update.
+**Moving from an iPhone to Android?** Turn off iMessage on the iPhone first (**Settings → Apps → Messages**). If you don't, texts from iPhone friends can get lost.
 
-## 💻 On any computer
+## 💻 On a computer
 
 | Your computer | Download | Good to know |
 |---|---|---|
 | 🪟 **Windows** | [Windows app](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Windows.exe) | Windows may warn you the first time. [Here's why, and what to do.](docs/self-hosting.md#desktop-apps) |
-| 🍎 **Mac** | [Mac app](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-macOS.dmg) | macOS may warn you the first time. [Here's what to do.](docs/self-hosting.md#desktop-apps) |
-| 🐧 **Linux** | [Linux app](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage) | A free alternative to Windows and macOS. If you're not sure, you don't use it. |
+| 🍎 **Mac** | [Mac app](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-macOS.dmg) | Your Mac may warn you the first time. [Here's what to do.](docs/self-hosting.md#desktop-apps) |
+| 🐧 **Linux** | [Linux app](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage) | If you're not sure what Linux is, you don't have it. |
 
-Add your chat accounts in **Settings → Accounts**, and link your Android phone for texts in **Settings → Phone and other devices**.
+Open it and follow the welcome steps. To see your texts, link your Android phone in **Settings → Phone and other devices**.
 
-**On an iPhone, iPad, or another computer's browser:** run FluidMessages on a computer or home server (see *Run it yourself* below), then open its address in your browser and add it to your home screen.
+## 🍎 On an iPhone or iPad
+
+Run FluidMessages on a computer at home (see *Run it yourself* below). Then open its address in Safari on your iPhone and tap **Share → Add to Home Screen**. It opens like any other app. You get alerts while it is open; it can't wake your iPhone when it is closed yet.
+
+<br>
+
+---
+
+<br>
+
+# 💬 A note from the person who made this
+
+I'm one person, not a company.
+
+I made FluidMessages because I was tired of it. Tired of being the green bubble. Tired of a phone maker deciding how I talk to my friends. I looked for an app that fixed texting, kept my messages private, and worked on all my devices. I could not find one. So I built it.
+
+**I used AI tools to help write the code**, and I want to be upfront about that. Here is why I think you can still trust it: every line is public. You don't have to take my word for anything. Anyone can read the code, test it, and tell me what is wrong, and I will fix it.
+
+There are no ads here and nothing to buy. I just think your messages should belong to you. ([Privacy policy](docs/privacy.md))
 
 <br>
 
@@ -349,6 +358,8 @@ Also available: the [server download](https://github.com/Lin8x/FluidMessages/rel
 | 🏠 [Self-hosting](docs/self-hosting.md) | Docker, Portainer, HTTPS, and desktop apps. |
 | 🛠️ [Development](docs/development.md) | Building, testing, and releasing. |
 | 🤝 [Contributing](CONTRIBUTING.md) | How to help. |
+| 🛡️ [Privacy policy](docs/privacy.md) | What the app sends, and where. |
+| 🔐 [Security](SECURITY.md) | Report a problem privately. |
 
 Built with <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-7F52FF?logo=kotlin&logoColor=white"> <img alt="Jetpack Compose" src="https://img.shields.io/badge/Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white"> <img alt="Python" src="https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white"> <img alt="Docker" src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white"> <img alt="Matrix" src="https://img.shields.io/badge/Matrix-000000?logo=matrix&logoColor=white"> <img alt="XMPP" src="https://img.shields.io/badge/XMPP-002B5C?logo=xmpp&logoColor=white">
 
@@ -387,6 +398,6 @@ FluidMessages is free and open source under the [Apache License 2.0](LICENSE).
 <div align="center">
 <br>
 <img src="docs/images/logo.png" width="40" alt=""><br>
-<sub>Made with 💚 for everyone tired of being the green bubble.</sub><br>
+<sub>Made with 💚 for everyone tired of the walls.</sub><br>
 <sub><a href="https://fluidmessages.danieljalali.com">fluidmessages.danieljalali.com</a></sub>
 </div>

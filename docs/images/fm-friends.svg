@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1100" viewBox="0 0 720 1100" role="img" aria-label="Your friends don't need the app. You send a Pizza or tacos poll from FluidMessages. Your friend, on any phone with no app, gets a normal text that says Reply 1 for Pizza, Reply 2 for Tacos. They text back 1, and the Pizza bar on your poll shows 1 vote. Their answer still counts.">
+  <defs>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity=".15"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .poll { animation: poll 14s ease-out infinite; }
+      @keyframes poll { 0% { opacity: 0; transform: translateY(12px); } 4%, 96% { opacity: 1; transform: none; } 100% { opacity: 0; transform: none; } }
+      .dd { opacity: 0; animation: dd 14s ease-in-out infinite; }
+      @keyframes dd { 0%, 5% { opacity: 0; transform: translateY(0); } 6% { opacity: 1; transform: translateY(0); } 13% { opacity: 1; transform: translateY(74px); } 14%, 100% { opacity: 0; transform: translateY(74px); } }
+      .du { opacity: 0; animation: du 14s ease-in-out infinite; }
+      @keyframes du { 0%, 27% { opacity: 0; transform: translateY(0); } 28% { opacity: 1; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-74px); } 36%, 100% { opacity: 0; transform: translateY(-74px); } }
+      .ft { animation: ft 14s ease-out infinite; }
+      @keyframes ft { 0%, 14% { opacity: 0; transform: translateY(12px); } 17%, 96% { opacity: 1; transform: none; } 100% { opacity: 0; transform: none; } }
+      .fr { animation: fr 14s ease-out infinite; }
+      @keyframes fr { 0%, 23% { opacity: 0; transform: translateY(12px); } 26%, 96% { opacity: 1; transform: none; } 100% { opacity: 0; transform: none; } }
+      .vbar { transform-box: fill-box; transform-origin: left; animation: vbar 14s ease-out infinite; }
+      @keyframes vbar { 0%, 36% { transform: scaleX(0); } 41%, 96% { transform: scaleX(1); } 100% { transform: scaleX(0); } }
+      .vtxt { animation: vtxt 14s ease-out infinite; }
+      @keyframes vtxt { 0%, 38% { opacity: 0; } 41%, 96% { opacity: 1; } 100% { opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .dd, .du { opacity: 0 !important; } }
+    </style>
+  </defs>
+  <rect width="720" height="1100" rx="32" fill="#f1f6fb"/>
+  <text x="360" y="68" fill="#141820" font-size="40" font-weight="800" text-anchor="middle">Your friends</text>
+  <text x="360" y="114" fill="#141820" font-size="40" font-weight="800" text-anchor="middle">don't need the app</text>
+  <text x="360" y="156" fill="#5b6070" font-size="24" text-anchor="middle">They get a normal text.</text>
+  <text x="360" y="188" fill="#5b6070" font-size="24" text-anchor="middle">They can answer like always.</text>
+
+  <!-- phone 1 -->
+  <text x="360" y="240" fill="#1b8f40" font-size="24" font-weight="800" text-anchor="middle">You, with FluidMessages</text>
+  <rect x="130" y="256" width="460" height="296" rx="44" fill="#16161a" filter="url(#shadow)"/>
+  <rect x="144" y="270" width="432" height="268" rx="32" fill="#f3faf5"/>
+  <g class="poll">
+    <rect x="170" y="292" width="382" height="224" rx="24" fill="#fff" stroke="#1fa84a" stroke-width="3"/>
+    <text x="194" y="338" fill="#141820" font-size="25" font-weight="800">Pizza or tacos?</text>
+    <text x="194" y="384" fill="#3a3e4a" font-size="22">Pizza</text>
+    <text class="vtxt" x="528" y="384" fill="#1b8f40" font-size="22" font-weight="800" text-anchor="end">1 vote</text>
+    <rect x="194" y="396" width="334" height="24" rx="12" fill="#e9e9ee"/>
+    <rect class="vbar" x="194" y="396" width="334" height="24" rx="12" fill="#1fa84a"/>
+    <text x="194" y="462" fill="#3a3e4a" font-size="22">Tacos</text>
+    <rect x="194" y="474" width="334" height="24" rx="12" fill="#e9e9ee"/>
+  </g>
+
+  <!-- travel lane -->
+  <g fill="none" stroke="#9aa3b5" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M290 568 V638" stroke-dasharray="2 12"/><path d="M278 630 l12 12 l12 -12"/>
+    <path d="M430 644 V574" stroke-dasharray="2 12"/><path d="M418 582 l12 -12 l12 12"/>
+  </g>
+  <circle class="dd" cx="290" cy="568" r="12" fill="#1fa84a"/>
+  <circle class="du" cx="430" cy="644" r="12" fill="#1f7fd6"/>
+
+  <!-- phone 2 -->
+  <text x="360" y="688" fill="#1f7fd6" font-size="24" font-weight="800" text-anchor="middle">Your friend, on any phone, no app</text>
+  <rect x="130" y="706" width="460" height="296" rx="44" fill="#16161a" filter="url(#shadow)"/>
+  <rect x="144" y="720" width="432" height="268" rx="32" fill="#fff"/>
+  <g class="ft">
+    <rect x="168" y="740" width="270" height="126" rx="26" fill="#e9e9ee"/>
+    <text fill="#141820" font-size="22"><tspan x="192" y="778">Pizza or tacos?</tspan><tspan x="192" y="810">Reply 1 for Pizza.</tspan><tspan x="192" y="842">Reply 2 for Tacos.</tspan></text>
+  </g>
+  <g class="fr">
+    <rect x="482" y="888" width="70" height="58" rx="29" fill="#1f7fd6"/>
+    <text x="517" y="927" fill="#fff" font-size="26" font-weight="800" text-anchor="middle">1</text>
+  </g>
+
+  <text x="360" y="1060" fill="#141820" font-size="28" font-weight="800" text-anchor="middle">Their answer still counts.</text>
+</svg>

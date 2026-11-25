@@ -236,6 +236,37 @@ final class DirectProtocols {
         return client.command(context, route, command);
     }
 
+    // IRC channels on the phone's own connection: the Join and Browse pages (ServersScreen) work without FluidMessages Web.
+
+    private static DirectIrc irc() {
+        synchronized (DirectProtocols.class) { return clients.get(MessageProtocol.IRC) instanceof DirectIrc client ? client : null; }
+    }
+
+    /** Whether the phone's own IRC connection is signed in and can join or list channels right now. */
+    static boolean ircReady() {
+        var client = irc();
+        return client != null && client.ready();
+    }
+
+    private static DirectIrc ircOrThrow(Context context) {
+        var client = irc();
+        if (client != null) return client;
+        var account = account(context, MessageProtocol.IRC);
+        String server = account == null ? "" : account.optString("server");
+        String name = ServerDirectory.INSTANCE.ircName(server);
+        throw new IllegalStateException("You’re not connected to " + (name != null ? name : server.isEmpty() ? "IRC" : server) + " yet. Connect, then try again.");
+    }
+
+    /** Joins a channel by name (with or without #) and returns its chat's link. */
+    static JSONObject ircJoin(Context context, String channel) throws Exception {
+        return ircOrThrow(context).join(context.getApplicationContext(), channel, "");
+    }
+
+    /** The network's public channels matching [search], busiest first, capped at [limit]. */
+    static List<IrcChannelRow> ircList(Context context, String search, int limit) throws Exception {
+        return ircOrThrow(context).list(search, limit);
+    }
+
     static void reconnect(Context context, MessageProtocol format) {
         DirectClient client;
         synchronized (DirectProtocols.class) { client = clients.get(format); }

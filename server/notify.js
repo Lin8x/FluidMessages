@@ -57,7 +57,11 @@ function notificationFor(message, {test = false} = {}) {
     const body = message.body || '';
     words = (typeof meetingPreview === 'function' ? meetingPreview(body) : null) || (typeof cardPreview === 'function' ? cardPreview(body) : null)
       || (typeof plainPreview === 'function' ? plainPreview(body) : body) || (message.attachment ? '📎 ' + (message.attachment.name || 'Attachment') : 'New message');
-    if (message.author && (test || threadIsGroup(key))) words = message.author + ': ' + words;
+    // A reaction sent as a text reads as what they did: "Sam loved “See you at 7”" (reactions.js).
+    const reacted = message.author && !message.attachment && !message.photo && typeof reactionNotice === 'function'
+      ? reactionNotice(message.author, body) : null;
+    if (reacted) words = reacted;
+    else if (message.author && (test || threadIsGroup(key))) words = message.author + ': ' + words;
     if (words.length > 180) words = words.slice(0, 179) + '…';
   }
   // A chat with a code doesn't even say whose it is.

@@ -377,6 +377,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        // Texting is on but another app is Android's default messages app: ask again, and show no messages. Once that's
+        // settled outside the app (FluidMessages made the default in Android's settings), the ask gives way to the inbox.
+        if (!TextingGate.staysOpen(page) && !textingGated() && page.equals("texting") && textingBack == null) inbox();
         // Texts, internet messages, and settings changes already refresh the shared message list as they happen,
         // and contacts clear themselves when they change, so coming back reuses what's loaded instead of reading
         // every message and contact again.
@@ -434,11 +437,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "inbox" -> super.onBackPressed();
             case "setup" -> { if (setupStep > 0) onboarding(setupStep - 1); else finish(); }
             case "sampleChat" -> sampleInbox();
+            case "texting" -> { if (textingBack != null) textingBack.run(); else super.onBackPressed(); }
             case "contact", "chatAppearance", "decoy" -> contactBack.run();
             case "contactEditor", "webContacts" -> { if (contactEditorBack != null) contactEditorBack.run(); else phone(); }
             case "sample" -> inbox();
             case "theme", "backups", "messaging", "about", "protocols", "privacy", "reset", "calls", "gifs", "payments", "sounds" -> settings();
-            case "recording" -> callsSettings();
+            case "recording", "meetingLinks" -> callsSettings();
             case "recordings" -> recordingSettings();
             case "locks", "hiddenChats", "decoyMode", "encryption", "requestsSettings" -> privacySettings();
             case "requestConfirm" -> requestBack.run();
@@ -454,6 +458,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private void open(Intent intent) {
+        if (textingGated()) return;
         if (DecoyTile.END.equals(intent.getAction())) { if (Privacy.decoyMode(prefs)) { inbox(); endDecoyMode(); return; } }
         if (QUICK_HIDE.equals(intent.getAction())) {
             // From the app icon's Quick hide shortcut: switch to decoy mode straight away.
@@ -463,8 +468,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         if (intent.getData() != null && Intent.ACTION_SENDTO.equals(intent.getAction())) {
             number = intent.getData().getSchemeSpecificPart().split("\\?", 2)[0];
         }
-        if (number != null && number.startsWith("mms:") && hasRole()) { chat(number, MessageProtocol.MMS); return; }
-        if (number != null && !number.isBlank() && hasRole()) {
+        if (number != null && number.startsWith("mms:") && texts()) { chat(number, MessageProtocol.MMS); return; }
+        if (number != null && !number.isBlank() && texts()) {
             String body = intent.getStringExtra("sms_body");
             if (Intent.ACTION_SENDTO.equals(intent.getAction()) && (number.contains(",") || number.contains(";"))) {
                 openRecipients(number, body == null ? "" : body);
@@ -478,6 +483,51 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private boolean hasRole() { return getSystemService(RoleManager.class).isRoleHeld(RoleManager.ROLE_SMS); }
+    /** Texts are shown and sent: texting is on in Settings → Chat services and FluidMessages is the default messages app. */
+    private boolean texts() { return TextingGate.showsTexts(TextingGate.textingOn(prefs), hasRole()); }
+
+    /** Where the texting ask goes back to when a switch opened it. Null while it is the gate, which has no way around it. */
+    private Runnable textingBack;
+
+    /**
+     * The gate: with texting on and another app as Android's default messages app, shows the full-page ask in place of
+     * the page that was opening and returns true. No inbox, chat, or other message shows until FluidMessages is the
+     * default app or the person turns texting off there.
+     */
+    private boolean textingGated() {
+        if (!TextingGate.mustAsk(TextingGate.textingOn(prefs), hasRole())) return false;
+        if (!page.equals("texting") || textingBack != null) textingAsk(null);
+        return true;
+    }
+
+    /** The ask as a full page. With back, it was opened by a switch that tried to turn texting on, and can be left. */
+    private void textingAsk(Runnable back) {
+        render("texting");
+        textingBack = back;
+        TextingGateScreen.mount(root, prefs, back == null, this::requestSmsRole, back == null ? this::turnOffTexting : back,
+            back == null ? this::sampleInbox : null);
+    }
+
+    /** "Turn off texting in FluidMessages": SMS, MMS, and RCS go off together, and the other chat services stay. */
+    private void turnOffTexting() {
+        TextingGate.turnOff(prefs);
+        textingChanged();
+        inbox();
+    }
+
+    /** Turns texting on, which needs the default messages app role first: without it this opens the ask instead. */
+    private void turnOnTexting(Runnable back) {
+        if (!hasRole()) { textingAsk(back); return; }
+        TextingGate.turnOn(prefs);
+        textingChanged();
+        back.run();
+    }
+
+    /** Texting went on or off: drop the loaded messages and the remembered inbox, so texts appear or leave at once. */
+    private void textingChanged() {
+        invalidateRows();
+        InboxSnapshot.clear(this);
+    }
     private int accent() { return MessageStyle.controls(prefs); }
     private int canvas() { return MessageStyle.canvas(prefs); }
     private MessageStyle.UiColors uiColors() { return MessageStyle.uiColors(prefs); }
@@ -608,13 +658,18 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         OnboardingScreen.mount(root, prefs, step, () -> onboarding(step + 1), () -> onboarding(step - 1),
             () -> finishSetup(false), () -> finishSetup(true), () -> finishSetup(false), this::recolorWindow,
             () -> accounts(() -> onboarding(step)), () -> syncGuide(0, () -> onboarding(step)),
-            () -> openWebsite(ReleaseUpdates.REPOSITORY + "#lan-web-companion"), () -> backupsFrom(() -> onboarding(step)),
-            this::allowNotifications);
+            () -> openWebsite(ReleaseUpdates.REPOSITORY + "/blob/main/docs/self-hosting.md#https-and-connecting-your-phone"), () -> backupsFrom(() -> onboarding(step)),
+            this::allowNotifications, this::requestSmsRole);
     }
 
     private void finishSetup(boolean demo) {
         boolean replay = prefs.getBoolean("onboarded", false);
         prefs.edit().putBoolean("onboarded", true).apply();
+        // Leaving setup without making FluidMessages the default messages app means texting stays off.
+        if (!hasRole() && TextingGate.textingOn(prefs)) {
+            TextingGate.turnOff(prefs);
+            textingChanged();
+        }
         if (demo) sampleInbox();
         else if (replay) inbox();
         else open(getIntent());
@@ -1107,9 +1162,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 blockChat(number);
                 boolean system = phone && MessageRequests.systemBlock(this, number);
                 requestOnWeb(throughWeb, "report", number);
-                toast(phone ? (system ? "Blocked here and in Android's blocked numbers" : "Blocked. Android's blocked numbers need "
-                    + "FluidMessages as the default SMS app.") : throughWeb && format.family() == MessageProtocol.MATRIX
-                    ? "Blocked and reported to the homeserver" : name + " is blocked");
+                toast(phone ? (system ? "Blocked here and in Android's blocked numbers" : "Blocked. To block in Android too, make "
+                    + "FluidMessages your texting app.") : throughWeb && format.family() == MessageProtocol.MATRIX
+                    ? "Blocked and reported to the chat service" : name + " is blocked");
                 inbox();
             });
     }
@@ -1310,11 +1365,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
      * ("App was denied access to default SMS app") until the user allows restricted settings.
      */
     private void smsRoleBlocked() {
-        SecurityDialogs.page(this, prefs, "Couldn't become the default SMS app",
+        SecurityDialogs.page(this, prefs, "Couldn't become your texting app",
             "If Android said FluidMessages was denied access, it's because the app was installed from a "
                 + "downloaded file. To allow it:\n\n1. Open App info.\n2. Tap ⋮ in the top corner, then "
-                + "Allow restricted settings, and confirm.\n3. Come back and tap Set as default again.\n\n"
-                + "If you don't see Allow restricted settings, try setting the default once first, then check again.",
+                + "Allow restricted settings, and confirm.\n3. Come back and tap " + TextingGate.ALLOW + " again.\n\n"
+                + "If you don't see Allow restricted settings, try making FluidMessages your texting app once first, then check again.",
             "Open App info", () -> {
                 try {
                     startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
@@ -1335,16 +1390,17 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     static final String ANNOUNCE_SETTINGS = "announceSettings";
 
     private void inbox() {
+        if (textingGated()) return;
         if (folder.equals(HIDDEN_FOLDER) && !Privacy.vaultOpen() && !emptyHidden) folder = "Inbox";
         // A filter turned off in Settings → Inbox filters goes back to Inbox.
         if (!folder.equals(HIDDEN_FOLDER) && !InboxFilters.menu(InboxFilters.read(prefs), Set.of("SMS", "MATRIX", "XMPP", "EMAIL", "IRC")).contains(folder)) folder = "Inbox";
         render("inbox");
         prefs.edit().putString("lastTab", "messages").apply();
-        // An internet account alone is enough to start chats, even without the SMS role.
-        boolean connected = hasRole() || GatewayClient.hasRoutes(prefs) || !reachableProtocols(true).isEmpty();
+        // An internet account alone is enough to start chats, with texting off.
+        boolean connected = texts() || GatewayClient.hasRoutes(prefs) || !reachableProtocols(true).isEmpty();
         inboxScreen = new InboxScreen(root, prefs, false, connected, folder, filter,
             query -> { filter = query; scheduleInboxSearch(); }, this::settings, this::chooseFolder,
-            connected ? this::compose : this::sampleInbox, this::requestSmsRole, this::openThread,
+            connected ? this::compose : this::sampleInbox, () -> turnOnTexting(this::inbox), this::openThread,
             key -> conversationMenu(threadAddress(key), textThread(key)), key -> contactDetails(threadAddress(key), threadAddress(key), this::inbox), null,
             connected ? this::phone : null, inboxFolders(), tabCounts);
         // The counts themselves update once the inbox has loaded.
@@ -1397,6 +1453,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     /** The Phone tab: favorites, recent calls, contacts, and the keypad, in the same window as Messages. */
     private void phone() {
+        if (textingGated()) return;
         render("phone");
         prefs.edit().putString("lastTab", "phone").apply();
         // Opening the Phone tab sees its missed calls; the Messages count stays.
@@ -1508,13 +1565,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void startMeeting(String key, boolean video) { startMeeting(List.of(key), threadTitle(key), video); }
 
     /**
-     * Starts a Jitsi Meet call: you choose which chat gets the link (any way you can message them), or not to send
-     * it at all, and then the meeting opens.
+     * Starts a meeting-link call: you pick the service (Zoom, Jitsi Meet, and any others turned on), then which chat
+     * gets the link (any way you can message them), or not to send it at all, and then the meeting opens.
      */
     private void startMeeting(List<String> addresses, String name, boolean video) {
         if (callBlocked(Calling.Method.MEETING)) return;
-        String room = "FluidMessages-" + java.util.HexFormat.of().formatHex(Privacy.randomBytes(8));
-        String link = "https://" + meetingServer() + "/" + room;
+        MeetingPages.start(this, prefs, (video ? "Video meeting with " : "Meeting with ") + name,
+            (service, link) -> sendMeeting(addresses, video, service, link));
+    }
+
+    private void sendMeeting(List<String> addresses, boolean video, MeetingService service, String link) {
         record Route(String address, MessageProtocol format) {}
         List<Route> routes = new ArrayList<>();
         List<String[]> items = new ArrayList<>();
@@ -1530,17 +1590,18 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         items.add(new String[]{"Don't send the link", "Just open the meeting"});
         Runnable open = () -> {
             try {
-                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(video ? link : link + "#config.startWithVideoMuted=true"))
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(MeetingLinks.joinLink(service, video, link)))
                     .addCategory(Intent.CATEGORY_BROWSABLE));
             } catch (ActivityNotFoundException error) { toast("No browser is available to join the call"); }
         };
-        SecurityDialogs.chooseOne(this, prefs, (video ? "Video meeting with " : "Meeting with ") + name,
-            "They join by tapping the link, in a browser or the Jitsi Meet app.", items, index -> {
+        SecurityDialogs.options(this, prefs, "Send the " + service.getLabel() + " link",
+            "They join by tapping the link, in a browser or the " + service.getLabel() + " app. " + service.getPrivacy(),
+            items.stream().map(item -> item[0] + " · " + item[1]).toList(), index -> {
                 if (index < routes.size()) {
                     var route = routes.get(index);
                     sendRouted(route.format(), new OutgoingMessage(route.address(), route.address().startsWith("mms:")
                         ? groupNumbers(route.address()) : List.of(route.address()),
-                        MeetingKt.meetingText(video, link), null, prefs.getInt("sim", -1), null));
+                        MeetingLinks.text(service, video, link), null, prefs.getInt("sim", -1), null));
                 } else if (index == routes.size()) {
                     getSystemService(android.content.ClipboardManager.class)
                         .setPrimaryClip(android.content.ClipData.newPlainText("Meeting link", link));
@@ -1577,7 +1638,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             sections.add(new SettingsSection("SIP", rows));
         }
         List<SettingsAction> more = new ArrayList<>();
-        if (meetingLinks()) more.add(action("Meeting server", meetingServer(), this::chooseMeetingServer));
+        if (meetingLinks()) more.add(action("Meeting links", MeetingPages.summary(prefs) + " · services, your saved links, and the Jitsi server",
+            this::meetingLinksSettings));
         more.add(action("Call recording", CallRecordings.allowed(prefs) ? "On · where recordings are saved" : "Off", this::recordingSettings));
         boolean phoneCalls = prefs.getBoolean("showPhoneCalls", true);
         more.add(toggleRow("Show regular phone calls in Recents", "Next to internet calls in the Phone tab", phoneCalls, () -> {
@@ -1723,14 +1785,21 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         }, () -> { Calling.saveSipAccount(prefs, null); callsSettings(); });
     }
 
+    /** Settings → Accounts and calls → Calls → Meeting links: each service on or off, your saved links, and the Jitsi server. */
+    private void meetingLinksSettings() {
+        render("meetingLinks");
+        heading("Meeting links", "Calls", this::callsSettings);
+        SettingsPages.mount(root, prefs, MeetingPages.settingsSections(this, prefs, this::meetingLinksSettings, this::chooseMeetingServer));
+    }
+
     private void chooseMeetingServer() {
-        SecurityDialogs.form(this, prefs, "Meeting links", "Meeting-link calls use Jitsi Meet, which works in any browser and the free "
-            + "Jitsi app. Use meet.jit.si, or your own Jitsi server. The meeting server can see who joins.",
-            List.<String[]>of(new String[]{"Meeting server", meetingServer(), "meet.jit.si", "uri"}), "Save", null, values -> {
+        SecurityDialogs.form(this, prefs, "Jitsi server", "Jitsi Meet works in any browser and the free Jitsi app, with no account. "
+            + "Use meet.jit.si, or your own Jitsi server. The meeting server can see who joins.",
+            List.<String[]>of(new String[]{"Jitsi server", meetingServer(), "meet.jit.si", "uri"}), "Save", null, values -> {
                 String value = values[0].trim().replaceFirst("^https?://", "").replaceAll("/+$", "");
                 if (!value.matches("[A-Za-z0-9.-]{3,253}(:[0-9]{1,5})?")) return "Enter a server name like meet.jit.si.";
                 prefs.edit().putString("meetingServer", value).apply();
-                callsSettings();
+                meetingLinksSettings();
                 return null;
             }, null);
     }
@@ -2019,7 +2088,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void loadInbox() {
         if (inboxLoading) { inboxAgain = true; return; }
         var target = inboxScreen;
-        if (target == null || (!hasRole() && !GatewayClient.hasRoutes(prefs) && reachableProtocols(true).isEmpty())) return;
+        if (target == null || (!texts() && !GatewayClient.hasRoutes(prefs) && reachableProtocols(true).isEmpty())) return;
         inboxLoading = true;
         inboxAgain = false;
         int version = ++inboxVersion;
@@ -2158,6 +2227,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 }
                 List<ThreadRow> entries = new ArrayList<>();
                 List<InboxSnapshot.Entry> remembered = new ArrayList<>();
+                // Unsent drafts show on their rows in the normal inbox only (Drafts), never for private-folder chats.
+                Map<String, String> drafts = scope == InboxFilters.Scope.INBOX ? Drafts.inbox(this, prefs) : Map.of();
                 // Services with more than one account: their rows on another account get a small hint.
                 var severalAccounts = java.util.EnumSet.noneOf(MessageProtocol.class);
                 if (!decoy) for (var format : reachableProtocols(true)) {
@@ -2176,6 +2247,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     String meetingLine = MeetingKt.meetingPreview(message.getString("body"));
                     if (meetingLine == null) meetingLine = RichCardsKt.cardPreview(message.getString("body"));
                     String preview = Privacy.locked(prefs, number, format) ? "Locked · enter the passcode to read"
+                        : drafts.containsKey(number) ? Drafts.preview(drafts.get(number))
                         : meetingLine != null ? meetingLine : message.getString("body");
                     boolean empty = message.optBoolean(EMPTY_CHANNEL);
                     var row = new ThreadRow(rowKey, name, initials(name), preview,
@@ -2306,7 +2378,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         }
         var store = ProtocolStore.get(this);
         var rows = new ArrayList<>(store.read());
-        if (hasRole()) {
+        // With texting off, or another app as the default messages app, no text is read or shown: not from Android's
+        // message store, and not the MMS and private-folder texts FluidMessages keeps itself.
+        boolean showTexts = texts();
+        java.util.function.Predicate<JSONObject> hiddenText = row -> TextingGate.hidesRow(row.optString("protocol"), showTexts);
+        rows.removeIf(hiddenText);
+        if (showTexts) {
             var texts = SmsStore.read(this, 0);
             for (int i = 0; i < texts.length(); i++) rows.add(texts.getJSONObject(i));
         }
@@ -2315,8 +2392,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             var allowed = Privacy.decoyAllowed(prefs);
             rows.removeIf(row -> allowed.stream().noneMatch(address -> sameAddress(address, row.optString("address"))));
             rows.addAll(Privacy.decoys(prefs));
-        } else if (Privacy.vaultOpen()) rows.addAll(store.readHidden());
-        else if (Privacy.vaultExists(prefs)) rows.removeIf(row -> HiddenChats.rowHidden(prefs, row));
+        } else if (Privacy.vaultOpen()) {
+            for (var row : store.readHidden()) if (!hiddenText.test(row)) rows.add(row);
+        } else if (Privacy.vaultExists(prefs)) rows.removeIf(row -> HiddenChats.rowHidden(prefs, row));
         // Encrypted texts are stored scrambled; show what they say, and leave out anything whose time is up.
         long now = System.currentTimeMillis();
         long[] due = {0};
@@ -2390,7 +2468,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     private List<MessageProtocol> formats(String key) {
         var routes = new ArrayList<>(GatewayClient.formats(prefs, key));
-        if (hasRole()) {
+        if (texts()) {
             if (key.startsWith("mms:")) routes.add(MessageProtocol.MMS);
             // One text route per person: SMS upgrades itself to MMS for photos and files.
             else if (SmsStore.validRecipient(key)) routes.add(MessageProtocol.SMS);
@@ -2484,10 +2562,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 servers.add(new kotlin.Pair<>(account.optString("id"), account.optString("protocol")));
             }
         }
+        // An IRC network this phone connects itself is listed too, with its channels and Join or browse.
+        String phoneIrc = directServers().getOrDefault("irc", "");
+        if (!phoneIrc.isEmpty() && MessageProtocol.IRC.enabled(prefs) && servers.stream().noneMatch(server -> server.getFirst().equals(phoneIrc))) {
+            servers.add(new kotlin.Pair<>(phoneIrc, "irc"));
+        }
         var links = new ArrayList<ChannelLink>();
         for (var route : GatewayClient.allRoutes(prefs)) {
+            boolean onPhone = route.optBoolean("direct") && "irc".equals(route.optString("protocol")) && route.optString("account").isEmpty();
             links.add(new ChannelLink(route.optString("address"), route.optString("title"), route.optString("protocol"),
-                route.optString("account"), route.optBoolean("group")));
+                onPhone ? phoneIrc : route.optString("account"), route.optBoolean("group")));
         }
         return ChannelDirectory.group(servers, links);
     }
@@ -2669,6 +2753,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private void chat(String number, MessageProtocol format) {
+        if (textingGated()) return;
         var scopes = Privacy.lockedScopes(prefs, number, format);
         if (!scopes.isEmpty()) {
             askCode(scopes.get(0), () -> chat(number, format));
@@ -2719,6 +2804,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 } catch (Exception ignored) {}
             });
         conversationScreen.setOpenGifSettings(this::gifSettings);
+        Drafts.attach(conversationScreen, this, prefs, number, Privacy.hidden(prefs, number, format));
+        conversationScreen.setSavedSender(LinkLoading.savedSenders(this, prefs, number, phone, groupMembers(number)));
         // The bell with a slash beside the lock while this chat or its server is muted; tapping it opens the mute page.
         conversationScreen.setMuted(Mutes.label(Mutes.endsFor(prefs, number)));
         ConversationScreen screen = conversationScreen;
@@ -3288,9 +3375,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                         () -> startActivity(CallHub.demo(this, key, name, false, "SIP", Encryption.IN_TRANSIT))));
                 }
                 if (meetingLinks()) {
-                    options.add(new ReachOption(ReachOption.CALL, "Meeting link", meetingServer(),
+                    options.add(new ReachOption(ReachOption.CALL, "Meeting link", MeetingPages.summary(prefs),
                         () -> startActivity(CallHub.demo(this, key, name, false, "Meeting link", Encryption.IN_TRANSIT))));
-                    options.add(new ReachOption(ReachOption.VIDEO, "Meeting link", meetingServer(),
+                    options.add(new ReachOption(ReachOption.VIDEO, "Meeting link", MeetingPages.summary(prefs),
                         () -> startActivity(CallHub.demo(this, key, name, true, "Meeting link", Encryption.IN_TRANSIT))));
                 }
             }
@@ -3320,8 +3407,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             options.add(new ReachOption(ReachOption.VIDEO, "XMPP", target, () -> startCall(key, name, true, "XMPP")));
         }
         if (meetingLinks() && !formats(key).isEmpty()) {
-            // A meeting link works with anyone on any service: they tap it to join in their browser or the Jitsi app.
-            String server = meetingServer();
+            // A meeting link works with anyone on any service: they tap it to join in their browser or the meeting app.
+            String server = MeetingPages.summary(prefs);
             options.add(new ReachOption(ReachOption.CALL, "Meeting link", server, () -> startMeeting(key, false)));
             options.add(new ReachOption(ReachOption.VIDEO, "Meeting link", server, () -> startMeeting(key, true)));
         }
@@ -3582,7 +3669,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             "Unknown texts " + (asks.getTexts() ? "filtered" : "in the inbox") + " · chat services " + (asks.getChats() ? "filtered" : "in the inbox")
                 + " · automated senders", this::requestSettings))));
         sections.add(new SettingsSection("Messages", List.of(
-            action("Encryption", "Scramble messages so only you and the other person can read them", this::encryptionSettings),
+            action("Encryption", "Scramble messages so only you and the other person can read them. You both type the same key first.", this::encryptionSettings),
             action("Disappearing messages", "Default: " + Disappearing.label(Disappearing.globalSeconds(prefs)),
                 () -> SecurityDialogs.disappearing(this, prefs, "Default timer", Disappearing.globalSeconds(prefs), null, seconds -> {
                     Disappearing.setGlobal(prefs, seconds);
@@ -3792,11 +3879,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 action("Turn on for", (encrypted.isEmpty() ? "Nothing yet" : encrypted)
                     + (SmsCrypto.defaultKey(prefs).isEmpty() ? " · no default key" : " · default key set"),
                     () -> SecurityDialogs.protocolEncryption(this, prefs, this::encryptionSettings)),
-                new SettingsAction("How it works", "You and the other person enter the same encryption key, and messages are scrambled "
-                    + "before they leave your phone. Both of you need FluidMessages. A chat's own setting, in its details, always wins.",
+                new SettingsAction("How it works", "It does not turn on by itself. You and the other person both type the same encryption key, like a "
+                    + "shared secret code. Then messages are scrambled before they leave your phone. Both of you need FluidMessages. A chat's own setting, in its details, always wins.",
                     () -> {}, true, null))),
-            new SettingsSection("On this phone", List.of(new SettingsAction("Your stored messages are encrypted",
-                "Saved messages, accounts, and passwords are locked with a key kept in your phone's secure hardware.", () -> {}, true, null)))));
+            new SettingsSection("On this phone", List.of(new SettingsAction("What is locked on this phone",
+                "Messages from chat services, picture messages, and saved accounts and passwords are locked with a key kept in your "
+                    + "phone's secure hardware. Regular texts are kept in Android's shared text storage, like in any texting app, so "
+                    + "they are not locked this way. Texts you move to the private folder are locked too.", () -> {}, true, null)))));
     }
 
     private String hiddenProtocolLabel() {
@@ -4187,6 +4276,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private void settings() {
+        if (textingGated()) return;
         render("settings");
         heading("Settings", "Inbox", this::inbox);
         boolean locked = prefs.getBoolean("lock", false);
@@ -4291,11 +4381,15 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         var account = GatewayClient.servers(prefs).stream().filter(item -> item.optString("id").equals(id)).findFirst().orElse(null);
         if (account == null) {
             // Connected from this phone: its account lives in Settings → Chat services.
-            if (directServers().containsValue(id)) {
-                if (!action.equals("details")) toast("Browse and join work for servers on FluidMessages Web. Add channels in this account's settings.");
+            if (!directServers().containsValue(id)) { inbox(); return; }
+            if (action.equals("details") || !id.startsWith("irc:")) {
+                // The phone's own Matrix and XMPP connections can't look up rooms yet; IRC can (below).
+                if (!action.equals("details")) toast(ServersScreen.phoneOnly(id));
                 protocolSettings();
-            } else inbox();
-            return;
+                return;
+            }
+            // IRC joins and browses on the phone's own connection.
+            account = ServersScreen.directAccount(id);
         }
         if (action.equals("details")) {
             serverDetails(account);
@@ -4360,7 +4454,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void protocolSettings() {
         render("protocols");
         heading("Chat services", "Back", this::settings);
-        ProtocolSettingsScreen.mount(root, prefs);
+        ProtocolSettingsScreen.mount(root, prefs, () -> turnOnTexting(this::protocolSettings), this::textingChanged);
     }
 
     private void accounts() { accounts(this::settings); }
@@ -5230,10 +5324,22 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             else if (page.equals("contactEditor") && contactEditorBack != null) contactEditorBack.run();
         } else if (request == ROLE) {
             // The prompt below asks for notifications together with the phone number, so the inbox doesn't ask too.
-            if (hasRole() && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            // Not from the setup guide: its own pages ask, and Android's prompt must still be unused for them.
+            if (hasRole() && !page.equals("setup")
+                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 prefs.edit().putBoolean(NOTIFICATIONS_ASKED, true).putBoolean("notificationsPrompted", true).apply();
             }
-            inbox();
+            if (hasRole()) {
+                // Asking for the role is asking for texting: it turns on once FluidMessages is the default messages app.
+                if (!TextingGate.textingOn(prefs)) TextingGate.turnOn(prefs);
+                textingChanged();
+            }
+            Runnable back = textingBack;
+            // From the setup guide: back to its step, which shows the new state and asks for the rest itself.
+            if (page.equals("setup")) { onboarding(setupStep); if (!hasRole()) smsRoleBlocked(); return; }
+            // From a switch that tried to turn texting on: back to it once that worked; otherwise the ask stays.
+            if (page.equals("texting") && back != null) { if (hasRole()) back.run(); }
+            else inbox();
             if (!hasRole()) smsRoleBlocked();
             if (hasRole()) {
                 // Your own number lets group MMS replies join the group you're in instead of a new one.
@@ -5307,16 +5413,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             SettingsPages.mount(root, prefs, List.of(new SettingsSection("Not set up", List.of(
                 action("Set up step by step", "Start FluidMessages Web on a computer, then connect this phone",
                     () -> syncGuide(0, () -> companion(back))),
-                action("Enter address and token", "If you already have a pairing token", () -> companion(back, true))))));
+                action("Enter address and link code", "If you already have a link code", () -> companion(back, true))))));
             return;
         }
-        item(root, text("In FluidMessages Web, open Settings → Phone and other devices → Connect your phone, then enter the web app's HTTPS address and that token here. "
-            + "Pairing turns on cloud backups. Browser messaging also syncs the newest 2,000 texts and sends texts you write on the web.", 16, uiColors().muted()));
+        item(root, text("In FluidMessages Web, open Settings → Phone and other devices → Connect your phone, then enter the web address (it starts with https://) and the link code here. "
+            + "Linking turns on cloud backups. Browser messaging also syncs the newest 2,000 texts and sends texts you write on the web.", 16, uiColors().muted()));
         EditText url = field("https://messages.example.net");
         url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         url.setText(prefs.getString("server", ""));
         item(root, url);
-        EditText token = field("Pairing token");
+        EditText token = field("Link code");
         token.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
         token.setText(Privacy.token(prefs));
         item(root, token);
@@ -5352,7 +5458,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
      * guide. Returns what to fix, or null once it's saved.
      */
     private String saveCompanion(String address, String pairingToken, boolean messaging) {
-        if (messaging && !hasRole()) return "Browser messaging needs the default SMS role. Turn it off to pair for backups.";
+        if (messaging && !hasRole()) return "To text from a browser, make FluidMessages your texting app first. Or turn browser messaging off to link for backups only.";
         try {
             var endpoint = new java.net.URI(address.trim());
             String token = pairingToken.trim();
@@ -5366,7 +5472,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 .putBoolean("syncSms", messaging).apply();
             SyncJob.reschedule(this);
             return null;
-        } catch (Exception error) { return "Enter the web app's https:// address and the pairing token from its Settings"; }
+        } catch (Exception error) { return "Enter the web address (it starts with https://) and the link code from FluidMessages Web’s Settings"; }
     }
 
     /** Asks the saved FluidMessages Web for its backup list, which needs the token, then sends the first sync. */
@@ -5374,7 +5480,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         new Thread(() -> {
             String problem = null;
             try { CloudBackup.targets(this); }
-            catch (Exception error) { problem = "Couldn't reach FluidMessages Web. Check the https:// address, its certificate, and the token."; }
+            catch (Exception error) { problem = "Couldn't reach FluidMessages Web. Check the web address and the link code, and that the address starts with https://"; }
             // Combines this phone's settings with the web's now, so the guide can go straight to any differences.
             if (problem == null) try { SyncMergeRun.run(getApplicationContext(), true); } catch (Exception ignored) {}
             String result = problem;
@@ -5396,7 +5502,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         render("syncGuide");
         SyncGuideScreen.mount(root, prefs, step, () -> syncGuide(step + 1, back),
             () -> { if (step > 0) syncGuide(step - 1, back); else back.run(); }, back, this::recolorWindow,
-            () -> openWebsite(ReleaseUpdates.REPOSITORY + "#lan-web-companion"), hasRole(), this::saveCompanion, this::testCompanion,
+            () -> openWebsite(ReleaseUpdates.REPOSITORY + "/blob/main/docs/self-hosting.md#https-and-connecting-your-phone"), hasRole(), this::saveCompanion, this::testCompanion,
             () -> syncConflicts(() -> syncGuide(5, back), () -> syncGuide(step, back)));
     }
 
@@ -5438,7 +5544,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     private void sync(boolean report) {
-        boolean carrierSync = prefs.getBoolean("syncSms", true) && hasRole();
+        boolean carrierSync = prefs.getBoolean("syncSms", true) && texts();
         if (syncing || !CloudBackup.paired(this) || (!carrierSync && !GatewayClient.wanted(prefs))) return;
         syncing = true;
         new Thread(() -> {
@@ -5455,7 +5561,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 SyncJob.sync(getApplicationContext());
                 if (report) runOnUiThread(() -> toast("FluidMessages Web synced"));
             } catch (Exception error) {
-                if (report) runOnUiThread(() -> toast("Could not sync. Check the HTTPS certificate, address, and token."));
+                if (report) runOnUiThread(() -> toast("Could not sync. Check the web address and the link code, and that the address starts with https://"));
             } finally {
                 runOnUiThread(() -> syncing = false);
             }

@@ -12,8 +12,61 @@ internal enum class SmsReaction(val symbol: String, val verb: String, val title:
     EMPHASIZE("‼️", "Emphasized", "Exclamation", "an exclamation"),
     QUESTION("❓", "Questioned", "Question", "a question mark");
 
-    fun sms(quote: String, ownMessage: Boolean): String =
-        "$verb “${messageExcerpt(quote, 700)}”" + if (ownMessage) " (my message)" else ""
+    @JvmOverloads fun sms(quote: String, ownMessage: Boolean, media: ReactionMedia? = null): String =
+        "$verb ${reactionTargetWords(quote, media)}" + if (ownMessage) REACTION_OWN else ""
+}
+
+/** The kind of message a reaction names when there are no words to quote: "Liked an image". */
+internal enum class ReactionMedia { PHOTO, VIDEO, AUDIO, ANY }
+
+/**
+ * The wording of reactions sent as a text in one language. English is the only one so far: add a language by adding
+ * its own entry to [REACTION_LANGUAGES] and to REACTION_WORDS in server/reactions.js, with wording taken from real
+ * messages. The first phrase of a kind in [media] is the one sent.
+ */
+internal class ReactionWords(
+    val verbs: List<Pair<String, String>>,
+    val reacted: Pair<String, String>,
+    val removed: Pair<String, String>,
+    val nouns: Map<String, String>,
+    val media: List<Pair<String, ReactionMedia>>,
+)
+
+internal val REACTION_LANGUAGES = listOf(ReactionWords(
+    verbs = SmsReaction.entries.map { it.verb to it.symbol },
+    reacted = "Reacted " to " to ",
+    removed = "Removed " to " from ",
+    nouns = SmsReaction.entries.associate { it.noun to it.symbol },
+    media = listOf("an image" to ReactionMedia.PHOTO, "a photo" to ReactionMedia.PHOTO, "a picture" to ReactionMedia.PHOTO,
+        "a video" to ReactionMedia.VIDEO, "a movie" to ReactionMedia.VIDEO, "an audio message" to ReactionMedia.AUDIO,
+        "a voice message" to ReactionMedia.AUDIO, "an attachment" to ReactionMedia.ANY, "a file" to ReactionMedia.ANY),
+))
+
+private const val REACTION_OWN = " (my message)"
+
+/** What a message without words says in place of them (the attachment labels and the MMS placeholders). */
+private val REACTION_WORDLESS = setOf("Photo", "Video", "Audio", "Voice message", "File", "Multimedia message")
+private val stickerName = Regex("""sticker\.\w+""")
+
+/** The words a reaction names its message by: the text in quotes, or "an image" for a picture without words. */
+internal fun reactionTargetWords(quote: String, media: ReactionMedia?): String =
+    media?.let { kind -> REACTION_LANGUAGES[0].media.first { it.second == kind }.first } ?: "“${messageExcerpt(quote, 700)}”"
+
+/**
+ * One emoji, by its characters alone, so the phone and the browser (reactionEmoji in reactions.js) always agree
+ * about which texts are reactions: pictographs and their joiners.
+ */
+internal fun isReactionSymbol(value: String): Boolean {
+    if (value.isEmpty() || value.length > 64) return false
+    var picture = false
+    for (code in value.codePoints().toArray()) {
+        if (code in 0x1F000..0x1FAFF || code in 0x2190..0x21FF || code in 0x2300..0x23FF || code in 0x2460..0x24FF ||
+            code in 0x25A0..0x27BF || code in 0x2900..0x297F || code in 0x2B00..0x2BFF ||
+            code in intArrayOf(0xA9, 0xAE, 0x203C, 0x2049, 0x2122, 0x2139, 0x3030, 0x303D, 0x3297, 0x3299, 0x20E3)) picture = true
+        else if (!(code == 0x200D || code == 0xFE0F || code == 0xFE0E || code in 0xE0020..0xE007F ||
+                code in 0x30..0x39 || code == 0x23 || code == 0x2A)) return false
+    }
+    return picture
 }
 
 internal fun isReactionEmoji(value: String): Boolean {
@@ -30,15 +83,17 @@ internal fun isReactionEmoji(value: String): Boolean {
     }
 }
 
-internal fun emojiReactionSms(emoji: String, quote: String, ownMessage: Boolean): String {
-    return SmsReaction.entries.firstOrNull { it.symbol == emoji }?.sms(quote, ownMessage)
-        ?: ("Reacted $emoji to “${messageExcerpt(quote, 700)}”" + if (ownMessage) " (my message)" else "")
+@JvmOverloads
+internal fun emojiReactionSms(emoji: String, quote: String, ownMessage: Boolean, media: ReactionMedia? = null): String {
+    return SmsReaction.entries.firstOrNull { it.symbol == emoji }?.sms(quote, ownMessage, media)
+        ?: ("Reacted $emoji to ${reactionTargetWords(quote, media)}" + if (ownMessage) REACTION_OWN else "")
 }
 
 /** Readable removal, worded the way iPhones and Google Messages send it, so those apps can fold it too. */
-internal fun reactionRemovedSms(emoji: String, quote: String, ownMessage: Boolean): String {
+@JvmOverloads
+internal fun reactionRemovedSms(emoji: String, quote: String, ownMessage: Boolean, media: ReactionMedia? = null): String {
     val what = SmsReaction.entries.firstOrNull { it.symbol == emoji }?.noun ?: emoji
-    return "Removed $what from “${messageExcerpt(quote, 700)}”" + if (ownMessage) " (my message)" else ""
+    return "Removed $what from ${reactionTargetWords(quote, media)}" + if (ownMessage) REACTION_OWN else ""
 }
 
 /** Readable change from one reaction to another, so people on other apps know the old one is gone. */
@@ -47,41 +102,101 @@ internal fun reactionChangedSms(previous: String, emoji: String, quote: String, 
 
 internal enum class ReactionChange { ADD, REMOVE, CHANGE }
 
-/** A reaction written as text: what changed, the emoji, and the quoted message it refers to. */
-internal data class ReactionText(val change: ReactionChange, val symbol: String, val quote: String?, val ownMessage: Boolean)
+/**
+ * A reaction written as text: what changed, the emoji, and the message it refers to. That is the [quote]d words or,
+ * without a quote, the [media] it names ("Liked an image").
+ */
+internal data class ReactionText(val change: ReactionChange, val symbol: String, val quote: String?, val ownMessage: Boolean,
+                                 val media: ReactionMedia? = null)
 
-private val removedPattern = Regex("""(?s)^Removed (.{1,64}?) from (.+)$""")
 private val changedPattern = Regex("""(?s)^Changed reaction from (\S{1,64}) to (\S{1,64}) on (.+)$""")
 
-private fun unquote(text: String): String? = when {
-    text.length >= 2 && text.startsWith("“") && text.endsWith("”") -> text.drop(1).dropLast(1)
-    text.length >= 2 && text.startsWith("\"") && text.endsWith("\"") -> text.drop(1).dropLast(1)
-    else -> null
-}
+/** The words between curly or straight quotes, or null. */
+private fun unquote(text: String): String? =
+    if (text.length >= 3 && text.first() in "“\"" && text.last() in "”\"") text.substring(1, text.length - 1) else null
 
+private fun reactionTrim(text: String) = text.trim(' ', '\t', '\r', '\n')
+
+/**
+ * Reads a reaction sent as a text, the way iPhones and other Android apps word it: "Liked “…”" and the five other
+ * verbs, "Reacted 😂 to “…”", "Removed a like from “…”", "Removed 😂 from “…”", and the same about "an image",
+ * "a video", "an audio message", or "an attachment". Null for any other text. server/reactions.js reads them the
+ * same way, and both run app/src/test/resources/reaction-vectors.json.
+ */
 internal fun parseReactionText(text: String): ReactionText? {
-    val ownMessage = text.endsWith(" (my message)")
-    val wire = text.removeSuffix(" (my message)")
-    SmsReaction.entries.firstOrNull { wire.startsWith("${it.verb} “") || wire.startsWith("${it.verb} \"") }?.let {
-        return ReactionText(ReactionChange.ADD, it.symbol, unquote(wire.removePrefix("${it.verb} ")) ?: return null, ownMessage)
+    val trimmed = reactionTrim(text)
+    val ownMessage = trimmed.endsWith(REACTION_OWN)
+    val wire = trimmed.removeSuffix(REACTION_OWN)
+    for (words in REACTION_LANGUAGES) {
+        fun target(rest: String, change: ReactionChange, symbol: String): ReactionText? {
+            unquote(rest)?.let { return ReactionText(change, symbol, it, ownMessage) }
+            return words.media.firstOrNull { it.first == rest }?.let { ReactionText(change, symbol, null, ownMessage, it.second) }
+        }
+        for ((verb, symbol) in words.verbs) {
+            if (wire.startsWith("$verb ")) target(wire.substring(verb.length + 1), ReactionChange.ADD, symbol)?.let { return it }
+        }
+        for ((frame, change) in listOf(words.reacted to ReactionChange.ADD, words.removed to ReactionChange.REMOVE)) {
+            if (!wire.startsWith(frame.first)) continue
+            val rest = wire.substring(frame.first.length)
+            val at = rest.indexOf(frame.second)
+            if (at < 1) continue
+            val what = rest.substring(0, at)
+            val symbol = (if (change == ReactionChange.REMOVE) words.nouns[what] else null) ?: what.takeIf(::isReactionSymbol) ?: continue
+            target(rest.substring(at + frame.second.length), change, symbol)?.let { return it }
+        }
     }
-    if (wire.startsWith("Reacted ")) {
-        val emoji = wire.removePrefix("Reacted ").substringBefore(" to ")
-        if (!isReactionEmoji(emoji)) return null
-        return ReactionText(ReactionChange.ADD, emoji, unquote(wire.removePrefix("Reacted $emoji to ")) ?: return null, ownMessage)
-    }
-    removedPattern.matchEntire(wire)?.let { match ->
-        val what = match.groupValues[1]
-        val symbol = SmsReaction.entries.firstOrNull { it.noun == what }?.symbol
-            ?: what.takeIf(::isReactionEmoji) ?: return null
-        return ReactionText(ReactionChange.REMOVE, symbol, unquote(match.groupValues[2]) ?: return null, ownMessage)
-    }
+    // FluidMessages' own wording for a changed reaction, still sent to chats that aren't texts.
     changedPattern.matchEntire(wire)?.let { match ->
         val emoji = match.groupValues[2]
-        if (!isReactionEmoji(emoji)) return null
+        if (!isReactionSymbol(emoji)) return null
         return ReactionText(ReactionChange.CHANGE, emoji, unquote(match.groupValues[3]) ?: return null, ownMessage)
     }
     return null
+}
+
+/** Curly and straight quotes and apostrophes, line endings, and no-break spaces compare as the same. */
+private fun reactionPlain(text: String) = reactionTrim(text.replace("\r\n", "\n").replace('‘', '\'').replace('’', '\'')
+    .replace('“', '"').replace('”', '"').replace('\u00a0', ' '))
+
+/** Whether [quote] is this message: all of it, its first 700 characters, or, ending in …, 20 or more of its first characters. */
+internal fun reactionQuotes(text: String, quote: String): Boolean {
+    val whole = reactionPlain(text)
+    val quoted = reactionPlain(quote)
+    if (whole == quoted || reactionPlain(messageExcerpt(text, 700)) == quoted) return true
+    val cut = if (quoted.endsWith("…")) 1 else if (quoted.endsWith("...")) 3 else return false
+    val prefix = quoted.dropLast(cut).trimEnd(' ', '\t', '\r', '\n')
+    return prefix.length >= 20 && whole.startsWith(prefix)
+}
+
+/** What kind of picture or file a message carries, as reactions name it; [ReactionMedia.ANY] for other files. */
+internal fun ChatLine.reactionMedia(): ReactionMedia? {
+    val file = attachment ?: return if (photo != null) ReactionMedia.PHOTO else null
+    val mime = file.mime.lowercase()
+    return when {
+        file.kind == AttachmentKind.PHOTO || mime.startsWith("image/") -> ReactionMedia.PHOTO
+        file.kind == AttachmentKind.VIDEO || mime.startsWith("video/") -> ReactionMedia.VIDEO
+        file.kind == AttachmentKind.AUDIO || file.kind == AttachmentKind.VOICE || mime.startsWith("audio/") -> ReactionMedia.AUDIO
+        else -> ReactionMedia.ANY
+    }
+}
+
+/** The kind of a picture or file sent without words, which a reaction names ("an image") instead of quoting. */
+internal fun ChatLine.wordlessMedia(): ReactionMedia? {
+    val kind = reactionMedia() ?: return null
+    val words = reactionTrim(text)
+    return kind.takeIf { words.isEmpty() || words == attachment?.name.orEmpty() || words in REACTION_WORDLESS || stickerName.matches(words) }
+}
+
+/**
+ * The message a reaction text is about: the most recent one in [visible] (oldest first) that it quotes or names.
+ * People react to what others sent, so those are tried first; then anyone's, for someone reacting to their own.
+ * "(my message)" from FluidMessages means the sender's own. [reactor] is the sender key of the reaction.
+ */
+internal fun reactionTarget(parsed: ReactionText, reactor: String?, visible: List<ChatLine>): ChatLine? {
+    fun ChatLine.fits() = !event && if (parsed.quote != null) reactionQuotes(text, parsed.quote)
+        else reactionMedia().let { it != null && (parsed.media == ReactionMedia.ANY || parsed.media == it) }
+    return visible.lastOrNull { (it.senderKey() == reactor) == parsed.ownMessage && it.fits() }
+        ?: if (parsed.ownMessage) null else visible.lastOrNull { it.fits() }
 }
 
 private val attributionStart = Regex("""^\s*(On|Am|Le|El|Il|Em|Op)\b.*""")
@@ -150,20 +265,14 @@ internal fun foldSmsReactions(lines: List<ChatLine>): List<DisplayMessage> {
                 continue
             }
         }
-        val parsed = if (line.unsettled() || line.event) null else parseReactionText(line.text)
+        // A picture or file is never folded away, whatever its caption says.
+        val parsed = if (line.unsettled() || line.event || line.media != null) null else parseReactionText(line.text)
         if (parsed == null) {
             visible.add(line)
             continue
         }
-        val match = if (line.reactionTarget != null) visible.lastOrNull { it.id == line.reactionTarget }
-        else parsed.quote?.let { quoted ->
-            // Long messages are quoted as an excerpt; some phones shorten them further and end with "…".
-            val prefix = quoted.removeSuffix("…").takeIf { quoted.endsWith("…") && it.length >= 20 }
-            fun ChatLine.hasQuote() = text == quoted || messageExcerpt(text, 700) == quoted ||
-                (prefix != null && text.startsWith(prefix))
-            visible.lastOrNull { (it.senderKey() == line.senderKey()) == parsed.ownMessage && it.hasQuote() }
-                ?: if (parsed.ownMessage) null else visible.lastOrNull { it.hasQuote() }
-        }
+        val match = line.reactionTarget?.let { id -> visible.lastOrNull { it.id == id } }
+            ?: reactionTarget(parsed, line.senderKey(), visible)
         if (match == null) {
             visible.add(line)
             continue

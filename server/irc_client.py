@@ -319,11 +319,15 @@ class IrcClient:
         elif command == "322" and len(params) >= 3 and self.listing is not None:
             # RPL_LIST: me, channel, visible users, topic.
             listing = self.listing
-            if len(listing["rows"]) < listing["limit"] and (not listing["search"] or listing["search"] in
-                                                            (params[1] + " " + (params[3] if len(params) > 3 else "")).lower()):
+            if not listing["search"] or listing["search"] in (params[1] + " " + (params[3] if len(params) > 3 else "")).lower():
                 users = int(params[2]) if params[2].isdigit() else 0
-                listing["rows"].append({"target": params[1], "name": params[1], "members": users,
-                                        "topic": (params[3] if len(params) > 3 else "")[:300]})
+                rows = listing["rows"]
+                rows.append({"target": params[1], "name": params[1], "members": users,
+                             "topic": (params[3] if len(params) > 3 else "")[:300]})
+                # The busiest are kept, whatever order the network sends them in; the rest are dropped as they come.
+                if len(rows) >= listing["limit"] * 4:
+                    rows.sort(key=lambda row: -row["members"])
+                    del rows[listing["limit"]:]
         elif command in ("323", "416") and self.listing is not None:
             self.listing["done"].set()
         elif command in ("433", "432", "436", "437") and not self.registered:
@@ -577,8 +581,8 @@ class IrcClient:
         self.on_message(conversation, nick, text, {**tags, **extra} if extra else tags, self.date(tags), outgoing)
 
     def list_channels(self, search="", limit=50, timeout=20):
-        """The network's public channels (LIST), filtered by [search], at most [limit]. Big networks send thousands,
-        so only the first [limit] matches are kept; the rest of the reply is read and dropped."""
+        """The network's public channels (LIST), filtered by [search], busiest first, at most [limit]. Big networks
+        send thousands in no useful order, so the [limit] busiest matches are kept and the rest are dropped."""
         if not self.ready.wait(20):
             raise ConnectionError("IRC isn’t connected yet")
         search = (search or "").strip().lower()[:100]
@@ -588,10 +592,10 @@ class IrcClient:
                 # ELIST=M servers filter themselves; others send everything and the filter above applies.
                 self.write("LIST" + (" *" + search.replace(" ", "") + "*" if search and "*" not in search else ""))
                 self.listing["done"].wait(timeout)
-                rows = self.listing["rows"]
+                rows, most = self.listing["rows"], self.listing["limit"]
             finally:
                 self.listing = None
-        return sorted(rows, key=lambda row: -row["members"])
+        return sorted(rows, key=lambda row: -row["members"])[:most]
 
     def sync_channels(self, channels):
         """Joins channels added since the connection opened and parts ones that were left, without reconnecting."""

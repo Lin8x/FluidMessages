@@ -35,7 +35,7 @@ object OnboardingScreen {
     fun mount(root: LinearLayout, prefs: SharedPreferences, shownStep: Int, next: Runnable, back: Runnable,
               skip: Runnable, sample: Runnable, inbox: Runnable, recolor: IntConsumer, accounts: Runnable,
               web: Runnable, learnWeb: Runnable, backups: Runnable,
-              allowNotifications: Runnable) {
+              allowNotifications: Runnable, allowTexting: Runnable) {
         // A step saved by an older version with a different number of steps still opens a real step.
         val step = shownStep.coerceIn(0, steps.lastIndex)
         val view = ComposeView(root.context)
@@ -76,6 +76,9 @@ object OnboardingScreen {
                         }
                         when (key) {
                             "welcome" -> item { SampleConversation(appearance) }
+                            "texting" -> item { TextingStepCard(allowTexting) }
+                            "permissions" -> item { PermissionsCard("Allow now", basicPermissions, allowNotifications) }
+                            "later" -> item { PermissionsCard("Now or later", laterPermissions, allowNotifications) }
                             "tabs" -> {
                                 item { TabsIllustration(appearance.speed) }
                                 item { NewContactShowcase(appearance) }
@@ -91,8 +94,8 @@ object OnboardingScreen {
                                 item { WaysIllustration(appearance) }
                                 item {
                                     Tips(listOf(
-                                        Tip(TipIcon.CHAT, "Texts work right away", "Using your phone plan"),
-                                        Tip(TipIcon.TAG, "Tags show how", "SMS, Matrix, Email, and more"),
+                                        Tip(TipIcon.CHAT, "Texts use your phone plan", "Once FluidMessages is your texting app"),
+                                        Tip(TipIcon.TAG, "Tags show how", "A small tag on each chat: text, email, and more"),
                                         Tip(TipIcon.PEOPLE, "More ways? We ask", "Pick how to reach someone each time")), appearance.speed)
                                 }
                             }
@@ -101,7 +104,7 @@ object OnboardingScreen {
                                 item {
                                     Tips(listOf(
                                         Tip(TipIcon.CHAT, "Chats | Communities", "The switch under the Messages title"),
-                                        Tip(TipIcon.FOLDER, "One section per server", "IRC networks, Matrix homeservers, and XMPP servers. Tap a server to fold it"),
+                                        Tip(TipIcon.FOLDER, "One section per group", "Each chat service you join gets its own section. Tap its name to open or close it"),
                                         Tip(TipIcon.PEOPLE, "Browse and join", "A server’s ⋯ menu, or + Add server at the bottom"),
                                         Tip(TipIcon.OPTIONAL, "In Chats too, if you like", "Settings → Messaging → Show community chats in Chats")), appearance.speed)
                                 }
@@ -266,7 +269,7 @@ object OnboardingScreen {
                                 item {
                                     Tips(listOf(
                                         Tip(TipIcon.PRACTICE, "Practice first", "Pretend chats and calls, nothing is sent") { sample.run() },
-                                        Tip(TipIcon.CHAT, "Make it your texting app", "In your inbox, tap Set as default SMS app"),
+                                        Tip(TipIcon.CHAT, "Texting", "On once FluidMessages is your texting app. Change it in Settings → Chat services"),
                                         Tip(TipIcon.OPTIONAL, "Come back anytime", "Settings → Help → Setup guide")), appearance.speed)
                                 }
                             }
@@ -293,6 +296,9 @@ object OnboardingScreen {
  */
 internal val onboardingSteps: List<Triple<String, String, String>> = listOf(
     Triple("welcome", "Welcome", "Your texts, calls, and chats, all in one place."),
+    Triple("texting", TextingGate.TITLE, TextingGate.WHY),
+    Triple("permissions", "Allow the basics", "Tap Allow for each one you want. You can skip any of them and turn it on later."),
+    Triple("later", "Ask now or later", "Each of these is for one feature. Allow them now, or FluidMessages asks the first time you use that feature."),
     Triple("tabs", "Two tabs", "Phone on the left. Messages on the right."),
     Triple("ways", "One inbox", "Texts and other chat apps, side by side."),
     Triple("communities", "Communities", "Chat networks with many rooms, each server with its channels, a tap away from your chats."),
@@ -306,7 +312,7 @@ internal val onboardingSteps: List<Triple<String, String, String>> = listOf(
     Triple("sounds", "Sounds and notifications", "Hear and see new messages, even when FluidMessages is closed."),
     Triple("backup", "Keep a backup", "Save your messages and settings to a file, so you don’t lose them if you change phones. Backups are password-protected."),
     Triple("computer", "On a computer too", "Optional. Link FluidMessages Web to read and reply from a browser. Set it up later if you like."),
-    Triple("services", "Chat services", "Texts work right away. Turn on the other chat services you use, and sign in when you’re ready."),
+    Triple("services", "Chat services", "Turn on the chat services you use, and sign in when you’re ready."),
     Triple("calls", "Calls", "Call from the Phone tab or from a chat. Turn on the ways to call you want."),
     Triple("ready", "You’re ready", "Practice with pretend chats first, or open your real inbox. RCS (the newer texting standard) isn’t available in FluidMessages yet."),
 )

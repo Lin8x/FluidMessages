@@ -664,6 +664,53 @@ internal fun LinkPreviewCard(url: String, foreground: Color) {
     }
 }
 
+/**
+ * Whether a message's link preview, or the picture or GIF it links to, loads by itself. Loading one makes the phone
+ * contact the link's website, which tells that site the message was opened and where from. So only your own messages
+ * and messages from saved contacts load by themselves; anyone else's show "Tap to load preview" first.
+ */
+internal object LinkLoading {
+    const val TAP_PREVIEW = "Tap to load preview"
+    const val TAP_PICTURE = "Tap to load picture"
+
+    /** [senderSaved]: the sender is a saved contact, or a one-to-one chat you set up yourself. [sample]: made-up sample chats, which fetch nothing. */
+    @JvmStatic
+    fun auto(outgoing: Boolean, senderSaved: Boolean, sample: Boolean): Boolean = outgoing || senderSaved || sample
+
+    /** The people in a group text who are saved contacts, by the name their messages show. */
+    fun savedNames(members: List<GroupMember>, saved: (String) -> Boolean): Set<String> =
+        members.filter { it.address.isNotEmpty() && saved(it.address) }.map { it.name }.toSet()
+
+    /**
+     * For one live chat: which authors' messages may load links by themselves. A one-to-one text counts when the
+     * number is a saved contact, a group text per person, and a chat on a chat service when it is one-to-one and
+     * you started or linked it. Rooms, channels, and people who wrote first always wait for a tap.
+     */
+    @JvmStatic
+    fun savedSenders(context: Context, prefs: android.content.SharedPreferences, address: String, phone: Boolean,
+                     members: List<GroupMember>): java.util.function.Predicate<String?> {
+        val contacts = ContactDirectory.shared(context)
+        fun saved(number: String) = runCatching { SmsStore.validRecipient(number) && contacts.find(number) != null }.getOrDefault(false)
+        if (address.startsWith(Privacy.DECOY)) return java.util.function.Predicate { false }
+        if (phone && address.startsWith("mms:")) {
+            val names = savedNames(members, ::saved)
+            return java.util.function.Predicate { author -> author != null && author in names }
+        }
+        val known = if (phone) saved(address) else MessageRequests.route(prefs, address)
+            ?.let { !it.optBoolean("group") && !it.optBoolean("request") && !it.optBoolean("invite") } == true
+        return java.util.function.Predicate { known }
+    }
+}
+
+/** The small line shown in place of a link preview or linked picture that hasn't been loaded. */
+@Composable
+internal fun TapToLoad(label: String, foreground: Color, load: () -> Unit) {
+    Text(label, Modifier.padding(top = 6.dp, bottom = 2.dp).clip(RoundedCornerShape(12.dp)).background(foreground.copy(alpha = .1f))
+        .clickable(onClickLabel = label, role = androidx.compose.ui.semantics.Role.Button, onClick = load)
+        .padding(horizontal = 12.dp, vertical = 9.dp),
+        color = foreground, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+}
+
 /** What cards in a chat need from the conversation around them. */
 internal class RichContext(
     val polls: Map<String, PollTally>,
@@ -678,15 +725,20 @@ internal class RichContext(
     val pictures: Boolean = true,
     /** Dice, coin flips, and random picks as cards. */
     val random: Boolean = true,
+    /** Whether this message's link preview and linked picture load without a tap (LinkLoading). */
+    val loadsRemote: (ChatLine) -> Boolean = { true },
+    /** "Tap to load preview" was tapped on this message. */
+    val allowRemote: (ChatLine) -> Unit = {},
 )
 
 internal fun richContext(lines: List<ChatLine>, respond: ((String) -> Unit)?, previews: Boolean, pictures: Boolean = true,
-                         games: Boolean = true, random: Boolean = true): RichContext {
+                         games: Boolean = true, random: Boolean = true, loadsRemote: (ChatLine) -> Boolean = { true },
+                         allowRemote: (ChatLine) -> Unit = {}): RichContext {
     val moves = mutableSetOf<String>()
     val tracked = if (games) trackGames(lines, moves) else emptyMap()
     // With games turned off in Settings, game messages show as their plain text.
     return RichContext(tallyPolls(lines, moves), if (games) tracked else emptyMap(), if (games) trackRps(lines) else emptyMap(), tallyRsvps(lines),
-        respond, previews, pictures, random)
+        respond, previews, pictures, random, loadsRemote, allowRemote)
 }
 
 /** A short inbox line for a card message, so the inbox never shows the raw text behind it. */

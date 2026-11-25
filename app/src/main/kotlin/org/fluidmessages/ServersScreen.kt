@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -47,7 +48,8 @@ internal object RoomFilter {
  * Servers: an IRC network, a Matrix account (and its Spaces), or an XMPP account. These full pages add a server (pick a
  * service, then a well-known public server or Other server…), join a channel or room by name, browse the server's own
  * directory (IRC LIST, the Matrix public room directory, XMPP service discovery), and confirm leaving one.
- * Everything goes through FluidMessages Web, which holds the connections.
+ * Servers on FluidMessages Web go through it, since it holds those connections. An IRC network this phone connects
+ * itself joins and browses on the phone's own connection (DirectIrc), with nothing else needed.
  */
 internal object ServersScreen {
     private fun mountView(root: LinearLayout, prefs: SharedPreferences, content: @Composable () -> Unit) {
@@ -65,7 +67,18 @@ internal object ServersScreen {
     /** The server's directory. [opened] gets a chat's address and protocol, after joining it or for Open on a joined one. */
     @JvmStatic
     fun browse(root: LinearLayout, prefs: SharedPreferences, account: JSONObject, opened: BiConsumer<String, String>) =
-        mountView(root, prefs) { Browse(prefs, account, opened) }
+        mountView(root, prefs) { if (onPhone(account)) PhoneIrcBrowse(prefs, account, opened) else Browse(prefs, account, opened) }
+
+    /** The account for a server this phone connects itself, for [join] and [browse]. Only IRC can do both on the phone. */
+    @JvmStatic
+    fun directAccount(id: String): JSONObject = JSONObject().put("id", id).put("protocol", AccountKeys.service(id)).put("direct", true)
+
+    /** Why Join and Browse aren't offered for a Matrix or XMPP account this phone connects itself, in one sentence. */
+    @JvmStatic
+    fun phoneOnly(id: String): String {
+        val label = MessageProtocol.parse(AccountKeys.service(id)).label
+        return "This phone can’t look up $label ${noun(AccountKeys.service(id))}s on its own connection yet, so finding and joining them needs FluidMessages Web."
+    }
 
     /** Add server, step 1: pick IRC, Matrix, or XMPP; [pick] opens that service's list of public servers. */
     @JvmStatic
@@ -86,6 +99,9 @@ internal object ServersScreen {
 
     fun serviceTitle(service: String) = when (service) { "irc" -> "IRC network"; "matrix" -> "Matrix homeserver"; else -> "XMPP server" }
 }
+
+/** An account this phone connects itself (ServersScreen.directAccount), not one on FluidMessages Web. */
+private fun onPhone(account: JSONObject) = account.optBoolean("direct") && AccountKeys.service(account.optString("id")) == "irc"
 
 private fun noun(service: String) = when (service) { "irc" -> "channel"; "matrix" -> "room"; else -> "group chat" }
 private fun plural(service: String) = when (service) { "irc" -> "networks"; "matrix" -> "homeservers"; else -> "servers" }
@@ -206,11 +222,15 @@ private fun Join(prefs: SharedPreferences, account: JSONObject, browse: Runnable
     val id = account.optString("id")
     val service = AccountKeys.service(id)
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current.applicationContext
+    val phone = onPhone(account)
+    val link = if (phone) phoneIrcLink(prefs) else null
     var target by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Join a ${noun(service)} on ${AccountKeys.serverName(id)}", style = MaterialTheme.typography.headlineSmall) }
+        if (link != null && !link.ready) item { PhoneIrcWaiting(link, AccountKeys.serverName(id)) }
         item {
             OutlinedTextField(target, { target = it }, Modifier.fillMaxWidth(), singleLine = true, enabled = !busy,
                 label = { Text(if (service == "irc") "Channel" else "Address") },
@@ -218,7 +238,7 @@ private fun Join(prefs: SharedPreferences, account: JSONObject, browse: Runnable
         }
         item {
             Text(when (service) {
-                "irc" -> "Channel names start with #. You can leave it out."
+                "irc" -> "Type the channel’s name, like linux or #linux. The # is optional."
                 "matrix" -> "A room address like #room:example.org, or a room ID. Rooms on other homeservers work too."
                 else -> "A group chat address like room@conference.example.org."
             }, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -226,13 +246,15 @@ private fun Join(prefs: SharedPreferences, account: JSONObject, browse: Runnable
         status?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = browse::run) { Text("Browse instead") }
+                TextButton(onClick = browse::run) { Text(if (service == "irc") "Browse channels instead" else "Browse instead") }
                 Spacer(Modifier.weight(1f))
-                AppButton(enabled = !busy && target.isNotBlank(), onClick = {
+                AppButton(enabled = !busy && target.isNotBlank() && link?.ready != false, onClick = {
                     busy = true
                     status = null
                     scope.launch {
-                        runCatching { withContext(Dispatchers.IO) { GatewayClient.join(prefs, id, target.trim(), "") } }
+                        runCatching { withContext(Dispatchers.IO) {
+                            if (phone) DirectProtocols.ircJoin(context, target) else GatewayClient.join(prefs, id, target.trim(), "")
+                        } }
                             .onSuccess { route -> busy = false; route?.let { opened.accept(it.optString("address"), it.optString("protocol")) } }
                             .onFailure { status = it.message ?: "Couldn’t join."; busy = false }
                     }
@@ -386,5 +408,132 @@ private fun RoomRow(room: FoundRoom, joinedHere: Boolean, join: () -> Unit, open
             Text("Joined", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
             OutlinedButton(onClick = open) { Text("Open") }
         } else AppButton(onClick = join) { Text("Join") }
+    }
+}
+
+/** The phone's own IRC connection, checked about once a second while a Join or Browse page is open. */
+private data class PhoneIrcLink(val ready: Boolean, val state: String, val enabled: Boolean)
+
+@Composable
+private fun phoneIrcLink(prefs: SharedPreferences): PhoneIrcLink {
+    fun read() = PhoneIrcLink(DirectProtocols.ircReady(), DirectProtocols.status(prefs, MessageProtocol.IRC).optString("state"),
+        MessageProtocol.IRC.enabled(prefs))
+    var link by remember { mutableStateOf(read()) }
+    LaunchedEffect(Unit) { while (true) { delay(700); link = read() } }
+    return link
+}
+
+/** Shown while the phone isn't connected to the network: what's going on, in plain words, and a way to connect. */
+@Composable
+private fun PhoneIrcWaiting(link: PhoneIrcLink, network: String) {
+    val context = LocalContext.current.applicationContext
+    var asked by remember { mutableStateOf(false) }
+    // A press shows "Connecting…" until the connection reports back.
+    LaunchedEffect(asked) { if (asked) { delay(8000); asked = false } }
+    val (line, button) = IrcChannels.waiting(if (asked) "connecting" else link.state, network, link.enabled)
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.large) {
+        Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(line, Modifier.weight(1f))
+            if (button.isNotEmpty()) AppButton(onClick = { asked = true; DirectProtocols.reconnect(context, MessageProtocol.IRC) }) { Text(button) }
+            else if (link.enabled) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+        }
+    }
+}
+
+/**
+ * Browse for an IRC network this phone connects itself: the network's public channels (LIST) with people counts and
+ * topics, searched as you type, and a few long-lived channels as a starting point until the live list arrives.
+ */
+@Composable
+private fun PhoneIrcBrowse(prefs: SharedPreferences, account: JSONObject, opened: BiConsumer<String, String>) {
+    val id = account.optString("id")
+    val network = AccountKeys.serverName(id)
+    val context = LocalContext.current.applicationContext
+    val scope = rememberCoroutineScope()
+    val link = phoneIrcLink(prefs)
+    var search by remember { mutableStateOf("") }
+    // Null until the network's own list has arrived once.
+    var rows by remember { mutableStateOf<List<IrcChannelRow>?>(null) }
+    var asked by remember { mutableStateOf<String?>(null) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var joining by remember { mutableStateOf("") }
+    var request by remember { mutableIntStateOf(0) }
+    fun run(term: String) = scope.launch {
+        val mine = ++request
+        busy = true
+        status = null
+        runCatching { withContext(Dispatchers.IO) { DirectProtocols.ircList(context, term, IrcChannels.LIMIT) } }
+            .onSuccess { if (mine == request) { rows = it; asked = term } }
+            .onFailure { if (mine == request) status = it.message ?: "Couldn’t get the channel list." }
+        if (mine == request) busy = false
+    }
+    // Asks once connected, then again shortly after you stop typing. The connection itself spaces requests out.
+    LaunchedEffect(link.ready, search) {
+        val term = search.trim()
+        if (!link.ready || term == asked) return@LaunchedEffect
+        if (asked != null) delay(900)
+        run(term)
+    }
+    fun open(name: String): Boolean {
+        val chat = DirectProtocols.routeForTarget(context, MessageProtocol.IRC, name) ?: return false
+        opened.accept(chat.optString("address"), "irc")
+        return true
+    }
+    fun join(name: String) = scope.launch {
+        joining = name
+        status = null
+        runCatching { withContext(Dispatchers.IO) { DirectProtocols.ircJoin(context, name) } }
+            .onSuccess { opened.accept(it.optString("address"), "irc") }
+            .onFailure { status = it.message ?: "Couldn’t join $name." }
+        joining = ""
+    }
+    val joined = remember(rows, joining) { DirectProtocols.targets(context, MessageProtocol.IRC, true).map { AccountKeys.targetKey("irc", it) }.toSet() }
+    fun found(name: String, detail: String, topic: String = "") = FoundRoom(name, name, detail, AccountKeys.targetKey("irc", name) in joined, name, topic = topic)
+    val live = rows
+    val popular = remember(id) { IrcChannels.popular(AccountKeys.address(id).substringAfterLast('@')) }
+    // The list filters as you type, before the network answers the new search.
+    val shown = remember(live, search, joined) { RoomFilter.filter(live.orEmpty().map { found(it.name, IrcChannels.detail(it), it.topic) }, search) }
+    val typed = search.trim().takeIf { IrcChannels.looksLikeChannel(it) && shown.none { room -> room.name.equals(it, ignoreCase = true) } }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Text("Browse $network", style = MaterialTheme.typography.headlineSmall) }
+        item {
+            Text("Public channels on $network, busiest first. Type a word to search. Up to ${IrcChannels.LIMIT} show at a time.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (!link.ready) item { PhoneIrcWaiting(link, network) }
+        item {
+            OutlinedTextField(search, { search = it.take(100) }, Modifier.fillMaxWidth(), singleLine = true,
+                label = { Text("Search channels") },
+                trailingIcon = if (busy) ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }) else null,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { if (link.ready) run(search.trim()) }))
+        }
+        status?.let { problem ->
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(problem, Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
+                    if (link.ready && !busy && joining.isEmpty()) TextButton(onClick = { run(search.trim()) }) { Text("Try again") }
+                }
+            }
+        }
+        // A pasted or typed "#channel" can be joined straight away, listed or not.
+        typed?.let { name -> item("typed") { RoomRow(found(name, "Join this channel by name"), false, { join(name) }) { if (!open(name)) join(name) } } }
+        if (live == null && search.isBlank()) {
+            if (popular.isNotEmpty()) item { Text("Popular here", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 6.dp)) }
+            items(popular, key = { "popular:$it" }) { name -> RoomRow(found(name, "A long-running channel on $network"), false, { join(name) }) { if (!open(name)) join(name) } }
+            if (link.ready && busy) item { Text("Getting the full list from $network…", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        } else {
+            val line = when {
+                live == null -> if (busy) "Searching $network…" else null
+                shown.isEmpty() && busy -> "Searching $network…"
+                shown.isEmpty() -> if (search.isBlank()) "$network didn’t list any public channels." else "No channel matches “${search.trim()}”."
+                else -> "${shown.size} ${if (shown.size == 1) "channel" else "channels"}"
+            }
+            line?.let { item { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+            items(shown, key = { "room:" + AccountKeys.targetKey("irc", it.target) }) { room ->
+                RoomRow(room, false, { join(room.name) }) { if (!open(room.name)) join(room.name) }
+            }
+        }
     }
 }

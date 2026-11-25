@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Locale;
 
 enum MessageProtocol {
-    RCS("RCS", "Carrier preview"),
+    RCS("RCS", "Preview. Needs carrier support"),
     SMS("SMS", "Carrier texts"),
     MMS("MMS", "Carrier groups and pictures"),
     MATRIX("Matrix", "Homeserver rooms"),

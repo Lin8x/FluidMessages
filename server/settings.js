@@ -87,6 +87,10 @@ const SETTINGS_SUBPAGES = [
   {id: 'erase', icon: 'erase', title: 'Erase everything on this server', parent: 'privacy', page: erasePage},
   {id: 'payment-add', icon: 'payments', title: 'Add a way to pay', parent: 'payments', page: (settings, context) => addPaymentPage(context)},
   {id: 'chat-locks', icon: 'privacy', title: 'Chat locks', parent: 'privacy', page: () => chatLocksPage()},
+  // Calls → Meeting links, and a page to save your own link for each service that needs one (meetings.js).
+  {id: 'meeting-links', icon: 'calls', title: 'Meeting links', parent: 'calls', page: (settings, context) => meetingLinksPage(context)},
+  ...['zoom', 'meet', 'teams'].map((id) => ({id: 'meeting-link-' + id, icon: 'calls', title: 'Your meeting link', parent: 'meeting-links',
+    page: () => meetingLinkPage(id)})),
   ...LOCK_KINDS.map(([kind, label]) => ({id: 'lock-' + kind, icon: 'privacy', title: label, parent: 'chat-locks', page: () => kindLockPage(kind, label)})),
   {id: 'encryption', icon: 'privacy', title: 'Encryption', parent: 'privacy', page: () => encryptionPage()}];
 
@@ -347,7 +351,8 @@ function callsPage() {
   ways.append(
     checkbox('Matrix', callWayOn('matrix'), save('callMatrix'), 'Voice and video with Matrix contacts. End-to-end encrypted.'
       + (matrix ? '' : ' Add a Matrix account in Accounts to call from here.')),
-    checkbox('Meeting links', callWayOn('meeting'), save('callMeetings'), 'A Jitsi Meet link anyone can tap to join, on any app. Free and open source.'),
+    checkbox('Meeting links', callWayOn('meeting'), save('callMeetings'), 'A link anyone can open to join, on any app. Pick Zoom, Jitsi Meet, Google Meet, or Teams when you send it.'),
+    settingsLink('meeting-links', meetingSummary(meetingSettings(prefs.meetings)) + ' · services, your saved links, and the Jitsi server'),
     element('p', 'Off hides that way to call in chats, their details, and contact pages. Calls you get still show.', 'muted'));
   const phone = settingsCard('On your phone');
   const list = element('dl', '', 'settings-facts');
@@ -358,7 +363,7 @@ function callsPage() {
     ['SIP', 'Internet phone service from a SIP provider, including regular phone numbers. Set up and made on your phone.']]) {
     list.append(element('dt', term), element('dd', detail));
   }
-  phone.append(list, element('p', 'Turn these on or off, and set call recording, the meeting server, and regular phone calls in Recents, in '
+  phone.append(list, element('p', 'Turn these on or off, and set call recording, the phone’s own meeting links, and regular phone calls in Recents, in '
     + 'FluidMessages for Android.', 'muted'));
   const open = element('button', 'Open Calls', 'primary');
   open.type = 'button';

@@ -127,7 +127,7 @@ internal fun GroupMembers(members: List<GroupMember>) {
 
 object ProtocolSettingsScreen {
     @JvmStatic
-    fun mount(root: LinearLayout, prefs: SharedPreferences) {
+    fun mount(root: LinearLayout, prefs: SharedPreferences, askTexting: Runnable, textingChanged: Runnable) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -136,15 +136,18 @@ object ProtocolSettingsScreen {
                     verticalArrangement = Arrangement.spacedBy(15.dp)) {
                     item {
                         PreferencesCard("Text messages") {
-                            ProtocolSwitch(prefs, MessageProtocol.RCS.key(), "RCS (preview)",
-                                "Used first when available. Falls back to SMS when RCS can’t connect.", true)
-                            ProtocolSwitch(prefs, MessageProtocol.SMS.key(), "SMS", "Carrier texts from your SIM.", true)
-                            ProtocolSwitch(prefs, MessageProtocol.MMS.key(), "Allow MMS",
-                                "SMS switches to MMS for photos, files, and group chats.", true)
+                            // Texting needs the default messages app role: without it, a switch opens the ask instead.
+                            if (!TextingGate.roleHeld(root.context)) PreferenceText("Texting is off",
+                                "Android lets only one app send and receive your texts. To turn texting on, make FluidMessages your texting app first.")
+                            TextingSwitch(prefs, MessageProtocol.RCS.key(), "RCS (preview)",
+                                "Used first when available. Falls back to SMS when RCS can’t connect.", askTexting, textingChanged)
+                            TextingSwitch(prefs, MessageProtocol.SMS.key(), "SMS", "Carrier texts from your SIM.", askTexting, textingChanged)
+                            TextingSwitch(prefs, MessageProtocol.MMS.key(), "Allow MMS",
+                                "SMS switches to MMS for photos, files, and group chats.", askTexting, textingChanged)
                         }
                     }
                     item {
-                        PreferencesCard("Internet protocols") {
+                        PreferencesCard("Chat services") {
                             for (protocol in MessageProtocol.values().filter { !it.isText() }) {
                                 ProtocolSwitch(prefs, protocol.key(), protocol.label, protocol.description, true)
                             }
@@ -161,7 +164,7 @@ object ProtocolSettingsScreen {
                         }
                     }
                     item {
-                        Text("New messages use the first available protocol: RCS, SMS or MMS, Matrix, XMPP, Email, then IRC. Choose another for a contact from the composer in its chat. A disabled protocol stays readable.",
+                        Text("New messages use the first available protocol: RCS, SMS or MMS, Matrix, XMPP, Email, then IRC. Choose another for a contact from the composer in its chat. A service you turn off stays readable. Texts are different: with RCS, SMS, and MMS all off, FluidMessages shows no texts.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 12.dp))
                     }
                 }
@@ -187,6 +190,21 @@ object ProtocolSettingsScreen {
             }
         }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+    }
+}
+
+/** An RCS, SMS, or MMS switch. It turns on only while FluidMessages is the default messages app; otherwise it opens the ask. */
+@Composable
+private fun TextingSwitch(prefs: SharedPreferences, key: String, title: String, detail: String, ask: Runnable, changed: Runnable) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var enabled by remember(key) { mutableStateOf(prefs.getBoolean(key, true)) }
+    SettingsSwitch(title, detail, enabled) {
+        if (!TextingGate.maySwitch(it, TextingGate.roleHeld(context))) ask.run()
+        else {
+            enabled = it
+            prefs.edit().putBoolean(key, it).apply()
+            changed.run()
+        }
     }
 }
 

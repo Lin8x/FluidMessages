@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1126" viewBox="0 0 720 1126" role="img" aria-label="Your phone came with walls: each company wants you to stay inside. Two walled gardens are shown. In Apple’s garden, blue bubbles only work on Apple devices. In Google’s or Samsung’s garden, your texts live in their app. A message bubble that tries to cross between them bounces off the wall and turns plain green. Their app, their rules, their cloud: you can’t take your messages with you.">
+  <defs>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".14"/></filter><pattern id="brick" width="44" height="28" patternUnits="userSpaceOnUse"><rect width="44" height="28" fill="#cb7d60"/><path d="M0 1H44M0 15H44M22 1V15M1 15V28M43 15V28" stroke="#f1d6c8" stroke-width="2"/></pattern>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .hop { transform-box: fill-box; transform-origin: center bottom; animation: hop 12s ease-in infinite; }
+      @keyframes hop { 0% { opacity: 0; transform: translateY(-40px); } 4% { opacity: 1; transform: translateY(-40px); } 12% { opacity: 1; transform: translateY(42px) scale(1, 1); } 14% { transform: translateY(42px) scale(1.14, .8); } 22%, 96% { opacity: 1; transform: translateY(0) scale(1, 1); } 100% { opacity: 0; transform: translateY(0); } }
+      .blue { opacity: 0; animation: blue 12s linear infinite; }
+      @keyframes blue { 0%, 13% { opacity: 1; } 21%, 100% { opacity: 0; } }
+      .spark { opacity: 0; animation: spark 12s linear infinite; }
+      @keyframes spark { 0%, 11% { opacity: 0; } 13%, 16% { opacity: 1; } 20%, 100% { opacity: 0; } }
+      .l1 { animation: l1 12s ease-out infinite; } .l2 { animation: l2 12s ease-out infinite; } .l3 { animation: l3 12s ease-out infinite; } .l4 { animation: l4 12s ease-out infinite; }
+      @keyframes l1 { 0%, 24% { opacity: 0; transform: translateY(14px); } 28%, 96% { opacity: 1; transform: translateY(0); } 100% { opacity: 0; transform: translateY(0); } }
+      @keyframes l2 { 0%, 30% { opacity: 0; transform: translateY(14px); } 34%, 96% { opacity: 1; transform: translateY(0); } 100% { opacity: 0; transform: translateY(0); } }
+      @keyframes l3 { 0%, 36% { opacity: 0; transform: translateY(14px); } 40%, 96% { opacity: 1; transform: translateY(0); } 100% { opacity: 0; transform: translateY(0); } }
+      @keyframes l4 { 0%, 42% { opacity: 0; transform: translateY(14px); } 46%, 96% { opacity: 1; transform: translateY(0); } 100% { opacity: 0; transform: translateY(0); } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; }  }
+
+    </style>
+  </defs>
+  <rect width="720" height="1126" rx="32" fill="#fbf4ee"/>
+  <text x="360" y="64" fill="#141820" font-size="38" font-weight="800" text-anchor="middle">Your phone came with walls</text>
+  <text x="360" y="106" fill="#5b6070" font-size="24" text-anchor="middle">Each company wants you to stay inside.</text>
+  <rect x="24" y="132" width="672" height="320" rx="28" fill="url(#brick)" stroke="#a9624a" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="46" y="154" width="628" height="276" rx="12" fill="#eef5ff" stroke="#a9624a" stroke-width="2"/>
+  <text x="360" y="208" fill="#141820" font-size="30" font-weight="800" text-anchor="middle">Apple’s garden</text>
+  <g><rect x="110" y="232" width="270" height="48" rx="24" fill="#1f7fd6"/><rect x="134" y="251" width="150" height="10" rx="5" fill="#fff" opacity=".85"/><rect x="340" y="292" width="270" height="48" rx="24" fill="#1f7fd6"/><rect x="364" y="311" width="190" height="10" rx="5" fill="#fff" opacity=".85"/></g>
+  <text x="360" y="396" fill="#5b6070" font-size="24" text-anchor="middle">Blue bubbles only work on Apple devices</text>
+  <rect x="24" y="592" width="672" height="250" rx="28" fill="url(#brick)" stroke="#a9624a" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="46" y="614" width="628" height="206" rx="12" fill="#f0f8f1" stroke="#a9624a" stroke-width="2"/>
+  <text x="360" y="668" fill="#141820" font-size="28" font-weight="800" text-anchor="middle">Google’s or Samsung’s garden</text>
+  <g><rect x="110" y="690" width="230" height="46" rx="23" fill="#e9e9ee"/><rect x="134" y="708" width="130" height="10" rx="5" fill="#b9bdc9"/><rect x="380" y="690" width="230" height="46" rx="23" fill="#1fa84a"/><rect x="404" y="708" width="150" height="10" rx="5" fill="#fff" opacity=".85"/></g>
+  <text x="360" y="790" fill="#5b6070" font-size="24" text-anchor="middle">Your texts live in their app</text>
+  <g class="spark" stroke="#b07d00" stroke-width="5" stroke-linecap="round"><path d="M278 580l-22-14M442 580l22-14M262 596h-26M458 596h26"/></g>
+  <g class="hop"><rect x="296" y="494" width="128" height="56" rx="28" fill="#1fa84a"/><rect class="blue" x="296" y="494" width="128" height="56" rx="28" fill="#1f7fd6"/><text x="360" y="531" fill="#fff" font-size="24" font-weight="800" text-anchor="middle">Hi!</text></g>
+  <g class="l1"><text x="360" y="906" fill="#141820" font-size="32" font-weight="800" text-anchor="middle">Their app.</text></g>
+  <g class="l2"><text x="360" y="954" fill="#141820" font-size="32" font-weight="800" text-anchor="middle">Their rules.</text></g>
+  <g class="l3"><text x="360" y="1002" fill="#141820" font-size="32" font-weight="800" text-anchor="middle">Their cloud.</text></g>
+  <g class="l4"><rect x="24" y="1030" width="672" height="72" rx="36" fill="#141820"/><text x="360" y="1075" fill="#fff" font-size="24" font-weight="700" text-anchor="middle">You can’t take your messages with you.</text></g>
+
+</svg>

@@ -596,8 +596,15 @@ class ChatFeatures:
                 if isinstance(getattr(entry[1], "status", None), dict)}
 
     def reconnect(self, data):
-        entry = self.clients.get(data.get("account")) if isinstance(data.get("account"), str) else None
+        ident = data.get("account") if isinstance(data.get("account"), str) else None
+        entry = self.clients.get(ident)
+        if entry is None and ident:
+            # An account added a moment ago: start its connection now rather than at the next check.
+            self.refresh_clients()
+            entry = self.clients.get(ident)
+            if entry is not None and hasattr(entry[1], "reconnect_now"):
+                return {"ok": True}
         if entry is None or not hasattr(entry[1], "reconnect_now"):
-            raise ValueError("That network isn’t connecting from FluidMessages Web")
+            raise ValueError("IRC is turned off, so this network can’t connect. Turn it on in Settings → Chat services.")
         entry[1].reconnect_now()
         return {"ok": True}

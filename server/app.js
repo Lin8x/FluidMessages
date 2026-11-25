@@ -12,8 +12,6 @@ const colors = {
 const labels = {rcs: 'RCS', sms: 'SMS', mms: 'MMS', matrix: 'Matrix', xmpp: 'XMPP', email: 'Email', irc: 'IRC'};
 const family = (protocol) => ['rcs', 'mms', undefined, ''].includes(protocol) ? 'sms' : protocol;
 let enabled = new Set(['sms', 'mms', 'matrix', 'xmpp', 'email', 'irc']);
-const verbs = [['Liked', '👍'], ['Loved', '❤️'], ['Disliked', '👎'], ['Laughed at', '😆'],
-  ['Emphasized', '‼️'], ['Questioned', '❓']];
 const jobStates = {scheduled: 'Queued', claimed: 'Claimed by phone', submitted: 'Submitted by phone',
   failed: 'Phone submission failed', cancelled: 'Cancelled'};
 const drafts = new Map();
@@ -34,7 +32,7 @@ let refreshNumber = 0;
 let lastLook = '';
 // Fun and effects, set in Settings for this server. Everything is on until turned off.
 let prefs = {effects: true, reactionEffects: true, games: true, random: true, gifs: true, linkPreviews: true,
-  sendGifs: true, sendStickers: true, callMatrix: true, callMeetings: true};
+  sendGifs: true, sendStickers: true, callMatrix: true, callMeetings: true, meetings: null};
 // Chat accounts on this server (Matrix, XMPP, Email, IRC), for empty states and New chat.
 let chatAccounts = [];
 // Signed in as this computer, which opens without a password, so there's nothing to sign out of.
@@ -263,24 +261,7 @@ const graphemes = window.Intl?.Segmenter ? new Intl.Segmenter(undefined, {granul
 const isEmoji = (value) => !!value && value.length <= 64 && /[\p{Emoji_Presentation}\p{Extended_Pictographic}\u20E3]/u.test(value)
   && (!graphemes || [...graphemes.segment(value)].length === 1);
 
-// Same wording as the phone: added, removed (as iPhones word it), or changed reactions.
-function parseReaction(body) {
-  if (typeof body !== 'string') return null;
-  const own = body.endsWith(' (my message)');
-  const wire = own ? body.slice(0, -13) : body;
-  const unquote = (text) => (/^“([\s\S]+)”$/.exec(text) || /^"([\s\S]+)"$/.exec(text) || [])[1];
-  const known = verbs.find(([verb]) => wire.startsWith(verb + ' “') || wire.startsWith(verb + ' "'));
-  if (known) return {change: 'add', emoji: known[1], quote: unquote(wire.slice(known[0].length + 1)), own};
-  let match = /^Reacted (\S{1,64}) to ([\s\S]+)$/.exec(wire);
-  if (match && isEmoji(match[1])) return {change: 'add', emoji: match[1], quote: unquote(match[2]), own};
-  match = /^Removed (.{1,64}?) from ([\s\S]+)$/.exec(wire);
-  if (match && (nouns[match[1]] || isEmoji(match[1]))) {
-    return {change: 'remove', emoji: nouns[match[1]] || match[1], quote: unquote(match[2]), own};
-  }
-  match = /^Changed reaction from (\S{1,64}) to (\S{1,64}) on ([\s\S]+)$/.exec(wire);
-  if (match && isEmoji(match[2])) return {change: 'change', emoji: match[2], quote: unquote(match[3]), own};
-  return null;
-}
+// Reactions that arrive as text (parseReaction, reactionTarget) are read in reactions.js, with the phone's rules.
 
 // One reaction per sender: yourself for sent messages, otherwise the group member who sent it.
 const senderKey = (message) => message.type === 1 ? 'from:' + (message.author || '') : 'me';
@@ -300,15 +281,10 @@ function fold(history) {
       if (target) { target.earlier = (target.earlier || []).concat(target.body); target.body = edit[2]; continue; }
     }
     const parsed = unsettled(message) || message.event ? null : parseReaction(message.body);
-    if (parsed?.quote) {
-      const quoted = parsed.quote;
-      // Long messages are quoted as an excerpt; some phones shorten them further and end with "…".
-      const prefix = quoted.endsWith('…') && quoted.length > 20 ? quoted.slice(0, -1) : null;
-      const matches = [...shown].reverse().filter((row) => typeof row.body === 'string' && (row.body === quoted
-        || excerpt(row.body, 700) === quoted || (prefix && row.body.startsWith(prefix))));
+    // A picture or file is never folded away, whatever its caption says.
+    if (parsed && !reactionMedia(message)) {
       const target = (message.reaction_target && shown.find((row) => row.id === message.reaction_target))
-        || matches.find((row) => (senderKey(row) === senderKey(message)) === parsed.own)
-        || (!parsed.own && matches[0]);
+        || reactionTarget(parsed, senderKey(message), shown, senderKey);
       if (target) {
         const key = senderKey(message);
         target.reactions.delete(key);
@@ -695,7 +671,7 @@ function reactWith(message, row, emoji) {
   const as = typeof sampleOn !== 'undefined' && sampleOn && sampleSender !== 'me' ? 'from:' + sampleSender : 'me';
   if (message.reactions.get(as) !== emoji) playReaction(row, emoji, reactionId(message, as, emoji));
   const own = as === 'me' ? message.type !== 1 : senderKey(message) === as;
-  const quote = '“' + excerpt(message.body, 700) + '”' + (own ? ' (my message)' : '');
+  const quote = reactionTargetWords(message) + (own ? ' (my message)' : '');
   const current = message.reactions.get(as);
   // Matrix and XMPP take reactions back and change them natively; the readable text goes everywhere else.
   const native = ['matrix', 'xmpp'].includes(message.protocol);
@@ -704,7 +680,8 @@ function reactWith(message, row, emoji) {
   if (current === emoji) {
     const noun = Object.keys(nouns).find((key) => nouns[key] === emoji) || emoji;
     send('Removed ' + noun + ' from ' + quote, '', relation({removed: true})).catch(showError);
-  } else if (current) {
+  } else if (current && internet(message.protocol)) {
+    // Texts get the usual "Loved “…”" for a change too: iPhones and other apps replace the earlier reaction with it.
     send('Changed reaction from ' + current + ' to ' + emoji + ' on ' + quote, '', relation({previous: current})).catch(showError);
   } else {
     send((verb || 'Reacted ' + emoji + ' to') + ' ' + quote, '', {kind: 'reaction', target: message.id || '', emoji, own}).catch(showError);
@@ -827,6 +804,8 @@ function showMessages(preserve = false) {
         bubble.prepend(file);
       }
     }
+    // A Zoom, Google Meet, Teams, or Jitsi link in an everyday message gets a "Join meeting" button (meetings.js).
+    if (!carded && !message.attachment && typeof meetingChip === 'function') meetingChip(message, bubble);
     // The bubble, with a small ⋯ beside it (on hover or focus) for reactions, reply, and more.
     const wrap = element('div', '', 'bubble-wrap');
     wrap.append(bubble);

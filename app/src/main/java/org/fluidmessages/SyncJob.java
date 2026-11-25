@@ -88,8 +88,8 @@ public final class SyncJob extends JobService {
         try { SyncMergeRun.run(context, false); } catch (Exception ignored) {}
         // Contacts made on the web: shown in the Phone tab, and saved into Android's contacts once you allowed it.
         try { WebContacts.refresh(context); } catch (Exception ignored) {}
-        if (!preferences.getBoolean("syncSms", true)
-            || !context.getSystemService(RoleManager.class).isRoleHeld(RoleManager.ROLE_SMS)) return;
+        // Texts go to FluidMessages Web only while texting is on here and FluidMessages is the default messages app.
+        if (!preferences.getBoolean("syncSms", true) || !TextingGate.showsTexts(context, preferences)) return;
         publishInbox(context, preferences, url, token);
         boolean submitted = false;
         for (int count = 0; count < 10 && !Thread.currentThread().isInterrupted(); count++) {

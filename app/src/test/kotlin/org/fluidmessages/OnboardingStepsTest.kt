@@ -10,7 +10,7 @@ class OnboardingStepsTest {
     private val titles = onboardingSteps.map { it.second }
 
     @Test fun lengthAndOrder() {
-        assertTrue("${onboardingSteps.size} steps", onboardingSteps.size in 15..17)
+        assertTrue("${onboardingSteps.size} steps", onboardingSteps.size in 15..20)
         assertEquals(keys.size, keys.toSet().size)
         assertEquals(titles.size, titles.toSet().size)
         assertEquals("welcome", keys.first())

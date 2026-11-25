@@ -793,7 +793,8 @@ internal val callServiceTexts: List<Pair<Calling.Method, ServiceText>> = listOf(
     Calling.Method.SIP to ServiceText("SIP", "SIP",
         "Internet phone service from a SIP provider, including calls to regular phone numbers over Wi-Fi or data. Your provider can access calls."),
     Calling.Method.MEETING to ServiceText("Meet", "Meeting links",
-        "A Jitsi Meet link anyone can tap to join, from any app or browser. Free and open source. The meeting server can access the call."),
+        "A link anyone can tap to join, from any app or browser. Pick Zoom, Jitsi Meet, Google Meet, or Teams each time you send one. " +
+            "The meeting service can access the call."),
 )
 
 /** The lock each way to call shows on the call screen (see CallHub and CallActivity). */
@@ -844,19 +845,20 @@ private fun CardSwitch(label: String, checked: Boolean, changed: (Boolean) -> Un
 }
 
 @Composable
-private fun StatusLabel(text: String) {
+internal fun StatusLabel(text: String) {
     Text(text, Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
         .padding(horizontal = 8.dp, vertical = 3.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
 }
 
-/** One card per chat service. Texts are always there; the internet services have their on/off switch. */
+/** One card per chat service. Texts follow the default messages app step; the internet services have their on/off switch. */
 @Composable
 internal fun ChatServiceCards(prefs: SharedPreferences, appearance: Appearance) {
+    val texting = TextingGate.showsTexts(LocalContext.current, prefs)
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         for ((protocol, text) in chatServiceTexts) {
             ServiceCard(text, protocol.tint(appearance), chatEncryption(protocol)) {
                 when (protocol) {
-                    MessageProtocol.SMS -> StatusLabel("Ready")
+                    MessageProtocol.SMS -> StatusLabel(if (texting) "Ready" else "Off")
                     MessageProtocol.RCS -> StatusLabel("Preview")
                     else -> {
                         var on by remember(protocol) { mutableStateOf(protocol.enabled(prefs)) }

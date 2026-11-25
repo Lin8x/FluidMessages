@@ -55,6 +55,16 @@ final class DirectIrc implements DirectProtocols.DirectClient {
     private final ArrayDeque<Long> newChats = new ArrayDeque<>();
     private final SecureRandom random = new SecureRandom();
     private final Object wake = new Object();
+    // Browsing (LIST) and joining by name from the Join and Browse pages.
+    private final Object listLock = new Object();
+    private final java.util.concurrent.atomic.AtomicInteger listAsked = new java.util.concurrent.atomic.AtomicInteger();
+    private final Set<String> joining = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final Map<String, String[]> joinErrors = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, String> forwards = new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile IrcChannelList listing;
+    private volatile boolean listStreaming;
+    private volatile long listAt;
+    private volatile String elist = "", listProblem = "";
     private volatile boolean stopped, ready, registered, saslOk, online = true, manual;
     private long ctcpAt;
     private int nickTries;
@@ -191,6 +201,8 @@ final class DirectIrc implements DirectProtocols.DirectClient {
         offered.clear();
         caps.clear();
         joined.clear();
+        listStreaming = false;
+        elist = "";
         // Each connection asks for your own nick again, even if the last one fell back to nick_.
         nick = wanted;
         nickTries = 0;
@@ -289,6 +301,14 @@ final class DirectIrc implements DirectProtocols.DirectClient {
                 ready = true;
                 status("connected", 0, "");
             }
+            case "005" -> { String can = IrcChannels.elist(p); if (!can.isEmpty()) elist = can; }
+            // The public channel list: rows, then its end. 263 and 416 mean the network won't send (more of) it now.
+            case "322" -> { var list = listing; if (list != null) list.add(p); }
+            case "323" -> listStreaming = false;
+            case "416" -> { listProblem = "too many"; listStreaming = false; }
+            case "263" -> { if (listStreaming) { listProblem = "busy"; listStreaming = false; } }
+            // A channel that sends newcomers to another one (such as an overflow channel for unregistered nicknames).
+            case "470" -> { if (p.size() >= 3 && joining.contains(lower(p.get(1)))) forwards.put(lower(p.get(1)), p.get(2)); }
             case "PRIVMSG", "NOTICE", "TAGMSG" -> { if (!p.isEmpty()) message(line); }
             case "332" -> { if (p.size() >= 3) { topics.put(lower(p.get(1)), p.get(2)); publish(p.get(1)); } }
             case "TOPIC" -> {
@@ -370,6 +390,9 @@ final class DirectIrc implements DirectProtocols.DirectClient {
                     write("NICK " + nick);
                 } else if (WHOIS.contains(command) && p.size() >= 3) {
                     whois(line);
+                } else if (ERRORS.contains(command) && p.size() >= 3 && joining.contains(lower(p.get(1)))) {
+                    // The Join page is waiting on this channel: it shows why the network said no.
+                    joinErrors.put(lower(p.get(1)), new String[]{command, p.get(p.size() - 1)});
                 } else if (ERRORS.contains(command) && p.size() >= 2) {
                     String about = p.size() >= 3 ? p.get(1) : "";
                     String where = whoisFor.getOrDefault(lower(about), about.startsWith("#") || about.startsWith("&") ? about : SERVER);
@@ -594,6 +617,98 @@ final class DirectIrc implements DirectProtocols.DirectClient {
         while (!joined.contains(lower(channel)) && System.currentTimeMillis() < deadline) Thread.sleep(50);
     }
 
+    boolean ready() { return ready && !stopped; }
+
+    private String network() {
+        String server = account.optString("server");
+        String name = ServerDirectory.INSTANCE.ircName(server);
+        return name == null ? server : name;
+    }
+
+    /**
+     * Joins a channel by name, with or without the leading #, and returns its chat. Waits a few seconds for the
+     * network's answer, so a refusal (invite-only, full, registered nicknames only…) comes back in plain words instead
+     * of an empty chat. A channel that forwards newcomers elsewhere opens the channel it sent you to.
+     */
+    JSONObject join(Context context, String typed, String key) throws Exception {
+        String target = IrcChannels.channelName(typed);
+        if (target == null) throw new IllegalArgumentException("“" + typed.trim() + "” isn’t a channel name. Channel names look like #linux.");
+        if (!ready) throw new IllegalStateException("You’re not connected to " + network() + " yet. Connect, then try again.");
+        var chat = DirectProtocols.routeForTarget(context, MessageProtocol.IRC, target);
+        boolean added = chat == null;
+        if (added) chat = DirectProtocols.linkQuietly(context, MessageProtocol.IRC, target, target, true, null);
+        String name = lower(target);
+        if (joined.contains(name)) return chat;
+        joinErrors.remove(name);
+        forwards.remove(name);
+        joining.add(name);
+        try {
+            say("JOIN " + target + (key == null || key.isEmpty() ? "" : " " + key));
+            long deadline = System.currentTimeMillis() + 8000;
+            while (ready && System.currentTimeMillis() < deadline) {
+                if (joined.contains(name)) return chat;
+                String forward = forwards.get(name);
+                if (forward != null && joined.contains(lower(forward))) {
+                    if (added) DirectProtocols.unlink(context, chat.getString("address"), MessageProtocol.IRC);
+                    var moved = DirectProtocols.linkQuietly(context, MessageProtocol.IRC, forward, forward, true, null);
+                    publish(forward);
+                    return moved;
+                }
+                String[] refused = joinErrors.get(name);
+                if (refused != null) {
+                    if (added) DirectProtocols.unlink(context, chat.getString("address"), MessageProtocol.IRC);
+                    throw new IllegalStateException(IrcChannels.joinError(refused[0], target, network(), refused[1]));
+                }
+                Thread.sleep(50);
+            }
+            return chat; // No answer yet: the chat opens, and fills in when the network lets you in.
+        } finally {
+            joining.remove(name);
+            joinErrors.remove(name);
+            forwards.remove(name);
+        }
+    }
+
+    /**
+     * The network's public channels matching [search], busiest first, at most [limit] (IRC LIST). Big networks send
+     * thousands of rows: the network filters where it can (ELIST), the rest is filtered and capped as it arrives, and
+     * waiting stops after IrcChannels.TIMEOUT_MILLIS with whatever came. Only one LIST runs at a time, never sooner
+     * than IrcChannels.GAP_MILLIS after the last, and only the newest search is sent, so typing can't flood the network.
+     */
+    List<IrcChannelRow> list(String search, int limit) throws Exception {
+        if (!ready) throw new IllegalStateException("You’re not connected to " + network() + " yet. Connect, then try again.");
+        int mine = listAsked.incrementAndGet();
+        synchronized (listLock) {
+            long gap = listAt + IrcChannels.GAP_MILLIS - System.currentTimeMillis();
+            if (gap > 0) Thread.sleep(gap);
+            // The last list may still be streaming in after its page stopped waiting: let it finish first.
+            for (long until = System.currentTimeMillis() + 10_000; listStreaming && System.currentTimeMillis() < until; ) Thread.sleep(100);
+            if (mine != listAsked.get()) throw new IllegalStateException("A newer search replaced this one.");
+            if (listStreaming && System.currentTimeMillis() - listAt < 60_000) {
+                throw new IllegalStateException(network() + " is still sending its last channel list. Try again in a moment.");
+            }
+            var list = new IrcChannelList(search, limit);
+            listProblem = "";
+            listing = list;
+            listStreaming = true;
+            listAt = System.currentTimeMillis();
+            try {
+                say(IrcChannels.command(search, elist));
+                long deadline = System.currentTimeMillis() + IrcChannels.TIMEOUT_MILLIS;
+                while (listStreaming && ready && System.currentTimeMillis() < deadline) Thread.sleep(50);
+            } finally {
+                listing = null;
+                listAt = System.currentTimeMillis();
+            }
+            var rows = list.result();
+            if (rows.isEmpty() && !ready) throw new IllegalStateException("The connection to " + network() + " dropped. Connect, then try again.");
+            if (rows.isEmpty() && listProblem.equals("busy")) throw new IllegalStateException(network() + " is busy and asked us to wait. Try again in a minute.");
+            if (rows.isEmpty() && listProblem.equals("too many")) throw new IllegalStateException(network() + " has too many channels to list at once. Type a word to search for.");
+            if (rows.isEmpty() && listStreaming) throw new IllegalStateException(network() + " didn’t send its channel list in time. Try again, or join a channel by name.");
+            return rows;
+        }
+    }
+
     @Override public void opened(JSONObject route) {
         String channel = route.optString("target");
         new Thread(() -> { try { ensureJoined(channel, 0); } catch (Exception ignored) {} }, "fluid-irc-open").start();
@@ -669,14 +784,8 @@ final class DirectIrc implements DirectProtocols.DirectClient {
                 result.put("open", chat.getString("address"));
             }
             case "join" -> {
-                String target = argv.get(0).startsWith("#") || argv.get(0).startsWith("&") ? argv.get(0) : "#" + argv.get(0);
-                var existing = DirectProtocols.routeForTarget(context, MessageProtocol.IRC, target);
-                if (existing == null) {
-                    DirectProtocols.link(context, "irc-" + Integer.toHexString(lower(target).hashCode()), MessageProtocol.IRC, target, target, true);
-                    existing = DirectProtocols.routeForTarget(context, MessageProtocol.IRC, target);
-                }
-                write("JOIN " + target + (argv.size() > 1 ? " " + argv.get(1) : ""));
-                result.put("open", existing.getString("address"));
+                // The same join as the Join page, so a refusal or a forward to another channel is explained here too.
+                result.put("open", join(context, argv.get(0), argv.size() > 1 ? argv.get(1) : "").getString("address"));
             }
             case "part" -> {
                 JSONObject chat = !argv.isEmpty() && (argv.get(0).startsWith("#") || argv.get(0).startsWith("&"))

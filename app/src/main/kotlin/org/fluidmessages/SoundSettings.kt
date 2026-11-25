@@ -42,6 +42,7 @@ private fun Page(prefs: SharedPreferences, motion: Int, status: NotificationStat
     var volume by remember { mutableIntStateOf(SoundPrefs.volume(prefs.getInt(SoundPrefs.VOLUME, SoundPrefs.DEFAULT_VOLUME))) }
     var stream by remember { mutableStateOf(prefs.getString(SoundPrefs.STREAM, SoundPrefs.NOTIFICATION) ?: SoundPrefs.NOTIFICATION) }
     var sent by remember { mutableStateOf<String?>(null) }
+    var showContent by remember { mutableStateOf(prefs.getBoolean(NotificationContent.PREF, true)) }
     var tabCounts by remember { mutableStateOf(prefs.getBoolean(TabBadges.PREF, true)) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item {
@@ -49,6 +50,13 @@ private fun Page(prefs: SharedPreferences, motion: Int, status: NotificationStat
                 Row(Modifier.fillMaxWidth().padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     PreferenceText(status.label, status.detail, Modifier.weight(1f).padding(15.dp))
                     if (!status.allowed) AppButton(onClick = allow::run) { Text("Allow") }
+                }
+                HorizontalDivider(Modifier.padding(start = 15.dp), color = scheme.outlineVariant)
+                SettingsSwitch("Show names and message text in notifications",
+                    "Off: a new text only says “New text message”. Chats in the private folder, chats with a code, and everything while app lock is on never show names or text.",
+                    showContent) {
+                    showContent = it
+                    prefs.edit().putBoolean(NotificationContent.PREF, it).apply()
                 }
                 HorizontalDivider(Modifier.padding(start = 15.dp), color = scheme.outlineVariant)
                 Column(Modifier.padding(horizontal = 15.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

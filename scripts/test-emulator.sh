@@ -293,12 +293,19 @@ advance_setup() {
 }
 
 if "$expect_onboarding"; then
-    wait_visible "Welcome" && wait_visible "Step 1 of 17" ||
+    wait_visible "Welcome" && wait_visible "Step 1 of 20" ||
         fail "A fresh install did not start on the first onboarding page."
 fi
 first_ui="$(ui)"
 if [[ "$first_ui" == *"Skip setup"* ]]; then
     tap_label "Skip setup" || fail "Could not finish first-run setup."
+fi
+# Texting is on but FluidMessages isn't the default messages app (an install from before the ask): the full-page ask
+# shows instead of the inbox. Turning texting off there leaves the role alone and opens the inbox.
+if wait_visible "Turn off texting in FluidMessages"; then
+    [[ "$(ui)" != *"Filters"* ]] || fail "The texting ask must not show the inbox."
+    tap_label "Turn off texting in FluidMessages" || fail "Could not turn off texting from the texting ask."
+    wait_visible "Turn on texting" || fail "Turning off texting did not open the inbox with texting off."
 fi
 tap_label "Settings" || fail "Could not open Settings."
 tap_label "Themes and appearance" || fail "Could not open the appearance editor."
@@ -384,8 +391,8 @@ fi
 "${device[@]}" shell input keyevent KEYCODE_BACK
 # Settings → Help → Setup guide (older builds called it "Replay setup guide").
 tap_label "Setup guide" || tap_label "Replay setup guide" || fail "Could not open the setup guide."
-# The guide's 17 pages, in order (onboardingSteps in OnboardingScreen.kt).
-setup_pages=("Welcome" "Two tabs" "One inbox" "Communities" "Stay organized" "Who can read it?" "Keep chats private"
+# The guide's 20 pages, in order (onboardingSteps in OnboardingScreen.kt).
+setup_pages=("Welcome" "Make FluidMessages your texting app" "Allow the basics" "Ask now or later" "Two tabs" "One inbox" "Communities" "Stay organized" "Who can read it?" "Keep chats private"
     "Disappearing messages" "More than text" "Quick moves" "Pick your colors" "Sounds and notifications" "Keep a backup"
     "On a computer too" "Chat services" "Calls" "You’re ready")
 wait_visible "${setup_pages[0]}" || fail "The first setup page did not render."

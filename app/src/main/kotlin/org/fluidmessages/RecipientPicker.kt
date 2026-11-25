@@ -315,8 +315,8 @@ private fun ChannelList(servers: List<ServerChannels>, modifier: Modifier, open:
         if (servers.isEmpty()) item {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("No servers yet", style = MaterialTheme.typography.titleMedium, color = scheme.onSurface)
-                Text("Servers are IRC networks, Matrix homeservers, and XMPP accounts on FluidMessages Web. Their channels " +
-                    "and rooms show up in your chat list, and here, so you can write in one.",
+                Text("A server is a place with many group chats, on Matrix, XMPP, or IRC. Add one in Communities, and its " +
+                    "group chats show up here and in your chat list.",
                     color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
             }
         }

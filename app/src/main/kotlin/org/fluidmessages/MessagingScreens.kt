@@ -406,9 +406,9 @@ private fun WelcomeCard(palette: Palette, connect: Runnable, sample: Runnable) {
     ) {
         Avatar("F", "FluidMessages", 44)
         Text("Set up your inbox", color = palette.ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-        Text("Choose FluidMessages as your default SMS app to view conversations and send texts.",
+        Text("Texting is off. Turn it on to see and send your texts here, or add a chat account in Settings.",
             color = palette.muted, style = MaterialTheme.typography.bodyLarge)
-        AppButton(onClick = connect::run) { Text("Set as default SMS app") }
+        AppButton(onClick = connect::run) { Text("Turn on texting") }
         TextButton(onClick = sample::run) { Text("Open sample inbox") }
     }
 }
@@ -522,6 +522,12 @@ internal class ConversationScreen @JvmOverloads constructor(
     private val removeFailed: Consumer<ChatLine>? = null,
 ) {
     var draft by mutableStateOf("")
+    /** Keeps the unsent draft for this chat (Drafts); set by the live chat. Called shortly after typing stops and on leaving. */
+    var saveDraft: Consumer<String>? = null
+    /** Whether a message's author (null in a one-to-one chat) is a saved contact (LinkLoading.savedSenders); set by the live chat. */
+    var savedSender: java.util.function.Predicate<String?>? = null
+    /** Messages whose "Tap to load preview" was tapped while this chat is open. */
+    private val loadedRemote = mutableStateMapOf<String, Boolean>()
     /** "Muted until 3:40 PM" and the like while this chat or its server is muted (Mutes); empty when it isn't. */
     var muted by mutableStateOf("")
     /** Opens the mute page from the header's mark: how long, or Unmute. */
@@ -662,6 +668,8 @@ internal class ConversationScreen @JvmOverloads constructor(
                     ?: send?.test(OutgoingMessage(name, emptyList(), text, attachment, -1, relation).fallbackBody()) ?: false
             }
             DisposableEffect(Unit) { onDispose { recorder?.cancel() } }
+            LaunchedEffect(draft) { kotlinx.coroutines.delay(500); saveDraft?.accept(draft) }
+            DisposableEffect(Unit) { onDispose { saveDraft?.accept(draft) } }
             val ircMode = active == MessageProtocol.IRC && routing?.combined != true
             val messages = remember(lines) { foldSmsReactions(lines) }
             val currentSubmit by rememberUpdatedState<(String) -> Boolean>({ text -> submit(text) })
@@ -669,7 +677,11 @@ internal class ConversationScreen @JvmOverloads constructor(
             val picturesOn = remember { GifSettings.autoPictures(prefs) }
             val rich = remember(lines, blocked) {
                 richContext(lines, if (blocked.isEmpty()) ({ text -> currentSubmit(text); Unit }) else null, previewsOn, picturesOn,
-                    FunSettings.games(prefs), FunSettings.random(prefs))
+                    FunSettings.games(prefs), FunSettings.random(prefs),
+                    // Links from people who aren't saved contacts wait for a tap before the phone contacts their website.
+                    loadsRemote = { line -> loadedRemote[line.id] == true ||
+                        LinkLoading.auto(line.outgoing, savedSender?.test(line.author) == true, sample) },
+                    allowRemote = { line -> loadedRemote[line.id] = true })
             }
             val headerMembers = remember(groupMembers, sampleMembers) {
                 groupMembers.ifEmpty { sampleMembers.map { GroupMember(it) } }
@@ -860,7 +872,8 @@ internal class ConversationScreen @JvmOverloads constructor(
                                     // Tapping your current reaction takes it back; another one replaces it.
                                     val current = display.bySender[if (sample) sendAs else null]
                                     submit("", MessageRelation(RelationKind.REACTION, line.id, line.text, line.author.orEmpty(),
-                                        it, own, removed = current == it, previous = if (current != null && current != it) current else ""))
+                                        it, own, removed = current == it, previous = if (current != null && current != it) current else "",
+                                        targetMedia = line.wordlessMedia()))
                                 },
                                 { forward.accept(if (forwarded != null) line.text else
                                     forwardAsSms(line.text, if (line.outgoing) "Me" else line.author ?: name), line.media) },
@@ -1095,7 +1108,10 @@ private fun MessageBubble(
         bottomStart = if (!line.outgoing && !continues) inner else round,
     )
     val chosenFill = bubbleColor
-    val picture = remember(line.text) { if (line.attachment == null && line.photo == null && rich?.pictures != false) parsePictureLink(line.text) else null }
+    val loadsRemote = rich == null || rich.loadsRemote(line)
+    val pictureLink = remember(line.text) { if (line.attachment == null && line.photo == null && rich?.pictures != false) parsePictureLink(line.text) else null }
+    // A linked picture that waits for a tap stays a plain link, with "Tap to load picture" under it.
+    val picture = pictureLink.takeIf { loadsRemote }
     // Stickers float on their own, with no bubble behind them.
     val sticker = picture?.sticker == true || line.attachment?.isSticker() == true
     val fill = if (sticker) Color.Transparent else accessibleBubbleFill(chosenFill)
@@ -1271,7 +1287,13 @@ private fun MessageBubble(
                             lineHeight = (palette.appearance.size + 4).sp, color = foreground, fontStyle = style)
                         // A preview of the first link, like a card for a video, song, or article.
                         val link = remember(shown) { if (rich?.previews == true && !card && line.attachment == null) previewableLink(shown) else null }
-                        link?.takeIf { !inkHidden }?.let { LinkPreviewCard(it, foreground) }
+                        if (pictureLink != null && picture == null) TapToLoad(LinkLoading.TAP_PICTURE, foreground) { rich?.allowRemote?.invoke(line) }
+                        else link?.takeIf { !inkHidden }?.let {
+                            if (loadsRemote) LinkPreviewCard(it, foreground)
+                            else TapToLoad(LinkLoading.TAP_PREVIEW, foreground) { rich?.allowRemote?.invoke(line) }
+                        }
+                        // A Zoom, Google Meet, Teams, or Jitsi link in an everyday message gets a Join button.
+                        if (!card && !inkHidden && line.attachment == null) MeetingChip(shown, foreground)
                     }
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false },

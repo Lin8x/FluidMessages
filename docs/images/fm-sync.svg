@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1004" viewBox="0 0 720 1004" role="img" aria-label="A laptop and a phone linked together. The message Running late, be there at 6 is typed on the laptop and appears on the phone. The reply No worries arrives on the phone and appears on the laptop. Read it on one, and it is marked read on both.">
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".12"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .b { opacity: 0; transform-box: fill-box; transform-origin: center; animation-duration: 12s; animation-timing-function: ease-out; animation-iteration-count: infinite; }
+      .l1 { animation-name: pA; } .p1 { animation-name: pB; } .p2 { animation-name: pC; } .l2 { animation-name: pD; }
+      @keyframes pA { 0%, 5% { opacity: 0; transform: scale(.7); } 8%, 94% { opacity: 1; transform: none; } 98%, 100% { opacity: 0; transform: none; } }
+      @keyframes pB { 0%, 17% { opacity: 0; transform: scale(.7); } 20%, 94% { opacity: 1; transform: none; } 98%, 100% { opacity: 0; transform: none; } }
+      @keyframes pC { 0%, 34% { opacity: 0; transform: scale(.7); } 37%, 94% { opacity: 1; transform: none; } 98%, 100% { opacity: 0; transform: none; } }
+      @keyframes pD { 0%, 46% { opacity: 0; transform: scale(.7); } 49%, 94% { opacity: 1; transform: none; } 98%, 100% { opacity: 0; transform: none; } }
+      .dn { opacity: 0; animation: dn 12s linear infinite; } .up { opacity: 0; animation: upw 12s linear infinite; }
+      @keyframes dn { 0%, 9% { opacity: 0; transform: translateY(0); } 10% { opacity: 1; } 16% { opacity: 1; } 17%, 100% { opacity: 0; transform: translateY(96px); } }
+      @keyframes upw { 0%, 38% { opacity: 0; transform: translateY(0); } 39% { opacity: 1; } 45% { opacity: 1; } 46%, 100% { opacity: 0; transform: translateY(-96px); } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .b { opacity: 1 !important; } }
+    </style>
+  </defs>
+  <rect width="720" height="1004" rx="32" fill="#eef4fc"/>
+  <text x="360" y="66" fill="#141820" font-size="40" font-weight="800" text-anchor="middle">Text from your computer</text>
+  <text x="360" y="108" fill="#5b6070" font-size="24" text-anchor="middle">Link your phone once. Then they stay in step.</text>
+  <g>
+    <rect x="100" y="144" width="520" height="296" rx="20" fill="#16161a"/><rect x="114" y="158" width="492" height="268" rx="8" fill="#fff"/>
+    <path d="M64 440 h592 l-22 28 h-548 z" fill="#2b2b33"/><rect x="310" y="446" width="100" height="8" rx="4" fill="#4a4a55"/>
+    <text x="360" y="194" fill="#5b6070" font-size="22" font-weight="700" text-anchor="middle">💻 Your computer</text><rect x="114" y="208" width="492" height="2" fill="#eceef3"/>
+    <g class="b l1"><rect x="240" y="224" width="352" height="54" rx="27" fill="#1f7fd6"/><text x="416" y="259" fill="#fff" font-size="22" text-anchor="middle">Running late, be there at 6</text></g>
+    <g class="b l2"><rect x="128" y="292" width="204" height="54" rx="27" fill="#e9e9ee"/><text x="230" y="327" fill="#141820" font-size="22" text-anchor="middle">No worries! 👍</text></g>
+    <rect x="128" y="366" width="464" height="46" rx="23" fill="#f1f3f8"/>
+  </g>
+  <path d="M360 482 v96" stroke="#1f7fd6" stroke-width="4" stroke-dasharray="4 10" stroke-linecap="round" opacity=".6"/>
+  <circle class="dn" cx="360" cy="482" r="9" fill="#1f7fd6"/><circle class="up" cx="360" cy="578" r="9" fill="#1fa84a"/>
+  <g>
+    <rect x="126" y="592" width="468" height="322" rx="42" fill="#16161a"/><rect x="142" y="608" width="436" height="290" rx="28" fill="#fff"/>
+    <text x="360" y="646" fill="#5b6070" font-size="22" font-weight="700" text-anchor="middle">📱 Your phone</text><rect x="142" y="660" width="436" height="2" fill="#eceef3"/>
+    <g class="b p1"><rect x="212" y="676" width="352" height="54" rx="27" fill="#1f7fd6"/><text x="388" y="711" fill="#fff" font-size="22" text-anchor="middle">Running late, be there at 6</text></g>
+    <g class="b p2"><rect x="156" y="744" width="204" height="54" rx="27" fill="#e9e9ee"/><text x="258" y="779" fill="#141820" font-size="22" text-anchor="middle">No worries! 👍</text></g>
+    <rect x="160" y="820" width="400" height="46" rx="23" fill="#f1f3f8"/>
+  </g>
+  <text x="360" y="966" fill="#141820" font-size="24" font-weight="700" text-anchor="middle">Read it on one, and it's marked read on both.</text>
+
+</svg>

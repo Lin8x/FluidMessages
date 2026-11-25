@@ -383,7 +383,13 @@ function drawCommunities(list, rows, row) {
       const body = element('div', '', 'community-body');
       body.setAttribute('aria-label', group.server.name + ' ' + noun + 's');
       for (const channel of group.channels) body.append(row(channel.key, channel.messages));
-      if (!group.channels.length) body.append(element('p', 'No ' + noun + 's joined yet. Browse ' + group.server.name + ' to find some.', 'placeholder'));
+      if (!group.channels.length) {
+        // Browse is one tap away, not only behind the ⋯ button.
+        const find = element('button', 'Find ' + noun + 's to join', 'primary community-find');
+        find.type = 'button';
+        find.addEventListener('click', () => openBrowse(account));
+        body.append(element('p', 'No ' + noun + 's joined yet.', 'placeholder'), find);
+      }
       section.append(body);
     }
     list.append(section);
@@ -453,8 +459,21 @@ function serverHint(account) {
   return {irc: '#channel', matrix: '#room:' + (serverName(account) || 'example.org'), xmpp: 'room@conference.' + (account.name.split('@').pop() || 'example.org')}[account.protocol];
 }
 
+/** [account]'s IRC connection as the inbox last reported it (connections.js), or null. */
+function serverConnection(account) {
+  return typeof chatConnections === 'object' && chatConnections ? chatConnections[account.id] || null : null;
+}
+/** Whether an IRC network is connected right now. Matrix and XMPP answer for themselves when asked. */
+const serverConnected = (account) => account.protocol !== 'irc' || serverConnection(account)?.state === 'connected';
+
 async function joinTarget(account, target, title, status) {
   if (account.sample) return sampleJoin(account, target, title, status);
+  if (account.protocol === 'irc' && typeof channelName === 'function') {
+    // "python", "#python", and " #python " all join #python.
+    const channel = channelName(target);
+    if (!channel) { status.textContent = 'Type the channel’s name, like #python. It can’t have spaces or commas.'; return false; }
+    target = channel;
+  }
   status.textContent = 'Joining…';
   try {
     const result = await api('protocols/join', {account: account.id, target, title});
@@ -479,10 +498,12 @@ function openJoin(account) {
   const noun = account.protocol === 'irc' ? 'channel' : account.protocol === 'matrix' ? 'room' : 'group chat';
   form.append(element('h3', 'Join a ' + noun + ' on ' + serverName(account)),
     field(account.protocol === 'irc' ? 'Channel' : 'Address', target,
-      account.protocol === 'irc' ? 'Channel names start with #. You can leave it out.' : account.protocol === 'matrix'
+      account.protocol === 'irc' ? 'Type the channel’s name, like #python. You can leave out the #.' : account.protocol === 'matrix'
         ? 'A room address like #room:example.org, or a room ID. Rooms on other homeservers work too.'
         : 'A group chat address like room@conference.example.org.'),
     Object.assign(element('button', 'Join', 'primary'), {type: 'submit'}), status);
+  if (!serverConnected(account)) form.append(element('p', 'You’re not connected to ' + serverName(account) + ' right now. You can still join: '
+    + 'the channel opens as soon as you’re connected.', 'notice'));
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     joinTarget(account, target.value.trim(), '', status);
@@ -511,9 +532,12 @@ function openRoute(route) {
  * filter, or XMPP service discovery filtered here. The list filters as you type; the server is asked again shortly
  * after you stop typing, where it can search.
  */
-function openBrowse(account, service = '') {
+function openBrowse(account, service = '', {fresh = false} = {}) {
   if (account.sample) { sampleServerPage(account, 'browse'); return; }
   const section = element('section', '', 'settings-section');
+  const irc = account.protocol === 'irc';
+  // Well-known channels of a well-known network, shown while the search box is empty and its own list hasn't come.
+  const popular = irc && typeof popularChannels === 'function' ? popularChannels(String(account.name).split('@').pop()) : [];
   const search = Object.assign(element('input', ''), {type: 'search', placeholder: account.protocol === 'irc' ? 'Search channels'
     : account.protocol === 'matrix' ? 'Search rooms' : service ? 'Search group chats' : 'Search services', autocomplete: 'off', spellcheck: false});
   search.setAttribute('aria-label', search.placeholder);
@@ -523,11 +547,21 @@ function openBrowse(account, service = '') {
   const results = element('div', '', 'browse-list');
   results.id = 'browse-results';
   const where = account.protocol === 'xmpp' ? (service || 'group chat services') : serverName(account);
-  section.append(element('h3', 'Browse ' + where),
-    element('p', {irc: 'The network’s public channels, busiest first. Big networks have thousands, so the network searches them for you and the first 100 matches show.',
+  // IRC only: said plainly when the network isn't connected, with a button to connect.
+  const offline = element('div', '', 'notice browse-offline');
+  offline.setAttribute('role', 'status');
+  offline.hidden = true;
+  const heading = element('h4', 'Popular here', 'browse-heading');
+  heading.hidden = true;
+  section.append(element('h3', 'Browse ' + where));
+  if (fresh) section.append(element('p', 'Your account is saved. Now pick a '
+    + (irc ? 'channel' : account.protocol === 'matrix' ? 'room' : 'group chat') + ' to join.', 'notice'));
+  section.append(
+    element('p', {irc: 'Channels are the chat rooms on ' + where + '. Type a word to search, like “python” or “music”. '
+      + 'Big networks have thousands, so only the 100 busiest matches show.',
       matrix: 'Public rooms in this homeserver’s directory.', xmpp: service ? 'Public group chats on this service.'
         : 'Group chat services on your XMPP server. Pick one to see its group chats.'}[account.protocol], 'muted'),
-    search, status, results);
+    search, offline, status, heading, results);
   let found = [];       // The last rooms the server sent, filtered here as you type.
   let services = null;  // XMPP: group chat services, before one is picked.
   let asked = null;     // The search the server last answered (null: not yet).
@@ -539,7 +573,8 @@ function openBrowse(account, service = '') {
     const route = joinedRoute(account, room.target) || joinedRoute(account, room.alias);
     words.append(element('strong', room.name || room.target),
       element('span', [room.alias || (room.name !== room.target ? room.target : ''),
-        room.members ? room.members + (room.members === 1 ? ' person' : ' people') : '', room.topic].filter(Boolean).join(' · '), 'muted browse-detail'));
+        room.members ? room.members + (room.members === 1 ? ' person' : ' people') : '', room.topic].filter(Boolean).join(' · ')
+        || (irc ? 'No topic set' : ''), 'muted browse-detail'));
     item.append(words);
     if (route || room.joined) {
       item.append(element('span', 'Joined', 'browse-joined'));
@@ -583,15 +618,70 @@ function openBrowse(account, service = '') {
       return;
     }
     const list = roomSearch(found, query);
-    for (const room of list) results.append(row(room));
+    // The search box empty and nothing from the network (yet, or at all): its well-known channels.
+    const starter = !query && !list.length ? popular : [];
+    heading.hidden = !starter.length;
+    // A name typed in full joins even when the list doesn't have it: unlisted channels are common.
+    const typed = irc && query && typeof channelName === 'function' && !/\s/.test(query) ? channelName(query) : '';
+    if (typed && !list.some((room) => String(room.target).toLowerCase() === typed.toLowerCase())) {
+      results.append(row({target: typed, name: typed, topic: 'Not in the list? Join it by name.'}));
+    }
+    for (const room of [...list, ...starter]) results.append(row(room));
     if (asked === null) return;
-    status.textContent = list.length ? list.length + ' found' : query ? 'Nothing matches “' + query + '”.' : 'Nothing listed.';
+    status.textContent = list.length ? list.length + ' found' + (irc && list.length >= 100 ? '. Type a word to narrow it down.' : '')
+      : query ? 'Nothing in the list matches “' + query + '”.'
+        : irc ? where + ' didn’t send its list. Try again in a minute, or join a channel by name.' : 'Nothing listed.';
   };
+  // "You're not connected", in plain words, with Connect. Joining still works: the channel opens once connected.
+  const drawOffline = (failed = '') => {
+    if (!irc || serverConnected(account)) { offline.hidden = true; return; }
+    const state = serverConnection(account)?.state || '';
+    const trying = state === 'connecting' && !failed;
+    const words = element('span', trying ? 'Connecting to ' + where + '… This takes a few seconds.'
+      : failed || 'You’re not connected to ' + where + ' right now.' + (state === 'paused' ? ' FluidMessages is waiting a while before it tries again.' : ''));
+    offline.replaceChildren(words, element('small', 'You can still join a channel. It opens as soon as you’re connected.', 'hint'));
+    if (!trying) {
+      const connect = element('button', 'Connect', 'primary');
+      connect.type = 'button';
+      connect.addEventListener('click', async () => {
+        connect.disabled = true;
+        try {
+          await api('protocols/reconnect', {account: account.id});
+          if (typeof chatConnections === 'object') chatConnections[account.id] = {...(serverConnection(account) || {}), state: 'connecting'};
+          drawOffline();
+          refresh().catch(() => {});
+        } catch (error) { drawOffline(error.message); }
+      });
+      offline.append(connect);
+    }
+    offline.hidden = false;
+  };
+  // The inbox refreshes every few seconds and brings the connection's state; the list loads the moment it's connected.
+  let wasConnected = serverConnected(account);
+  let wasState = serverConnection(account)?.state || '';
+  const watch = irc ? setInterval(() => {
+    if (!section.isConnected) { clearInterval(watch); return; }
+    const now = serverConnected(account);
+    const state = serverConnection(account)?.state || '';
+    if (now === wasConnected && state === wasState) return;
+    const came = now && !wasConnected;
+    wasConnected = now;
+    wasState = state;
+    drawOffline();
+    if (came) run();
+  }, 1000) : 0;
   const run = async () => {
     const term = account.protocol === 'xmpp' ? '' : search.value.trim();
     if (asked === term) return draw();
+    if (irc && !serverConnected(account)) {
+      // Asking now would only wait and fail. The well-known channels show, and Connect is offered.
+      status.textContent = '';
+      drawOffline();
+      return draw();
+    }
     const mine = ++request;
-    status.textContent = 'Searching ' + where + '…';
+    status.textContent = irc ? (term ? 'Searching ' + where + '…' : 'Getting the channel list from ' + where + '… Big networks take a few seconds.')
+      : 'Searching ' + where + '…';
     try {
       const reply = await api('protocols/browse', {account: account.id, search: term, limit: 100, ...(service ? {service} : {})});
       if (mine !== request) return;
@@ -599,7 +689,16 @@ function openBrowse(account, service = '') {
       if (reply.services) services = reply.services;
       else found = reply.rooms || [];
       draw();
-    } catch (error) { if (mine === request) status.textContent = error.message; }
+    } catch (error) {
+      if (mine !== request) return;
+      // "IRC isn't connected yet" and the like: said plainly, with Connect, instead of the raw error.
+      if (irc && /connect/i.test(error.message)) {
+        status.textContent = '';
+        wasConnected = false;
+        drawOffline('You’re not connected to ' + where + ' right now.');
+        draw();
+      } else status.textContent = error.message;
+    }
   };
   search.addEventListener('input', () => {
     draw();
@@ -611,7 +710,10 @@ function openBrowse(account, service = '') {
     if (event.key !== 'Enter') return;
     event.preventDefault();
     clearTimeout(timer);
-    run();
+    // "#python" and Enter just joins it.
+    const typed = irc && /^[#&]\S+$/.test(search.value.trim()) && typeof channelName === 'function' ? channelName(search.value) : '';
+    if (typed) joinTarget(account, typed, '', status);
+    else run();
   });
   const nodes = [section];
   if (account.protocol === 'matrix') {
@@ -635,6 +737,8 @@ function openBrowse(account, service = '') {
   join.addEventListener('click', () => openJoin(account));
   nodes.push(join);
   detailsPage('Browse', nodes, service ? () => openBrowse(account) : () => closeDetailsPage());
+  draw();
+  drawOffline();
   run();
   search.focus();
 }
@@ -677,14 +781,28 @@ function openAddServer() {
     const chevron = element('span', '›', 'service-chevron');
     chevron.setAttribute('aria-hidden', 'true');
     button.append(badge, words, chevron);
-    button.addEventListener('click', () => showServerList(protocol));
+    button.addEventListener('click', () => openServerGuide(protocol));
     list.append(button);
   }
   section.append(list);
   detailsPage('Add server', [section], () => closeDetailsPage());
 }
 
-/** Add server, step 2: well-known public servers for [protocol], searchable, and Other server… for any other. */
+/**
+ * Add server, step 2: a page about the service for someone new to it (account-setup.js), with Get started into its
+ * form, the most popular place to begin as a tappable example, and the list of public servers one tap away.
+ */
+function openServerGuide(protocol) {
+  if (typeof serviceGuide !== 'function') { showServerList(protocol); return; }
+  const back = () => openServerGuide(protocol);
+  detailsPage('Add ' + labels[protocol], serviceGuide(protocol, {
+    start: () => showServerForm(protocol, null, {}, {simple: true, back}),
+    example: () => showServerForm(protocol, guideExample(protocol).entry, {}, {simple: true, back}),
+    expert: () => showServerForm(protocol, null, {}, {back}),
+    more: () => showServerList(protocol)}), () => openAddServer());
+}
+
+/** Add server: well-known public servers for [protocol], searchable, and Other server… for any other. */
 function showServerList(protocol) {
   const section = element('section', '', 'settings-section');
   const noun = {irc: 'networks', matrix: 'homeservers', xmpp: 'servers'}[protocol];
@@ -728,13 +846,22 @@ function showServerList(protocol) {
   };
   search.addEventListener('input', draw);
   draw();
-  detailsPage(SERVICE_TITLES[protocol], [section], () => openAddServer());
+  detailsPage(SERVICE_TITLES[protocol], [section], () => openServerGuide(protocol));
   search.focus();
 }
 
-/** Add server, step 3: the sign-in form, pre-filled from the directory [entry], or blank for Other server…. */
-function showServerForm(protocol, entry, preset = {}) {
-  const done = () => { closeDetailsPage(false); refresh().catch(() => {}); };
+/**
+ * Add server, last step: the sign-in form, pre-filled from the directory [entry], or blank. It fills itself in as you
+ * type (account-setup.js); [simple] (from Get started) tucks the rarely needed settings under More options.
+ * Once saved, the new server's Browse page opens, so there is something to join right away.
+ */
+function showServerForm(protocol, entry, preset = {}, {simple = false, back = null} = {}) {
+  const done = async (added) => {
+    await refresh().catch(() => {});
+    const account = added ? serverAccounts().find((item) => item.id === added.id) : null;
+    if (account) openBrowse(account, '', {fresh: true});
+    else closeDetailsPage(false);
+  };
   const intro = element('section', '', 'settings-section');
   if (entry) {
     intro.append(element('h3', entry.name), element('p', entry.about, 'muted'),
@@ -742,10 +869,15 @@ function showServerForm(protocol, entry, preset = {}) {
         xmpp: 'Your address ends in @' + entry.domain + '.'}[protocol], 'muted'));
     preset = {...preset, ...{irc: {server: entry.host, port: String(entry.port)}, matrix: {homeserver: entry.homeserver},
       xmpp: {jid: '@' + entry.domain}}[protocol]};
+  } else if (simple) {
+    intro.append(element('h3', 'Add ' + labels[protocol]), element('p', {
+      irc: 'Pick a network and a nickname. That’s all you need.',
+      matrix: 'Type your Matrix ID, and the server is filled in for you.',
+      xmpp: 'Type your address and password. The server is found from your address.'}[protocol], 'muted'));
   } else {
     intro.append(element('h3', 'Other ' + SERVICE_TITLES[protocol].split(' ').pop()), element('p', {
-      irc: 'Enter the network’s host and its TLS port, usually 6697.',
-      matrix: 'Enter the homeserver’s address, starting with https://.',
+      irc: 'Pick a network, or choose Another network… and enter its address and TLS port, usually 6697.',
+      matrix: 'Enter your Matrix ID. The homeserver is filled in from it; change it if yours is different.',
       xmpp: 'Enter your full XMPP address. The server is found from its domain.'}[protocol], 'muted'));
   }
   if (protocol === 'irc') {
@@ -757,14 +889,15 @@ function showServerForm(protocol, entry, preset = {}) {
     wrap.append(words);
     intro.append(wrap);
   }
-  const form = accountForm(protocol, null, done, {add: true, preset});
+  const form = accountForm(protocol, null, done, {add: true, preset, simple});
   const hint = {matrix: ['user_id', '@you:' + (entry?.name || 'example.org')], xmpp: ['jid', 'you@' + (entry?.domain || 'example.org')]}[protocol];
   const named = hint && form.querySelector('[name="' + hint[0] + '"]');
   if (named) named.placeholder = hint[1];
-  detailsPage(entry ? entry.name : 'Other ' + SERVICE_TITLES[protocol],
-    [intro, element('p', SERVER_HELP[protocol], 'muted server-help'), form], () => showServerList(protocol));
+  detailsPage(entry ? entry.name : simple ? 'Add ' + labels[protocol] : 'Other ' + SERVICE_TITLES[protocol],
+    [intro, element('p', SERVER_HELP[protocol], 'muted server-help'), form], back || (() => showServerList(protocol)));
   // The first empty field gets the cursor; an XMPP address starts before "@domain".
-  if (protocol === 'xmpp' && entry && named) {
+  if (typeof focusAccountForm === 'function') focusAccountForm(form);
+  else if (protocol === 'xmpp' && entry && named) {
     named.focus();
     named.setSelectionRange(0, 0);
   } else ([...form.querySelectorAll('input')].find((input) => !input.value) || form.querySelector('input'))?.focus();

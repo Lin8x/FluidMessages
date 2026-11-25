@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="920" viewBox="0 0 720 920" role="img" aria-label="Make it look like you. A phone shows a short chat whose colors change through four of the 8 themes: Fluid in green, Ember in orange, Midnight in dark navy and purple, and Love in pink. You can change colors, wallpaper, and sounds.">
+  <defs>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity=".15"/></filter>
+    <clipPath id="screen"><rect x="134" y="190" width="452" height="512" rx="36"/></clipPath>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .th { opacity: 0; animation: th 12s ease-in-out infinite; }
+      .t1 { animation-delay: -1s; } .t2 { animation-delay: -10s; } .t3 { animation-delay: -7s; } .t4 { animation-delay: -4s; }
+      @keyframes th { 0% { opacity: 0; } 4%, 25% { opacity: 1; } 29%, 100% { opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .t1 { opacity: 1 !important; } }
+    </style>
+  </defs>
+  <rect width="720" height="920" rx="32" fill="#f5f3fa"/>
+  <text x="360" y="72" fill="#141820" font-size="42" font-weight="800" text-anchor="middle">Make it look like you</text>
+  <text x="360" y="114" fill="#5b6070" font-size="24" text-anchor="middle">8 themes, light and dark. Change</text>
+  <text x="360" y="146" fill="#5b6070" font-size="24" text-anchor="middle">colors, wallpaper, and sounds.</text>
+
+  <rect x="120" y="176" width="480" height="540" rx="50" fill="#16161a" filter="url(#shadow)"/>
+  <g clip-path="url(#screen)">
+    <rect x="134" y="190" width="452" height="512" fill="#f3faf5"/>
+    <g class="th t1">
+      <rect x="134" y="190" width="452" height="512" fill="#f3faf5"/>
+      <rect x="134" y="190" width="452" height="80" fill="#1b8f40"/>
+      <circle cx="184" cy="230" r="22" fill="#fff" fill-opacity=".25"/>
+      <text x="184" y="239" fill="#fff" font-size="24" font-weight="800" text-anchor="middle">M</text>
+      <text x="222" y="240" fill="#fff" font-size="26" font-weight="800">Maya</text>
+      <rect x="156" y="300" width="300" height="56" rx="28" fill="#e9e9ee"/>
+      <text x="306" y="337" fill="#141820" font-size="24" text-anchor="middle">Movie tonight? 🎬</text>
+      <rect x="378" y="386" width="186" height="56" rx="28" fill="#1b8f40"/>
+      <text x="471" y="423" fill="#fff" font-size="24" font-weight="600" text-anchor="middle">Yes! 7:30?</text>
+      <rect x="156" y="472" width="190" height="56" rx="28" fill="#e9e9ee"/>
+      <text x="251" y="509" fill="#141820" font-size="24" text-anchor="middle">Perfect 🍿</text>
+      <rect x="156" y="618" width="340" height="58" rx="29" fill="#fff" stroke="#d5dbe0" stroke-width="2"/>
+      <text x="184" y="655" fill="#5b6070" font-size="22">Text message</text>
+      <circle cx="536" cy="647" r="29" fill="#1b8f40"/>
+      <path d="M525 647 h20 M537 638 l9 9 l-9 9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g class="th t2">
+      <rect x="134" y="190" width="452" height="512" fill="#fff4ec"/>
+      <rect x="134" y="190" width="452" height="80" fill="#c2410c"/>
+      <circle cx="184" cy="230" r="22" fill="#fff" fill-opacity=".25"/>
+      <text x="184" y="239" fill="#fff" font-size="24" font-weight="800" text-anchor="middle">M</text>
+      <text x="222" y="240" fill="#fff" font-size="26" font-weight="800">Maya</text>
+      <rect x="156" y="300" width="300" height="56" rx="28" fill="#f6dccb"/>
+      <text x="306" y="337" fill="#141820" font-size="24" text-anchor="middle">Movie tonight? 🎬</text>
+      <rect x="378" y="386" width="186" height="56" rx="28" fill="#c2410c"/>
+      <text x="471" y="423" fill="#fff" font-size="24" font-weight="600" text-anchor="middle">Yes! 7:30?</text>
+      <rect x="156" y="472" width="190" height="56" rx="28" fill="#f6dccb"/>
+      <text x="251" y="509" fill="#141820" font-size="24" text-anchor="middle">Perfect 🍿</text>
+      <rect x="156" y="618" width="340" height="58" rx="29" fill="#fff" stroke="#ecc9b3" stroke-width="2"/>
+      <text x="184" y="655" fill="#6b4a3a" font-size="22">Text message</text>
+      <circle cx="536" cy="647" r="29" fill="#c2410c"/>
+      <path d="M525 647 h20 M537 638 l9 9 l-9 9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g class="th t3">
+      <rect x="134" y="190" width="452" height="512" fill="#0f1326"/>
+      <rect x="134" y="190" width="452" height="80" fill="#1b2142"/>
+      <circle cx="184" cy="230" r="22" fill="#fff" fill-opacity=".25"/>
+      <text x="184" y="239" fill="#fff" font-size="24" font-weight="800" text-anchor="middle">M</text>
+      <text x="222" y="240" fill="#fff" font-size="26" font-weight="800">Maya</text>
+      <rect x="156" y="300" width="300" height="56" rx="28" fill="#2a2f4a"/>
+      <text x="306" y="337" fill="#fff" font-size="24" text-anchor="middle">Movie tonight? 🎬</text>
+      <rect x="378" y="386" width="186" height="56" rx="28" fill="#6c4cdc"/>
+      <text x="471" y="423" fill="#fff" font-size="24" font-weight="600" text-anchor="middle">Yes! 7:30?</text>
+      <rect x="156" y="472" width="190" height="56" rx="28" fill="#2a2f4a"/>
+      <text x="251" y="509" fill="#fff" font-size="24" text-anchor="middle">Perfect 🍿</text>
+      <rect x="156" y="618" width="340" height="58" rx="29" fill="#1b2142" stroke="#3a4064" stroke-width="2"/>
+      <text x="184" y="655" fill="#b9bfd8" font-size="22">Text message</text>
+      <circle cx="536" cy="647" r="29" fill="#6c4cdc"/>
+      <path d="M525 647 h20 M537 638 l9 9 l-9 9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g class="th t4">
+      <rect x="134" y="190" width="452" height="512" fill="#fff0f5"/>
+      <rect x="134" y="190" width="452" height="80" fill="#c2185b"/>
+      <circle cx="184" cy="230" r="22" fill="#fff" fill-opacity=".25"/>
+      <text x="184" y="239" fill="#fff" font-size="24" font-weight="800" text-anchor="middle">M</text>
+      <text x="222" y="240" fill="#fff" font-size="26" font-weight="800">Maya</text>
+      <rect x="156" y="300" width="300" height="56" rx="28" fill="#fbd3e1"/>
+      <text x="306" y="337" fill="#141820" font-size="24" text-anchor="middle">Movie tonight? 🎬</text>
+      <rect x="378" y="386" width="186" height="56" rx="28" fill="#c2185b"/>
+      <text x="471" y="423" fill="#fff" font-size="24" font-weight="600" text-anchor="middle">Yes! 7:30?</text>
+      <rect x="156" y="472" width="190" height="56" rx="28" fill="#fbd3e1"/>
+      <text x="251" y="509" fill="#141820" font-size="24" text-anchor="middle">Perfect 🍿</text>
+      <rect x="156" y="618" width="340" height="58" rx="29" fill="#fff" stroke="#f0b8cd" stroke-width="2"/>
+      <text x="184" y="655" fill="#7a4258" font-size="22">Text message</text>
+      <circle cx="536" cy="647" r="29" fill="#c2185b"/>
+      <path d="M525 647 h20 M537 638 l9 9 l-9 9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+
+  <text class="th t1" x="360" y="790" fill="#1b8f40" font-size="42" font-weight="800" text-anchor="middle">Fluid</text>
+  <text class="th t2" x="360" y="790" fill="#c2410c" font-size="42" font-weight="800" text-anchor="middle">Ember</text>
+  <text class="th t3" x="360" y="790" fill="#3b2f8f" font-size="42" font-weight="800" text-anchor="middle">Midnight</text>
+  <text class="th t4" x="360" y="790" fill="#c2185b" font-size="42" font-weight="800" text-anchor="middle">Love</text>
+  <circle cx="228" cy="848" r="24" fill="#1fa84a"/>
+  <circle class="th t1" cx="228" cy="848" r="33" fill="none" stroke="#1fa84a" stroke-width="5"/>
+  <circle cx="316" cy="848" r="24" fill="#e8590c"/>
+  <circle class="th t2" cx="316" cy="848" r="33" fill="none" stroke="#e8590c" stroke-width="5"/>
+  <circle cx="404" cy="848" r="24" fill="#3b2f8f"/>
+  <circle class="th t3" cx="404" cy="848" r="33" fill="none" stroke="#3b2f8f" stroke-width="5"/>
+  <circle cx="492" cy="848" r="24" fill="#e0567a"/>
+  <circle class="th t4" cx="492" cy="848" r="33" fill="none" stroke="#e0567a" stroke-width="5"/>
+</svg>

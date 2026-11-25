@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1108" viewBox="0 0 720 1108" role="img" aria-label="A regular text is like a postcard: anyone who handles it can read it. In the top row a postcard reading Door code is 4821 travels from you through the phone company to your friend while the phone company and hackers watch. In the bottom row the same message travels as a sealed, scrambled envelope that the watchers cannot read, and only your friend can open it.">
+  <defs>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".14"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .ride { animation: ride 12s ease-in-out infinite; }
+      @keyframes ride { 0% { opacity: 0; transform: translateX(0); } 4% { opacity: 1; transform: translateX(0); } 16%, 26% { opacity: 1; transform: translateX(189px); } 38%, 95% { opacity: 1; transform: translateX(378px); } 100% { opacity: 0; transform: translateX(378px); } }
+      .w1, .w2, .open { transform-box: fill-box; transform-origin: center; }
+      .w1 { animation: w1 12s ease-out infinite; } .w2 { animation: w2 12s ease-out infinite; } .open { animation: open 12s ease-out infinite; }
+      @keyframes w1 { 0%, 15% { opacity: 0; transform: scale(.4); } 18% { opacity: 1; transform: scale(1.15); } 20%, 95% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+      @keyframes w2 { 0%, 19% { opacity: 0; transform: scale(.4); } 22% { opacity: 1; transform: scale(1.15); } 24%, 95% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+      @keyframes open { 0%, 38% { opacity: 0; transform: scale(.4); } 41% { opacity: 1; transform: scale(1.15); } 43%, 95% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .ride { transform: translateX(189px); } }
+
+    </style>
+  </defs>
+  <rect width="720" height="1108" rx="32" fill="#f5f6fa"/>
+  <text x="360" y="64" fill="#141820" font-size="40" font-weight="800" text-anchor="middle">A regular text is</text>
+  <text x="360" y="110" fill="#141820" font-size="40" font-weight="800" text-anchor="middle">like a postcard</text>
+  <text x="360" y="152" fill="#5b6070" font-size="24" text-anchor="middle">Anyone who handles it can read it.</text>
+  <g transform="translate(0 180)">
+    <rect x="24" y="0" width="672" height="366" rx="26" fill="#fff6f5" stroke="#f1d3d3" stroke-width="2" filter="url(#shadow)"/>
+    <text x="52" y="48" fill="#b3261e" font-size="24" font-weight="800" letter-spacing="1">REGULAR TEXT</text>
+    <g class="w1"><rect x="112" y="60" width="296" height="46" rx="23" fill="#fde0de"/><text x="260" y="91" fill="#b3261e" font-size="22" font-weight="700" text-anchor="middle">Phone company 👀</text></g>
+    <g class="w2"><rect x="420" y="60" width="188" height="46" rx="23" fill="#fde0de"/><text x="514" y="91" fill="#b3261e" font-size="22" font-weight="700" text-anchor="middle">Hackers 👀</text></g>
+    <rect x="70" y="134" width="52" height="76" rx="9" fill="#16161a"/><rect x="75" y="140" width="43" height="64" rx="5" fill="#e9fbee"/>
+    <path d="M360 136l20 72h-40zM349 176h22" fill="none" stroke="#5b6070" stroke-width="5" stroke-linejoin="round"/><path d="M336 142a34 34 0 0 1 0-28M384 142a34 34 0 0 0 0-28" fill="none" stroke="#5b6070" stroke-width="4" stroke-linecap="round" transform="translate(0 8)"/>
+    <rect x="578" y="134" width="52" height="76" rx="9" fill="#16161a"/><rect x="583" y="140" width="43" height="64" rx="5" fill="#eef4ff"/>
+    <g font-size="22" fill="#5b6070" text-anchor="middle"><text x="96" y="240">You</text><text x="360" y="240">Phone company</text><text x="604" y="240">Your friend</text></g>
+    <line x1="56" y1="302" x2="664" y2="302" stroke="#f1d3d3" stroke-width="4" stroke-dasharray="4 12" stroke-linecap="round"/>
+    <g class="ride"><rect x="36" y="264" width="270" height="76" rx="8" fill="#fff8e6" stroke="#e0c27a" stroke-width="2"/><rect x="266" y="274" width="28" height="32" rx="3" fill="#f3d9d6" stroke="#d99a94" stroke-width="2" stroke-dasharray="3 3"/><text x="52" y="312" fill="#141820" font-size="22" font-weight="700">Door code is 4821</text></g>
+  </g>
+  <g transform="translate(0 566)">
+    <rect x="24" y="0" width="672" height="436" rx="26" fill="#f3fbf5" stroke="#cdebd6" stroke-width="2" filter="url(#shadow)"/>
+    <text x="52" y="48" fill="#1b8f40" font-size="24" font-weight="800" letter-spacing="1">ENCRYPTED MESSAGE</text>
+    <g class="w1"><rect x="112" y="60" width="296" height="46" rx="23" fill="#d9f3e0"/><text x="260" y="91" fill="#1b8f40" font-size="22" font-weight="700" text-anchor="middle">Phone company 🤷</text></g>
+    <g class="w2"><rect x="420" y="60" width="188" height="46" rx="23" fill="#d9f3e0"/><text x="514" y="91" fill="#1b8f40" font-size="22" font-weight="700" text-anchor="middle">Hackers 🤷</text></g>
+    <rect x="70" y="134" width="52" height="76" rx="9" fill="#16161a"/><rect x="75" y="140" width="43" height="64" rx="5" fill="#e9fbee"/>
+    <path d="M360 136l20 72h-40zM349 176h22" fill="none" stroke="#5b6070" stroke-width="5" stroke-linejoin="round"/><path d="M336 142a34 34 0 0 1 0-28M384 142a34 34 0 0 0 0-28" fill="none" stroke="#5b6070" stroke-width="4" stroke-linecap="round" transform="translate(0 8)"/>
+    <rect x="578" y="134" width="52" height="76" rx="9" fill="#16161a"/><rect x="583" y="140" width="43" height="64" rx="5" fill="#eef4ff"/>
+    <g font-size="22" fill="#5b6070" text-anchor="middle"><text x="96" y="240">You</text><text x="360" y="240">Phone company</text><text x="604" y="240">Your friend</text></g>
+    <line x1="56" y1="302" x2="664" y2="302" stroke="#cdebd6" stroke-width="4" stroke-dasharray="4 12" stroke-linecap="round"/>
+    <g class="ride"><rect x="36" y="264" width="270" height="76" rx="8" fill="#e3f7e9" stroke="#7cc995" stroke-width="2"/><path d="M37 266l134 32 134-32" fill="none" stroke="#7cc995" stroke-width="2" stroke-linejoin="round"/><text x="171" y="330" fill="#1b8f40" font-size="22" font-weight="700" text-anchor="middle">🔒 <tspan font-family="ui-monospace, Menlo, Consolas, monospace">x9#Qa!7mR2</tspan></text></g>
+    <g class="open"><rect x="236" y="362" width="436" height="50" rx="25" fill="#1b8f40"/><text x="454" y="395" fill="#fff" font-size="22" font-weight="700" text-anchor="middle">Only your friend can open it</text></g>
+  </g>
+  <text x="360" y="1048" fill="#141820" font-size="24" text-anchor="middle"><tspan font-weight="800">Encrypted = scrambled</tspan>, so only the</text>
+  <text x="360" y="1082" fill="#141820" font-size="24" text-anchor="middle">person you sent it to can read it.</text>
+
+</svg>

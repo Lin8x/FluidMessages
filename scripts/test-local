@@ -878,6 +878,96 @@ def reaction_revisions_test():
     print("PASS  removing and changing reactions is native on Matrix and XMPP and recorded from others")
 
 
+def reactions_test():
+    """Reactions sent as a text by iPhones and other Android apps: FluidMessages Web reads the cases the phone's
+    ReactionTextsTest.kt reads, folds them onto the same messages, and sends the standard wording for its own."""
+    with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
+        index = request("/", authorized=False).decode()
+        scripts = re.findall(r'src="(/[^"#?]+)"', index)
+        check("/reactions.js" in scripts and scripts.index("/reactions.js") < scripts.index("/app.js"),
+              "The page doesn't load reactions.js before app.js")
+        check("'/reactions.js'" in request("/sw.js", authorized=False).decode(), "The service worker doesn't cache reactions.js")
+        check(b"function parseReaction" in request("/reactions.js", authorized=False), "reactions.js isn't served")
+    app_js, notify_js = ((ROOT / "server" / name).read_text() for name in ("app.js", "notify.js"))
+    check("function parseReaction" not in app_js and "reactionTarget(parsed, senderKey(message), shown, senderKey)" in app_js,
+          "app.js doesn't fold reactions with the shared rules")
+    check("reactionNotice(message.author, body)" in notify_js, "Notifications don't word a reaction as a sentence")
+    kotlin = (ROOT / "app/src/main/kotlin/org/fluidmessages/MessageInteractions.kt").read_text()
+    web_rules = (ROOT / "server/reactions.js").read_text()
+    for phrase in ("an image", "a photo", "a picture", "a video", "a movie", "an audio message", "a voice message", "an attachment", "a file"):
+        check(f'"{phrase}" to ReactionMedia.' in kotlin and f"['{phrase}', '" in web_rules, f"The phone and the browser don't both read “{phrase}”")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("SKIP  reaction texts in Node: node is missing")
+        return
+    excerpt = re.search(r"function excerpt\(value, limit\) \{.*?\n\}\n", app_js, re.S).group(0)
+    fold = re.search(r"// One reaction per sender: yourself.*?(?=\nfunction threadKey)", app_js, re.S).group(0)
+    react = re.search(r"const REACTIONS = .*?(?=\n// A click anywhere else)", app_js, re.S).group(0)
+    nouns = re.search(r"const nouns = \{.*?\};\n", app_js, re.S).group(0)
+    script = "const rules = require(process.argv[1]);\nObject.assign(globalThis, rules);\n" + excerpt + nouns + fold + react + r"""
+const vectors = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));
+const wrong = [];
+const same = (label, got, want) => { if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push(label + ': ' + JSON.stringify(got)); };
+for (const {text, expect} of vectors.parse) same('parse ' + text, parseReaction(text), expect);
+for (const [value, expected] of vectors.emoji) same('emoji ' + value, reactionEmoji(value), expected);
+// Pictures and files as the companion stores them, and as MMS rows (a photo flag) or with a type alone.
+const files = {photo: ['Photo', 'image/jpeg'], video: ['clip.mp4', 'video/mp4'], voice: ['Voice message', 'audio/mp4'],
+  audio: ['song.mp3', 'audio/mpeg'], file: ['notes.pdf', 'application/pdf']};
+const attach = (kind, bare, name) => !kind ? {} : bare && kind === 'photo' ? {photo: true}
+  : {attachment: {...(bare ? {} : {kind}), name: name || files[kind][0], mime: files[kind][1]}};
+const row = (message, bare) => ({id: message.id, body: message.body, type: message.from === 'me' ? 2 : 1,
+  author: message.from === 'me' ? '' : message.from, status: message.status || '', reaction_target: message.target,
+  ...attach(message.media, bare)});
+for (const bare of [false, true]) {
+  for (const chat of vectors.fold) {
+    const shown = fold(chat.messages.map((message) => row(message, bare)));
+    same('fold ' + chat.name + (bare ? ' (bare)' : ''), shown.map((message) => ({id: message.id,
+      reactions: [...message.reactions].map(([who, emoji]) => [who === 'me' ? 'me' : who.slice(5), emoji])})), chat.shown);
+    // Never dropped: a text that isn't a reaction always keeps its bubble.
+    for (const message of chat.messages) if (!parseReaction(message.body) && !shown.some((kept) => kept.id === message.id)) wrong.push('dropped ' + message.body);
+  }
+}
+for (const [body, kind, name, words] of vectors.words) {
+  same('words ' + body, reactionTargetWords({body, ...attach(kind, false, name)}), words);
+  if (kind === 'photo' && !/\.\w+$/.test(body)) same('words (MMS) ' + body, reactionTargetWords({body, photo: true}), words);
+}
+for (const [who, text, sentence] of vectors.notice) same('notice ' + text, reactionNotice(who, text), sentence);
+// What goes out when you react: the standard wording for texts, with a change sent as the new reaction.
+const sent = [];
+const send = async (body, text, relation) => { sent.push(body); };
+const internet = (protocol) => !['sms', 'mms', 'rcs', undefined, ''].includes(protocol);
+const playReaction = () => {}, reactionId = () => '', showError = (error) => wrong.push(String(error));
+const react = (message, emoji, current) => { reactWith({...message, reactions: new Map(current ? [['me', current]] : [])}, null, emoji); return sent.pop(); };
+const theirs = {id: 't1', type: 1, protocol: 'sms', body: 'See you at 7'};
+same('send like', react(theirs, '👍'), 'Liked “See you at 7”');
+same('send love', react(theirs, '❤️'), 'Loved “See you at 7”');
+same('send dislike', react(theirs, '👎'), 'Disliked “See you at 7”');
+same('send laugh', react(theirs, '😆'), 'Laughed at “See you at 7”');
+same('send emphasis', react(theirs, '‼️'), 'Emphasized “See you at 7”');
+same('send question', react(theirs, '❓'), 'Questioned “See you at 7”');
+same('send emoji', react(theirs, '😂'), 'Reacted 😂 to “See you at 7”');
+same('send removal', react(theirs, '❤️', '❤️'), 'Removed a heart from “See you at 7”');
+same('send emoji removal', react(theirs, '😂', '😂'), 'Removed 😂 from “See you at 7”');
+same('send change', react(theirs, '❤️', '👍'), 'Loved “See you at 7”');
+same('send change to emoji', react({...theirs, protocol: 'mms'}, '😂', '👍'), 'Reacted 😂 to “See you at 7”');
+same('send change by email', react({...theirs, protocol: 'email'}, '❤️', '👍'), 'Changed reaction from 👍 to ❤️ on “See you at 7”');
+same('send photo', react({...theirs, protocol: 'mms', body: 'Photo', photo: true}, '❤️'), 'Loved an image');
+same('send photo removal', react({...theirs, protocol: 'mms', body: 'Photo', photo: true}, '❤️', '❤️'), 'Removed a heart from an image');
+same('send own', react({...theirs, type: 2}, '👍'), 'Liked “See you at 7” (my message)');
+// Everything sent is read back as the same reaction.
+for (const emoji of ['👍', '❤️', '👎', '😆', '‼️', '❓', '😂']) {
+  same('round trip ' + emoji, parseReaction(react(theirs, emoji)), {change: 'add', emoji, quote: 'See you at 7', media: null, own: false});
+  same('round trip removal ' + emoji, parseReaction(react(theirs, emoji, emoji)), {change: 'remove', emoji, quote: 'See you at 7', media: null, own: false});
+}
+process.stdout.write(JSON.stringify(wrong));
+"""
+    result = subprocess.run([node, "-e", script, str(ROOT / "server/reactions.js"), str(ROOT / "app/src/test/resources/reaction-vectors.json")],
+                            capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0 and result.stdout == "[]", "Reaction texts are read wrong: " + (result.stdout or result.stderr)[:900])
+    print("PASS  reaction texts: the six verbs, any emoji, removals, pictures and files, cut and straight quotes, groups, "
+          "near misses that stay texts, notifications, and the standard wording sent to texts (the phone's cases)")
+
+
 def email_quotes_test():
     """Incoming email replies lose the quoted history, with fictional fixtures."""
     sys.path.insert(0, str(ROOT / "server"))
@@ -1486,7 +1576,8 @@ def multi_account_test():
                  ":irc.example.test 323 fluidtest :End of /LIST"):
         client.handle(irc_client.parse(line))
     worker.join(5)
-    check([row["target"] for row in result.get("rows", [])] == ["#radio-club", "#radio-help"], "IRC LIST filtering or limit failed")
+    check([row["target"] for row in result.get("rows", [])] == ["#radio-more", "#radio-club"],
+          "IRC LIST didn't keep the busiest matching channels")
     client.sync_channels(["#a", "#b"])
     check(client.sock.lines[-2:] == ["JOIN #b", "PART #c :Left in FluidMessages"], "IRC didn't join and part live")
     print("PASS  several accounts per service: migration keeps old chats, two Matrix accounts and two IRC networks send and "
@@ -2287,6 +2378,150 @@ process.stdout.write(JSON.stringify(wrong));
               "Joined channels and rooms aren't listed under their server")
     print("PASS  Add server: public server list served and searchable (no Discord anywhere served); Browse searches IRC by "
           "mask and filters XMPP group chats; joined channels and rooms are named and listed under their server")
+
+
+def account_setup_test():
+    """Adding an account on the web: the email provider table, the server found from a Matrix ID or XMPP address, IRC
+    channel names and Popular here, the guide page for each service, and the form that fills itself in. Fictional
+    addresses only; nothing here connects anywhere."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import accounts
+
+    with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
+        index = request("/", authorized=False).decode()
+        scripts = re.findall(r'src="(/[^"#?]+)"', index)
+        check("/account-setup.js" in scripts and scripts.index("/server-directory.js") < scripts.index("/account-setup.js")
+              < scripts.index("/servers.js"), "The page doesn't load account-setup.js between the server list and servers.js")
+        check("'/account-setup.js'" in request("/sw.js", authorized=False).decode(), "The service worker doesn't cache account-setup.js")
+        setup = request("/account-setup.js", authorized=False).decode()
+        servers_js = request("/servers.js", authorized=False).decode()
+        companion_js = request("/companion.js", authorized=False).decode()
+        css = request("/features.css", authorized=False).decode()
+    check(all(name in setup for name in ("function serviceGuide", "function setUpAccountForm", "Get started", "I already know what I’m doing",
+                                         "Don’t have an account yet?", "Show details")), "The add-account guide or automatic setup isn't served")
+    check("showModal" not in setup and "prompt(" not in setup and "alert(" not in setup and "confirm(" not in setup,
+          "The add-account guide opens a pop-up instead of a full page")
+    check("function openServerGuide" in servers_js and "openServerGuide(protocol)" in servers_js and "Popular here" in servers_js
+          and "You’re not connected to " in servers_js and "'Connect'" in servers_js,
+          "Add server skips the guide, or Browse has no Popular here list or plain not-connected state")
+    check("serviceGuide(protocol" in companion_js and "setUpAccountForm(form, inputs, protocol" in companion_js,
+          "Settings and the setup guide add accounts without the guide page or automatic setup")
+    check(".service-guide-art" in css and ".setup-note" in css and "style=" not in setup,
+          "The guide's picture isn't styled from the theme (inline styles are blocked by the page's security policy)")
+    for brand in ("whatsapp", "telegram", "slack", "discord", "monal"):
+        check(not re.search(r"\b" + brand + r"\b", setup, re.I),
+              "The add-account guide names a brand-name chat app: " + brand)
+    # The table only uses ports whose security the server really applies (TLS from the start, or STARTTLS).
+    check(not accounts.imap_starttls(993) and not accounts.smtp_starttls(465) and accounts.smtp_starttls(587) and accounts.smtp_starttls(1025)
+          and not accounts.imap_starttls(1143), "The server's email port rules changed; update the provider table's wording")
+
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("PASS  add-account guide and automatic setup are served (the rules in Node skipped: node is missing)")
+        return
+    block = re.search(r"// account-setup:start[^\n]*\n(.*?)// account-setup:end", (ROOT / "server/account-setup.js").read_text(), re.S)
+    check(block, "account-setup.js has no rules block")
+    script = (ROOT / "server/server-directory.js").read_text() + block.group(1) + r"""
+const wrong = [];
+const same = (got, want, what) => { if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push(what + ': ' + JSON.stringify(got)); };
+const mail = (address, options) => { const s = emailSetup(address, options); return s && [s.name, s.fields.imap_host, s.fields.imap_port, s.fields.smtp_host, s.fields.smtp_port, s.security.smtp]; };
+// The provider table, the same as the phone's.
+const table = {
+  'gmail.com': ['Gmail', 'imap.gmail.com', 993, 'smtp.gmail.com', 465, 'TLS'], 'googlemail.com': ['Gmail', 'imap.gmail.com', 993, 'smtp.gmail.com', 465, 'TLS'],
+  'outlook.com': ['Outlook', 'outlook.office365.com', 993, 'smtp-mail.outlook.com', 587, 'STARTTLS'],
+  'hotmail.com': ['Outlook', 'outlook.office365.com', 993, 'smtp-mail.outlook.com', 587, 'STARTTLS'],
+  'live.com': ['Outlook', 'outlook.office365.com', 993, 'smtp-mail.outlook.com', 587, 'STARTTLS'],
+  'msn.com': ['Outlook', 'outlook.office365.com', 993, 'smtp-mail.outlook.com', 587, 'STARTTLS'],
+  'yahoo.com': ['Yahoo Mail', 'imap.mail.yahoo.com', 993, 'smtp.mail.yahoo.com', 465, 'TLS'],
+  'ymail.com': ['Yahoo Mail', 'imap.mail.yahoo.com', 993, 'smtp.mail.yahoo.com', 465, 'TLS'],
+  'rocketmail.com': ['Yahoo Mail', 'imap.mail.yahoo.com', 993, 'smtp.mail.yahoo.com', 465, 'TLS'],
+  'aol.com': ['AOL Mail', 'imap.aol.com', 993, 'smtp.aol.com', 465, 'TLS'],
+  'icloud.com': ['iCloud Mail', 'imap.mail.me.com', 993, 'smtp.mail.me.com', 587, 'STARTTLS'],
+  'me.com': ['iCloud Mail', 'imap.mail.me.com', 993, 'smtp.mail.me.com', 587, 'STARTTLS'],
+  'mac.com': ['iCloud Mail', 'imap.mail.me.com', 993, 'smtp.mail.me.com', 587, 'STARTTLS'],
+  'fastmail.com': ['Fastmail', 'imap.fastmail.com', 993, 'smtp.fastmail.com', 465, 'TLS'],
+  'fastmail.fm': ['Fastmail', 'imap.fastmail.com', 993, 'smtp.fastmail.com', 465, 'TLS'],
+  'zoho.com': ['Zoho Mail', 'imap.zoho.com', 993, 'smtp.zoho.com', 465, 'TLS'], 'zohomail.com': ['Zoho Mail', 'imap.zoho.com', 993, 'smtp.zoho.com', 465, 'TLS'],
+  'gmx.com': ['GMX', 'imap.gmx.com', 993, 'mail.gmx.com', 587, 'STARTTLS'], 'gmx.us': ['GMX', 'imap.gmx.com', 993, 'mail.gmx.com', 587, 'STARTTLS'],
+  'gmx.net': ['GMX', 'imap.gmx.com', 993, 'mail.gmx.com', 587, 'STARTTLS'], 'gmx.de': ['GMX', 'imap.gmx.com', 993, 'mail.gmx.com', 587, 'STARTTLS'],
+  'mail.com': ['mail.com', 'imap.mail.com', 993, 'smtp.mail.com', 587, 'STARTTLS'],
+  'proton.me': ['Proton Mail', '127.0.0.1', 1143, '127.0.0.1', 1025, 'STARTTLS'],
+  'protonmail.com': ['Proton Mail', '127.0.0.1', 1143, '127.0.0.1', 1025, 'STARTTLS'], 'pm.me': ['Proton Mail', '127.0.0.1', 1143, '127.0.0.1', 1025, 'STARTTLS'],
+};
+for (const [domain, want] of Object.entries(table)) same(mail('sam@' + domain), want, domain);
+same(EMAIL_PROVIDERS.flatMap((p) => p.domains).length, Object.keys(table).length, 'a domain outside the table');
+const links = Object.fromEntries(EMAIL_PROVIDERS.filter((p) => p.link).map((p) => [p.id, p.link[1]]));
+same(links, {gmail: 'https://myaccount.google.com/apppasswords',
+  outlook: 'https://support.microsoft.com/account-billing/5896ed9b-4263-e681-128a-a6f2979a7944',
+  yahoo: 'https://login.yahoo.com/account/security', aol: 'https://login.aol.com/account/security',
+  icloud: 'https://account.apple.com/account/manage', fastmail: 'https://app.fastmail.com/settings/security/apps',
+  zoho: 'https://accounts.zoho.com/home#security/app_password'}, 'provider links');
+same(emailSetup('sam@outlook.com').note, 'Outlook may not allow sign-in from other apps.', 'the Outlook note');
+same([/app password/.test(emailSetup('sam@gmail.com').note), /2-Step Verification/.test(emailSetup('sam@gmail.com').note)], [true, true], 'the Gmail note');
+same([emailSetup('sam@pm.me').bridge, /Bridge/.test(emailSetup('sam@pm.me').note), emailSetup('sam@pm.me').link], [true, true, null], 'Proton');
+// Case and spaces don't matter; an unknown domain is a clearly marked guess; half an address is nothing.
+same(mail('  Sam.Rivera@GMail.COM '), table['gmail.com'], 'case and spaces');
+same(tidyAddress(' Sam.Rivera@Example.ORG '), 'Sam.Rivera@example.org', 'tidy keeps the name, lowers the domain');
+same(mail('sam@garden.example'), ['garden.example', 'imap.garden.example', 993, 'smtp.garden.example', 465, 'TLS'], 'an unknown domain');
+same([emailSetup('sam@garden.example').guess, emailSetup('sam@garden.example').known, emailSetup('sam@gmail.com').guess], [true, false, false], 'guess marks');
+same(emailSetup('sam@garden.example', {guess: false}), null, 'no guess while typing');
+for (const half of ['', 'sam', 'sam@', 'sam@gmail', '@gmail.com', 'sam@-bad.example', 'sam@gmail.c']) same(emailSetup(half), null, 'half: ' + half);
+same([emailSecurity('imap', 993), emailSecurity('imap', 143), emailSecurity('smtp', 465), emailSecurity('smtp', 587)], ['TLS', 'STARTTLS', 'TLS', 'STARTTLS'], 'security');
+// Matrix: the homeserver from the ID. matrix.org's is its real address from Add server's list.
+same(matrixSetup('@sam:example.org'), {domain: 'example.org', homeserver: 'https://example.org', known: false, guess: true, name: 'example.org'}, 'matrix guess');
+same(matrixSetup(' @Sam:Matrix.ORG ').homeserver, 'https://matrix-client.matrix.org', 'matrix.org');
+same(matrixSetup('sam:example.org').homeserver, 'https://example.org', 'a missing @');
+same(matrixSetup('@sam:example.org:8448').homeserver, 'https://example.org:8448', 'a port');
+for (const half of ['', '@sam', '@sam:', '@sam:example', 'sam@example.org', '@sam:exa_mple.org']) same(matrixSetup(half), null, 'matrix half: ' + half);
+same([tidyMatrixId(' @Sam:Example.org'), tidyHomeserver('Matrix.Example.org/ '), tidyHomeserver('http://matrix.example.org')],
+  ['@sam:example.org', 'https://matrix.example.org', 'https://matrix.example.org'], 'matrix tidy');
+// XMPP: the server from the address.
+same(xmppSetup('Sam@Example.ORG'), {domain: 'example.org', known: false, name: 'example.org'}, 'xmpp');
+same(xmppSetup('sam@jabber.org/phone').known, true, 'a known XMPP server, resource ignored');
+for (const half of ['', 'sam', 'sam@', 'sam@example', 'a@b@example.org']) same(xmppSetup(half), null, 'xmpp half: ' + half);
+// IRC: networks by name or host, channel names, nicknames, and Popular here.
+same([ircNetwork('Libera.Chat').host, ircNetwork('irc.libera.chat').port, ircNetwork('ircs://irc.libera.chat:6697/').tls, ircNetwork('libera.chat').name,
+  ircNetwork('irc.starlight.example')], ['irc.libera.chat', 6697, true, 'Libera.Chat', null], 'networks');
+same(['python', '#python', ' #python ', '#python, please', '&local', '#', '', 'two words'].map(channelName),
+  ['#python', '#python', '#python', '#python', '&local', '', '', '#two'], 'channel names');
+same(popularChannels('irc.libera.chat').map((room) => room.target), ['#libera', '#linux', '#python', '#ubuntu', '#archlinux'], 'Popular on Libera.Chat');
+same(popularChannels('irc.starlight.example'), [], 'no Popular list for an unknown network');
+same(popularChannels('irc.libera.chat').every((room) => room.topic && room.name === room.target), true, 'Popular rows say what they are');
+same(['Sam Rivera', '@sam.r:example.org', 'sam@example.org', 'Zoë', '42', ''].map(suggestNick), ['Sam', 'sam_r', 'sam', 'Zoe', '', ''], 'nicknames');
+same(tidyHost(' IRC.Libera.Chat:6697 '), 'irc.libera.chat', 'hosts');
+// Saving tidies what was typed.
+same(tidyAccountFields('email', {address: ' Sam@Example.ORG', imap_host: 'IMAP.Example.org ', imap_port: 993}),
+  {address: 'Sam@example.org', imap_host: 'imap.example.org', imap_port: 993}, 'email fields');
+same(tidyAccountFields('matrix', {user_id: 'Sam:Example.org', homeserver: 'example.org/'}), {user_id: '@sam:example.org', homeserver: 'https://example.org'}, 'matrix fields');
+same(tidyAccountFields('xmpp', {jid: 'Sam@Example.org ', password: ' kept as typed '}), {jid: 'sam@example.org', password: ' kept as typed '}, 'xmpp fields');
+same(tidyAccountFields('irc', {server: 'irc.Libera.Chat', nick: 'sam r', channels: 'python, #linux', ctcp_replies: false}),
+  {server: 'irc.libera.chat', nick: 'samr', channels: '#python, #linux', ctcp_replies: false}, 'irc fields');
+// The guides: the one-liners both apps share, three steps each, and an example that fills in the form.
+same(Object.keys(SERVICE_GUIDES).sort(), ['email', 'irc', 'matrix', 'xmpp'], 'a guide per service');
+same(SERVICE_GUIDES.matrix.line, 'Modern group chat that no single company owns. Used by communities, schools, and workplaces.', 'Matrix line');
+same(SERVICE_GUIDES.xmpp.line, 'Simple, private one-to-one and group chat. It works like email: pick any provider and talk to people on all the others.', 'XMPP line');
+same(SERVICE_GUIDES.email.line, 'Your normal email, shown as chats. Only the conversations you choose show up.', 'Email line');
+same(SERVICE_GUIDES.irc.line, 'Big public chat rooms for hobbies and open-source projects. No sign-up needed: just pick a nickname.', 'IRC line');
+same(Object.values(SERVICE_GUIDES).map((guide) => guide.steps.length), [3, 3, 3, 3], 'three steps');
+same(SERVICE_GUIDES.email.example, 'Use the email you already have', 'the email example');
+same([guideExample('matrix').preset, guideExample('xmpp').preset, guideExample('irc').preset, guideExample('email').preset],
+  [{homeserver: 'https://matrix-client.matrix.org'}, {jid: '@jabber.org'}, {server: 'irc.libera.chat', port: '6697'}, {}], 'examples');
+process.stdout.write(JSON.stringify(wrong));
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0 and result.stdout == "[]", "Automatic account setup is wrong: " + (result.stdout or result.stderr)[:900])
+    # What the form sends for each provider is an account the server accepts, with the security the table says.
+    for address, host, port in (("sam@gmail.com", "imap.gmail.com", 993), ("sam@outlook.com", "outlook.office365.com", 993),
+                                ("sam@pm.me", "127.0.0.1", 1143), ("sam@garden.example", "imap.garden.example", 993)):
+        clean = accounts.validate("email", {"address": address, "imap_host": host, "imap_port": port, "imap_password": "fixture",
+                                            "smtp_host": host.replace("imap", "smtp"), "smtp_port": 465})
+        check(clean["imap_host"] == host and clean["imap_port"] == port, "The server refused a filled-in email account: " + address)
+    check(accounts.validate("irc", {"server": "irc.libera.chat", "port": "6697", "nick": "fluidtest"})["port"] == 6697
+          and accounts.validate("matrix", {"homeserver": "https://matrix-client.matrix.org", "user_id": "@sam:matrix.org",
+                                           "access_token": "fixture"})["homeserver"] == "https://matrix-client.matrix.org",
+          "The server refused a filled-in IRC or Matrix account")
+    print("PASS  adding an account: a full-page guide per service (same one-liners as the phone), the email provider table, "
+          "servers found from Matrix IDs and XMPP addresses, IRC networks, channel names, nicknames, and Popular here")
 
 
 def sign_in_test():
@@ -3766,6 +4001,145 @@ def web_parity_test():
           "chat themes, kind locks, hidden services and the close passcode, real chats in decoy mode, and the GIF API address")
 
 
+def meeting_links_test():
+    """Meeting links on the web: Zoom first and the default, Zoom and Jitsi on at first, your own saved links checked
+    by the server, the last one used picked next time, and the message that carries the link read back as a call card."""
+    zoom, meet = "https://zoom.us/j/1234567890?pwd=Fictional1", "https://meet.google.com/abc-defg-hij"
+    with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
+        index, shell = request("/", authorized=False).decode(), request("/sw.js", authorized=False).decode()
+        check("/meetings.js" in index and "'/meetings.js'" in shell, "The page or the offline cache leaves out meetings.js")
+        check(index.index("/companion.js") < index.index("/meetings.js"), "meetings.js loads before companion.js")
+        meetings_js = request("/meetings.js", authorized=False).decode()
+        check(meetings_js == (ROOT / "server/meetings.js").read_text(), "The served meetings.js differs from the file")
+        check("showModal" not in meetings_js and "<dialog" not in meetings_js and "detailsPage(" in meetings_js,
+              "Picking a meeting service isn't a full page")
+        welcome_js, settings_js = (request(path, authorized=False).decode() for path in ("/welcome.js", "/settings.js"))
+        check("A Jitsi Meet link anyone" not in welcome_js + settings_js and "Pick Zoom, Jitsi Meet, Google Meet, or Teams" in welcome_js,
+              "The Calls page still says meeting links are only Jitsi")
+        check("discord" not in (meetings_js + welcome_js).lower(), "Meeting links mention a service FluidMessages doesn't name")
+        # A server from before there was a choice has no meeting settings: Zoom and Jitsi on, Jitsi on meet.jit.si.
+        fresh = request("/api/settings")["prefs"]
+        check(fresh["meetings"] == {"on": {"zoom": True, "meet": False, "teams": False, "jitsi": True}, "links": {}, "last": "",
+                                    "jitsiServer": "meet.jit.si"} and fresh["callMeetings"] is True, "Meeting links don't start with Zoom and Jitsi on")
+        saved = request("/api/settings", {"prefs": {"meetings": {"on": {"meet": True}, "links": {"zoom": zoom, "meet": meet}, "last": "meet",
+                                                                 "jitsiServer": "meet.example.org"}}})["prefs"]["meetings"]
+        check(saved == {"on": {"zoom": True, "meet": True, "teams": False, "jitsi": True}, "links": {"zoom": zoom, "meet": meet}, "last": "meet",
+                        "jitsiServer": "meet.example.org"}, "Meeting links weren't saved: " + json.dumps(saved))
+        check(request("/api/settings")["prefs"]["meetings"] == saved, "Meeting links weren't kept")
+        # Other settings saved afterwards leave them alone.
+        check(request("/api/settings", {"prefs": {"callMeetings": False}})["prefs"]["meetings"] == saved, "Another setting reset meeting links")
+        for bad in ({"links": {"zoom": meet}}, {"links": {"zoom": "https://zoom.us.example.org/j/1234567890"}}, {"links": {"jitsi": "https://meet.jit.si/Room"}},
+                    {"links": {"meet": "https://meet.google.com/"}}, {"links": {"teams": "javascript:alert(1)"}}, {"on": {"zoom": "yes"}},
+                    {"on": {"other": True}}, {"on": {"zoom": False, "jitsi": False}}, {"last": "other"}, {"jitsiServer": "meet example"},
+                    {"jitsiServer": "https://meet.example.org/"}, {"extra": 1}, [], "zoom"):
+            try:
+                request("/api/settings", {"prefs": {"meetings": bad}})
+                raise RuntimeError("Invalid meeting links were accepted: " + json.dumps(bad))
+            except HTTPError as error:
+                check(error.code == 400, f"Expected HTTP 400 for invalid meeting links, got {error.code}")
+        check(request("/api/settings")["prefs"]["meetings"] == saved, "A refused change still changed meeting links")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("SKIP  meeting link rules in Node: node is missing")
+        return
+    block = re.search(r"// meetings:start[^\n]*\n(.*?)// meetings:end", meetings_js, re.S).group(1)
+    script = block + r"""
+const wrong = [];
+const same = (what, got, want) => { if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push([what, got, want]); };
+const ids = (list) => list.map((service) => service.id);
+// Zoom is first and the default; Zoom and Jitsi are on at first.
+const fresh = meetingSettings(undefined);
+same('order', ids(MEETING_SERVICES), ['zoom', 'meet', 'teams', 'jitsi']);
+same('on at first', ids(meetingEnabled(fresh)), ['zoom', 'jitsi']);
+same('zoom the first time', meetingPreselected(fresh), 'zoom');
+same('jitsi needs nothing', [meetingReady(fresh, 'jitsi'), meetingReady(fresh, 'zoom')], [true, false]);
+same('summary', meetingSummary(fresh), 'Zoom or Jitsi Meet');
+// The last one used is picked while it is still on.
+same('last used', meetingPreselected(meetingSettings({last: 'jitsi'})), 'jitsi');
+same('last used and turned on', meetingPreselected(meetingSettings({last: 'meet', on: {meet: true}})), 'meet');
+same('last used but off', meetingPreselected(meetingSettings({last: 'meet'})), 'zoom');
+same('zoom off', meetingPreselected(meetingSettings({last: 'zoom', on: {zoom: false}})), 'jitsi');
+same('nonsense', meetingPreselected(meetingSettings({last: 'other', on: 'yes', links: 4})), 'zoom');
+// Each service turns on or off, and one always stays on.
+const all = meetingSettings({on: {meet: true, teams: true}});
+same('all on', ids(meetingEnabled(all)), ['zoom', 'meet', 'teams', 'jitsi']);
+same('summary of four', meetingSummary(all), 'Zoom and 3 more');
+const onlyTeams = meetingSettings({on: {zoom: false, jitsi: false, teams: true}});
+same('one on', [ids(meetingEnabled(onlyTeams)), meetingCanTurnOff(onlyTeams, 'teams'), meetingCanTurnOff(all, 'zoom')], [['teams'], false, true]);
+same('none on still offers some', ids(meetingEnabled(meetingSettings({on: {zoom: false, jitsi: false}}))), ['zoom', 'jitsi']);
+// Someone who set up a Jitsi server of their own keeps it, and keeps Jitsi picked until they choose something else.
+const before = meetingSettings({jitsiServer: 'meet.example.org'});
+same('own jitsi server', [before.jitsiServer, ids(meetingEnabled(before)), meetingPreselected(before)], ['meet.example.org', ['zoom', 'jitsi'], 'jitsi']);
+same('own jitsi server, then zoom', meetingPreselected(meetingSettings({jitsiServer: 'meet.example.org', last: 'zoom'})), 'zoom');
+same('broken server', meetingSettings({jitsiServer: 'not a server'}).jitsiServer, 'meet.jit.si');
+same('jitsi detail', meetingDetail(before, 'jitsi'), 'Makes a new room each time on meet.example.org. No account needed.');
+// What counts as a real link for each service.
+same('zoom', [validMeetingLink('zoom', ' zoom.us/j/1234567890 '), validMeetingLink('zoom', 'https://us02web.zoom.us/j/12345678901?pwd=Fictional1'),
+  validMeetingLink('zoom', 'http://example.zoom.us/my/river.room')],
+  ['https://zoom.us/j/1234567890', 'https://us02web.zoom.us/j/12345678901?pwd=Fictional1', 'https://example.zoom.us/my/river.room']);
+for (const bad of ['', 'https://zoom.us/', 'https://zoom.us/profile', 'https://zoom.us/j/12', 'https://notzoom.us/j/1234567890',
+  'https://zoom.us.example.org/j/1234567890', 'https://example.org/?next=https://zoom.us/j/1234567890', 'ftp://zoom.us/j/1234567890',
+  'https://zoom.us/j/1234567890 and more', 'https://meet.google.com/abc-defg-hij']) same('not zoom: ' + bad, validMeetingLink('zoom', bad), null);
+same('meet', [validMeetingLink('meet', 'meet.google.com/abc-defg-hij'), validMeetingLink('meet', 'https://meet.google.com/abc-defg-hij?authuser=0')],
+  ['https://meet.google.com/abc-defg-hij', 'https://meet.google.com/abc-defg-hij?authuser=0']);
+for (const bad of ['https://meet.google.com/', 'https://meet.google.com/abcdefghij', 'https://meet.google.com/abc-defg-hi',
+  'https://meet.google.com.example.org/abc-defg-hij', 'https://google.com/abc-defg-hij', 'https://zoom.us/j/1234567890']) same('not meet: ' + bad, validMeetingLink('meet', bad), null);
+const long = 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_Fictional%40thread.v2/0?context=%7b%22Tid%22%3a%22fictional%22%7d';
+same('teams', [validMeetingLink('teams', long), validMeetingLink('teams', 'teams.live.com/meet/9312345678901?p=Fictional'), validMeetingLink('teams', 'https://teams.microsoft.com/meet/1234567890')],
+  [long, 'https://teams.live.com/meet/9312345678901?p=Fictional', 'https://teams.microsoft.com/meet/1234567890']);
+for (const bad of ['https://teams.microsoft.com/', 'https://teams.microsoft.com/v2/', 'https://teams.example.org/meet/123',
+  'https://teams.microsoft.com.example.org/meet/123', 'https://teams.live.com/l/other/1']) same('not teams: ' + bad, validMeetingLink('teams', bad), null);
+same('jitsi room', newJitsiRoom('meet.jit.si', '0011223344556677'), 'https://meet.jit.si/FluidMessages-0011223344556677');
+same('whose link', [meetingServiceOf('https://meet.jit.si/FluidMessages-0011223344556677')?.id, meetingServiceOf('https://meet.example.org/TrailClub', 'meet.example.org')?.id,
+  meetingServiceOf('https://meet.example.org/TrailClub'), meetingServiceOf('https://example.org/article'), meetingServiceOf('https://zoom.us/j/1234567890')?.id],
+  ['jitsi', 'jitsi', null, null, 'zoom']);
+same('server names', [cleanJitsiServer('https://meet.example.org:8443/'), cleanJitsiServer('meet example')], ['meet.example.org:8443', null]);
+for (const service of MEETING_SERVICES.filter((item) => item.id !== 'jitsi')) {
+  same(service.id + ' example and steps', [validMeetingLink(service.id, service.example), service.steps.length, service.home.startsWith('https://')], [service.example, 3, true]);
+}
+// A saved link is sent; a broken one counts as missing.
+const saved = meetingSettings({links: {zoom: 'https://zoom.us/j/1234567890', meet: 'https://example.org/x', jitsi: 'https://meet.jit.si/Room'}, on: {meet: true}});
+same('saved', [meetingSavedLink(saved, 'zoom'), meetingReady(saved, 'zoom'), meetingDetail(saved, 'zoom'), meetingSavedLink(saved, 'meet'), meetingDetail(saved, 'meet'), saved.links.jitsi],
+  ['https://zoom.us/j/1234567890', true, 'Sends your saved link', null, 'Save your own Google Meet link first', undefined]);
+// The message names the service and reads back as a call card.
+same('texts', [meetingText('jitsi', true, 'https://meet.jit.si/Room-1'), meetingText('jitsi', false, 'https://meet.jit.si/Room-1'),
+  meetingText('zoom', true, 'https://zoom.us/j/1234567890'), meetingText('teams', false, 'https://teams.live.com/meet/931?p=a')],
+  ['📹 Join my video call: https://meet.jit.si/Room-1', '📞 Join my call: https://meet.jit.si/Room-1',
+   '📹 Join my Zoom video call: https://zoom.us/j/1234567890', '📞 Join my Teams call: https://teams.live.com/meet/931?p=a']);
+for (const service of MEETING_SERVICES) for (const video of [true, false]) {
+  const link = service.id === 'jitsi' ? 'https://meet.jit.si/Room-1' : service.example;
+  const card = parseMeeting(meetingText(service.id, video, link));
+  same('card ' + service.id, [card?.service, card?.video, card?.link], [service.id, video, link]);
+}
+const older = parseMeeting('📹 Join my video call: https://meet.example.org/FluidMessages-00112233');
+same('older jitsi card', [older.service, older.place], ['', 'meet.example.org']);
+same('places', [parseMeeting('Join my Zoom call: https://zoom.us/my/river.room').place, parseMeeting('📞 Join my call: https://meet.jit.si/Room-1').place], ['Zoom', 'meet.jit.si']);
+same('preview', meetingPreview('📹 Join my Google Meet video call: https://meet.google.com/abc-defg-hij'), '📹 Video call · tap to join');
+same('not cards', [parseMeeting('Join my call: https://example.org/a/b?c=d'), parseMeeting('Can you join my call later?'), meetingPreview('Fictional')], [null, null, null]);
+// A meeting link in an everyday message gets a Join button.
+same('found', [findMeetingLink('Trail club at 6: https://zoom.us/j/1234567890?pwd=Fictional1.'), findMeetingLink('See https://example.org first, then (https://meet.google.com/abc-defg-hij)'),
+  findMeetingLink('https://meet.jit.si/TrailClub'), findMeetingLink('The map is at https://example.org/zoom.us/j/1234567890'), findMeetingLink('No link here')],
+  [{service: 'zoom', link: 'https://zoom.us/j/1234567890?pwd=Fictional1'}, {service: 'meet', link: 'https://meet.google.com/abc-defg-hij'},
+   {service: 'jitsi', link: 'https://meet.jit.si/TrailClub'}, null, null]);
+same('join', [meetingJoinLink('jitsi', false, 'https://meet.jit.si/Room-1'), meetingJoinLink('jitsi', true, 'https://meet.jit.si/Room-1'), meetingJoinLink('zoom', false, 'https://zoom.us/j/1234567890')],
+  ['https://meet.jit.si/Room-1#config.startWithVideoMuted=true', 'https://meet.jit.si/Room-1', 'https://zoom.us/j/1234567890']);
+same('privacy', [meetingPrivacy('zoom'), meetingPrivacy('jitsi')], ['Zoom can see who joins and may record. For a private call, use an encrypted call instead.',
+  'The meeting server can access the call. For a private call, use an encrypted call instead.']);
+process.stdout.write(JSON.stringify(wrong));
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0 and result.stdout == "[]", "The web's meeting link rules are wrong: " + (result.stdout or result.stderr)[:600])
+    # The phone has the same services, in the same order, with the same link rules.
+    kotlin = (ROOT / "app/src/main/kotlin/org/fluidmessages/MeetingServices.kt").read_text()
+    main_py = (ROOT / "server/main.py").read_text()
+    for name in ("zoom", "meet", "teams"):
+        rule = re.search(name + r": /\^(.*?)\$/i", block).group(1).replace(r"\/", "/")
+        check(rule in kotlin and rule in main_py, f"The {name} link rule differs between the web, the phone, and the server")
+    check(re.findall(r'^    [A-Z]+\("(\w+)", "([^"]+)"', kotlin, re.M) == re.findall(r"\{id: '(\w+)', label: '([^']+)'", block),
+          "The phone and the web list different meeting services")
+    print("PASS  meeting links: Zoom first, Zoom and Jitsi on at first, saved links checked for their service, the last one used, and call cards")
+
+
 def web_parity_node_test():
     """The browser's rules for the same features, run in Node: failed messages and their choices, kind locks,
     contrast and tints with readable fallbacks, a chat's own colors, and theme switching keeping sound and motion."""
@@ -3912,6 +4286,7 @@ def main():
         cloud_smoke_test()
         gateway_relations_test()
         reaction_revisions_test()
+        reactions_test()
         email_quotes_test()
         privacy_calls_test()
         protocol_accounts_test()
@@ -3920,6 +4295,7 @@ def main():
         unique_chats_test()
         chat_features_test()
         server_directory_test()
+        account_setup_test()
         communities_test()
         requests_test()
         merge_test()
@@ -3928,6 +4304,7 @@ def main():
         web_contacts_test()
         sample_onboarding_test()
         web_parity_test()
+        meeting_links_test()
         android(args)
         if args.demo:
             demo(args.no_browser)

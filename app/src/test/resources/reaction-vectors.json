@@ -1,0 +1,3227 @@
+{
+ "about": "Reaction texts, read the same way by the phone (ReactionTextsTest.kt) and FluidMessages Web (scripts/test-local reactions_test). Fictional people and messages. Keep both sides passing when adding a case.",
+ "parse": [
+  {
+   "text": "Liked “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "👍",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Liked \"See you at 7\"",
+   "expect": {
+    "change": "add",
+    "emoji": "👍",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a like from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "👍",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a like from \"See you at 7\"",
+   "expect": {
+    "change": "remove",
+    "emoji": "👍",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Liked an image",
+   "expect": {
+    "change": "add",
+    "emoji": "👍",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a like from a video",
+   "expect": {
+    "change": "remove",
+    "emoji": "👍",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Loved “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Loved \"See you at 7\"",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a heart from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "❤️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a heart from \"See you at 7\"",
+   "expect": {
+    "change": "remove",
+    "emoji": "❤️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Loved an image",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a heart from a video",
+   "expect": {
+    "change": "remove",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Disliked “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "👎",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Disliked \"See you at 7\"",
+   "expect": {
+    "change": "add",
+    "emoji": "👎",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a dislike from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "👎",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a dislike from \"See you at 7\"",
+   "expect": {
+    "change": "remove",
+    "emoji": "👎",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Disliked an image",
+   "expect": {
+    "change": "add",
+    "emoji": "👎",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a dislike from a video",
+   "expect": {
+    "change": "remove",
+    "emoji": "👎",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Laughed at “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "😆",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Laughed at \"See you at 7\"",
+   "expect": {
+    "change": "add",
+    "emoji": "😆",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a laugh from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "😆",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a laugh from \"See you at 7\"",
+   "expect": {
+    "change": "remove",
+    "emoji": "😆",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Laughed at an image",
+   "expect": {
+    "change": "add",
+    "emoji": "😆",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a laugh from a video",
+   "expect": {
+    "change": "remove",
+    "emoji": "😆",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Emphasized “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "‼️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Emphasized \"See you at 7\"",
+   "expect": {
+    "change": "add",
+    "emoji": "‼️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed an exclamation from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "‼️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed an exclamation from \"See you at 7\"",
+   "expect": {
+    "change": "remove",
+    "emoji": "‼️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Emphasized an image",
+   "expect": {
+    "change": "add",
+    "emoji": "‼️",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed an exclamation from a video",
+   "expect": {
+    "change": "remove",
+    "emoji": "‼️",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Questioned “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "❓",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Questioned \"See you at 7\"",
+   "expect": {
+    "change": "add",
+    "emoji": "❓",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a question mark from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "❓",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a question mark from \"See you at 7\"",
+   "expect": {
+    "change": "remove",
+    "emoji": "❓",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Questioned an image",
+   "expect": {
+    "change": "add",
+    "emoji": "❓",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed a question mark from a video",
+   "expect": {
+    "change": "remove",
+    "emoji": "❓",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 😂 to “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "😂",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 😂 from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "😂",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 👍🏽 to “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "👍🏽",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 👍🏽 from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "👍🏽",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 👨‍👩‍👧 to “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "👨‍👩‍👧",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 👨‍👩‍👧 from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "👨‍👩‍👧",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 🇨🇦 to “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "🇨🇦",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 🇨🇦 from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "🇨🇦",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 1️⃣ to “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "1️⃣",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 1️⃣ from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "1️⃣",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted ❤️ to “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed ❤️ from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "❤️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 🫶 to “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "🫶",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 🫶 from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "🫶",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted ☺️ to “See you at 7”",
+   "expect": {
+    "change": "add",
+    "emoji": "☺️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Removed ☺️ from “See you at 7”",
+   "expect": {
+    "change": "remove",
+    "emoji": "☺️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Loved an image",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 😂 to an image",
+   "expect": {
+    "change": "add",
+    "emoji": "😂",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 😂 from an image",
+   "expect": {
+    "change": "remove",
+    "emoji": "😂",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Loved a photo",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 😂 to a photo",
+   "expect": {
+    "change": "add",
+    "emoji": "😂",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 😂 from a photo",
+   "expect": {
+    "change": "remove",
+    "emoji": "😂",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Loved a picture",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 😂 to a picture",
+   "expect": {
+    "change": "add",
+    "emoji": "😂",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 😂 from a picture",
+   "expect": {
+    "change": "remove",
+    "emoji": "😂",
+    "quote": null,
+    "media": "photo",
+    "own": false
+   }
+  },
+  {
+   "text": "Loved a video",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 😂 to a video",
+   "expect": {
+    "change": "add",
+    "emoji": "😂",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 😂 from a video",
+   "expect": {
+    "change": "remove",
+    "emoji": "😂",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Loved a movie",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 😂 to a movie",
+   "expect": {
+    "change": "add",
+    "emoji": "😂",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 😂 from a movie",
+   "expect": {
+    "change": "remove",
+    "emoji": "😂",
+    "quote": null,
+    "media": "video",
+    "own": false
+   }
+  },
+  {
+   "text": "Loved an audio message",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "audio",
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 😂 to an audio message",
+   "expect": {
+    "change": "add",
+    "emoji": "😂",
+    "quote": null,
+    "media": "audio",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 😂 from an audio message",
+   "expect": {
+    "change": "remove",
+    "emoji": "😂",
+    "quote": null,
+    "media": "audio",
+    "own": false
+   }
+  },
+  {
+   "text": "Loved a voice message",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "audio",
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 😂 to a voice message",
+   "expect": {
+    "change": "add",
+    "emoji": "😂",
+    "quote": null,
+    "media": "audio",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 😂 from a voice message",
+   "expect": {
+    "change": "remove",
+    "emoji": "😂",
+    "quote": null,
+    "media": "audio",
+    "own": false
+   }
+  },
+  {
+   "text": "Loved an attachment",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "any",
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 😂 to an attachment",
+   "expect": {
+    "change": "add",
+    "emoji": "😂",
+    "quote": null,
+    "media": "any",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 😂 from an attachment",
+   "expect": {
+    "change": "remove",
+    "emoji": "😂",
+    "quote": null,
+    "media": "any",
+    "own": false
+   }
+  },
+  {
+   "text": "Loved a file",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": null,
+    "media": "any",
+    "own": false
+   }
+  },
+  {
+   "text": "Reacted 😂 to a file",
+   "expect": {
+    "change": "add",
+    "emoji": "😂",
+    "quote": null,
+    "media": "any",
+    "own": false
+   }
+  },
+  {
+   "text": "Removed 😂 from a file",
+   "expect": {
+    "change": "remove",
+    "emoji": "😂",
+    "quote": null,
+    "media": "any",
+    "own": false
+   }
+  },
+  {
+   "text": "Laughed at an audio message",
+   "expect": {
+    "change": "add",
+    "emoji": "😆",
+    "quote": null,
+    "media": "audio",
+    "own": false
+   }
+  },
+  {
+   "text": "Liked “See you at 7” (my message)",
+   "expect": {
+    "change": "add",
+    "emoji": "👍",
+    "quote": "See you at 7",
+    "media": null,
+    "own": true
+   }
+  },
+  {
+   "text": "Liked an image (my message)",
+   "expect": {
+    "change": "add",
+    "emoji": "👍",
+    "quote": null,
+    "media": "photo",
+    "own": true
+   }
+  },
+  {
+   "text": "Liked “See you at 7”\n",
+   "expect": {
+    "change": "add",
+    "emoji": "👍",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "  Loved “See you at 7” \r\n",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Liked “Bring the long list of things we talked about on the…”",
+   "expect": {
+    "change": "add",
+    "emoji": "👍",
+    "quote": "Bring the long list of things we talked about on the…",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Loved “First line\nSecond line”",
+   "expect": {
+    "change": "add",
+    "emoji": "❤️",
+    "quote": "First line\nSecond line",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Liked “She said \"hi\" to me”",
+   "expect": {
+    "change": "add",
+    "emoji": "👍",
+    "quote": "She said \"hi\" to me",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Questioned “Reacted 😂 to “Lunch?””",
+   "expect": {
+    "change": "add",
+    "emoji": "❓",
+    "quote": "Reacted 😂 to “Lunch?”",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "Changed reaction from 👍 to ❤️ on “See you at 7”",
+   "expect": {
+    "change": "change",
+    "emoji": "❤️",
+    "quote": "See you at 7",
+    "media": null,
+    "own": false
+   }
+  },
+  {
+   "text": "liked “See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "Liked See you at 7",
+   "expect": null
+  },
+  {
+   "text": "Liked “See you at 7” too",
+   "expect": null
+  },
+  {
+   "text": "I Liked “See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "Liked“See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "Liked “”",
+   "expect": null
+  },
+  {
+   "text": "Liked",
+   "expect": null
+  },
+  {
+   "text": "Loved it",
+   "expect": null
+  },
+  {
+   "text": "Loved the video",
+   "expect": null
+  },
+  {
+   "text": "Liked an image of the lake",
+   "expect": null
+  },
+  {
+   "text": "Laughed at “",
+   "expect": null
+  },
+  {
+   "text": "Laughed “See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "Reacted quickly to “See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "Reacted to “See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "Reacted 😂 “See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "Reacted 😂 to See you at 7",
+   "expect": null
+  },
+  {
+   "text": "Removed a bug from “See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "Removed a like “See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "Removed from “See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "Removed 😂 from the group",
+   "expect": null
+  },
+  {
+   "text": "Changed reaction from 👍 to maybe on “See you at 7”",
+   "expect": null
+  },
+  {
+   "text": "",
+   "expect": null
+  }
+ ],
+ "emoji": [
+  [
+   "😂",
+   true
+  ],
+  [
+   "👍🏽",
+   true
+  ],
+  [
+   "👨‍👩‍👧",
+   true
+  ],
+  [
+   "🇨🇦",
+   true
+  ],
+  [
+   "1️⃣",
+   true
+  ],
+  [
+   "❤️",
+   true
+  ],
+  [
+   "🫶",
+   true
+  ],
+  [
+   "☺️",
+   true
+  ],
+  [
+   "👍",
+   true
+  ],
+  [
+   "😆",
+   true
+  ],
+  [
+   "‼️",
+   true
+  ],
+  [
+   "❓",
+   true
+  ],
+  [
+   "👎",
+   true
+  ],
+  [
+   "#️⃣",
+   true
+  ],
+  [
+   "©️",
+   true
+  ],
+  [
+   "↔️",
+   true
+  ],
+  [
+   "",
+   false
+  ],
+  [
+   "ok",
+   false
+  ],
+  [
+   "a😂",
+   false
+  ],
+  [
+   "😂!",
+   false
+  ],
+  [
+   "7",
+   false
+  ],
+  [
+   "#",
+   false
+  ],
+  [
+   "quickly",
+   false
+  ],
+  [
+   "é",
+   false
+  ],
+  [
+   "😂 😂",
+   false
+  ]
+ ],
+ "words": [
+  [
+   "See you at 7",
+   "",
+   "",
+   "“See you at 7”"
+  ],
+  [
+   "Photo",
+   "photo",
+   "Photo",
+   "an image"
+  ],
+  [
+   "",
+   "photo",
+   "IMG_0042.jpg",
+   "an image"
+  ],
+  [
+   "IMG_0042.jpg",
+   "photo",
+   "IMG_0042.jpg",
+   "an image"
+  ],
+  [
+   "Multimedia message",
+   "video",
+   "clip.mp4",
+   "a video"
+  ],
+  [
+   "Video",
+   "video",
+   "Video",
+   "a video"
+  ],
+  [
+   "Voice message",
+   "voice",
+   "Voice message",
+   "an audio message"
+  ],
+  [
+   "song.mp3",
+   "audio",
+   "song.mp3",
+   "an audio message"
+  ],
+  [
+   "notes.pdf",
+   "file",
+   "notes.pdf",
+   "an attachment"
+  ],
+  [
+   "sticker.webp",
+   "photo",
+   "sticker.webp",
+   "an image"
+  ],
+  [
+   "The view from the dock",
+   "photo",
+   "Photo",
+   "“The view from the dock”"
+  ],
+  [
+   "Photo",
+   "",
+   "",
+   "“Photo”"
+  ]
+ ],
+ "fold": [
+  {
+   "name": "Liked: shown on the message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Removed a like: takes it away",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Removed a like from “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "Loved: shown on the message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❤️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Removed a heart: takes it away",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Removed a heart from “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "Disliked: shown on the message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Disliked “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👎"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Removed a dislike: takes it away",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Disliked “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Removed a dislike from “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "Laughed at: shown on the message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Laughed at “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "😆"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Removed a laugh: takes it away",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Laughed at “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Removed a laugh from “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "Emphasized: shown on the message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Emphasized “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "‼️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Removed an exclamation: takes it away",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Emphasized “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Removed an exclamation from “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "Questioned: shown on the message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Questioned “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❓"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Removed a question mark: takes it away",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Questioned “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Removed a question mark from “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "Reacted 😂",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Reacted 😂 to “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "😂"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Reacted 👍🏽",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Reacted 👍🏽 to “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍🏽"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Reacted 👨‍👩‍👧",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Reacted 👨‍👩‍👧 to “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👨‍👩‍👧"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Reacted 🇨🇦",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Reacted 🇨🇦 to “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "🇨🇦"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Reacted 1️⃣",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Reacted 1️⃣ to “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "1️⃣"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Reacted ❤️",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Reacted ❤️ to “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❤️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Reacted 🫶",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Reacted 🫶 to “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "🫶"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Reacted ☺️",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Reacted ☺️ to “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "☺️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Removed an emoji",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Reacted 😂 to “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Removed 😂 from “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "a removal with nothing left to remove is still not a bubble",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Removed a like from “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "a change replaces the earlier reaction",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Loved “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❤️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a change to an emoji and back",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Reacted 🫶 to “See you at 7”"
+    },
+    {
+     "id": "d",
+     "from": "Sam",
+     "body": "Removed 🫶 from “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "straight quotes",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Emphasized \"See you at 7\""
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "‼️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a trailing line break",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “See you at 7”\r\n"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a long quote cut short with …",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Bring the long list of things we talked about on the phone, and the folding chairs if they fit in the car"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “Bring the long list of things we talked about on the…”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a long quote cut short with three dots",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Bring the long list of things we talked about on the phone, and the folding chairs if they fit in the car"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved “Bring the long list of things we talked  ...”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❤️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a cut quote too short to trust stays a text",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Bring the long list of things we talked about on the phone, and the folding chairs if they fit in the car"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “Bring the…”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "a message that itself ends with …",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Well…"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Laughed at “Well…”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "😆"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "curly apostrophes in the quote",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Don't be late, it's at Maya's"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “Don’t be late, it’s at Maya’s”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "quotes inside the quote",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "She said \"hi\" to me"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Laughed at “She said “hi” to me”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "😆"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "more than one line",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "First line\nSecond line"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved “First line\r\nSecond line”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❤️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "the most recent matching message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Ok"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Sounds good"
+    },
+    {
+     "id": "c",
+     "from": "me",
+     "body": "Ok"
+    },
+    {
+     "id": "d",
+     "from": "Sam",
+     "body": "Liked “Ok”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": []
+    },
+    {
+     "id": "c",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "the other side's message before the sender's own",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Ok"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Ok"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Liked “Ok”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ]
+     ]
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "someone reacting to their own message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "Sam",
+     "body": "Running late"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Emphasized “Running late”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "‼️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "your own reaction sent as a text",
+   "messages": [
+    {
+     "id": "a",
+     "from": "Sam",
+     "body": "Lunch?"
+    },
+    {
+     "id": "b",
+     "from": "me",
+     "body": "Liked “Lunch?”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "me",
+       "👍"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "your own change sent as a text",
+   "messages": [
+    {
+     "id": "a",
+     "from": "Sam",
+     "body": "Lunch?"
+    },
+    {
+     "id": "b",
+     "from": "me",
+     "body": "Liked “Lunch?”"
+    },
+    {
+     "id": "c",
+     "from": "me",
+     "body": "Loved “Lunch?”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "me",
+       "❤️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "(my message) means the sender's own",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Done"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Done"
+    },
+    {
+     "id": "c",
+     "from": "me",
+     "body": "Liked “Done” (my message)"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "me",
+       "👍"
+      ]
+     ]
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "FluidMessages' own wording for a change",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Changed reaction from 👍 to 😂 on “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "😂"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "group: each person's reaction",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Dinner Friday?"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “Dinner Friday?”"
+    },
+    {
+     "id": "c",
+     "from": "Maya",
+     "body": "Loved “Dinner Friday?”"
+    },
+    {
+     "id": "d",
+     "from": "Jordan",
+     "body": "Reacted 🎉 to “Dinner Friday?”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ],
+      [
+       "Maya",
+       "❤️"
+      ],
+      [
+       "Jordan",
+       "🎉"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "group: a change moves to the end and keeps the others",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Dinner Friday?"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “Dinner Friday?”"
+    },
+    {
+     "id": "c",
+     "from": "Maya",
+     "body": "Loved “Dinner Friday?”"
+    },
+    {
+     "id": "d",
+     "from": "Sam",
+     "body": "Laughed at “Dinner Friday?”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Maya",
+       "❤️"
+      ],
+      [
+       "Sam",
+       "😆"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "group: a removal leaves the others",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Dinner Friday?"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “Dinner Friday?”"
+    },
+    {
+     "id": "c",
+     "from": "Maya",
+     "body": "Liked “Dinner Friday?”"
+    },
+    {
+     "id": "d",
+     "from": "Sam",
+     "body": "Removed a like from “Dinner Friday?”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Maya",
+       "👍"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "group: a reaction to someone else's message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "Maya",
+     "body": "I got the tickets"
+    },
+    {
+     "id": "b",
+     "from": "me",
+     "body": "Great"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Loved “I got the tickets”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❤️"
+      ]
+     ]
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "group: you and others on the same message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "Maya",
+     "body": "I got the tickets"
+    },
+    {
+     "id": "b",
+     "from": "me",
+     "body": "Loved “I got the tickets”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Loved “I got the tickets”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "me",
+       "❤️"
+      ],
+      [
+       "Sam",
+       "❤️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "photo: Loved an image",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved an image"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❤️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "photo: a photo, a picture",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked a photo"
+    },
+    {
+     "id": "c",
+     "from": "Maya",
+     "body": "Emphasized a picture"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ],
+      [
+       "Maya",
+       "‼️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "photo with a caption",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "The view from the dock",
+     "media": "photo"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved an image"
+    },
+    {
+     "id": "c",
+     "from": "Maya",
+     "body": "Liked “The view from the dock”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❤️"
+      ],
+      [
+       "Maya",
+       "👍"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "photo: removal",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved an image"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Removed a heart from an image"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "photo: an emoji and its removal",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Reacted 😂 to an image"
+    },
+    {
+     "id": "c",
+     "from": "Maya",
+     "body": "Reacted 🔥 to an image"
+    },
+    {
+     "id": "d",
+     "from": "Sam",
+     "body": "Removed 😂 from an image"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Maya",
+       "🔥"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "video: a video, a movie",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Multimedia message",
+     "media": "video"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved a video"
+    },
+    {
+     "id": "c",
+     "from": "Maya",
+     "body": "Laughed at a movie"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❤️"
+      ],
+      [
+       "Maya",
+       "😆"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "audio: an audio message",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Voice message",
+     "media": "voice"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Laughed at an audio message"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "😆"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "audio: a music file",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "song.mp3",
+     "media": "audio"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked an audio message"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "any file: an attachment",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "notes.pdf",
+     "media": "file"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked an attachment"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "an attachment also means a photo",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Questioned an attachment"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❓"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "the most recent photo, not an older one or a video",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "b",
+     "from": "me",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "c",
+     "from": "me",
+     "body": "Multimedia message",
+     "media": "video"
+    },
+    {
+     "id": "d",
+     "from": "Sam",
+     "body": "Liked an image"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ]
+     ]
+    },
+    {
+     "id": "c",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "your photo before the sender's own newer one",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Liked an image"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "👍"
+      ]
+     ]
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "someone reacting to their own photo",
+   "messages": [
+    {
+     "id": "a",
+     "from": "Sam",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved an image"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "Sam",
+       "❤️"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "no video in the chat: stays a text",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "Photo",
+     "media": "photo"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Loved a video"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "no picture in the chat: stays a text",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked an image"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "typed by hand with no matching message: stays a text",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “the movie”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "nothing in the chat yet: stays a text",
+   "messages": [
+    {
+     "id": "a",
+     "from": "Sam",
+     "body": "Liked “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "a quote of only part of the message stays a text",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7 by the fountain"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “See you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "a different case stays a text",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “see you at 7”"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "near misses stay texts",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "liked “See you at 7”"
+    },
+    {
+     "id": "c",
+     "from": "Sam",
+     "body": "Liked See you at 7"
+    },
+    {
+     "id": "d",
+     "from": "Sam",
+     "body": "Liked “See you at 7” too"
+    },
+    {
+     "id": "e",
+     "from": "Sam",
+     "body": "Reacted quickly to “See you at 7”"
+    },
+    {
+     "id": "f",
+     "from": "Sam",
+     "body": "Removed a bug from “See you at 7”"
+    },
+    {
+     "id": "g",
+     "from": "Sam",
+     "body": "Loved it"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": []
+    },
+    {
+     "id": "c",
+     "reactions": []
+    },
+    {
+     "id": "d",
+     "reactions": []
+    },
+    {
+     "id": "e",
+     "reactions": []
+    },
+    {
+     "id": "f",
+     "reactions": []
+    },
+    {
+     "id": "g",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "a picture is never folded away, whatever its caption",
+   "messages": [
+    {
+     "id": "a",
+     "from": "me",
+     "body": "See you at 7"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Liked “See you at 7”",
+     "media": "photo"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "a reaction text can be reacted to when it stayed a text",
+   "messages": [
+    {
+     "id": "a",
+     "from": "Sam",
+     "body": "Liked “the movie”"
+    },
+    {
+     "id": "b",
+     "from": "me",
+     "body": "Questioned “Liked “the movie””"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "me",
+       "❓"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a message still sending keeps its own bubble",
+   "messages": [
+    {
+     "id": "a",
+     "from": "Sam",
+     "body": "Lunch?"
+    },
+    {
+     "id": "b",
+     "from": "me",
+     "body": "Liked “Lunch?”",
+     "status": "Sending…"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": []
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  },
+  {
+   "name": "a known target wins over the words",
+   "messages": [
+    {
+     "id": "a",
+     "from": "Sam",
+     "body": "Ok"
+    },
+    {
+     "id": "b",
+     "from": "Sam",
+     "body": "Ok"
+    },
+    {
+     "id": "c",
+     "from": "me",
+     "body": "Liked “Ok”",
+     "target": "a"
+    }
+   ],
+   "shown": [
+    {
+     "id": "a",
+     "reactions": [
+      [
+       "me",
+       "👍"
+      ]
+     ]
+    },
+    {
+     "id": "b",
+     "reactions": []
+    }
+   ]
+  }
+ ],
+ "notice": [
+  [
+   "Sam",
+   "Loved “See you at 7”",
+   "Sam loved “See you at 7”"
+  ],
+  [
+   "Sam",
+   "Laughed at “See you at 7”",
+   "Sam laughed at “See you at 7”"
+  ],
+  [
+   "Maya",
+   "Reacted 😂 to “See you at 7”",
+   "Maya reacted 😂 to “See you at 7”"
+  ],
+  [
+   "Maya",
+   "Removed a like from “See you at 7”",
+   "Maya removed a like from “See you at 7”"
+  ],
+  [
+   "Sam",
+   "Liked an image",
+   "Sam liked an image"
+  ],
+  [
+   "Sam",
+   "Liked “See you at 7” (my message)",
+   "Sam liked “See you at 7”"
+  ],
+  [
+   "Sam",
+   "Loved it",
+   null
+  ],
+  [
+   "",
+   "Loved “See you at 7”",
+   null
+  ]
+ ]
+}

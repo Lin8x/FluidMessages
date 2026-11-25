@@ -154,7 +154,7 @@ public final class BackupJob extends JobService {
 
     private static void requireSmsRole(Context context, Backup.Options options) throws IOException {
         if (options.messages() && !context.getSystemService(RoleManager.class).isRoleHeld(RoleManager.ROLE_SMS)) {
-            throw new IOException("Default SMS role required");
+            throw new IOException("FluidMessages needs to be your texting app");
         }
     }
 

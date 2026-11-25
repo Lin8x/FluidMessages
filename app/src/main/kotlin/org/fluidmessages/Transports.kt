@@ -44,6 +44,8 @@ internal data class MessageRelation(
     val removed: Boolean = false,
     /** The sender's earlier reaction that [emoji] replaces, or "". */
     val previous: String = "",
+    /** For a reaction to a picture or file sent without words: what it was, named in place of a quote. */
+    val targetMedia: ReactionMedia? = null,
 ) {
     /** A removal or a change of an earlier reaction. */
     val revises: Boolean get() = kind == RelationKind.REACTION && (removed || previous.isNotEmpty())
@@ -54,7 +56,8 @@ internal data class MessageRelation(
     companion object {
         @JvmStatic fun reply(target: ChatLine) = MessageRelation(RelationKind.REPLY, target.id, target.text, target.author.orEmpty())
         @JvmStatic fun reaction(target: ChatLine, emoji: String, ownMessage: Boolean) =
-            MessageRelation(RelationKind.REACTION, target.id, target.text, target.author.orEmpty(), emoji, ownMessage)
+            MessageRelation(RelationKind.REACTION, target.id, target.text, target.author.orEmpty(), emoji, ownMessage,
+                targetMedia = target.wordlessMedia())
         @JvmStatic fun forward(text: String, author: String) = MessageRelation(RelationKind.FORWARD, null, text, author)
     }
 }
@@ -76,9 +79,13 @@ internal data class OutgoingMessage @JvmOverloads constructor(
      * What the transport sends. Matrix and XMPP remove and change reactions natively; every other protocol
      * sends the readable text, so people on other apps know what changed.
      */
-    fun forTransport(protocol: MessageProtocol): OutgoingMessage =
-        if (relation?.revises == true && protocol != MessageProtocol.MATRIX && protocol != MessageProtocol.XMPP)
-            copy(text = fallbackBody(), relation = null) else this
+    fun forTransport(protocol: MessageProtocol): OutgoingMessage = when {
+        relation?.revises != true || protocol == MessageProtocol.MATRIX || protocol == MessageProtocol.XMPP -> this
+        // Texts get the usual "Loved “…”" for a change too: iPhones and other apps replace the earlier reaction with it.
+        !relation.removed && (protocol == MessageProtocol.SMS || protocol == MessageProtocol.MMS || protocol == MessageProtocol.RCS) ->
+            copy(relation = relation.copy(previous = ""))
+        else -> copy(text = fallbackBody(), relation = null)
+    }
 
     /** The attachment travels as a file, rather than as text such as a location link. */
     val hasFile: Boolean get() = attachment?.isFile == true
@@ -94,10 +101,10 @@ internal data class OutgoingMessage @JvmOverloads constructor(
         return when (relation?.kind) {
             RelationKind.REPLY -> "Reply to “${messageExcerpt(relation.targetText, 240)}”\n\n$caption"
             RelationKind.REACTION -> when {
-                relation.removed -> reactionRemovedSms(relation.emoji, relation.targetText, relation.ownMessage)
+                relation.removed -> reactionRemovedSms(relation.emoji, relation.targetText, relation.ownMessage, relation.targetMedia)
                 relation.previous.isNotEmpty() ->
                     reactionChangedSms(relation.previous, relation.emoji, relation.targetText, relation.ownMessage)
-                else -> emojiReactionSms(relation.emoji, relation.targetText, relation.ownMessage)
+                else -> emojiReactionSms(relation.emoji, relation.targetText, relation.ownMessage, relation.targetMedia)
             }
             RelationKind.FORWARD -> forwardAsSms(relation.targetText, relation.targetAuthor)
             null -> caption
@@ -127,7 +134,7 @@ private object SmsTransport : MessageTransport {
 
     override fun unavailable(context: Context, prefs: SharedPreferences, conversation: String) = when {
         !protocol.enabled(prefs) -> protocol.disabledReason(prefs)
-        !holdsSmsRole(context) -> "Set FluidMessages as your default SMS app."
+        !holdsSmsRole(context) -> "Make FluidMessages your texting app to send texts."
         else -> ""
     }
 
@@ -145,7 +152,7 @@ private object MmsCarrierTransport : MessageTransport {
 
     override fun unavailable(context: Context, prefs: SharedPreferences, conversation: String) = when {
         !protocol.enabled(prefs) -> protocol.disabledReason(prefs)
-        !holdsSmsRole(context) -> "Set FluidMessages as your default SMS app."
+        !holdsSmsRole(context) -> "Make FluidMessages your texting app to send texts."
         else -> ""
     }
 
@@ -159,7 +166,7 @@ private object RcsPreviewTransport : MessageTransport {
         nativeReplies = false, nativeReactions = false, encryption = Encryption.PREVIEW)
 
     override fun unavailable(context: Context, prefs: SharedPreferences, conversation: String) =
-        protocol.disabledReason(prefs).ifEmpty { "Carrier RCS is a preview on this Android build." }
+        protocol.disabledReason(prefs).ifEmpty { "RCS is only a preview here. It needs carrier support." }
 
     override fun send(context: Context, message: OutgoingMessage) =
         throw IllegalStateException(unavailable(context, context.getSharedPreferences("fluid", Context.MODE_PRIVATE), message.conversation))

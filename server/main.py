@@ -35,6 +35,7 @@ ORIGINS = {item.strip().rstrip("/") for item in os.environ.get("FLUID_ORIGINS", 
 # container, which sees the Docker gateway's address instead of loopback. Remove it before exposing the port.
 LOCAL_ONLY = os.environ.get("FLUID_LOCAL_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
 FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
+         "/reactions.js": ("reactions.js", "text/javascript"),
          "/style.css": ("style.css", "text/css"), "/icon.webp": ("icon.webp", "image/webp"),
          "/companion.js": ("companion.js", "text/javascript"), "/call.js": ("shared/call.js", "text/javascript"),
          "/cards.js": ("cards.js", "text/javascript"), "/chess.js": ("shared/chess.js", "text/javascript"),
@@ -45,10 +46,11 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/sync-merge.js": ("sync-merge.js", "text/javascript"), "/people.js": ("people.js", "text/javascript"),
          "/privacy.js": ("privacy.js", "text/javascript"), "/servers.js": ("servers.js", "text/javascript"),
          "/server-directory.js": ("server-directory.js", "text/javascript"),
+         "/account-setup.js": ("account-setup.js", "text/javascript"),
          "/inbox-filters.js": ("inbox-filters.js", "text/javascript"),
          "/notify.js": ("notify.js", "text/javascript"), "/requests.js": ("requests.js", "text/javascript"),
          "/chat-commands.js": ("chat-commands.js", "text/javascript"), "/invites.js": ("invites.js", "text/javascript"),
-         "/connections.js": ("connections.js", "text/javascript"),
+         "/connections.js": ("connections.js", "text/javascript"), "/meetings.js": ("meetings.js", "text/javascript"),
          "/chat-features.css": ("chat-features.css", "text/css"),
          # The sample inbox's fictional portraits, the phone's own (res/drawable-nodpi/sample_*.webp).
          "/samples/maya.webp": ("samples/maya.webp", "image/webp"), "/samples/jordan.webp": ("samples/jordan.webp", "image/webp"),
@@ -86,9 +88,50 @@ def clean_inbox_filters(value):
     return list(value) + [item for item in INBOX_FILTERS if item not in ids]
 
 
+# Settings → Calls → Meeting links: the services you can pick when you send a meeting link (Zoom first), your own saved
+# links, the one used last, and the Jitsi server. FluidMessages has no account with Zoom, Google, or Microsoft, so those
+# three send a link you saved; Jitsi makes a new room each time. The same rules as meetings.js and MeetingServices.kt.
+MEETING_SERVICES = {"zoom": True, "meet": False, "teams": False, "jitsi": True}  # on at first
+MEETING_LINKS = {
+    "zoom": re.compile(r"https://(?:[a-z0-9-]+\.)*zoom\.us/(?:j/\d{9,11}|my/[A-Za-z0-9._-]{1,64})(?:[?#]\S*)?", re.I | re.A),
+    "meet": re.compile(r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}(?:[?#]\S*)?", re.I | re.A),
+    "teams": re.compile(r"https://teams\.(?:microsoft|live)\.com/(?:l/meetup-join/\S+|meet/[A-Za-z0-9]+(?:[?#]\S*)?)", re.I | re.A)}
+MEETING_SERVER = re.compile(r"[A-Za-z0-9.-]{3,253}(:[0-9]{1,5})?", re.A)
+
+
+def default_meetings():
+    return {"on": dict(MEETING_SERVICES), "links": {}, "last": "", "jitsiServer": "meet.jit.si"}
+
+
+def clean_meetings(value):
+    """Meeting-link choices, checked. Missing parts keep their defaults, so settings saved before a part existed still
+    load; anything of the wrong kind, an unknown service, or a link that isn't that service's own is refused."""
+    if not isinstance(value, dict) or any(key not in ("on", "links", "last", "jitsiServer") for key in value):
+        raise ValueError("Invalid meeting links")
+    clean = default_meetings()
+    on, links = value.get("on", {}), value.get("links", {})
+    if not isinstance(on, dict) or not isinstance(links, dict):
+        raise ValueError("Invalid meeting links")
+    for key, item in on.items():
+        if key not in MEETING_SERVICES or type(item) is not bool:
+            raise ValueError("Invalid meeting links")
+        clean["on"][key] = item
+    if not any(clean["on"].values()):
+        raise ValueError("One meeting service always stays on")
+    for key, item in links.items():
+        if key not in MEETING_LINKS or not isinstance(item, str) or len(item) > 2000 or not MEETING_LINKS[key].fullmatch(item):
+            raise ValueError("That isn't a meeting link for that service")
+        clean["links"][key] = item
+    last, server = value.get("last", ""), value.get("jitsiServer", "meet.jit.si")
+    if last not in ("", *MEETING_SERVICES) or not isinstance(server, str) or not MEETING_SERVER.fullmatch(server):
+        raise ValueError("Invalid meeting links")
+    clean["last"], clean["jitsiServer"] = last, server
+    return clean
+
+
 def default_prefs():
     return {**{key: True for key in PREFS}, "communitySort": "recent", "inboxFilters": list(INBOX_FILTERS),
-            **message_requests.defaults()}
+            "meetings": default_meetings(), **message_requests.defaults()}
 
 def appearance_snapshot(value):
     if not isinstance(value, dict):
@@ -412,6 +455,10 @@ def web_prefs(db):
         prefs["inboxFilters"] = clean_inbox_filters(stored["inboxFilters"])
     except (KeyError, ValueError):
         prefs["inboxFilters"] = list(INBOX_FILTERS)
+    try:
+        prefs["meetings"] = clean_meetings(stored["meetings"])
+    except (KeyError, ValueError):
+        prefs["meetings"] = default_meetings()
     # Settings → Privacy and security → Requests and spam.
     prefs.update(message_requests.read_prefs(stored))
     return prefs
@@ -428,6 +475,8 @@ def clean_prefs(value, current):
             clean[key] = item
         elif key == "inboxFilters":
             clean[key] = clean_inbox_filters(item)
+        elif key == "meetings":
+            clean[key] = clean_meetings(item)
         elif key in message_requests.PREFS:
             clean[key] = message_requests.clean_pref(key, item)
         else:
@@ -1428,6 +1477,8 @@ class Handler(BaseHTTPRequestHandler):
                 # "id" edits that account and "add" adds another; neither (older phones) edits the first one.
                 ident = data.get("id") if isinstance(data.get("id"), str) and data.get("id") else None
                 gateway.accounts.save(data.get("protocol"), dict(data.get("fields") or {}), ident, data.get("add") is True)
+                # Connect the new or changed account now, not at the next 15-second check, so Browse works right away.
+                threading.Timer(0.2, gateway.refresh_clients).start()
                 return {"accounts": gateway.accounts.redacted()}
             if self.path == "/api/protocols/accounts/delete":
                 ident = data.get("id") if isinstance(data.get("id"), str) and data.get("id") else None

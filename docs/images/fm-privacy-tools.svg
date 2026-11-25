@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1088" viewBox="0 0 720 1088" role="img" aria-label="Five privacy tools in FluidMessages: app lock that opens only with your fingerprint or code, a hidden folder for private chats, a decoy code that opens a harmless pretend inbox, an emergency erase code that quietly wipes everything, and disappearing messages that delete themselves after an hour, a day, or a week.">
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".12"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .scan { animation: scan 2.6s ease-in-out infinite; }
+      @keyframes scan { 0%, 100% { transform: translateY(0); opacity: .25; } 50% { transform: translateY(38px); opacity: .95; } }
+      .slide { animation: slide 9s ease-in-out infinite; }
+      @keyframes slide { 0%, 62% { transform: translateX(0); opacity: 1; } 74%, 88% { transform: translateX(70px); opacity: 0; } 100% { transform: translateX(0); opacity: 1; } }
+      .swap1 { animation: swapA 9s ease-in-out infinite; } .swap2 { opacity: 0; animation: swapB 9s ease-in-out infinite; }
+      @keyframes swapA { 0%, 60% { opacity: 1; } 66%, 92% { opacity: 0; } 100% { opacity: 1; } }
+      @keyframes swapB { 0%, 60% { opacity: 0; } 66%, 92% { opacity: 1; } 100% { opacity: 0; } }
+      .wipe { transform-box: fill-box; transform-origin: left; animation: wipe 9s ease-in-out infinite; }
+      @keyframes wipe { 0%, 60% { transform: scaleX(1); } 74%, 90% { transform: scaleX(0); } 100% { transform: scaleX(1); } }
+      .fade { animation: fade 9s ease-in-out infinite; }
+      @keyframes fade { 0%, 60% { opacity: 1; } 76%, 90% { opacity: 0; } 100% { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .swap2 { opacity: 0 !important; } }
+    </style>
+  </defs>
+  <rect width="720" height="1088" rx="32" fill="#f4f2fb"/>
+  <text x="360" y="66" fill="#141820" font-size="38" font-weight="800" text-anchor="middle">Privacy tools for real life</text>
+  <text x="360" y="108" fill="#5b6070" font-size="24" text-anchor="middle">For a nosy roommate, a lost phone, or</text>
+  <text x="360" y="140" fill="#5b6070" font-size="24" text-anchor="middle">someone demanding to see your messages.</text>
+  <g>
+    <rect x="24" y="172" width="672" height="162" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <circle cx="114" cy="253" r="54" fill="#efeafd"/>
+    <g transform="translate(114 253) scale(1.5)"><g fill="none" stroke="#6c4cdc" stroke-width="3" stroke-linecap="round"><path d="M-20 -6 a20 20 0 0 1 40 0 v14"/><path d="M-12 12 v-18 a12 12 0 0 1 24 0 v22"/><path d="M0 -8 v26"/></g>
+    <rect class="scan" x="-30" y="-24" width="60" height="4" rx="2" fill="#6c4cdc"/></g>
+    <text x="212" y="230" fill="#141820" font-size="28" font-weight="800">App lock</text>
+    <text x="212" y="270" fill="#5b6070" font-size="24">Opens only with your fingerprint</text>
+    <text x="212" y="302" fill="#5b6070" font-size="24">or code.</text>
+  </g>
+  <g>
+    <rect x="24" y="352" width="672" height="162" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <rect x="44" y="393" width="140" height="80" rx="16" fill="#f3f4f7"/>
+    <g class="slide"><rect x="54" y="413" width="56" height="40" rx="14" fill="#e0567a"/><circle cx="70" cy="433" r="4" fill="#fff"/><circle cx="82" cy="433" r="4" fill="#fff"/><circle cx="94" cy="433" r="4" fill="#fff"/></g>
+    <rect x="122" y="403" width="54" height="60" rx="12" fill="#6c4cdc"/><text x="149" y="443" font-size="28" text-anchor="middle">🗂️</text>
+    <text x="212" y="410" fill="#141820" font-size="28" font-weight="800">Hidden folder</text>
+    <text x="212" y="450" fill="#5b6070" font-size="24">Private chats vanish from your</text>
+    <text x="212" y="482" fill="#5b6070" font-size="24">inbox until you unlock them.</text>
+  </g>
+  <g>
+    <rect x="24" y="532" width="672" height="162" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <rect x="72" y="551" width="84" height="124" rx="16" fill="#16161a"/><rect x="79" y="558" width="70" height="110" rx="10" fill="#fff"/>
+    <g class="swap1"><rect x="88" y="573" width="52" height="18" rx="9" fill="#e0567a"/><rect x="88" y="601" width="40" height="18" rx="9" fill="#6c4cdc"/><rect x="88" y="629" width="46" height="18" rx="9" fill="#1f7fd6"/></g>
+    <g class="swap2"><rect x="88" y="573" width="46" height="18" rx="9" fill="#d5d6de"/><rect x="88" y="601" width="52" height="18" rx="9" fill="#d5d6de"/><rect x="88" y="629" width="36" height="18" rx="9" fill="#d5d6de"/></g>
+    <text x="212" y="590" fill="#141820" font-size="28" font-weight="800">Decoy code</text>
+    <text x="212" y="630" fill="#5b6070" font-size="24">A second code opens a harmless</text>
+    <text x="212" y="662" fill="#5b6070" font-size="24">pretend inbox.</text>
+  </g>
+  <g>
+    <rect x="24" y="712" width="672" height="162" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <rect x="52" y="751" width="124" height="20" rx="10" fill="#eceef3"/><rect class="wipe" x="52" y="751" width="124" height="20" rx="10" fill="#e0567a"/><rect x="52" y="783" width="124" height="20" rx="10" fill="#eceef3"/><rect class="wipe" x="52" y="783" width="98" height="20" rx="10" fill="#6c4cdc"/><rect x="52" y="815" width="124" height="20" rx="10" fill="#eceef3"/><rect class="wipe" x="52" y="815" width="112" height="20" rx="10" fill="#1f7fd6"/>
+    <text x="212" y="770" fill="#141820" font-size="28" font-weight="800">Emergency erase</text>
+    <text x="212" y="810" fill="#5b6070" font-size="24">A special code quietly wipes</text>
+    <text x="212" y="842" fill="#5b6070" font-size="24">everything.</text>
+  </g>
+  <g>
+    <rect x="24" y="892" width="672" height="162" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <g class="fade"><rect x="48" y="921" width="132" height="48" rx="24" fill="#1fa84a"/><circle cx="92" cy="945" r="5" fill="#fff"/><circle cx="114" cy="945" r="5" fill="#fff"/><circle cx="136" cy="945" r="5" fill="#fff"/></g>
+    <text x="114" y="1017" font-size="34" text-anchor="middle">⏱️</text>
+    <text x="212" y="950" fill="#141820" font-size="28" font-weight="800">Disappearing messages</text>
+    <text x="212" y="990" fill="#5b6070" font-size="24">Messages delete themselves after</text>
+    <text x="212" y="1022" fill="#5b6070" font-size="24">an hour, a day, or a week.</text>
+  </g>
+
+</svg>

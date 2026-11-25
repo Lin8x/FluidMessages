@@ -329,14 +329,31 @@ async function accountRows(list, again) {
   const result = await api('protocols/accounts');
   list.replaceChildren();
   const blurbs = {matrix: 'Chat, groups, and calls', xmpp: 'Jabber and XMPP chat', email: 'Any IMAP and SMTP mailbox', irc: 'Channels and private messages'};
-  const open = (protocol, account) => {
+  const backButton = (label, run) => {
     const back = element('button', '', 'sheet-back');
     back.type = 'button';
-    back.append(element('span', '‹'), document.createTextNode(' Accounts'));
-    back.addEventListener('click', again);
-    list.replaceChildren(back, element('h3', (account ? '' : 'Add ') + labels[protocol] + (account ? ' · ' + account.name : ' account')),
-      element('p', typeof SERVER_HELP === 'object' ? SERVER_HELP[protocol] : '', 'muted'), accountForm(protocol, account, again, {add: !account}));
-    list.querySelector('input')?.focus();
+    back.append(element('span', '‹'), document.createTextNode(' ' + label));
+    back.addEventListener('click', run);
+    return back;
+  };
+  const top = () => (list.closest('dialog') || list).scrollTo?.({top: 0});
+  const open = (protocol, account, {simple = false, preset = {}, guided = false} = {}) => {
+    list.replaceChildren(guided ? backButton('About ' + labels[protocol], () => guide(protocol)) : backButton('Accounts', again),
+      element('h3', (account ? '' : 'Add ') + labels[protocol] + (account ? ' · ' + account.name : ' account')),
+      element('p', typeof SERVER_HELP === 'object' ? SERVER_HELP[protocol] : '', 'muted'),
+      accountForm(protocol, account, () => again(), {add: !account, simple, preset}));
+    top();
+    if (typeof focusAccountForm === 'function') focusAccountForm(list); else list.querySelector('input')?.focus();
+  };
+  // Adding starts with a page about the service (account-setup.js), then its form, which fills itself in.
+  const guide = (protocol) => {
+    if (typeof serviceGuide !== 'function') { open(protocol, null); return; }
+    list.replaceChildren(backButton('Accounts', again), ...serviceGuide(protocol, {
+      start: () => open(protocol, null, {simple: true, guided: true}),
+      example: () => open(protocol, null, {simple: true, guided: true, preset: guideExample(protocol).preset}),
+      expert: () => open(protocol, null, {guided: true})}));
+    top();
+    list.querySelector('.service-guide-begin')?.focus({preventScroll: true});
   };
   for (const protocol of Object.keys(ACCOUNT_FIELDS)) {
     const group = element('div', '', 'account-group');
@@ -349,7 +366,7 @@ async function accountRows(list, again) {
     const add = element('button', mine.length ? 'Add another' : 'Add', mine.length ? '' : 'primary');
     add.type = 'button';
     add.setAttribute('aria-label', (mine.length ? 'Add another ' : 'Add ') + labels[protocol] + ' account');
-    add.addEventListener('click', () => open(protocol, null));
+    add.addEventListener('click', () => guide(protocol));
     head.append(badge, words, add);
     group.append(head);
     for (const account of mine) {
@@ -377,7 +394,7 @@ async function accountRows(list, again) {
 }
 
 /** An account's fields. [add] adds another account; with [account] it edits that one. [preset] pre-fills fields. */
-function accountForm(protocol, account, done, {add = false, preset = {}} = {}) {
+function accountForm(protocol, account, done, {add = false, preset = {}, simple = false} = {}) {
   const form = element('form', '', 'settings-section');
   const inputs = {};
   for (const [name, label, hint, secret, help] of ACCOUNT_FIELDS[protocol]) {
@@ -405,13 +422,19 @@ function accountForm(protocol, account, done, {add = false, preset = {}} = {}) {
   const save = element('button', 'Save', 'primary');
   form.append(element('p', 'Passwords are kept in a private file on your server and are never shown again.'
     + (protocol === 'irc' ? ' FluidMessages connects to IRC with TLS only.' : protocol === 'email' ? ' Email always uses TLS, never plain text.' : ''), 'muted'), save, status);
+  // A new account's form fills itself in as you type (account-setup.js). Editing one never changes what you saved.
+  const fresh = add && !account && typeof setUpAccountForm === 'function';
+  if (fresh) setUpAccountForm(form, inputs, protocol, {simple, preset});
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const fields = {};
+    if (form.beforeSave) form.beforeSave();
+    let fields = {};
     for (const [name, input] of Object.entries(inputs)) {
       if (input.type === 'checkbox') fields[name] = input.checked;
       else if (input.value.trim()) fields[name] = input.value.trim();
     }
+    // Spaces out, domains in lower case, channels with their #.
+    if (fresh && typeof tidyAccountFields === 'function') fields = tidyAccountFields(protocol, fields);
     const badPort = protocol === 'email' && Object.keys(EMAIL_PORTS).find((name) => fields[name] && !validPort(fields[name]));
     if (badPort) {
       status.textContent = 'Enter a ' + (badPort === 'imap_port' ? 'IMAP' : 'SMTP') + ' port from 1 to 65535.';
@@ -421,9 +444,15 @@ function accountForm(protocol, account, done, {add = false, preset = {}} = {}) {
     if (protocol === 'email') for (const name of Object.keys(EMAIL_PORTS)) if (fields[name]) fields[name] = Number(fields[name]);
     save.disabled = true;
     try {
-      await api('protocols/accounts', {protocol, fields, ...(account?.id ? {id: account.id} : add ? {add: true} : {})});
-      done();
-    } catch (error) { status.textContent = error.message; }
+      const before = new Set((typeof chatAccounts !== 'undefined' ? chatAccounts : []).map((item) => item.id));
+      const result = await api('protocols/accounts', {protocol, fields, ...(account?.id ? {id: account.id} : add ? {add: true} : {})});
+      // The account just added, for callers that carry on with it (Add server goes on to Browse).
+      const added = add && !account ? (result.accounts || []).filter((item) => item.protocol === protocol && item.id && !before.has(item.id)).pop() : null;
+      done(added || null);
+    } catch (error) {
+      status.textContent = error.message;
+      if (form.afterError) form.afterError();
+    }
     finally { save.disabled = false; }
   });
   return form;
@@ -432,9 +461,25 @@ function accountForm(protocol, account, done, {add = false, preset = {}} = {}) {
 /** The account form in a sheet, for the setup guide. Without [account] it adds one. */
 function editAccount(protocol, account, done) {
   const sheet = dialog(labels[protocol] + ' account');
-  sheet.append(accountForm(protocol, account, () => { sheet.close(); done(); }, {add: !account}));
+  const body = element('div', '', 'account-flow');
+  sheet.append(body);
+  const form = ({simple = false, preset = {}, guided = false} = {}) => {
+    sheet.back = guided ? () => guide() : null;
+    body.replaceChildren(accountForm(protocol, account, () => { sheet.close(); done(); }, {add: !account, simple, preset}));
+    sheet.scrollTo?.({top: 0});
+    if (typeof focusAccountForm === 'function') focusAccountForm(body); else body.querySelector('input')?.focus();
+  };
+  // A new account starts with a page about the service (account-setup.js); Back from its form returns there.
+  const guide = () => {
+    sheet.back = null;
+    body.replaceChildren(...serviceGuide(protocol, {
+      start: () => form({simple: true, guided: true}),
+      example: () => form({simple: true, guided: true, preset: guideExample(protocol).preset}),
+      expert: () => form({guided: true})}));
+    sheet.scrollTo?.({top: 0});
+  };
   sheet.showModal();
-  sheet.querySelector('input')?.focus();
+  if (!account && typeof serviceGuide === 'function') guide(); else form();
 }
 
 /**
@@ -1762,43 +1807,7 @@ function showCalls() {
 const MEETING_VIDEO_LABEL = 'Video call (sends a meeting link)';
 const MEETING_VOICE_LABEL = 'Voice call (sends a meeting link)';
 
-// Meeting-link calls: sent as plain text so every app can open them, shown here as a call card with Join.
-const MEETING = /^(?:📹|📞)?\s*Join my (video )?call: (https:\/\/[A-Za-z0-9.-]+(?::\d+)?\/[A-Za-z0-9_-]+)\s*$/;
-
-function meetingPreview(body) {
-  const match = MEETING.exec(body.trim());
-  return match ? (match[1] ? '📹 Video call · tap to join' : '📞 Call · tap to join') : null;
-}
-
-function meetingCard(message, bubble) {
-  const match = MEETING.exec((message.body || '').trim());
-  if (!match) return false;
-  const [, video, link] = match;
-  const card = element('div', '', 'meeting-card');
-  const icon = element('span', video ? '📹' : '📞', 'meeting-icon');
-  const text = element('span', '', 'meeting-text');
-  text.append(element('strong', video ? 'Video call' : 'Voice call'),
-    element('small', (message.type === 1 ? 'Started a call' : 'You started a call') + ' · ' + new URL(link).host));
-  const join = element('a', 'Join', 'meeting-join');
-  join.href = video ? link : link + '#config.startWithVideoMuted=true';
-  join.target = '_blank';
-  join.rel = 'noopener noreferrer';
-  card.append(icon, text, join);
-  bubble.replaceChildren(card);
-  return true;
-}
-
-// Starts a meeting-link call from the browser: the link goes to this chat, then the meeting opens.
-async function startMeeting(video) {
-  if (!active) return;
-  if (!callWayOn('meeting')) throw new Error('Meeting links are off. Turn them on in Settings → Calls.');
-  const room = 'FluidMessages-' + fluidCallId().slice(0, 16);
-  const link = 'https://meet.jit.si/' + room;
-  const body = (video ? '📹 Join my video call: ' : '📞 Join my call: ') + link;
-  window.open(video ? link : link + '#config.startWithVideoMuted=true', '_blank', 'noopener');
-  if (internet(threadProtocol(active))) await send(body, body, null);
-  else await queueSms(body, threadAddress(active), Date.now());
-}
+// Meeting-link calls (the call card, picking a service, and sending the link) are in meetings.js.
 
 (() => {
   const button = headButton('video', MEETING_VIDEO_LABEL);

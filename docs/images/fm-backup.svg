@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1112" viewBox="0 0 720 1112" role="img" aria-label="How backup works: photos, group chats, and themes from your phone are packed into a locked backup that only your password opens. You can keep it on your phone, on your own computer at home, or in a cloud you pick, like Google Drive. On your new phone, everything is back.">
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".12"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .st { opacity: 0; animation: up 12s ease-out infinite; }
+      @keyframes up { 0% { opacity: 0; transform: translateY(14px); } 5%, 93% { opacity: 1; transform: none; } 98%, 100% { opacity: 0; transform: none; } }
+      .drop { opacity: 0; animation: drop 12s ease-in infinite; }
+      @keyframes drop { 0% { opacity: 0; transform: translateY(0); } 1%, 7% { opacity: 1; } 9%, 100% { opacity: 0; transform: translateY(46px); } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .st { opacity: 1 !important; } }
+    </style>
+  </defs>
+  <rect width="720" height="1112" rx="32" fill="#eef7f1"/>
+  <text x="360" y="66" fill="#141820" font-size="40" font-weight="800" text-anchor="middle">Never lose a text again</text>
+  <text x="360" y="108" fill="#5b6070" font-size="24" text-anchor="middle">Phones break and get lost.</text>
+  <text x="360" y="140" fill="#5b6070" font-size="24" text-anchor="middle">Your messages don't have to.</text>
+  <g class="st">
+    <rect x="48" y="172" width="624" height="164" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <rect x="72" y="194" width="64" height="120" rx="13" fill="#16161a"/><rect x="77" y="200" width="54" height="108" rx="8" fill="#fff"/><rect x="96" y="212" width="30" height="14" rx="7" fill="#1fa84a"/><rect x="82" y="236" width="34" height="14" rx="7" fill="#e9e9ee"/><rect x="102" y="260" width="24" height="14" rx="7" fill="#1fa84a"/><rect x="82" y="284" width="28" height="14" rx="7" fill="#e9e9ee"/>
+    <text x="160" y="232" fill="#141820" font-size="28" font-weight="800">Your phone</text>
+    <rect x="160" y="254" width="146" height="48" rx="24" fill="#fde6ec"/><text x="233" y="286" fill="#141820" font-size="22" text-anchor="middle">Photos 📷</text>
+    <rect x="316" y="254" width="164" height="48" rx="24" fill="#e3effb"/><text x="398" y="286" fill="#141820" font-size="22" text-anchor="middle">Group chats</text>
+    <rect x="490" y="254" width="158" height="48" rx="24" fill="#ece7fb"/><text x="569" y="286" fill="#141820" font-size="22" text-anchor="middle">Themes 🎨</text>
+  </g>
+  <path d="M360 346 v36 m-12 -12 l12 14 l12 -14" fill="none" stroke="#1b8f40" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>
+  <rect class="drop" style="animation-delay:1.00s" x="296" y="346" width="30" height="16" rx="8" fill="#e0567a"/><rect class="drop" style="animation-delay:1.18s" x="392" y="346" width="30" height="16" rx="8" fill="#1f7fd6"/><rect class="drop" style="animation-delay:1.36s" x="424" y="346" width="30" height="16" rx="8" fill="#6c4cdc"/>
+  <g class="st" style="animation-delay:1.6s">
+    <rect x="48" y="404" width="624" height="144" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <path d="M84 424 h52 l24 24 v80 h-76 z" fill="#e7f6ec" stroke="#1b8f40" stroke-width="3" stroke-linejoin="round"/><path d="M136 424 v24 h24" fill="none" stroke="#1b8f40" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M110 478 v-10 a12 12 0 0 1 24 0 v10" fill="none" stroke="#1b8f40" stroke-width="5"/><rect x="100" y="476" width="44" height="36" rx="8" fill="#1fa84a"/><circle cx="122" cy="494" r="5" fill="#fff"/>
+    <text x="188" y="468" fill="#141820" font-size="28" font-weight="800">Locked backup</text>
+    <text x="188" y="506" fill="#5b6070" font-size="24">Only your password opens it</text>
+  </g>
+  <path d="M360 558 v36 m-12 -12 l12 14 l12 -14" fill="none" stroke="#1b8f40" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>
+  <rect class="drop" style="animation-delay:2.60s" x="296" y="558" width="30" height="16" rx="8" fill="#e0567a"/><rect class="drop" style="animation-delay:2.78s" x="392" y="558" width="30" height="16" rx="8" fill="#1f7fd6"/><rect class="drop" style="animation-delay:2.96s" x="424" y="558" width="30" height="16" rx="8" fill="#6c4cdc"/>
+  <g class="st" style="animation-delay:3.2s">
+    <rect x="48" y="616" width="624" height="68" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <text x="92" y="660" font-size="28" text-anchor="middle">📱</text><text x="128" y="659" fill="#141820" font-size="24">On your phone</text>
+  </g>
+  <g class="st" style="animation-delay:3.7s">
+    <rect x="48" y="696" width="624" height="68" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <text x="92" y="740" font-size="28" text-anchor="middle">🏠</text><text x="128" y="739" fill="#141820" font-size="24">Your own computer at home</text>
+  </g>
+  <g class="st" style="animation-delay:4.2s">
+    <rect x="48" y="776" width="624" height="68" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <text x="92" y="820" font-size="28" text-anchor="middle">☁️</text><text x="128" y="819" fill="#141820" font-size="24">A cloud you pick, like Google Drive</text>
+  </g>
+  <path d="M360 854 v36 m-12 -12 l12 14 l12 -14" fill="none" stroke="#1b8f40" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>
+  <rect class="drop" style="animation-delay:5.00s" x="296" y="854" width="30" height="16" rx="8" fill="#e0567a"/><rect class="drop" style="animation-delay:5.18s" x="392" y="854" width="30" height="16" rx="8" fill="#1f7fd6"/><rect class="drop" style="animation-delay:5.36s" x="424" y="854" width="30" height="16" rx="8" fill="#6c4cdc"/>
+  <g class="st" style="animation-delay:5.6s">
+    <rect x="48" y="912" width="624" height="164" rx="26" fill="#fff" filter="url(#shadow)"/>
+    <rect x="72" y="934" width="64" height="120" rx="13" fill="#16161a"/><rect x="77" y="940" width="54" height="108" rx="8" fill="#fff"/><rect x="96" y="952" width="30" height="14" rx="7" fill="#1fa84a"/><rect x="82" y="976" width="34" height="14" rx="7" fill="#e9e9ee"/><rect x="102" y="1000" width="24" height="14" rx="7" fill="#1fa84a"/><rect x="82" y="1024" width="28" height="14" rx="7" fill="#e9e9ee"/>
+    <text x="160" y="982" fill="#141820" font-size="28" font-weight="800">Your new phone</text>
+    <text x="160" y="1026" fill="#1b8f40" font-size="26" font-weight="800">Everything is back ✓</text>
+  </g>
+
+</svg>

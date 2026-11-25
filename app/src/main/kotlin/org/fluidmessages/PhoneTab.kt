@@ -922,8 +922,9 @@ private fun PersonPage(prefs: SharedPreferences, sample: Boolean, palette: Palet
                     (if (Calling.allowed(prefs, Calling.Method.MEETING) && (person.numbers.isNotEmpty() || person.accounts.isNotEmpty())) {
                         // Every way to reach them, so the link can go wherever you choose.
                         val addresses = (person.numbers + person.accounts.map { it.address }).distinct()
-                        listOf(ReachOption(ReachOption.CALL, "Meeting link", "Jitsi Meet", Runnable { actions.meeting(addresses, person.name, false) }),
-                            ReachOption(ReachOption.VIDEO, "Meeting link", "Jitsi Meet", Runnable { actions.meeting(addresses, person.name, true) }))
+                        val services = MeetingPages.summary(prefs)
+                        listOf(ReachOption(ReachOption.CALL, "Meeting link", services, Runnable { actions.meeting(addresses, person.name, false) }),
+                            ReachOption(ReachOption.VIDEO, "Meeting link", services, Runnable { actions.meeting(addresses, person.name, true) }))
                     } else emptyList()) +
                     listOfNotNull(matrix?.takeIf { Calling.allowed(prefs, Calling.Method.MATRIX) }).flatMap { account -> listOf(
                         ReachOption(ReachOption.CALL, "Matrix", account.target, Runnable { actions.internetCall(account.address, person.name, false, "Matrix") }),

@@ -2,11 +2,16 @@
 // Well-known public servers offered in Add server, one list per service. Keep it in step with the phone's
 // ServerDirectory.kt. Only add servers that are public and long-running. Picking one only fills in the sign-in form;
 // nothing connects until Save. IRC entries are TLS hosts; FluidMessages never connects to IRC without TLS.
+// popular: a few real, long-lived public channels with a plain description, shown as "Popular here" in Browse until
+// the network's own list arrives.
 
 const SERVER_DIRECTORY = {
   irc: [
-    {name: 'Libera.Chat', host: 'irc.libera.chat', port: 6697, tls: true, about: 'Free and open-source software projects and their communities'},
-    {name: 'OFTC', host: 'irc.oftc.net', port: 6697, tls: true, about: 'Debian, Tor, and other open-source projects'},
+    {name: 'Libera.Chat', host: 'irc.libera.chat', port: 6697, tls: true, about: 'Free and open-source software projects and their communities',
+      popular: [['#libera', 'Help with Libera.Chat itself'], ['#linux', 'Linux questions and chat'], ['#python', 'The Python programming language'],
+        ['#ubuntu', 'Help with Ubuntu'], ['#archlinux', 'Help with Arch Linux']]},
+    {name: 'OFTC', host: 'irc.oftc.net', port: 6697, tls: true, about: 'Debian, Tor, and other open-source projects',
+      popular: [['#oftc', 'Help with OFTC itself'], ['#debian', 'Help with Debian'], ['#tor', 'The Tor privacy project']]},
     {name: 'EFnet', host: 'irc.efnet.org', port: 6697, tls: true, about: 'One of the oldest IRC networks, with general chat of every kind'},
     {name: 'IRCnet', host: 'ssl.ircnet.ovh', port: 6697, tls: true, about: 'A long-running network, popular in Europe'},
     {name: 'Undernet', host: 'irc.undernet.org', port: 6697, tls: true, about: 'A large general-purpose network with help and social channels'},

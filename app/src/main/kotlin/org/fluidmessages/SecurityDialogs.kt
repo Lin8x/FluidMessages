@@ -48,7 +48,7 @@ import org.json.JSONObject
 
 /** Dialogs for keys, codes, timers, and encryption, in the app's own theme. Each one is opened from Java. */
 object SecurityDialogs {
-    private fun present(activity: ComponentActivity, prefs: SharedPreferences, content: @Composable (dismiss: () -> Unit) -> Unit) {
+    internal fun present(activity: ComponentActivity, prefs: SharedPreferences, content: @Composable (dismiss: () -> Unit) -> Unit) {
         val host = activity.findViewById<ViewGroup>(android.R.id.content)
         val view = ComposeView(activity)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)

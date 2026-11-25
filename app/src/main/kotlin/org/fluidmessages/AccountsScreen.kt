@@ -3,6 +3,8 @@ package org.fluidmessages
 import android.content.SharedPreferences
 import android.widget.LinearLayout
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
@@ -40,8 +42,8 @@ private val forms = mapOf(
         Field("poll_minutes", "Check for mail every … minutes", "1, 5, 15, 30, or 60", number = true, optional = true),
     ),
     MessageProtocol.MATRIX to listOf(
-        Field("homeserver", "Homeserver", "https://matrix.org"),
         Field("user_id", "Matrix ID", "@you:matrix.org"),
+        Field("homeserver", "Homeserver", "https://matrix.org"),
         Field("password", "Password", "Used once to sign in; only a session token is saved", secret = true, optional = true),
         Field("access_token", "Or an access token", "For advanced setups", secret = true, optional = true),
     ),
@@ -51,13 +53,13 @@ private val forms = mapOf(
         Field("host", "Server host", "Leave blank to look it up", optional = true),
     ),
     MessageProtocol.IRC to listOf(
-        Field("server", "Server", "irc.libera.chat"),
+        Field("server", "Network", "irc.libera.chat"),
         Field("port", "TLS port", "6697", number = true, optional = true),
         Field("nick", "Nickname"),
         Field("sasl_user", "SASL account", "Leave blank to use your nickname", optional = true),
         Field("sasl_password", "SASL password", secret = true, optional = true),
         Field("nickserv_password", "NickServ password", "Identifies on connect when SASL isn’t used", secret = true, optional = true),
-        Field("channels", "Channels", "#example, #another", optional = true),
+        Field("channels", "Channels to join", "#example, #another", optional = true, help = "You can also browse and join channels later."),
     ),
 )
 
@@ -94,6 +96,8 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
     var accounts by remember { mutableStateOf<JSONArray?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf(start) }
+    // The account whose guide page shows before its form: a first account on a service, or one from Add server.
+    var guided by remember { mutableStateOf(start) }
     fun load() = scope.launch {
         error = null
         runCatching { withContext(Dispatchers.IO) { GatewayClient.accounts(prefs) } }
@@ -106,9 +110,20 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
     }.orEmpty()
     val current = editing
     if (current != null) {
-        AccountForm(prefs, current, { if (done != null && current == start) done.run() else editing = null }) { updated ->
+        // Opened from Add server, closing goes back there; from this list, back to the list.
+        val close: () -> Unit = { if (done != null && start != null) done.run() else editing = null }
+        if (guided == current) {
+            fun form(preset: Map<String, String>) {
+                val next = current.copy(preset = current.preset + preset)
+                guided = null
+                editing = next
+            }
+            AccountGuide(current.protocol, pickedServer(current), ::form, { form(emptyMap()) }, close)
+            return
+        }
+        AccountForm(prefs, current, close) { updated ->
             accounts = updated
-            if (done != null && current == start) done.run() else editing = null
+            close()
         }
         return
     }
@@ -147,7 +162,12 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
                 if (shown == 0) Text(if (accounts == null) "Checking…" else "Not set up", Modifier.padding(horizontal = 15.dp, vertical = 6.dp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (shown > 0) HorizontalDivider(Modifier.padding(start = 15.dp))
-                TextButton(enabled = accounts != null, onClick = { editing = Editing(protocol, null, shown > 0) },
+                TextButton(enabled = accounts != null, onClick = {
+                    val next = Editing(protocol, null, shown > 0)
+                    // A first account on a service starts with its guide; another one goes straight to the form.
+                    if (shown == 0) guided = next
+                    editing = next
+                },
                     modifier = Modifier.padding(horizontal = 6.dp)) {
                     Text(if (shown > 0) "Add another" else "Add")
                 }
@@ -159,6 +179,37 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
         }
     }
 }
+
+/** The server picked in Add server, by name, for the guide page; "" when none was. */
+private fun pickedServer(editing: Editing): String =
+    editing.preset["server"]?.let { ServerDirectory.ircName(it) ?: it }
+        ?: editing.preset["homeserver"]?.let { address -> ServerDirectory.matrix.firstOrNull { it.address == address }?.name ?: address }
+        ?: editing.preset[ServerDirectory.XMPP_DOMAIN].orEmpty()
+
+/** A nickname to offer in the IRC form, from an account this phone already has (its Matrix, XMPP, or email name). */
+private fun suggestedNick(context: android.content.Context): String {
+    for ((protocol, key) in listOf(MessageProtocol.MATRIX to "user_id", MessageProtocol.XMPP to "jid", MessageProtocol.EMAIL to "address")) {
+        val nick = AccountSetup.nick(DirectProtocols.account(context, protocol)?.optString(key).orEmpty())
+        if (nick.length >= 2) return nick
+    }
+    return ""
+}
+
+/**
+ * Where a homeserver says it really lives (https://example.org/.well-known/matrix/client), for an address that was
+ * guessed from a Matrix ID. Any problem keeps the guess.
+ */
+private fun discoverHomeserver(guess: String): String = runCatching {
+    val connection = java.net.URL("$guess/.well-known/matrix/client").openConnection() as javax.net.ssl.HttpsURLConnection
+    try {
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
+        if (connection.responseCode != 200) return@runCatching guess
+        val reply = connection.inputStream.use { String(it.readNBytes(64 * 1024)) }
+        val base = JSONObject(reply).optJSONObject("m.homeserver")?.optString("base_url").orEmpty().trimEnd('/')
+        if (Regex("https://[A-Za-z0-9.-]+(:\\d{1,5})?(/[^\\s]*)?").matches(base)) base else guess
+    } finally { connection.disconnect() }
+}.getOrDefault(guess)
 
 private fun summary(protocol: MessageProtocol, entry: JSONObject): String {
     val fields = entry.optJSONObject("fields") ?: return ""
@@ -191,11 +242,11 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
     // Add server's pick fills in the form wherever it connects; an XMPP server leaves only the name to type.
     val xmppDomain = editing.preset[ServerDirectory.XMPP_DOMAIN]
     val stored = if (adding) JSONObject().apply { for ((key, value) in editing.preset) put(key, value) }
-    else if (onPhone) JSONObject().apply {
-        direct?.let { account -> for (key in account.keys()) {
+    else if (onPhone && direct != null) JSONObject().apply {
+        for (key in direct.keys()) {
             val secret = forms.getValue(protocol).any { it.key == key && it.secret }
-            put(key, if (secret) JSONObject().put("set", true) else account.get(key))
-        } }
+            put(key, if (secret) JSONObject().put("set", true) else direct.get(key))
+        }
     } else existing?.optJSONObject("fields") ?: JSONObject().apply { for ((key, value) in editing.preset) put(key, value) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -212,6 +263,34 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
             }
         }
     }
+    // What FluidMessages filled in by itself. Typing more only replaces these, never something you typed yourself.
+    val auto = remember(onPhone) { mutableStateMapOf<String, String>() }
+    fun fill(found: Map<String, String>) {
+        for ((key, was) in auto.toMap()) if (key !in found) {
+            if (values[key] == was) values[key] = forms.getValue(protocol).first { it.key == key }.default
+            auto.remove(key)
+        }
+        for ((key, value) in found) {
+            val now = values[key].orEmpty()
+            if (now.isBlank() || now == auto[key] || now == forms.getValue(protocol).first { it.key == key }.default) {
+                values[key] = value
+                auto[key] = value
+            }
+        }
+    }
+    fun typed(key: String, text: String) {
+        val value = AccountSetup.tidy(key, text)
+        values[key] = value
+        if (protocol == MessageProtocol.EMAIL && key == "address") fill(EmailProviders.detect(value)?.fields.orEmpty())
+        if (protocol == MessageProtocol.MATRIX && key == "user_id") fill(AccountSetup.matrixHomeserver(value)?.let { mapOf("homeserver" to it) }.orEmpty())
+    }
+    val links = androidx.compose.ui.platform.LocalUriHandler.current
+    // Email: a known provider's settings stay tucked away under "Show details" while they're the ones in use.
+    val mail = if (protocol == MessageProtocol.EMAIL) EmailProviders.detect(values["address"].orEmpty()) else null
+    val mailApplied = mail != null && !mail.blocked && mail.fields.all { (key, value) -> values[key] == value }
+    var details by remember { mutableStateOf(false) }
+    val tucked = if (mailApplied && mail?.guess == false && !details) setOf("imap_host", EmailPorts.IMAP_KEY, "smtp_host", EmailPorts.SMTP_KEY, "imap_user") else emptySet()
+    val nickIdea = remember { if (protocol == MessageProtocol.IRC && existing == null && direct == null) suggestedNick(context) else "" }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text(if (adding) "Add a ${protocol.label} account" else existing?.optString("name")?.takeIf { it.isNotEmpty() } ?: protocol.label,
             style = MaterialTheme.typography.headlineSmall) }
@@ -258,12 +337,33 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
         // The battery notice opens in place, under the choice, instead of in a pop-up.
         if (asking) item { BatteryConsent(protocol, { asking = false }) { consent = true; onPhone = true; asking = false } }
         if (readOnly) item { Text("This account is set in Docker Compose. Change it in your compose environment.", color = MaterialTheme.colorScheme.primary) }
-        for (field in forms.getValue(protocol)) item {
+        // IRC: well-known networks to pick from, unless Add server already picked one.
+        if (protocol == MessageProtocol.IRC && existing == null && direct == null && "server" !in editing.preset) item {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Pick a network, or type another one below", style = MaterialTheme.typography.labelLarge)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (network in ServerDirectory.irc.filter { it.tls }.take(6)) {
+                        FilterChip(selected = values["server"].equals(network.address, ignoreCase = true), enabled = !busy,
+                            onClick = { values["server"] = network.address; values["port"] = network.port.toString() },
+                            label = { Text(network.name) })
+                    }
+                }
+            }
+        }
+        for (field in forms.getValue(protocol)) {
+          if (field.key !in tucked) item(field.key) {
             val isSet = stored.optJSONObject(field.key)?.optBoolean("set") == true
-            OutlinedTextField(values[field.key].orEmpty(), { values[field.key] = it }, Modifier.fillMaxWidth(),
+            val value = values[field.key].orEmpty()
+            val help = when {
+                field.key == "homeserver" && value.isNotBlank() && value == auto["homeserver"] -> "Filled in from your Matrix ID. Change it if your server uses another address."
+                field.key == "jid" && xmppDomain == null && AccountSetup.xmppServer(value) != null -> "We’ll find the server for ${AccountSetup.xmppServer(value)} by itself."
+                field.key == "imap_password" && mail?.appPassword == true -> "Use the app password from ${mail.provider}, not your normal password."
+                else -> field.help
+            }
+            OutlinedTextField(value, { typed(field.key, it) }, Modifier.fillMaxWidth(),
                 enabled = !readOnly && !busy, singleLine = true, label = { Text(field.label + if (field.optional) " (optional)" else "") },
                 placeholder = { Text(if (field.secret && isSet) "Saved · leave blank to keep" else if (field.key == "jid" && xmppDomain != null) "you" else field.hint) },
-                supportingText = if (field.help.isNotEmpty()) ({ Text(field.help) }) else null,
+                supportingText = if (help.isNotEmpty()) ({ Text(help) }) else null,
                 suffix = if (field.key == "jid" && xmppDomain != null && !values[field.key].orEmpty().contains('@')) ({ Text("@$xmppDomain") }) else null,
                 visualTransformation = if (field.secret) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
                 keyboardOptions = KeyboardOptions(keyboardType = when {
@@ -273,6 +373,29 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
                     field.key.contains("host") || field.key == "homeserver" || field.key == "server" -> KeyboardType.Uri
                     else -> KeyboardType.Text
                 }))
+          }
+          // Right under the email address: what was set up, in one small card.
+          if (field.key == "address" && mail != null && !readOnly) item("mail-setup") {
+              Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.large) {
+                  Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                      Text(if (mailApplied || mail.blocked) mail.title else "These aren’t the usual settings for ${mail.provider}",
+                          style = MaterialTheme.typography.titleMedium)
+                      if (mail.note.isNotEmpty()) Text(mail.note)
+                      if (mailApplied && details) Text(mail.summary, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                      Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                          if (mail.helpUrl.isNotEmpty()) AppButton(onClick = { runCatching { links.openUri(mail.helpUrl) } }) { Text(mail.helpLabel) }
+                          if (mailApplied && !mail.guess) TextButton(onClick = { details = !details }) { Text(if (details) "Hide details" else "Show details") }
+                          if (!mailApplied && !mail.blocked) TextButton(enabled = !busy, onClick = {
+                              for ((key, value) in mail.fields) { values[key] = value; auto[key] = value }
+                          }) { Text("Use the usual settings") }
+                      }
+                  }
+              }
+          }
+          // A nickname idea from an account this phone already has.
+          if (field.key == "nick" && nickIdea.isNotEmpty() && values["nick"].isNullOrBlank()) item("nick-idea") {
+              TextButton(enabled = !busy, onClick = { values["nick"] = nickIdea }) { Text("Use “$nickIdea” as my nickname") }
+          }
         }
         error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
         item {
@@ -300,14 +423,20 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
                                         EmailPorts.IMAP_KEY, EmailPorts.SMTP_KEY -> fields.put(key, EmailPorts.parse(value)
                                             ?: throw IllegalArgumentException("Enter ${if (key == EmailPorts.IMAP_KEY) "an IMAP" else "an SMTP"} port from 1 to 65535."))
                                         "port", "poll_minutes" -> fields.put(key, value.trim().toInt())
-                                        "channels" -> fields.put(key, JSONArray(value.split(",").map { it.trim() }.filter { it.isNotEmpty() }))
-                                        "jid" -> fields.put(key, ServerDirectory.xmppAddress(value, xmppDomain))
-                                        else -> fields.put(key, value.trim())
+                                        "channels" -> fields.put(key, JSONArray(AccountSetup.channels(value)))
+                                        "jid" -> fields.put(key, AccountSetup.lowerDomain(ServerDirectory.xmppAddress(value, xmppDomain)))
+                                        "password", "imap_password", "sasl_password", "nickserv_password", "access_token" -> fields.put(key, value.trim())
+                                        else -> fields.put(key, AccountSetup.saved(key, value))
                                     }
                                 }
+                                // A homeserver guessed from the Matrix ID may live at another address; ask the server itself.
+                                if (protocol == MessageProtocol.MATRIX && fields.optString("homeserver").isNotEmpty()
+                                    && values["homeserver"] == auto["homeserver"] && fields.optString("homeserver") == "https://" + fields.optString("user_id").substringAfter(':')) {
+                                    fields.put("homeserver", discoverHomeserver(fields.optString("homeserver")))
+                                }
                                 if (protocol == MessageProtocol.MATRIX && values["password"].orEmpty().isNotBlank()) {
-                                    fields.put("access_token", GatewayClient.matrixLogin(values["homeserver"].orEmpty().trim(),
-                                        values["user_id"].orEmpty().trim(), values["password"].orEmpty(),
+                                    fields.put("access_token", GatewayClient.matrixLogin(fields.optString("homeserver"),
+                                        fields.optString("user_id"), values["password"].orEmpty(),
                                         if (onPhone) "FluidMessages on this phone" else "FluidMessages Web"))
                                 }
                                 if (onPhone) {
@@ -339,7 +468,10 @@ private fun checkDirect(protocol: MessageProtocol, fields: JSONObject) {
         MessageProtocol.XMPP -> listOf("jid", "password")
         else -> listOf("server", "nick")
     }
-    for (key in required) if (fields.optString(key).isBlank()) throw IllegalArgumentException("Enter " + key.replace("_", " "))
+    for (key in required) if (fields.optString(key).isBlank()) {
+        if (key == "access_token") throw IllegalArgumentException("Type your Matrix password to sign in.")
+        throw IllegalArgumentException("Fill in “" + (forms.getValue(protocol).firstOrNull { it.key == key }?.label ?: key.replace("_", " ")) + "” first.")
+    }
     if (protocol == MessageProtocol.MATRIX && !fields.getString("homeserver").startsWith("https://"))
         throw IllegalArgumentException("Enter an https:// homeserver")
     if (protocol == MessageProtocol.IRC && fields.optInt("port", 6697) in listOf(6667, 194))

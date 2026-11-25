@@ -700,13 +700,13 @@ function movesShowcase(flow) {
 // ---- Services and calls ----
 
 const SERVICE_INFO = {  // Same words and locks as the phone's Chat services page (OnboardingShowcase.kt).
-  matrix: {line: 'An open chat network, like email for instant messages. Talk to anyone on any Matrix server, including people using Element.',
+  matrix: {line: 'Modern group chat that no single company owns. Used by communities, schools, and workplaces.',
     tone: 'yellow', lock: 'Encrypted in transit'},
-  xmpp: {line: 'A long-running open chat standard, also called Jabber. Good for friends on Conversations, Monal, or their own server.',
+  xmpp: {line: 'Simple, private one-to-one and group chat. It works like email: pick any provider and talk to people on all the others.',
     tone: 'yellow', lock: 'Encrypted in transit'},
-  email: {line: 'Chat with anyone who has an email address. Only the conversations you choose show up, never your whole mailbox.',
+  email: {line: 'Your normal email, shown as chats. Only the conversations you choose show up.',
     tone: 'yellow', lock: 'Encrypted in transit'},
-  irc: {line: 'Classic chat rooms, called channels, used by many open-source projects and communities. Connects over TLS.',
+  irc: {line: 'Big public chat rooms for hobbies and open-source projects. No sign-up needed: just pick a nickname.',
     tone: 'yellow', lock: 'Encrypted in transit'},
 };
 
@@ -804,7 +804,7 @@ function callServices() {
         note: secure ? '' : 'Calls need FluidMessages Web opened over HTTPS, or at localhost on the computer it runs on.',
         action: matrix ? null : ['Add Matrix', () => editAccount('matrix', null, draw), true, 'Add Matrix account']}),
       serviceCard({badge: '📹', badgeClass: 'g-badge-meet', name: 'Meeting links',
-        line: 'A Jitsi Meet link anyone can open to join, from any app or browser, texts included. The meeting server can access the call.',
+        line: 'A link anyone can open to join, from any app or browser, texts included. Pick Zoom, Jitsi Meet, Google Meet, or Teams each time you send one. The meeting service can access the call.',
         tone: 'yellow', lock: 'Encrypted in transit', status: '✓ Ready. Use the camera button at the top of a chat.'}),
       serviceCard({badge: 'X', badgeClass: 'account-badge p-xmpp', name: 'XMPP calls',
         line: 'Voice and video with apps like Conversations and Dino ring in FluidMessages for Android. Here, send a meeting link instead.',
@@ -1280,7 +1280,10 @@ function notifyGuideCard() {
   row.append(allow, test, chime);
   const said = element('p', '', 'hint');
   said.setAttribute('role', 'status');
-  const words = {granted: 'Allowed', denied: 'Blocked', default: 'Not asked yet', insecure: 'Needs HTTPS', unsupported: 'Not available in this browser'};
+  const words = {granted: 'Allowed', denied: 'Blocked', default: 'Not yet', insecure: 'Needs HTTPS', unsupported: 'Not available in this browser'};
+  // Why it asks, in one plain sentence, before the button that asks.
+  const why = element('p', 'Your browser asks you before any site can show notifications. Allow it, and FluidMessages can tell you about a new '
+    + 'message while you’re doing something else. You can skip this and turn it on later.', 'g-notify-why');
   const permission = () => (typeof notifyPermission === 'function' ? notifyPermission() : 'unsupported');
   const draw = () => {
     const now = permission();
@@ -1309,7 +1312,7 @@ function notifyGuideCard() {
   });
   chime.addEventListener('click', () => { if (typeof playTone === 'function') playTone(true); });
   draw();
-  card.append(state, row, said);
+  card.append(why, state, row, said);
   return card;
 }
 

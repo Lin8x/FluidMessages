@@ -13,7 +13,7 @@ final class Calling {
         MATRIX("Matrix", "Voice and video with Matrix contacts. End-to-end encrypted."),
         XMPP("XMPP", "Voice and video with XMPP contacts, such as people using Conversations. End-to-end encrypted."),
         SIP("SIP", "Internet phone service from a SIP provider, including regular phone numbers"),
-        MEETING("Meeting links", "A Jitsi Meet link anyone can tap to join, on any app. Free and open source.");
+        MEETING("Meeting links", "A link anyone can tap to join, on any app. Pick Zoom, Jitsi Meet, Google Meet, or Teams when you send it.");
 
         final String label;
         final String detail;
