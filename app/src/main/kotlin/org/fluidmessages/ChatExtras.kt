@@ -75,7 +75,8 @@ internal object PhoneChat {
         return JSONObject().put("notice", result.optString("notice")).apply { if (open != null) put("open", open.optString("address")) }
     }
 
-    // Keep joined
+    // Keep joined, shown as "Rejoin automatically": on, a channel joins as soon as the connection opens; off, only
+    // when you open it. Together with the server's Reconnect automatically, nothing joins on its own when both are off.
 
     @JvmStatic
     fun keepJoined(prefs: SharedPreferences, link: JSONObject): Boolean {
@@ -119,35 +120,55 @@ internal object PhoneChat {
     private fun ircAccountId(account: JSONObject?) =
         if (account == null) "" else "irc:" + account.optString("nick") + "@" + account.optString("server").lowercase(Locale.ROOT)
 
+    /** The account id of this phone's own connection on [format] ("irc:kit@irc.libera.chat"), or "". */
+    @JvmStatic
+    fun directAccountId(context: Context, format: MessageProtocol): String {
+        val account = DirectProtocols.account(context, format) ?: return ""
+        if (format == MessageProtocol.IRC) return ircAccountId(account)
+        val service = format.name.lowercase(Locale.ROOT)
+        val fields = account.keys().asSequence().associateWith { account.optString(it) }
+        val identity = AccountKeys.identity(service, fields)
+        return if (identity.isEmpty()) "" else "$service:$identity"
+    }
+
+    private fun serverFormat(account: String) = MessageProtocol.parse(AccountKeys.service(account))
+
     /** What the bar says for a network's account (a FluidMessages Web or direct connection), or "" while connected. */
     @JvmStatic
     fun connectionText(context: Context, account: String): String {
         val prefs = DirectProtocols.prefs(context)
         val web = runCatching { JSONObject(prefs.getString("gatewayConnections", "{}") ?: "{}").optJSONObject(account) }.getOrNull()
-        val direct = DirectProtocols.account(context, MessageProtocol.IRC)
-        val status = web ?: if (account.isNotEmpty() && account == ircAccountId(direct)) DirectProtocols.status(prefs, MessageProtocol.IRC) else null
+        val format = serverFormat(account)
+        val status = web ?: if (account.isNotEmpty() && account == directAccountId(context, format)) DirectProtocols.status(prefs, format) else null
         return status?.let(::words).orEmpty()
     }
 
-    private fun words(status: JSONObject): String {
-        val network = status.optString("network").ifEmpty { "the network" }
+    /** The bar's words: why it isn't connected (the network's own reason, in plain words) and what happens next. */
+    @JvmStatic
+    fun words(status: JSONObject): String {
+        val host = status.optString("network")
+        val network = (ServerDirectory.ircName(host) ?: host).ifEmpty { "the network" }
         val retry = status.optLong("retry_at")
         val at = if (retry > 0) DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(retry)) else ""
-        return when (status.optString("state")) {
-            "reconnecting" -> "Disconnected from $network" + (if (at.isEmpty()) "" else " · Trying again at $at")
+        val why = status.optString("error").trim().let { if (it.isEmpty()) "" else " · $it" }
+        val state = status.optString("state")
+        if (status.optBoolean("manual") && state != "connected" && state != "connecting")
+            return "Not connected to $network · Reconnect automatically is off$why"
+        return when (state) {
+            "reconnecting" -> "Disconnected from $network$why" + (if (at.isEmpty()) "" else " · Trying again at $at")
             "paused" -> "Disconnected from $network · Waiting until $at to avoid reconnecting too often"
-            "disconnected" -> "Disconnected from $network · Stopped after ${IrcRules.RECONNECTS_PER_HOUR} tries this hour"
+            "disconnected" -> "Disconnected from $network" + why.ifEmpty { " · Stopped after ${IrcRules.RECONNECTS_PER_HOUR} tries this hour" }
             "offline" -> "Disconnected from $network · Waiting for a network"
             else -> ""
         }
     }
 
-    /** The account a chat goes through, for its bar: FluidMessages Web's account id, or the phone's IRC account. */
+    /** The account a chat goes through, for its bar: FluidMessages Web's account id, or the phone's own account. */
     @JvmStatic
     fun chatAccount(context: Context, conversation: String, format: MessageProtocol): String {
-        if (format != MessageProtocol.IRC) return ""
+        if (format != MessageProtocol.IRC && format != MessageProtocol.MATRIX && format != MessageProtocol.XMPP) return ""
         val prefs = DirectProtocols.prefs(context)
-        if (DirectProtocols.route(prefs, conversation, format) != null) return ircAccountId(DirectProtocols.account(context, format))
+        if (DirectProtocols.route(prefs, conversation, format) != null) return directAccountId(context, format)
         return GatewayClient.routeOf(prefs, conversation, format)?.optString("account").orEmpty()
     }
 
@@ -156,7 +177,63 @@ internal object PhoneChat {
         val prefs = DirectProtocols.prefs(context)
         val connections = runCatching { JSONObject(prefs.getString("gatewayConnections", "{}") ?: "{}") }.getOrNull()
         if (connections?.has(account) == true) Thread({ runCatching { GatewayClient.reconnect(prefs, account) } }, "fluid-reconnect").start()
-        else DirectProtocols.reconnect(context, MessageProtocol.IRC)
+        else DirectProtocols.reconnect(context, serverFormat(account))
+    }
+
+    /** Reconnect automatically for a server: this phone's own connection, or FluidMessages Web's (on by default). */
+    @JvmStatic
+    fun autoReconnect(context: Context, account: String): Boolean {
+        val prefs = DirectProtocols.prefs(context)
+        val format = serverFormat(account)
+        if (account == directAccountId(context, format)) return DirectProtocols.autoReconnect(prefs, format)
+        val accounts = runCatching { JSONArray(prefs.getString("gatewayAccounts", "[]") ?: "[]") }.getOrNull() ?: return true
+        for (index in 0 until accounts.length()) {
+            val item = accounts.optJSONObject(index) ?: continue
+            if (item.optString("id") == account) return item.optBoolean("reconnect", true)
+        }
+        return true
+    }
+
+    /** Turns Reconnect automatically on or off for a server. Call off the main thread. */
+    @JvmStatic
+    fun setAutoReconnect(context: Context, account: String, on: Boolean) {
+        val prefs = DirectProtocols.prefs(context)
+        val format = serverFormat(account)
+        if (account == directAccountId(context, format)) { DirectProtocols.setAutoReconnect(context, format, on); return }
+        // Shown at once; FluidMessages Web saves it and connects again when it's turned back on.
+        runCatching {
+            val accounts = JSONArray(prefs.getString("gatewayAccounts", "[]") ?: "[]")
+            for (index in 0 until accounts.length()) accounts.optJSONObject(index)?.takeIf { it.optString("id") == account }?.put("reconnect", on)
+            prefs.edit().putString("gatewayAccounts", accounts.toString()).apply()
+        }
+        runCatching { GatewayClient.autoReconnect(prefs, account, on) }
+    }
+
+    /**
+     * The inbox's connection mark for each IRC, Matrix, and XMPP chat: "connected", "connecting", "disconnected", or ""
+     * (no mark: not a server chat, or nothing known). Built once per inbox load.
+     */
+    internal class ConnectionStates(private val context: Context) {
+        private val prefs = DirectProtocols.prefs(context)
+        private val web = runCatching { JSONObject(prefs.getString("gatewayConnections", "{}") ?: "{}") }.getOrNull() ?: JSONObject()
+        private val direct = HashMap<MessageProtocol, String>()
+
+        fun of(conversation: String, format: MessageProtocol): String {
+            if (format != MessageProtocol.IRC && format != MessageProtocol.MATRIX && format != MessageProtocol.XMPP) return ""
+            if (DirectProtocols.route(prefs, conversation, format) != null) {
+                if (!DirectProtocols.on(prefs, format)) return ""
+                return direct.getOrPut(format) {
+                    val account = DirectProtocols.account(context, format)
+                    // The phone uses FluidMessages Web's IRC connection instead of a second one with the same nick.
+                    if (DirectProtocols.deferredToWeb(prefs, format, account)) webState(ircAccountId(account))
+                    else IrcRules.connectionState(DirectProtocols.status(prefs, format).optString("state"))
+                }
+            }
+            return webState(GatewayClient.routeOf(prefs, conversation, format)?.optString("account").orEmpty())
+        }
+
+        private fun webState(account: String) =
+            if (account.isEmpty()) "" else IrcRules.connectionState(web.optJSONObject(account)?.optString("state").orEmpty())
     }
 
     // Invitations

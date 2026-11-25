@@ -231,6 +231,10 @@ interface PhoneActions {
     fun muteLabel(keys: List<String>): String
     /** Opens the mute page for all of a person's chats and numbers; [done] runs after a choice. */
     fun mute(keys: List<String>, name: String, done: Runnable)
+    /** Whether every one of [keys] (a person's chats and numbers) is blocked. */
+    fun blocked(keys: List<String>): Boolean
+    /** Blocks or unblocks all of [keys], in the same Blocked folder as the inbox menu. */
+    fun block(keys: List<String>, on: Boolean)
 }
 
 /** A call in Recents. Phone calls come from Android's call history; protocol and address say how to call back. */
@@ -919,9 +923,11 @@ private fun PersonPage(prefs: SharedPreferences, sample: Boolean, palette: Palet
                     person.fields.filter { field -> field.kind == ContactField.Kind.CHAT && person.accounts.none { it.target.equals(field.value, true) } }
                         .map { field -> ReachOption(ReachOption.MESSAGE, field.label, field.value, Runnable { actions.startChat(field.service, field.value) }) } +
                     person.numbers.filter { Calling.allowed(prefs, Calling.Method.PHONE) }.map { ReachOption(ReachOption.CALL, "Phone", it, Runnable { actions.call(it) }) } +
-                    (if (Calling.allowed(prefs, Calling.Method.MEETING) && (person.numbers.isNotEmpty() || person.accounts.isNotEmpty())) {
-                        // Every way to reach them, so the link can go wherever you choose.
-                        val addresses = (person.numbers + person.accounts.map { it.address }).distinct()
+                    (if (Calling.allowed(prefs, Calling.Method.MEETING) && (person.numbers.isNotEmpty() ||
+                            person.accounts.any { IrcCalls.meetingRoute(it.protocol, IrcCalls.allowed(prefs)) })) {
+                        // Every way to reach them, so the link can go wherever you choose (IRC only when allowed, IrcCalls).
+                        val addresses = (person.numbers + person.accounts.filter { IrcCalls.meetingRoute(it.protocol, IrcCalls.allowed(prefs)) }
+                            .map { it.address }).distinct()
                         val services = MeetingPages.summary(prefs)
                         listOf(ReachOption(ReachOption.CALL, "Meeting link", services, Runnable { actions.meeting(addresses, person.name, false) }),
                             ReachOption(ReachOption.VIDEO, "Meeting link", services, Runnable { actions.meeting(addresses, person.name, true) }))
@@ -994,6 +1000,12 @@ private fun PersonPage(prefs: SharedPreferences, sample: Boolean, palette: Palet
                     }
                 }
             }
+        }
+        // Block all of their chats and numbers, confirmed right in the card.
+        if (sample || person.numbers.isNotEmpty() || person.accounts.isNotEmpty()) item {
+            val keys = remember(person) { if (sample) listOf(person.key) else (person.numbers + person.accounts.map { it.address }).distinct() }
+            val choice = remember(person) { BlockChoice(person.name, actions.blocked(keys)) { on -> actions.block(keys, on) } }
+            Card(palette, "Block") { BlockControl(choice, palette.ink, palette.muted, palette.inboxAction) }
         }
     }
 }

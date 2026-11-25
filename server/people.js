@@ -949,9 +949,11 @@ async function openPersonPage(person, {back} = {}) {
     };
     options.push({kind: 'voice', via: 'Matrix', target: account.target, run: run(false)}, {kind: 'video', via: 'Matrix', target: account.target, run: run(true)});
   }
-  if (!options.some((option) => option.kind === 'video') && chats.length && ways('meeting')) {
+  // IRC chats don't get meeting links unless they're turned on for IRC (companion.js ircCallsHidden).
+  const meetingChats = chats.filter((key) => typeof ircCallsHidden !== 'function' || !ircCallsHidden(key));
+  if (!options.some((option) => option.kind === 'video') && meetingChats.length && ways('meeting')) {
     // Anyone else gets a meeting link in their chat, which works everywhere.
-    const key = chats[0];
+    const key = meetingChats[0];
     options.push({kind: 'video', via: 'Meeting link', target: via(key), run: () => { openChat(key); startMeeting(true).catch(showError); }});
   }
   // The top: photo, name, protocols, and the favorite star.
@@ -1055,7 +1057,7 @@ async function openPersonPage(person, {back} = {}) {
     const box = element('details', '', 'dm-settings');
     box.open = chats.length === 1;
     box.append(element('summary', 'Chat settings · ' + via(key) + (chats.length > 1 ? ' · ' + (routeFor(key)?.target || threadAddress(key)) : '')));
-    box.append(...conversationSettings(key, settings));
+    box.append(...conversationSettings(key, settings, {block: false}));
     nodes.push(box);
   }
   // Mute all of their chats and numbers for a while or for good (chats.js).
@@ -1069,32 +1071,78 @@ function blockSection(person, chats) {
   const section = element('section', '', 'settings-section');
   section.append(element('h3', 'Block'));
   const addresses = [...new Set([...chats.map(threadAddress), ...person.numbers])];
-  const button = element('button', '', 'danger-text');
-  button.type = 'button';
-  const note = element('p', '', 'muted');
-  const draw = () => {
-    const blocked = addresses.length > 0 && addresses.every((address) => inFolder(address, 'blocked'));
-    button.textContent = (blocked ? 'Unblock ' : 'Block ') + person.name;
-    button.setAttribute('aria-pressed', String(blocked));
-    note.textContent = blocked ? 'Their chats are in Blocked here and don’t chime.'
-      : 'Moves their chats to Blocked here and stops their chimes. It doesn’t stop delivery; block on your phone for that.';
-    button.disabled = !addresses.length;
-  };
-  button.addEventListener('click', () => {
-    const state = chatState();
-    const blocked = addresses.every((address) => inFolder(address, 'blocked'));
-    const phoneSet = addresses.filter((address) => inFolder(address, 'blocked') && !(state.blocked || []).includes(address));
-    const next = {...state, blocked: blocked ? (state.blocked || []).filter((item) => !addresses.includes(item))
-      : [...new Set([...(state.blocked || []), ...addresses])],
-    archived: blocked ? state.archived : (state.archived || []).filter((item) => !addresses.includes(item))};
-    saveChats(next);
-    draw();
-    if (blocked && phoneSet.length) note.textContent = 'Your phone blocked some of these. Unblock them there, or choose “This web app’s own” settings.';
-  });
-  draw();
-  section.append(note, button);
-  if (!addresses.length) section.append(element('p', 'There’s no chat or number to block yet.', 'muted'));
+  // Confirmed in place, the same as a chat's details (chats.js blockControl).
+  section.append(blockControl(person.name, addresses));
   return section;
+}
+
+// Suggestions while linking an address to someone: people and addresses from your own chats on that service, from
+// what this browser already has (knownPeople). What's typed is never sent anywhere to search. The same rule as the
+// phone (LinkSuggestions.kt).
+
+const LINKABLE_SERVICES = ['matrix', 'xmpp', 'email', 'irc'];
+
+/** People on [service] (any linkable one when empty) whose name or address has [query]; starts-with first. */
+function linkSuggestions(query, service = '', people = knownPeople(), limit = 6) {
+  const typed = String(query || '').trim().toLowerCase();
+  if (!typed) return [];
+  const seen = new Set();
+  const found = [];
+  for (const person of people) {
+    for (const account of person.accounts || []) {
+      const address = String(account.target || '').trim();
+      if (!LINKABLE_SERVICES.includes(account.protocol) || (service && account.protocol !== service)) continue;
+      if (!address || /^[#!]/.test(address) || address.toLowerCase() === typed) continue;
+      if (!person.name.toLowerCase().includes(typed) && !address.toLowerCase().includes(typed)) continue;
+      const id = account.protocol + '\u0000' + address.toLowerCase();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      found.push({name: person.name, address, service: account.protocol});
+    }
+  }
+  const starts = (item) => item.name.toLowerCase().split(' ').some((word) => word.startsWith(typed))
+    || item.address.toLowerCase().replace(/^@/, '').startsWith(typed.replace(/^@/, ''));
+  return found.sort((a, b) => (Number(starts(b)) - Number(starts(a))) || a.name.localeCompare(b.name, undefined, {sensitivity: 'base'}))
+    .slice(0, limit);
+}
+
+/**
+ * The tappable suggestions under an address [input]: name, address, and a service tag. [serviceOf] says which service
+ * to search ('' for any); [pick] fills in the one tapped. Typing a new address still works.
+ */
+function linkSuggestionBox(input, serviceOf, pick) {
+  const box = element('div', '', 'link-suggestions');
+  box.hidden = true;
+  const list = element('div', '', 'member-list');
+  list.setAttribute('role', 'group');
+  list.setAttribute('aria-label', 'Suggestions from your chats');
+  box.append(element('small', 'From your chats', 'hint'), list);
+  const draw = () => {
+    const items = document.activeElement === input ? linkSuggestions(input.value, serviceOf()) : [];
+    list.replaceChildren();
+    for (const item of items) {
+      const button = element('button', '', 'member-row link-suggestion');
+      button.type = 'button';
+      const words = element('span', '', 'detail-words');
+      words.append(element('strong', item.name));
+      if (item.address !== item.name) words.append(element('small', item.address));
+      const service = SERVICE_LABELS[item.service] || item.service;
+      button.append(words, element('span', service, 'person-tag'));
+      button.setAttribute('aria-label', item.name + ', ' + item.address + ', ' + service + '. Use this address');
+      // Keeps the field focused while the suggestion is tapped.
+      button.addEventListener('mousedown', (event) => event.preventDefault());
+      button.addEventListener('click', () => { pick(item); box.hidden = true; });
+      list.append(button);
+    }
+    box.hidden = !items.length;
+  };
+  input.addEventListener('input', draw);
+  input.addEventListener('focus', draw);
+  // Hidden once focus leaves the field and its suggestions (Tab reaches them from the keyboard).
+  const leave = () => setTimeout(() => { if (document.activeElement !== input && !box.contains(document.activeElement)) box.hidden = true; }, 150);
+  input.addEventListener('blur', leave);
+  box.addEventListener('focusout', leave);
+  return box;
 }
 
 // New contact and Edit: a full page, like the phone's contact editor (ContactEditor.kt). Contacts are kept on the
@@ -1152,7 +1200,14 @@ function openContactEditor(contact = null, {back, prefill = {}} = {}) {
     drop.type = 'button';
     drop.setAttribute('aria-label', 'Remove this chat address');
     drop.addEventListener('click', () => remove(row, addresses, () => addAddress.focus()));
-    row.append(input, service, drop);
+    // People from your chats on this service (any of them until you pick one), searched in this browser only.
+    const suggestions = linkSuggestionBox(input, () => (chosen ? service.value : ''), (item) => {
+      input.value = item.address;
+      service.value = item.service;
+      chosen = true;
+      input.focus();
+    });
+    row.append(input, service, drop, suggestions);
     row.read = () => {
       let value = input.value.trim();
       if (service.value === 'sip') value = value.replace(/^sip:/i, '');

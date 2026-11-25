@@ -41,7 +41,8 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
     private static final String REPLY = "urn:xmpp:reply:0", REACTIONS = "urn:xmpp:reactions:0", OOB = "jabber:x:oob";
     private static final Pattern URL_TAG = Pattern.compile("<url>(https://[^<]{1,2000})</url>");
     private final String signature;
-    private volatile boolean stopped;
+    private volatile boolean stopped, manual;
+    private final Object wake = new Object();
     private Thread thread;
     private Context context;
     private JSONObject account;
@@ -59,8 +60,49 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
         thread.start();
     }
 
+    /** The Reconnect button: connects now, also while Reconnect automatically is off. */
+    @Override public void reconnectNow() {
+        synchronized (wake) { manual = true; wake.notifyAll(); }
+        var current = connection;
+        if (current != null && !current.isConnected()) new Thread(() -> {
+            try { status("connecting", ""); current.connect().login(); status("connected", ""); }
+            catch (Exception error) { status("disconnected", error.getMessage()); }
+        }, "fluid-xmpp-reconnect").start();
+    }
+
+    /** Smack's own reconnecting follows the switch at once, not only when the connection is next built. */
+    @Override public void autoReconnectChanged() {
+        XMPPTCPConnection open = connection;
+        if (open == null) return;
+        if (autoReconnect()) ReconnectionManager.getInstanceFor(open).enableAutomaticReconnection();
+        else ReconnectionManager.getInstanceFor(open).disableAutomaticReconnection();
+    }
+
+    private boolean autoReconnect() { return DirectProtocols.autoReconnect(DirectProtocols.prefs(context), MessageProtocol.XMPP); }
+
+    /** The inbox's connection mark and the bar read this (DirectProtocols.status). */
+    private void status(String state, String error) {
+        try {
+            DirectProtocols.saveStatus(context, MessageProtocol.XMPP, new JSONObject().put("state", state)
+                .put("network", account.optString("jid")).put("error", error == null ? "" : error)
+                .put("manual", !autoReconnect() && !state.equals("connected") && !state.equals("connecting")));
+        } catch (Exception ignored) {}
+    }
+
+    /** Waits for Reconnect while Reconnect automatically is off. False when stopped. */
+    private boolean waitForManual() {
+        synchronized (wake) {
+            while (!manual && !stopped) {
+                try { wake.wait(); } catch (InterruptedException interrupted) { return false; }
+            }
+            manual = false;
+        }
+        return !stopped;
+    }
+
     @Override public void stop() {
         stopped = true;
+        synchronized (wake) { wake.notifyAll(); }
         var current = connection;
         if (current != null) new Thread(current::disconnect, "fluid-xmpp-close").start();
         if (thread != null) thread.interrupt();
@@ -68,7 +110,13 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
 
     private void connect() {
         long delay = 5_000;
+        // Reconnect automatically off: connect only once you tap Reconnect.
+        if (!autoReconnect()) {
+            status("disconnected", "");
+            if (!waitForManual()) return;
+        }
         while (!stopped) {
+            status("connecting", "");
             try {
                 AndroidSmackInitializer.initialize(context);
                 var jid = JidCreate.entityBareFrom(account.getString("jid"));
@@ -81,7 +129,14 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
                 var next = new XMPPTCPConnection(builder.build());
                 next.setUseStreamManagement(true);
                 next.setUseStreamManagementResumption(true);
-                ReconnectionManager.getInstanceFor(next).enableAutomaticReconnection();
+                if (autoReconnect()) ReconnectionManager.getInstanceFor(next).enableAutomaticReconnection();
+                else ReconnectionManager.getInstanceFor(next).disableAutomaticReconnection();
+                next.addConnectionListener(new org.jivesoftware.smack.ConnectionListener() {
+                    @Override public void authenticated(org.jivesoftware.smack.XMPPConnection connected, boolean resumed) { status("connected", ""); }
+                    @Override public void connectionClosedOnError(Exception error) {
+                        if (!stopped) status(autoReconnect() ? "reconnecting" : "disconnected", error.getMessage());
+                    }
+                });
                 DeliveryReceiptManager.getInstanceFor(next).setAutoReceiptMode(DeliveryReceiptManager.AutoReceiptMode.ifIsSubscribed);
                 DeliveryReceiptManager.getInstanceFor(next).autoAddDeliveryReceiptRequests();
                 ChatManager.getInstanceFor(next).addIncomingListener((from, message, chat) -> received(from, message, false));
@@ -102,6 +157,7 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
                     .anyMatch(extension -> CallHub.JINGLE_MESSAGE.equals(extension.getNamespace())));
                 next.connect().login();
                 connection = next;
+                status("connected", "");
                 try { CarbonManager.getInstanceFor(next).enableCarbons(); } catch (Exception ignored) {}
                 var mucs = MultiUserChatManager.getInstanceFor(next);
                 for (String room : DirectProtocols.targets(context, MessageProtocol.XMPP, true)) {
@@ -113,7 +169,17 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
                 }
                 return;
             } catch (Exception error) {
-                try { Thread.sleep(delay); } catch (InterruptedException interrupted) { return; }
+                if (stopped) return;
+                if (!autoReconnect()) {
+                    status("disconnected", error.getMessage());
+                    if (!waitForManual()) return;
+                    continue;
+                }
+                status("reconnecting", error.getMessage());
+                synchronized (wake) {
+                    try { if (!manual) wake.wait(delay); } catch (InterruptedException interrupted) { return; }
+                    manual = false;
+                }
                 delay = Math.min(delay * 2, 300_000);
             }
         }

@@ -33,6 +33,11 @@ import org.json.JSONObject;
  * network (ConnectivityManager callbacks, not blind retries), backs off 15 s, 30 s, 1, 2, 5, then 10 minutes with
  * jitter, and after five automatic reconnects in an hour it stops and shows "Disconnected · Reconnect" until you tap
  * Reconnect. After a reconnect only channels set to Keep joined rejoin at once; the others rejoin when opened.
+ * With Reconnect automatically off (DirectProtocols.autoReconnect) it connects only when you tap Reconnect.
+ *
+ * When the network says no (a nickname it doesn't allow, SASL needed from this internet connection, a ban, a wrong
+ * SASL password), its reason goes into the bar and the server chat in plain words (IrcRules.explain), and a refusal
+ * that trying again can't fix waits for Reconnect instead of retrying.
  */
 final class DirectIrc implements DirectProtocols.DirectClient {
     private static final List<String> WANTED = List.of("sasl", "message-tags", "server-time", "multi-prefix");
@@ -43,7 +48,7 @@ final class DirectIrc implements DirectProtocols.DirectClient {
     private static final Set<String> WHOIS = Set.of("301", "311", "312", "313", "317", "318", "319", "330", "671");
     private static final String PREFIXES = "~&@%+";
     private static final Map<Character, Character> PREFIX_MODES = Map.of('q', '~', 'a', '&', 'o', '@', 'h', '%', 'v', '+');
-    private final String signature;
+    private volatile String signature;
     private final Set<String> offered = new HashSet<>(), caps = new HashSet<>();
     private final Map<String, Set<String>> members = new HashMap<>(), pending = new HashMap<>();
     private final Map<String, Map<String, String>> modes = new HashMap<>(), pendingModes = new HashMap<>();
@@ -66,6 +71,9 @@ final class DirectIrc implements DirectProtocols.DirectClient {
     private volatile long listAt;
     private volatile String elist = "", listProblem = "";
     private volatile boolean stopped, ready, registered, saslOk, online = true, manual;
+    // Why the network refused or closed this connection (IrcRules.explain), for the bar and the server chat.
+    private volatile IrcRules.Problem problem;
+    private volatile String saslNotice = "";
     private long ctcpAt;
     private int nickTries;
     private SSLSocket socket;
@@ -78,6 +86,9 @@ final class DirectIrc implements DirectProtocols.DirectClient {
     DirectIrc(String signature) { this.signature = signature; }
 
     @Override public String toString() { return signature; }
+
+    /** The account changed only in a way this connection already uses (a NickServ password saved from the card). */
+    void resign(String next) { signature = next; }
     @Override public boolean persistent() { return true; }
 
     @Override public void start(Context context, JSONObject account) {
@@ -112,23 +123,50 @@ final class DirectIrc implements DirectProtocols.DirectClient {
             online = connectivity == null || connectivity.getActiveNetwork() != null;
             if (connectivity != null) connectivity.registerDefaultNetworkCallback(callback);
         } catch (Exception error) { online = true; }
+        // The network's server chat is in the list from the start, connected or not, so the network you added shows.
+        try { serverRoute(); } catch (Exception ignored) {}
         try {
             int attempt = 0;
+            // Reconnect automatically off: nothing connects until you tap Reconnect, and the chats stay in the list.
+            boolean go = autoReconnect();
+            String error = "";
             while (!stopped) {
+                if (!go) {
+                    status("disconnected", 0, error, true);
+                    waitForManual();
+                    if (stopped) break;
+                    budget.reset();
+                    attempt = 0;
+                }
+                go = true;
                 waitForNetwork();
                 if (stopped) break;
                 status("connecting", 0, "");
-                String error = "";
+                error = "";
+                problem = null;
+                saslNotice = "";
                 try {
                     session();
-                } catch (Exception problem) {
-                    error = problem.getMessage() == null ? "" : problem.getMessage();
+                } catch (Exception failure) {
+                    error = failure.getMessage() == null ? "" : failure.getMessage();
                 } finally {
                     ready = false;
                     try { if (socket != null) socket.close(); } catch (Exception ignored) {}
                     output = null;
                 }
                 if (stopped) break;
+                // Closed before signing in, right after a notice that SASL is needed: that's the reason.
+                if (problem == null && !registered && !saslNotice.isEmpty()) problem = explain("ERROR", saslNotice);
+                if (problem != null) error = problem.getText();
+                if (problem != null && problem.getFatal()) {
+                    // Trying again can't help (a nickname the network refuses, SASL needed, a ban): wait for Reconnect.
+                    status("disconnected", 0, error);
+                    waitForManual();
+                    budget.reset();
+                    attempt = 0;
+                    continue;
+                }
+                if (!autoReconnect()) { go = false; continue; }
                 if (registered) attempt = 0; // It was working: start the schedule again.
                 long delay = IrcRules.backoffMillis(attempt++, random.nextDouble());
                 status("reconnecting", System.currentTimeMillis() + delay, error);
@@ -179,11 +217,29 @@ final class DirectIrc implements DirectProtocols.DirectClient {
         }
     }
 
-    private void status(String state, long retryAt, String error) {
+    private void status(String state, long retryAt, String error) { status(state, retryAt, error, false); }
+
+    /** [manual]: Reconnect automatically is off, so it waits for Reconnect. */
+    private void status(String state, long retryAt, String error, boolean manual) {
         try {
             DirectProtocols.saveStatus(context, MessageProtocol.IRC, new JSONObject().put("state", state)
-                .put("network", account.optString("server")).put("retry_at", retryAt).put("error", error));
+                .put("network", account.optString("server")).put("retry_at", retryAt).put("error", error == null ? "" : error)
+                .put("manual", manual));
         } catch (Exception ignored) {}
+    }
+
+    private boolean autoReconnect() { return DirectProtocols.autoReconnect(DirectProtocols.prefs(context), MessageProtocol.IRC); }
+
+    private IrcRules.Problem explain(String command, String text) {
+        return IrcRules.explain(command, text, network(), wanted == null ? "" : wanted, !account.optString("sasl_password").isEmpty());
+    }
+
+    /** Remembers why the network said no and says so in the server chat, in plain words. */
+    private void refused(String command, String text, Line line) throws Exception {
+        var found = explain(command, text);
+        if (found == null) return;
+        if (found.getFatal() || problem == null) problem = found;
+        event(SERVER, found.getText(), line, "error");
     }
 
     private void session() throws Exception {
@@ -289,7 +345,14 @@ final class DirectIrc implements DirectProtocols.DirectClient {
                         + account.optString("sasl_password")).getBytes(StandardCharsets.UTF_8)));
                 }
             }
-            case "903", "904", "905", "906", "907" -> { saslOk |= command.equals("903"); write("CAP END"); }
+            case "903", "904", "905", "906", "907" -> {
+                saslOk |= command.equals("903");
+                // A wrong SASL account or password: say so in the server chat, then carry on without signing in.
+                var found = command.equals("904") || command.equals("905") ? explain(command, p.isEmpty() ? "" : p.get(p.size() - 1)) : null;
+                if (found != null) event(SERVER, found.getText(), line, "error");
+                write("CAP END");
+            }
+            case "465", "463", "464" -> refused(command, p.isEmpty() ? "" : p.get(p.size() - 1), line);
             case "001" -> {
                 if (!p.isEmpty()) nick = p.get(0);
                 registered = true;
@@ -309,7 +372,10 @@ final class DirectIrc implements DirectProtocols.DirectClient {
             case "263" -> { if (listStreaming) { listProblem = "busy"; listStreaming = false; } }
             // A channel that sends newcomers to another one (such as an overflow channel for unregistered nicknames).
             case "470" -> { if (p.size() >= 3 && joining.contains(lower(p.get(1)))) forwards.put(lower(p.get(1)), p.get(2)); }
-            case "PRIVMSG", "NOTICE", "TAGMSG" -> { if (!p.isEmpty()) message(line); }
+            case "PRIVMSG", "NOTICE", "TAGMSG" -> {
+                if (command.equals("NOTICE") && !registered && p.size() > 1 && IrcRules.needsSasl(p.get(p.size() - 1))) saslNotice = p.get(p.size() - 1);
+                if (!p.isEmpty()) message(line);
+            }
             case "332" -> { if (p.size() >= 3) { topics.put(lower(p.get(1)), p.get(2)); publish(p.get(1)); } }
             case "TOPIC" -> {
                 if (p.size() == 2) {
@@ -381,11 +447,25 @@ final class DirectIrc implements DirectProtocols.DirectClient {
             case "INVITE" -> { if (p.size() >= 2) invited(p.get(1), line.nick()); }
             case "341" -> { if (p.size() >= 3) event(p.get(2), "Invited " + p.get(1) + " to " + p.get(2), line, "info"); }
             case "305", "306" -> { if (p.size() >= 2) event(SERVER, p.get(p.size() - 1), line, "info"); }
-            case "ERROR" -> { if (!p.isEmpty()) event(SERVER, "Disconnected: " + p.get(0), line, "error"); }
+            case "ERROR" -> {
+                if (p.isEmpty()) return;
+                event(SERVER, "Disconnected: " + p.get(0), line, "error");
+                var found = explain("ERROR", p.get(0));
+                // The SASL notice before it says more than "Closing Link".
+                if (found != null && !found.getFatal() && !registered && !saslNotice.isEmpty()) found = explain("ERROR", saslNotice);
+                if (found != null && (problem == null || found.getFatal())) problem = found;
+            }
             default -> {
-                if ((command.equals("433") || command.equals("432") || command.equals("436") || command.equals("437")) && !registered) {
+                if (command.equals("432") && !registered) {
+                    // A nickname the network doesn't allow: nick_ wouldn't be allowed either, so say why and stop.
+                    problem = explain("432", p.get(p.size() - 1));
+                    throw new IllegalStateException(problem.getText());
+                } else if ((command.equals("433") || command.equals("436") || command.equals("437")) && !registered) {
                     // Taken while connecting: nick_, nick__, then nick1…
-                    if (++nickTries > 8) throw new IllegalStateException("No free nickname");
+                    if (++nickTries > 8) {
+                        problem = explain("433", "");
+                        throw new IllegalStateException(problem.getText());
+                    }
                     nick = IrcRules.fallbackNick(wanted, nickTries);
                     write("NICK " + nick);
                 } else if (WHOIS.contains(command) && p.size() >= 3) {
@@ -410,8 +490,26 @@ final class DirectIrc implements DirectProtocols.DirectClient {
     private void identify() throws Exception {
         String password = account.optString("nickserv_password");
         if (password.isEmpty() || saslOk) return;
+        write(identifyLine(password));
+    }
+
+    /** NickServ IDENTIFY with the account name first, which Atheme (Libera.Chat) and Anope both accept. */
+    private String identifyLine(String password) throws Exception {
         String user = account.optString("sasl_user");
-        write("PRIVMSG NickServ :IDENTIFY " + (user.isEmpty() ? account.getString("nick") : user) + " " + password);
+        return "PRIVMSG NickServ :IDENTIFY " + (user.isEmpty() ? account.getString("nick") : user) + " " + password;
+    }
+
+    /**
+     * The NickServ card's Identify: IDENTIFY over the connection, never a chat message, so it's never in chat history.
+     * With [save] the next connect uses it too (DirectProtocols keeps it sealed with the account).
+     */
+    void identifyNow(String password, boolean save) throws Exception {
+        if (password == null || password.isEmpty() || password.length() > 300 || password.matches("(?s).*[\\s\\x00].*")) {
+            throw new IllegalArgumentException("Enter your NickServ password, with no spaces");
+        }
+        waitReady();
+        say(identifyLine(password));
+        if (save) account = new JSONObject(account.toString()).put("nickserv_password", password);
     }
 
     private void forget(String channel, String who) {

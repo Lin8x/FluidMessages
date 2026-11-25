@@ -294,7 +294,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 || sampleAutomated(name) && (asks.getAutomatedOut() || asks.getAutomatedBlock())) continue;
             rows.add(new BadgeMessage(name, "demo:" + name, sampleUnread(contact), false, !SampleInbox.serverOf(name).isEmpty()));
             if (SampleInbox.ARCHIVED.contains(name)) archived.add("demo:" + name);
-            if (SampleInbox.BLOCKED.contains(name)) blocked.add("demo:" + name);
+            if (sampleBlocked(name)) blocked.add("demo:" + name);
         }
         int[] split = TabBadges.unreadSplit(rows, sampleMutedAddresses(), archived, blocked, Communities.show(prefs));
         tabCounts.setMessages(split[0]);
@@ -936,7 +936,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         for (int index = 0; index < SAMPLES.length; index++) {
             String[] contact = SAMPLES[index];
             if (sampleDeleted(contact[0])) continue;
-            String folder = sampleBlockedNow.contains(contact[0]) ? "Blocked" : SampleInbox.folderOf(contact[0]);
+            String folder = sampleBlocked(contact[0]) ? "Blocked" : sampleUnblockedNow.contains(contact[0]) ? "Inbox" : SampleInbox.folderOf(contact[0]);
             String server = SampleInbox.serverOf(contact[0]);
             List<ChatLine> lines = sampleLines(contact, sampleReplies.getOrDefault(contact[0], List.of()));
             if (!search.matches(contact[0]) && lines.stream().noneMatch(line ->
@@ -961,7 +961,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     .collect(java.util.stream.Collectors.joining(" · ")),
                 sampleStyle(contact[0]) == SenderStyle.AUTOMATED, sampleGroupMembers(contact[0]), server,
                 sampleLastAt(contact, index), server.isEmpty() ? 0L : SampleInbox.SERVERS.size() * 10L - index,
-                Mutes.label(sampleChatMuteEnds("demo:" + contact[0])));
+                Mutes.label(sampleChatMuteEnds("demo:" + contact[0])), "", SampleInbox.connection(contact[0]));
             // Communities lists every channel and room on the sample servers, whatever the filter.
             if (!server.isEmpty()) channels.add(row);
             if (!Communities.showsInChats(!server.isEmpty(), communityChats)) continue;
@@ -1000,6 +1000,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 sampleMutesSeeded = false;
                 sampleRequestDecisions.clear();
                 sampleBlockedNow.clear();
+                sampleUnblockedNow.clear();
                 prefs.edit().remove(InboxFiltersKt.SAMPLE_FAVORITES).apply();
                 sampleInbox();
             }, "Cancel", null);
@@ -1497,10 +1498,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             @Override public void editContact(String key) { editPhoneContact(key); }
             @Override public void saveWebContacts() { webContactsPage(); }
             @Override public void startChat(String service, String target) { startTypedChat(service, target); }
-            @Override public String muteLabel(List<String> keys) { return Mutes.label(Mutes.endsForAll(prefs, keys)); }
+            @Override public String muteLabel(List<String> keys) { return Mutes.rowLabel(Mutes.endsForAll(prefs, keys)); }
             @Override public void mute(List<String> keys, String name, Runnable done) {
                 openMute(keys, name, "All of " + name + "’s chats and numbers.", done);
             }
+            @Override public boolean blocked(List<String> keys) { return !keys.isEmpty() && list("blocked").containsAll(keys); }
+            @Override public void block(List<String> keys, boolean on) { setBlocked(keys, on); }
         }, false, restrict, decoyNames, tabCounts);
     }
 
@@ -1553,9 +1556,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             @Override public void editContact(String key) {}
             @Override public void saveWebContacts() {}
             @Override public void startChat(String service, String target) { toast("Sample contact: nothing is sent"); }
-            @Override public String muteLabel(List<String> keys) { return keys.isEmpty() ? "" : Mutes.label(sampleMuteEnds(keys.get(0))); }
+            @Override public String muteLabel(List<String> keys) { return keys.isEmpty() ? "" : Mutes.rowLabel(sampleMuteEnds(keys.get(0))); }
             @Override public void mute(List<String> keys, String name, Runnable done) {
                 if (!keys.isEmpty()) openSampleMute(keys.get(0), name, done);
+            }
+            // Sample people block on this screen only; nothing is saved.
+            @Override public boolean blocked(List<String> keys) {
+                return !keys.isEmpty() && keys.stream().allMatch(key -> sampleBlocked(key.replaceFirst("^demo:", "")));
+            }
+            @Override public void block(List<String> keys, boolean on) {
+                for (String key : keys) setSampleBlocked(key.replaceFirst("^demo:", ""), on);
             }
         }, true, null, List.of(), tabCounts);
     }
@@ -1579,6 +1589,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         List<Route> routes = new ArrayList<>();
         List<String[]> items = new ArrayList<>();
         for (String address : addresses) for (var format : formats(address)) {
+            // No meeting links into IRC unless they're turned on for IRC (IrcCalls).
+            if (!IrcCalls.meetingRoute(format, IrcCalls.allowed(prefs))) continue;
             routes.add(new Route(address, format));
             String target = address;
             for (var item : GatewayClient.links(prefs, address)) {
@@ -2185,20 +2197,26 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                         threads.put(thread, message);
                     }
                 }
-                // Channels and rooms joined on a server show straight away, before their first message.
-                if (scope == InboxFilters.Scope.INBOX && (communities || showCommunity)) {
+                // Channels and rooms joined on a server show straight away, before their first message, connected or
+                // not. So does each IRC network's server chat (in Chats). Links made on this phone name no account:
+                // theirs is this phone's own account on the service (directServers).
+                if (scope == InboxFilters.Scope.INBOX) {
                     for (var route : GatewayClient.allRoutes(prefs)) {
                         String account = route.optString("account");
-                        if (!route.optBoolean("group") || !serverIds.contains(account)) continue;
+                        if (account.isEmpty() && route.optBoolean("direct")) account = direct.getOrDefault(route.optString("protocol"), "");
+                        boolean channel = route.optBoolean("group") && serverIds.contains(account);
+                        boolean serverChat = route.optBoolean("server_chat") && !communities;
+                        if (channel ? !(communities || showCommunity) : !serverChat) continue;
                         var placeholder = new JSONObject().put("address", route.optString("address")).put("protocol", route.optString("protocol"))
                             .put("body", "No messages yet").put("date", 0L).put("type", 1).put("read", 1).put(EMPTY_CHANNEL, true);
                         String number = rowAddress(placeholder);
                         var format = MessageProtocol.parse(route.optString("protocol"));
                         String thread = prefs.getBoolean("combineProtocols", false) ? number : number + "\u001f" + format.family().name();
-                        var facts = new InboxFilters.Chat(true, false, Set.of(format.family().name()), false,
+                        var facts = new InboxFilters.Chat(channel, false, Set.of(format.family().name()), false,
                             archived.contains(number), blocked.contains(number), HiddenChats.rowHidden(prefs, placeholder), false);
-                        if (threads.containsKey(thread) || !InboxFilters.shows(scope, filterId, facts)) continue;
-                        servers.putIfAbsent(number, account);
+                        if (threads.containsKey(thread) || !InboxFilters.keepsMessage(filterId, format.family().name())
+                            || !InboxFilters.shows(scope, filterId, facts)) continue;
+                        if (channel) servers.putIfAbsent(number, account);
                         if (query.empty() || query.matches(number, threadTitle(number), "")) threads.put(thread, placeholder);
                     }
                 }
@@ -2231,6 +2249,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 Map<String, String> drafts = scope == InboxFilters.Scope.INBOX ? Drafts.inbox(this, prefs) : Map.of();
                 // Services with more than one account: their rows on another account get a small hint.
                 var severalAccounts = java.util.EnumSet.noneOf(MessageProtocol.class);
+                // The small connection mark beside an IRC, Matrix, or XMPP chat's tag (PhoneChat.ConnectionStates).
+                var connections = decoy ? null : new PhoneChat.ConnectionStates(this);
                 if (!decoy) for (var format : reachableProtocols(true)) {
                     if (FromAccount.INSTANCE.shows(GatewayClient.sendAccounts(prefs, format))) severalAccounts.add(format);
                 }
@@ -2259,7 +2279,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                         servers.getOrDefault(number, ""), empty ? 0L : displayedTimestamp(message), joined.getOrDefault(number, 0L),
                         mutes.isEmpty() ? "" : Mutes.label(Mutes.INSTANCE.chatEnds(mutes.keySet(), mutes, number,
                             serverMutes ? Mutes.serverOf(prefs, number) : "", System.currentTimeMillis())),
-                        severalAccounts.contains(format) ? GatewayClient.inboxAccountHint(prefs, number, format) : "");
+                        severalAccounts.contains(format) ? GatewayClient.inboxAccountHint(prefs, number, format) : "",
+                        connections == null ? "" : connections.of(number, format));
                     entries.add(row);
                     if (!empty) remembered.add(new InboxSnapshot.Entry(row, number, message.optString("protocol"), displayedTimestamp(message),
                         Disappearing.expiry(prefs, message, message.optString("address"))));
@@ -2814,6 +2835,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         String commandFamily = PhoneChat.family(prefs, number, format);
         conversationScreen.setCommandFamily(ChatCommands.isChat(commandFamily) ? commandFamily : "");
         conversationScreen.setConnectionAccount(PhoneChat.chatAccount(this, number, format));
+        if (format == MessageProtocol.IRC) {
+            // NickServ's identify notices as one card with a password field (NickServ.kt).
+            conversationScreen.setNickServ(PhoneNickServ.identifier(getApplicationContext(), number));
+            conversationScreen.setNickServSaved(PhoneNickServ.saved(this, number));
+            conversationScreen.setNickServNick(PhoneNickServ.nick(this, number));
+            conversationScreen.setNickServChat(NickServRules.isNickServ(PhoneChat.target(prefs, number, format)));
+        }
         PhoneChat.opened(this, number, format);
         showRequestBar(number, format);
         fillChat();
@@ -3115,12 +3143,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 case EMAIL -> "maya@example.org";
                 default -> "nickname or #channel";
             };
-            List<String[]> form = new ArrayList<>();
-            form.add(new String[]{format.label + " address", "", hint, "email"});
-            if (format == MessageProtocol.XMPP) form.add(new String[]{"This is a group chat", "false", "", "check"});
-            SecurityDialogs.form(this, prefs, format.label + " for " + name, "", form, "Link", null, values -> {
-                String target = values[0].trim();
-                boolean group = values.length > 1 && values[1].equals("true");
+            // Suggestions come from this phone's own chats on that service; what's typed never leaves the phone to search.
+            LinkAddressPage.show(this, prefs, format.label + " for " + name, format.name().toLowerCase(Locale.ROOT), hint,
+                LinkSuggestions.known(prefs), (target, group) -> {
                 if (target.isEmpty()) return "Enter an address.";
                 new Thread(() -> {
                     try {
@@ -3135,19 +3160,30 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     }
                 }, "fluid-link").start();
                 return null;
-            }, null);
+            });
         });
     }
 
     /** Leaving a channel or room, confirmed on its own page; Cancel goes back to its details. */
+    /**
+     * Remove channel (or room, or group chat), confirmed on a full page: leaves it on the server (an IRC connection on
+     * this phone parts it at once) and takes it out of the list. Earlier messages stay, in Archived, like Leave always
+     * kept them; joining again brings the chat back (openJoined).
+     */
     private void confirmLeave(String key, MessageProtocol format, String noun, String server, Runnable back) {
         render("server-leave");
-        heading("Leave this " + noun, "Back", back);
-        ServersScreen.leave(root, prefs, noun, threadTitle(key), server, () -> new Thread(() -> {
+        heading("Remove " + noun, "Back", back);
+        String name = threadTitle(key);
+        ServersScreen.leave(root, prefs, noun, name, server, () -> new Thread(() -> {
             try {
-                GatewayClient.leave(prefs, key, format);
-                GatewayClient.refresh(this, prefs);
-                runOnUiThread(() -> { toast("Left"); inbox(); });
+                if (DirectProtocols.route(prefs, key, format) != null) DirectProtocols.removeChannel(this, key, format);
+                else {
+                    GatewayClient.leave(prefs, key, format);
+                    GatewayClient.refresh(this, prefs);
+                }
+                if (!list("archived").contains(key)) toggleAddress("archived", key);
+                invalidateRows();
+                runOnUiThread(() -> { toast("Removed " + name); inbox(); });
             } catch (Exception error) {
                 runOnUiThread(() -> { toast(error.getMessage()); back.run(); });
             }
@@ -3202,31 +3238,37 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 })));
         }
         if (sample) {
-            // The sample chats mute like real ones, kept on this screen only.
+            // The sample chats mute like real ones, kept on this screen only. Turning it on asks for how long.
             long muteEnds = sampleMuteEnds(key);
-            actions.add(action(muteEnds < 0 ? "Mute notifications" : "Muted", muteEnds < 0
-                ? "1 hour, 6 hours, 1 day, 1 week, or forever" : Mutes.label(muteEnds) + " · change or unmute",
-                () -> openSampleMute(key, name, returnToDetails)));
+            actions.add(toggleRow("Mute notifications", muteEnds < 0 ? "Choose 1 hour, 6 hours, 1 day, 1 week, or forever"
+                : Mutes.rowLabel(muteEnds), muteEnds >= 0, () -> {
+                if (muteEnds < 0) { openSampleMute(key, name, returnToDetails); return; }
+                sampleMutes.remove(key);
+                refreshTabBadges();
+                returnToDetails.run();
+            }));
         }
         if (!sample) {
             if (!contacts.allowed()) actions.add(action("Allow contacts", "Show saved names and photos",
                 () -> requestPermissions(new String[]{Manifest.permission.READ_CONTACTS}, PICKER_CONTACT_PERMISSION)));
-            // Mute opens its own page: 1 hour, 6 hours, 1 day, 1 week, or forever, and Unmute.
+            // Mute is a switch: on opens its own page to choose 1 hour, 6 hours, 1 day, 1 week, or forever; off unmutes.
             long muteEnds = Mutes.endsFor(prefs, key);
-            actions.add(action(muteEnds < 0 ? "Mute notifications" : "Muted", muteEnds < 0
-                ? "1 hour, 6 hours, 1 day, 1 week, or forever" : Mutes.label(muteEnds) + " · change or unmute",
-                () -> openChatMute(key, returnToDetails)));
+            actions.add(toggleRow("Mute notifications", muteEnds < 0 ? "Choose 1 hour, 6 hours, 1 day, 1 week, or forever"
+                : Mutes.rowLabel(muteEnds), muteEnds >= 0, () -> {
+                if (muteEnds < 0) { openChatMute(key, returnToDetails); return; }
+                Mutes.unmute(prefs, List.of(key));
+                refreshTabBadges();
+                if (Mutes.endsFor(prefs, key) >= 0) toast("Its whole server is still muted. Unmute the server from its card above the inbox.");
+                returnToDetails.run();
+            }));
             for (String setting : List.of("pinned", "archived")) {
                 boolean active = list(setting).contains(key);
-                String label = switch (setting) {
-                    case "pinned" -> active ? "Unpin conversation" : "Pin conversation";
-                    default -> active ? "Unarchive conversation" : "Archive conversation";
-                };
+                String label = setting.equals("pinned") ? "Pin conversation" : "Archive conversation";
                 String detail = switch (setting) {
                     case "pinned" -> active ? "Shown at the top of your inbox" : "Keep this chat at the top";
                     default -> active ? "In Archived" : "Move this chat out of your inbox";
                 };
-                actions.add(action(label, detail, () -> {
+                actions.add(toggleRow(label, detail, active, () -> {
                     toggleAddress(setting, key);
                     returnToDetails.run();
                 }));
@@ -3249,22 +3291,27 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 var format = MessageProtocol.parse(link.optString("protocol"));
                 String via = GatewayClient.via(prefs, key, format);
                 if (format == MessageProtocol.IRC && link.optBoolean("group")) {
-                    // Keep joined: rejoin right after reconnecting, or only when you open the channel (ChatExtras).
+                    // Rejoin automatically (Keep joined): join as soon as the connection opens, or only when you open
+                    // the channel (ChatExtras). A real switch.
                     boolean keep = PhoneChat.keepJoined(prefs, link);
-                    actions.add(action("Keep joined: " + (keep ? "On" : "Off"), keep
-                        ? "Rejoins right after reconnecting · tap to rejoin only when you open it"
-                        : "Rejoins when you open it · tap to rejoin right after reconnecting",
-                        () -> { PhoneChat.setKeepJoined(this, link, !keep); returnToDetails.run(); }));
+                    actions.add(toggleRow("Rejoin automatically", keep
+                        ? "Joins this channel as soon as you connect"
+                        : "Off: joins only when you open this channel. It stays in your list.",
+                        keep, () -> { PhoneChat.setKeepJoined(this, link, !keep); returnToDetails.run(); }));
                     boolean shown = !PhoneChat.hideJoins(prefs);
-                    actions.add(action("Joins and leaves: " + (shown ? "Shown" : "Hidden"), "In every channel and room · tap to " + (shown ? "hide" : "show"),
+                    actions.add(toggleRow("Show joins and leaves", "In every channel and room", shown,
                         () -> { prefs.edit().putBoolean("hideJoins", shown).apply(); returnToDetails.run(); }));
                 }
-                if (link.optBoolean("group") && !link.optString("account").isEmpty()
+                boolean directChannel = link.optBoolean("direct") && link.optBoolean("group") && !link.optBoolean("server_chat");
+                if (link.optBoolean("group") && (directChannel || !link.optString("account").isEmpty())
                         && AccountKeys.INSTANCE.getServerServices().contains(format.name().toLowerCase(Locale.ROOT))) {
-                    // A channel or room on a server: leave it there, on its own page.
+                    // A channel or room on a server, joined here or on FluidMessages Web: remove it, on its own page.
                     String noun = format == MessageProtocol.IRC ? "channel" : format == MessageProtocol.MATRIX ? "room" : "group chat";
-                    String server = format.label + " · " + AccountKeys.INSTANCE.serverName(link.optString("account")) + (via.isEmpty() ? "" : " · " + via);
-                    actions.add(action("Leave this " + noun, server, () -> confirmLeave(key, format, noun, server, returnToDetails)));
+                    String account = directChannel ? PhoneChat.directAccountId(this, format) : link.optString("account");
+                    String server = format.label + " · " + (account.isEmpty() ? link.optString("target") : AccountKeys.INSTANCE.serverName(account))
+                        + (via.isEmpty() ? "" : " · " + via) + (directChannel ? " · on this phone" : "");
+                    actions.add(action("Remove " + noun, "Leaves it and takes it out of your list · " + server,
+                        () -> confirmLeave(key, format, noun, server, returnToDetails)));
                     continue;
                 }
                 actions.add(action(format.label + " · " + link.optString("target"), (via.isEmpty() ? "" : via + " · ") + "Linked · tap to unlink",
@@ -3291,9 +3338,40 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         if (phone && contact != null) {
             for (var field : ContactFields.forNumber(this, key)) info.add(action(field.getLabel(), field.getValue(), () -> useContactField(field, name)));
         }
+        // Block is for one person: a group's members each have it on their own details, reached from Members.
+        boolean group = irc || !members.isEmpty() || key.startsWith("mms:") || (sample ? SAMPLE_GROUPS.containsKey(original) : groupRoute(key) != null);
+        BlockChoice block = group || key.startsWith(Privacy.DECOY) ? null : sample
+            ? new BlockChoice(name, sampleBlocked(original), on -> setSampleBlocked(original, on))
+            : new BlockChoice(name, list("blocked").contains(key), on -> setBlocked(List.of(key), on));
         ConversationDetails.mount(root, prefs, name, initials(name), subtitle, sample ? samplePhoto(name) : 0,
             contact == null ? null : contact.photo(), key, reachOptions(key, original, name, sample),
-            phone ? () -> editContact(key) : null, actions, members, security, info);
+            phone ? () -> editContact(key) : null, actions, members, security, info, block);
+    }
+
+    /** Blocks or unblocks [keys] (a chat, or all of a person's chats and numbers): the inbox's Blocked folder. */
+    private void setBlocked(List<String> keys, boolean on) {
+        for (String key : keys) {
+            if (on) blockChat(key);
+            else if (list("blocked").contains(key)) toggleAddress("blocked", key);
+        }
+        invalidateRows();
+        SyncJob.syncSoon(this);
+        refreshTabBadges();
+        toast(on ? "Blocked" : "Unblocked");
+    }
+
+    /** Sample chats blocked or unblocked from their details, on this screen only. */
+    private final Set<String> sampleUnblockedNow = new HashSet<>();
+
+    private boolean sampleBlocked(String name) {
+        return sampleBlockedNow.contains(name) || SampleInbox.BLOCKED.contains(name) && !sampleUnblockedNow.contains(name);
+    }
+
+    private void setSampleBlocked(String name, boolean on) {
+        if (on) { sampleBlockedNow.add(name); sampleUnblockedNow.remove(name); }
+        else { sampleBlockedNow.remove(name); if (SampleInbox.BLOCKED.contains(name)) sampleUnblockedNow.add(name); }
+        refreshTabBadges();
+        toast(on ? "Sample: " + name + " is blocked" : "Sample: " + name + " is unblocked");
     }
 
     /** Whether this is a one-to-one text chat, where a sender can be shown as automated or as a person. */
@@ -3380,6 +3458,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     options.add(new ReachOption(ReachOption.VIDEO, "Meeting link", MeetingPages.summary(prefs),
                         () -> startActivity(CallHub.demo(this, key, name, true, "Meeting link", Encryption.IN_TRANSIT))));
                 }
+                // Sample IRC channels hide Call and Video too, like live ones (IrcCalls).
+                return IrcCalls.filter(options, sampleFormats(contact), IrcCalls.allowed(prefs));
             }
             return options;
         }
@@ -3419,7 +3499,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             options.add(new ReachOption(ReachOption.CALL, "Matrix", target, () -> { if (!callBlocked(Calling.Method.MATRIX)) startActivity(CallHub.screen(this, key, name, false, null)); }));
             options.add(new ReachOption(ReachOption.VIDEO, "Matrix", target, () -> { if (!callBlocked(Calling.Method.MATRIX)) startActivity(CallHub.screen(this, key, name, true, null)); }));
         }
-        return options;
+        // An IRC channel or private chat hides Call and Video unless Settings → Accounts → IRC turns them on (IrcCalls).
+        return IrcCalls.filter(options, formats(key), IrcCalls.allowed(prefs));
     }
 
     /** Fictional numbers in the reserved 555-01xx range, and Matrix IDs on example.org, for the sample inbox. */
@@ -4382,9 +4463,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         if (account == null) {
             // Connected from this phone: its account lives in Settings → Chat services.
             if (!directServers().containsValue(id)) { inbox(); return; }
-            if (action.equals("details") || !id.startsWith("irc:")) {
+            // Its details page has Reconnect automatically, like a server on FluidMessages Web.
+            if (action.equals("details")) { serverDetails(ServersScreen.directAccount(id)); return; }
+            if (!id.startsWith("irc:")) {
                 // The phone's own Matrix and XMPP connections can't look up rooms yet; IRC can (below).
-                if (!action.equals("details")) toast(ServersScreen.phoneOnly(id));
+                toast(ServersScreen.phoneOnly(id));
                 protocolSettings();
                 return;
             }
@@ -4411,9 +4494,21 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         String id = account.optString("id");
         String service = account.optString("protocol");
         String noun = Communities.INSTANCE.noun(service);
-        long joined = GatewayClient.allRoutes(prefs).stream().filter(route -> id.equals(route.optString("account")) && route.optBoolean("group")).count();
+        boolean onPhone = account.optBoolean("direct");
+        long joined = GatewayClient.allRoutes(prefs).stream().filter(route -> route.optBoolean("group") && (id.equals(route.optString("account"))
+            || onPhone && route.optBoolean("direct") && service.equals(route.optString("protocol")))).count();
         render("server-details");
         heading(AccountKeys.INSTANCE.serverName(id), "Back", this::inbox);
+        // Reconnect automatically (on by default): off, it connects only when you tap Reconnect. Chats stay listed.
+        boolean auto = PhoneChat.autoReconnect(this, id);
+        var connection = new ArrayList<SettingsAction>();
+        connection.add(new SettingsAction("Reconnect automatically", auto
+            ? "Connects when FluidMessages opens and after the connection drops"
+            : "Off: connects only when you tap Reconnect. Your " + noun + "s stay in your list.",
+            () -> new Thread(() -> {
+                PhoneChat.setAutoReconnect(this, id, !auto);
+                runOnUiThread(() -> { if (page.equals("server-details")) serverDetails(account); });
+            }, "fluid-auto-reconnect").start(), false, null, auto));
         var actions = new ArrayList<SettingsAction>();
         actions.add(action("Browse " + AccountKeys.INSTANCE.serverName(id), "Find public " + noun + "s to join", () -> serverAction("browse", id)));
         actions.add(action("Join a " + noun, "By name or address", () -> serverAction("join", id)));
@@ -4421,7 +4516,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         account2.add(action(AccountKeys.INSTANCE.address(id), ServersScreen.INSTANCE.serviceTitle(service) + " · " + joined + " " + noun + (joined == 1 ? "" : "s")
             + " joined. Leave one from its chat details.", this::accounts));
         account2.add(action("Remove server", "Signs out in Settings → Accounts. Earlier messages stay.", this::accounts));
-        SettingsPages.mount(root, prefs, List.of(new SettingsSection("Server", account2), new SettingsSection("Channels and rooms", actions)));
+        SettingsPages.mount(root, prefs, List.of(new SettingsSection("Server", account2), new SettingsSection("Connection", connection),
+            new SettingsSection("Channels and rooms", actions)));
     }
 
     private void addServer() {
@@ -4445,6 +4541,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     /** Opens a channel or room just joined on a server, once this phone has its link. */
     private void openJoined(String address, String protocol) {
+        // Joined again after Remove channel: back out of Archived.
+        if (list("archived").contains(address)) toggleAddress("archived", address);
         new Thread(() -> {
             try { GatewayClient.refresh(this, prefs); } catch (Exception ignored) {}
             runOnUiThread(() -> chat(address, MessageProtocol.parse(protocol)));

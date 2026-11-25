@@ -295,7 +295,21 @@ function accountsPage() {
   const draw = () => accountRows(list, draw).then(() => refresh().catch(() => {}))
     .catch((error) => list.replaceChildren(element('p', error.message, 'muted')));
   draw();
-  return [card];
+  return [card, ircCallsCard()];
+}
+
+/** Settings → Accounts → IRC: call and meeting-link buttons in IRC chats, off unless you turn them on. */
+function ircCallsCard() {
+  const card = settingsCard('IRC');
+  const toggle = checkbox('Show call and meeting link buttons in IRC chats', prefs.ircCalls === true, async (value) => {
+    prefs = {...prefs, ircCalls: value};
+    updateCallButtons();
+    try { companionSettings = await api('settings', {prefs: {ircCalls: value}}); } catch (error) { showError(error); }
+  });
+  toggle.querySelector('input').setAttribute('role', 'switch');
+  card.append(toggle, element('p', 'Not recommended. Many IRC channels ban call and meeting links, and moderators may kick or ban you for '
+    + 'posting them. Off by default.', 'notice irc-calls-warning'));
+  return card;
 }
 
 const PROTOCOL_BLURBS = {matrix: 'Chat, groups, and calls', xmpp: 'Jabber and XMPP chat', email: 'Any IMAP and SMTP mailbox', irc: 'Channels and private messages'};

@@ -15,6 +15,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -158,7 +159,7 @@ object ConversationDetails {
     @JvmStatic @JvmOverloads
     fun mount(root: LinearLayout, prefs: SharedPreferences, name: String, initials: String, subtitle: String, photo: Int, photoUri: Uri?,
               person: String, reach: List<ReachOption>, edit: Runnable?, actions: List<SettingsAction>, members: List<GroupMember>,
-              security: List<SettingsAction>, info: List<SettingsAction> = emptyList()) {
+              security: List<SettingsAction>, info: List<SettingsAction> = emptyList(), block: BlockChoice? = null) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -187,6 +188,16 @@ object ConversationDetails {
                     item { DetailGroup("Customize", actions.take(1)) }
                     if (actions.size > 1) item { DetailGroup("Conversation", actions.drop(1)) }
                     if (security.isNotEmpty()) item { DetailGroup("Security", security) }
+                    // One person's chat only: in a group, each member's own details has Block.
+                    if (block != null) item {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Block", Modifier.padding(horizontal = 10.dp), style = MaterialTheme.typography.labelLarge,
+                                color = scheme.onSurfaceVariant)
+                            Surface(shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainer) {
+                                BlockControl(block, scheme.onSurface, scheme.onSurfaceVariant, scheme.primary)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -204,6 +215,22 @@ private fun DetailGroup(title: String, actions: List<SettingsAction>) {
             Column {
                 actions.forEachIndexed { index, action ->
                     if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 15.dp), color = scheme.outlineVariant)
+                    // On/off rows are real switches; the whole row flips it.
+                    val on = action.toggle
+                    if (on != null) {
+                        Row(Modifier.fillMaxWidth().toggleable(value = on, role = Role.Switch) { action.action.run() }
+                            .heightIn(min = 62.dp).padding(horizontal = 15.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(action.label, color = scheme.onSurface, style = MaterialTheme.typography.bodyLarge)
+                                if (action.detail.isNotEmpty()) Text(action.detail, color = scheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                            Switch(checked = on, onCheckedChange = null, colors = SwitchDefaults.colors(checkedThumbColor = Color.White,
+                                checkedTrackColor = Color(MessageStyle.filledControl(LocalControlTint.current))))
+                        }
+                        return@forEachIndexed
+                    }
                     Row(Modifier.fillMaxWidth()
                         .then(if (action.info) Modifier else Modifier.clickable(role = Role.Button, onClick = action.action::run))
                         .heightIn(min = 62.dp).padding(horizontal = 15.dp, vertical = 9.dp),
@@ -232,6 +259,44 @@ private fun CanvasChevron(color: Color) {
             androidx.compose.ui.geometry.Offset(end, center.y), strokeWidth = 2.dp.toPx())
         drawLine(color, androidx.compose.ui.geometry.Offset(end, center.y),
             androidx.compose.ui.geometry.Offset(start, size.height * .8f), strokeWidth = 2.dp.toPx())
+    }
+}
+
+/**
+ * Block or Unblock one person on a details page (the same "blocked" list as the inbox menu). [change] gets true to
+ * block and false to unblock; it returns once the choice is saved.
+ */
+class BlockChoice(val name: String, val blocked: Boolean, val change: java.util.function.Consumer<Boolean>)
+
+/** Block, confirmed right here in the card rather than in a pop-up; Unblock takes effect at once. */
+@Composable
+internal fun BlockControl(choice: BlockChoice, ink: Color, muted: Color, action: Color) {
+    var blocked by remember(choice) { mutableStateOf(choice.blocked) }
+    var asking by remember(choice) { mutableStateOf(false) }
+    val danger = MaterialTheme.colorScheme.error
+    Column(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (asking) {
+            Text("Block ${choice.name}?", color = ink, style = MaterialTheme.typography.titleMedium)
+            Text("Their chats move to Blocked, and new messages from them won’t notify you. You can unblock them here anytime.",
+                color = muted, style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { choice.change.accept(true); blocked = true; asking = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = danger, contentColor = MaterialTheme.colorScheme.onError)) {
+                    Text("Block")
+                }
+                TextButton(onClick = { asking = false }) { Text("Cancel", color = action) }
+            }
+        } else {
+            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button) {
+                if (blocked) { choice.change.accept(false); blocked = false } else asking = true
+            }, verticalAlignment = Alignment.CenterVertically) {
+                Text((if (blocked) "Unblock " else "Block ") + choice.name, color = if (blocked) action else danger,
+                    style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+            }
+            Text(if (blocked) "Blocked. Their chats are in Blocked, and they don’t notify you."
+                else "Moves their chats to Blocked and stops notifications from them.", color = muted,
+                style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 

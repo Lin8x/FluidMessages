@@ -4,8 +4,13 @@ import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.DateFormat
-import java.util.Calendar
-import java.util.Date
+import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.time.temporal.ChronoUnit
+import java.util.Locale
 
 /**
  * Muting for a while or for good: a chat, every address of one person, or every channel, room, and DM on a server.
@@ -91,18 +96,38 @@ object Mutes {
     }
 
     /**
-     * "Muted" (forever), "Muted until 3:40 PM" (later today), or "Muted for 6 hours" / "1 day" / "1 week".
-     * Empty when not muted. [clock] writes a time of day; [sameDay] says whether two times fall on the same day.
+     * When a timed mute ends, in this phone's time zone and language: "3:45 PM" later today, "tomorrow 9:00 AM",
+     * "Tue 3:45 PM" within the week, or "Dec 1, 3:45 PM" further out. [timePattern] and [datePattern] are the phone's
+     * own (the 12- or 24-hour choice comes with the time pattern), so tests can pass fixed ones.
      */
-    fun label(end: Long, now: Long, clock: (Long) -> String, sameDay: (Long, Long) -> Boolean): String {
-        if (end < 0) return ""
-        if (end == 0L) return "Muted"
-        if (sameDay(end, now)) return "Muted until " + clock(end)
-        val hours = ((end - now + HOUR - 1) / HOUR).toInt()
-        if (hours < 24) return "Muted for $hours hour" + if (hours == 1) "" else "s"
-        val days = maxOf(1, Math.round((end - now) / (24.0 * HOUR)).toInt())
-        return "Muted for " + when (days) { 7 -> "1 week"; 1 -> "1 day"; else -> "$days days" }
+    fun endsAt(end: Long, now: Long, zone: ZoneId, locale: Locale, timePattern: String, datePattern: String): String {
+        val at = Instant.ofEpochMilli(end).atZone(zone)
+        val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+        val time = runCatching { DateTimeFormatter.ofPattern(timePattern, locale) }
+            .getOrElse { DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale) }.format(at)
+        val days = ChronoUnit.DAYS.between(today, at.toLocalDate())
+        return when {
+            days <= 0L -> time
+            days == 1L -> "tomorrow $time"
+            days < 7L -> DateTimeFormatter.ofPattern("EEE", locale).format(at) + " " + time
+            else -> runCatching { DateTimeFormatter.ofPattern(datePattern, locale) }
+                .getOrElse { DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale) }.format(at) + ", " + time
+        }
     }
+
+    /**
+     * "Muted until Tue 3:45 PM" and the like for a timed mute, [forever] for one with no end, and "" when not muted.
+     * Short places (an inbox row, a chat's header) say just "Muted" for forever; the mute row in details says
+     * [FOREVER].
+     */
+    fun label(end: Long, now: Long, zone: ZoneId, locale: Locale, timePattern: String, datePattern: String,
+              forever: String = "Muted"): String = when {
+        end < 0 -> ""
+        end == 0L -> forever
+        else -> "Muted until " + endsAt(end, now, zone, locale, timePattern, datePattern)
+    }
+
+    const val FOREVER = "Muted until you turn it back on"
 
     // This phone's settings
 
@@ -178,21 +203,30 @@ object Mutes {
         write(prefs.edit(), unmuted(MainActivity.addressList(prefs, LIST), until(prefs), keys, now)).apply()
     }
 
-    @JvmStatic fun label(end: Long): String = label(end, System.currentTimeMillis(),
-        { DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it)) }, ::sameDay)
+    /** "Muted until Tue 3:45 PM", or "Muted" for forever, in this phone's time zone, language, and 12- or 24-hour clock. */
+    @JvmStatic fun label(end: Long): String = deviceLabel(end, "Muted")
+
+    /** The mute row in a chat's or person's details, where forever reads [FOREVER]. */
+    @JvmStatic fun rowLabel(end: Long): String = deviceLabel(end, FOREVER)
+
+    private fun deviceLabel(end: Long, forever: String): String {
+        val locale = Locale.getDefault()
+        return label(end, System.currentTimeMillis(), ZoneId.systemDefault(), locale, timePattern(locale), datePattern(locale), forever)
+    }
 
     /** When a choice on the mute page would end, for its second line: "Until 3:40 PM", "Until Tue 9:00 AM". */
     @JvmStatic fun choiceDetail(duration: Long): String {
-        if (duration <= 0) return "Until you unmute"
+        if (duration <= 0) return "Until you turn it back on"
         val now = System.currentTimeMillis()
-        val end = now + duration
-        val time = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(end))
-        return if (sameDay(end, now)) "Until $time" else "Until " + java.text.SimpleDateFormat("EEE", java.util.Locale.getDefault()).format(Date(end)) + " " + time
+        val locale = Locale.getDefault()
+        return "Until " + endsAt(now + duration, now, ZoneId.systemDefault(), locale, timePattern(locale), datePattern(locale))
     }
 
-    private fun sameDay(a: Long, b: Long): Boolean {
-        val one = Calendar.getInstance().apply { timeInMillis = a }
-        val two = Calendar.getInstance().apply { timeInMillis = b }
-        return one.get(Calendar.YEAR) == two.get(Calendar.YEAR) && one.get(Calendar.DAY_OF_YEAR) == two.get(Calendar.DAY_OF_YEAR)
-    }
+    /** The phone's short time pattern. Android's DateFormat follows the 12- or 24-hour choice in the phone's settings. */
+    private fun timePattern(locale: Locale): String =
+        (DateFormat.getTimeInstance(DateFormat.SHORT, locale) as? SimpleDateFormat)?.toPattern() ?: "h:mm a"
+
+    /** The phone's short month-and-day pattern, such as "MMM d" or "d MMM". */
+    private fun datePattern(locale: Locale): String =
+        runCatching { android.text.format.DateFormat.getBestDateTimePattern(locale, "MMMd") }.getOrNull() ?: "MMM d"
 }

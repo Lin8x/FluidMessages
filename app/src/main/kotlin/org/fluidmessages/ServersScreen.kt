@@ -203,15 +203,16 @@ private fun Directory(service: String, pick: BiConsumer<String, Map<String, Stri
 private fun Leave(noun: String, name: String, server: String, leave: Runnable, cancel: Runnable) {
     var busy by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Leave $name?", style = MaterialTheme.typography.headlineSmall)
+        Text("Remove $name?", style = MaterialTheme.typography.headlineSmall)
         Text(server, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("You stop getting this $noun’s messages. Earlier messages stay here, and you can join again any time.")
+        Text("FluidMessages leaves this $noun and takes it out of your list. You stop getting its messages.")
+        Text("Earlier messages stay in Archived. You can join again any time.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = cancel::run, enabled = !busy) { Text("Cancel") }
             Spacer(Modifier.weight(1f))
             Button(enabled = !busy, onClick = { busy = true; leave.run() },
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)) {
-                Text(if (busy) "Leaving…" else "Leave this $noun")
+                Text(if (busy) "Removing…" else "Remove $noun")
             }
         }
     }

@@ -212,6 +212,61 @@ def web_features_test(request):
     check(request("/api/settings", {"web_appearance": look})["web_appearance"] == look, "Appearance extras weren't saved")
     web_mute_test(request)
     web_details_effects_test(request)
+    web_details_rules_test(request)
+
+
+def web_details_rules_test(request):
+    """Conversation and contact details on FluidMessages Web: long member lists fold to five, on/off rows are switches,
+    Block asks again in place, and linking an address suggests people from your own chats without sending anything."""
+    chats_js, people_js, companion_js, style_css = (request(path, authorized=False).decode() for path in (
+        "/chats.js", "/people.js", "/companion.js", "/style.css"))
+    check("checkbox('Mute notifications'" in chats_js and "checkbox(title, set" in chats_js,
+          "Mute, Pin, and Archive in a chat's details aren't switches")
+    check(":is(.settings-page-body, .details-body) .settings-section label.check" in style_css, "Details pages don't draw switches")
+    check("blockControl(threadTitle(key), [address])" in chats_js and "!threadIsGroup(key)" in chats_js
+          and "blockControl(person.name, addresses)" in people_js, "Block is missing from a chat's or a person's details")
+    check("linkSuggestionBox(target" in companion_js and "linkSuggestionBox(input" in people_js,
+          "Linking an address doesn't suggest people from your chats")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("Skipped running the member list and link suggestion rules: node isn't installed (set NODE to its path)")
+        return
+    members = re.search(r"const MEMBERS_FOLD_OVER.*?(?=\nfunction memberList)", chats_js, re.S).group(0)
+    suggest = re.search(r"const LINKABLE_SERVICES.*?(?=\n/\*\*\n \* The tappable suggestions)", people_js, re.S).group(0)
+    script = """
+const knownPeople = () => [];
+""" + members + "\n" + suggest + """
+const wrong = [];
+const same = (label, got, want) => { if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push(label + ': ' + JSON.stringify(got)); };
+const people = (count) => Array.from({length: count}, (_, index) => 'Fixture person ' + (index + 1));
+for (const count of [0, 5, 10]) {
+  same('in full ' + count, visibleMembers(people(count), false).length, count);
+  same('no button ' + count, membersToggleLabel(count, false), '');
+}
+same('first five of eleven', visibleMembers(people(11), false), people(5));
+same('show all', membersToggleLabel(214, false), 'Show all 214 members');
+same('expanded', visibleMembers(people(214), true).length, 214);
+same('show fewer', membersToggleLabel(214, true), 'Show fewer');
+const book = [
+  {name: 'Maya Chen', accounts: [{protocol: 'matrix', target: '@maya:example.org'}, {protocol: 'xmpp', target: 'maya@example.org'}]},
+  {name: 'Rosa Amaya', accounts: [{protocol: 'matrix', target: '@rosa:example.org'}]},
+  {name: 'Leo Park', accounts: [{protocol: 'email', target: 'leo.park@example.org'}, {protocol: 'sip', target: 'leo@sip.example.org'}]},
+  {name: 'kestrel', accounts: [{protocol: 'irc', target: 'kestrel'}, {protocol: 'irc', target: '#radio'}]},
+];
+const addresses = (items) => items.map((item) => item.address);
+same('nothing until typed', linkSuggestions('', 'matrix', book), []);
+same('that service only', addresses(linkSuggestions('maya', 'matrix', book)), ['@maya:example.org', '@rosa:example.org']);
+same('any service', linkSuggestions('maya', '', book).map((item) => item.service), ['matrix', 'xmpp', 'matrix']);
+same('by address', addresses(linkSuggestions('PARK', 'email', book)), ['leo.park@example.org']);
+same('no SIP or channels', addresses(linkSuggestions('e', '', book)).filter((item) => item.includes('sip') || item.startsWith('#')), []);
+same('exact address not repeated', linkSuggestions('kestrel', 'irc', book), []);
+same('new address finds nothing', linkSuggestions('@new.person:example.org', 'matrix', book), []);
+same('tag', linkSuggestions('leo', '', book)[0], {name: 'Leo Park', address: 'leo.park@example.org', service: 'email'});
+process.stdout.write(JSON.stringify(wrong));
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0 and result.stdout == "[]", "The member list or link suggestion rules are wrong: " + (result.stdout or result.stderr)[:600])
+    print("PASS  web details: member lists fold over ten, switches, Block asks in place, link suggestions from your chats")
 
 
 def web_mute_test(request):
@@ -278,10 +333,18 @@ same('forever label', muteLabel(0), 'Muted');
 // Timed, chat and server, and the labels.
 webChats = muteKeys(['maya'], 6 * 3600000);
 same('timed end', muteEnds('maya'), now + 6 * 3600000);
-same('six hours', muteLabel(muteEnds('maya')), 'Muted for 6 hours');
-same('later today', muteLabel(Date.UTC(2026, 10, 24, 22, 40)), 'Muted until 22:40');
-same('a day', muteLabel(now + 86400000), 'Muted for 1 day');
-same('a week', muteLabel(now + 7 * 86400000), 'Muted for 1 week');
+// When it ends, as a weekday and time in the device's zone, with a fixed clock, zone, and language. ICU may put a
+// narrow space before AM or PM, so spaces are compared plainly.
+const plain = (text) => text.replace(/[\\u202f\\u00a0]/g, ' ');
+const until = (ends, from = now, locale = 'en-US', zone = 'UTC') => plain(muteLabel(ends, from, 'Muted', locale, zone));
+same('six hours', until(muteEnds('maya')), 'Muted until tomorrow 3:00 AM');
+same('later today', until(Date.UTC(2026, 10, 24, 22, 40)), 'Muted until 10:40 PM');
+same('a day', until(now + 86400000), 'Muted until tomorrow 9:00 PM');
+same('a week', until(now + 7 * 86400000), 'Muted until Dec 1, 9:00 PM');
+same('this week', until(Date.UTC(2026, 10, 24, 15, 45), Date.UTC(2026, 10, 22, 10, 0)), 'Muted until Tue 3:45 PM');
+same('24-hour clock', until(Date.UTC(2026, 10, 24, 22, 40), now, 'en-GB'), 'Muted until 22:40');
+same('time zone', until(Date.UTC(2026, 10, 24, 15, 0), Date.UTC(2026, 10, 24, 14, 0), 'en-US', 'Asia/Tokyo'), 'Muted until tomorrow 12:00 AM');
+same('forever on a details row', muteLabel(0, now, MUTED_FOREVER), 'Muted until you turn it back on');
 webChats = muteKeys([SERVER_MUTE + 'irc:fixture@irc.example.test'], 3600000);
 same('server covers its channel', chatMuteEnds('#radio'), now + 3600000);
 same('server covers its DMs', chatMuteEnds('kestrel'), now + 3600000);
@@ -333,6 +396,7 @@ def web_details_effects_test(request):
     chat_notice_test(cards_js, request("/app.js", authorized=False), request("/style.css", authorized=False))
     from_account_test(request("/servers.js", authorized=False), request("/app.js", authorized=False),
                       request("/companion.js", authorized=False))
+    connection_marks_test(request("/connections.js", authorized=False), request("/servers.js", authorized=False))
     # IRC channels' members reach the browser for a group's details.
     with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db, db:
         db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('channel:irc-fixture', ?)",
@@ -395,6 +459,37 @@ process.stdout.write(JSON.stringify(wrong));
     result = subprocess.run([node, "-e", script, json.dumps(CHAT_NOTICES, ensure_ascii=False)], capture_output=True, text=True, timeout=30)
     check(result.returncode == 0 and result.stdout == "[]", "The browser's chat notice parser disagrees with the phone's: "
           + (result.stdout or result.stderr)[:400])
+
+
+def connection_marks_test(connections_js, servers_js):
+    """The inbox's connection mark beside IRC, Matrix, and XMPP tags, the bar's words, and Remove channel on the web."""
+    block = re.search(rb"// connection-state:start[^\n]*\n(.*?)// connection-state:end", connections_js, re.S)
+    check(block, "connections.js has no connection state rules")
+    # The mark sits beside the tag and is never an unread-style dot; switches are read out as switches.
+    check(b"connectionMark(state)" in connections_js and b"'role', 'switch'" in connections_js
+          and b"autoReconnectToggle(account)" in servers_js and b"'Remove ' + noun" in servers_js
+          and b"route.group || route.server_chat" in servers_js, "The connection mark, switches, Remove, or server chats are missing")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("Skipped running the connection state rules: node isn't installed (set NODE to its path)")
+        return
+    script = block.group(1).decode() + """
+const wrong = [];
+const expect = (got, want, what) => { if (got !== want) wrong.push([what, got, want]); };
+expect(connectionState('connected'), 'connected', 'connected');
+expect(connectionState('reconnecting'), 'connecting', 'waiting to try again');
+expect(connectionState('paused'), 'disconnected', 'paused by the hourly limit');
+expect(connectionState(''), '', 'nothing known');
+expect(connectionWords({state: 'disconnected', error: 'Harbor Net only lets registered nicknames connect'}, 'Harbor Net'),
+  'Disconnected from Harbor Net · Harbor Net only lets registered nicknames connect', 'the network reason reaches the bar');
+expect(connectionWords({state: 'disconnected', manual: true}, 'Harbor Net'), 'Not connected to Harbor Net · Reconnect automatically is off', 'off');
+expect(connectionWords({state: 'connecting', manual: true}, 'Harbor Net'), 'Connecting to Harbor Net…', 'connecting after Reconnect');
+expect(SAMPLE_CONNECTIONS['sample-irc-meteors'], 'disconnected', 'the sample shows a disconnected channel');
+expect(CONNECTION_LABELS.disconnected, 'Not connected', 'the mark reads out as text');
+process.stdout.write(JSON.stringify(wrong));
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0 and result.stdout == "[]", "The connection mark rules are wrong: " + (result.stdout or result.stderr)[:600])
 
 
 def from_account_test(servers_js, app_js, companion_js):
@@ -1904,6 +1999,78 @@ def chat_features_test():
         check(len(rejoin.sock.lines) == before, "An open channel was joined twice")
         gateway.clients[ident] = ("fixture", client)
 
+        # Refusals in plain words: SASL needed from this connection, a nickname the network won't take, a ban. Each
+        # stops retrying and waits for Reconnect, with the reason in the bar's status and the server chat.
+        sasl = irc_client.explain("ERROR", "Closing Link: 192.0.2.7 (SASL authentication is required)", "irc.example.test", "fluidtest", False)
+        check(sasl and sasl[1] and "registered nicknames" in sasl[0] and "SASL password" in sasl[0], f"SASL-only wasn't explained: {sasl}")
+        check(irc_client.explain("ERROR", "Closing Link: host (Client Quit)", "n", "k", False) is None
+              and irc_client.explain("ERROR", "Closing Link: host (Ping timeout: 240 seconds)", "n", "k", False)[1] is False
+              and irc_client.explain("465", "You are banned", "n", "k", False)[1] is True
+              and irc_client.explain("904", "SASL failed", "n", "k", False) is None
+              and irc_client.explain("904", "SASL failed", "n", "k", True)[1] is False, "A refusal was classed wrongly")
+        refused = irc_client.IrcClient({"server": "irc.example.test", "nick": "9fluid"}, lambda *a: None, lambda *a: None)
+        refused.sock = Recorder()
+        try:
+            refused.handle(irc_client.parse(":irc.example.test 432 * 9fluid :Erroneous Nickname"))
+            raise RuntimeError("An erroneous nickname was retried as nick_")
+        except irc_client.Refused as error:
+            check("“9fluid”" in str(error) and refused.problem[1], "The refused nickname wasn't explained")
+        check(not any(line.startswith("NICK 9fluid_") for line in refused.sock.lines), "An erroneous nickname fell back to nick_")
+        notices = []
+        only = irc_client.IrcClient({"server": "irc.example.test", "nick": "fluidtest"}, lambda *a: notices.append(a), lambda *a: None)
+        only.sock = Recorder()
+        only.handle(irc_client.parse(":irc.example.test NOTICE * :*** You need to identify via SASL to use this server"))
+        only.handle(irc_client.parse("ERROR :Closing Link: 192.0.2.7 (Bye)"))
+        check(only.problem and only.problem[1] and "registered nicknames" in only.problem[0], f"The SASL notice wasn't the reason: {only.problem}")
+        only.wake.set()
+        check(only.wait_for_reconnect(only.problem[0]) is True and only.status["state"] == "disconnected"
+              and "registered nicknames" in only.status["error"], "A refusal didn't wait for Reconnect with its reason")
+
+        # Reconnect automatically: on by default; off, nothing connects until Reconnect, and it's in the snapshot.
+        check(gateway.reconnects(ident), "Reconnect automatically wasn't on by default")
+        with closing(connect()) as db, db:
+            gateway.set_auto_reconnect(db, {"account": ident, "on": False})
+        with closing(connect()) as db:
+            listed = next(a for a in gateway.snapshot(db)["accounts"] if a["id"] == ident)
+        check(listed["reconnect"] is False and not gateway.reconnects(ident), "Reconnect automatically off wasn't saved")
+        manual = irc_client.IrcClient({"server": "irc.example.test", "nick": "fluidtest"}, lambda *a: None, lambda *a: None,
+                                      connect=lambda: (_ for _ in ()).throw(RuntimeError("connected while Reconnect automatically was off")),
+                                      auto=lambda: gateway.reconnects(ident))
+        manual.stopped.set()
+        manual.wake.set()
+        manual.run()
+        check(manual.status["state"] == "disconnected" and manual.status["manual"] is True, f"Off still connected: {manual.status}")
+        client.wake.clear()
+        with closing(connect()) as db, db:
+            gateway.set_auto_reconnect(db, {"account": ident, "on": True})
+        check(gateway.reconnects(ident) and client.wake.is_set(), "Turning Reconnect automatically back on didn't connect")
+        try:
+            with closing(connect()) as db, db:
+                gateway.set_auto_reconnect(db, {"account": "email:nobody@example.test", "on": False})
+            raise RuntimeError("Reconnect automatically took an unknown account")
+        except ValueError:
+            pass
+        # The network's server chat exists as soon as its connection starts, so the network shows in the list.
+        server_chat = gateway.irc_server_route(ident)
+        with closing(connect()) as db:
+            shown = [r for r in gateway.snapshot(db)["routes"] if r.get("server_chat")]
+        check(server_chat["target"] == irc_client.SERVER and any(r["address"] == server_chat["address"] for r in shown),
+              "The network's server chat isn't listed")
+        # Matrix without encryption reports a connection too, and waits for Reconnect while off.
+        calls = []
+        poller = protocol_gateway.Poller(lambda: calls.append(1), 0.01, auto=lambda: False, network="matrix.example.test")
+        import threading
+        waiting = threading.Thread(target=poller.run, daemon=True)
+        waiting.start()
+        time.sleep(0.2)
+        check(not calls and poller.status["state"] == "disconnected" and poller.status["manual"], "The Matrix check ran while off")
+        poller.stop()
+        waiting.join(2)
+        check(not calls and not waiting.is_alive(), "The Matrix check ran after it was stopped")
+        working = protocol_gateway.Poller(lambda: (calls.append(1), working.stop()), 0.01, auto=lambda: True)
+        working.run()
+        check(calls and working.status["state"] == "connected", "A Matrix check didn't report connected")
+
         # Email never takes a command as text.
         try:
             gateway.check_not_command({"protocol": "email", "via": "email"}, "/me waves", {})
@@ -2503,6 +2670,9 @@ same(SERVICE_GUIDES.xmpp.line, 'Simple, private one-to-one and group chat. It wo
 same(SERVICE_GUIDES.email.line, 'Your normal email, shown as chats. Only the conversations you choose show up.', 'Email line');
 same(SERVICE_GUIDES.irc.line, 'Big public chat rooms for hobbies and open-source projects. No sign-up needed: just pick a nickname.', 'IRC line');
 same(Object.values(SERVICE_GUIDES).map((guide) => guide.steps.length), [3, 3, 3, 3], 'three steps');
+// IRC says how to register a nickname and where its password goes, for networks that ask you to sign in.
+same([SERVICE_GUIDES.irc.signIn.length > 2, SERVICE_GUIDES.irc.signIn.join(' ').includes('/msg NickServ REGISTER'),
+  SERVICE_GUIDES.irc.signIn.join(' ').includes('SASL password'), !!SERVICE_GUIDES.matrix.signIn], [true, true, true, false], 'irc sign-in help');
 same(SERVICE_GUIDES.email.example, 'Use the email you already have', 'the email example');
 same([guideExample('matrix').preset, guideExample('xmpp').preset, guideExample('irc').preset, guideExample('email').preset],
   [{homeserver: 'https://matrix-client.matrix.org'}, {jid: '@jabber.org'}, {server: 'irc.libera.chat', port: '6697'}, {}], 'examples');
@@ -4017,21 +4187,36 @@ def meeting_links_test():
         check("A Jitsi Meet link anyone" not in welcome_js + settings_js and "Pick Zoom, Jitsi Meet, Google Meet, or Teams" in welcome_js,
               "The Calls page still says meeting links are only Jitsi")
         check("discord" not in (meetings_js + welcome_js).lower(), "Meeting links mention a service FluidMessages doesn't name")
-        # A server from before there was a choice has no meeting settings: Zoom and Jitsi on, Jitsi on meet.jit.si.
+        # A server from before there was a choice has no meeting settings: all four on, Jitsi on meet.jit.si.
         fresh = request("/api/settings")["prefs"]
-        check(fresh["meetings"] == {"on": {"zoom": True, "meet": False, "teams": False, "jitsi": True}, "links": {}, "last": "",
-                                    "jitsiServer": "meet.jit.si"} and fresh["callMeetings"] is True, "Meeting links don't start with Zoom and Jitsi on")
-        saved = request("/api/settings", {"prefs": {"meetings": {"on": {"meet": True}, "links": {"zoom": zoom, "meet": meet}, "last": "meet",
-                                                                 "jitsiServer": "meet.example.org"}}})["prefs"]["meetings"]
-        check(saved == {"on": {"zoom": True, "meet": True, "teams": False, "jitsi": True}, "links": {"zoom": zoom, "meet": meet}, "last": "meet",
-                        "jitsiServer": "meet.example.org"}, "Meeting links weren't saved: " + json.dumps(saved))
+        check(fresh["meetings"] == {"version": 2, "on": {"zoom": True, "meet": True, "teams": True, "jitsi": True}, "links": {}, "custom": [], "last": "",
+                                    "jitsiServer": "meet.jit.si"} and fresh["callMeetings"] is True, "Meeting links don't start with all four on")
+        # Settings saved before Google Meet and Teams were on at first: those two come on, and the rest stays as chosen.
+        older = request("/api/settings", {"prefs": {"meetings": {"on": {"zoom": True, "meet": False, "teams": False, "jitsi": False}, "links": {},
+                                                                 "last": "zoom", "jitsiServer": "meet.jit.si"}}})["prefs"]["meetings"]
+        check(older["version"] == 2 and older["on"] == {"zoom": True, "meet": True, "teams": True, "jitsi": False} and older["last"] == "zoom",
+              "Older meeting settings didn't turn on Google Meet and Teams: " + json.dumps(older))
+        work = {"id": "c0a1b2c3d", "name": "Work video", "link": "https://video.example.org/rooms/team?pin=1234", "host": "video.example.org"}
+        club = {"id": "c99887766", "name": "Book club 📚", "link": "https://club.example.net/r/1", "host": ""}
+        saved = request("/api/settings", {"prefs": {"meetings": {"version": 2, "on": {"teams": False, "c99887766": False}, "links": {"zoom": zoom, "meet": meet},
+                                                                 "custom": [work, club], "last": "c0a1b2c3d", "jitsiServer": "meet.example.org"}}})["prefs"]["meetings"]
+        check(saved == {"version": 2, "on": {"zoom": True, "meet": True, "teams": False, "jitsi": True, "c0a1b2c3d": True, "c99887766": False},
+                        "links": {"zoom": zoom, "meet": meet}, "custom": [work, club], "last": "c0a1b2c3d", "jitsiServer": "meet.example.org"},
+              "Meeting links weren't saved: " + json.dumps(saved))
         check(request("/api/settings")["prefs"]["meetings"] == saved, "Meeting links weren't kept")
-        # Other settings saved afterwards leave them alone.
+        # Other settings saved afterwards leave them alone, and a choice made from version 2 on stays.
         check(request("/api/settings", {"prefs": {"callMeetings": False}})["prefs"]["meetings"] == saved, "Another setting reset meeting links")
+        custom = lambda **change: {"version": 2, "custom": [{**work, **change}]}
         for bad in ({"links": {"zoom": meet}}, {"links": {"zoom": "https://zoom.us.example.org/j/1234567890"}}, {"links": {"jitsi": "https://meet.jit.si/Room"}},
                     {"links": {"meet": "https://meet.google.com/"}}, {"links": {"teams": "javascript:alert(1)"}}, {"on": {"zoom": "yes"}},
-                    {"on": {"other": True}}, {"on": {"zoom": False, "jitsi": False}}, {"last": "other"}, {"jitsiServer": "meet example"},
-                    {"jitsiServer": "https://meet.example.org/"}, {"extra": 1}, [], "zoom"):
+                    {"on": {"other": True}}, {"version": 2, "on": {"zoom": False, "jitsi": False, "meet": False, "teams": False}}, {"last": "other"},
+                    {"jitsiServer": "meet example"}, {"jitsiServer": "https://meet.example.org/"}, {"extra": 1}, [], "zoom", {"version": 3}, {"version": True},
+                    {"custom": {}}, custom(name=""), custom(name="A" * 33), custom(name="Zoom"), custom(name="teams"), custom(name=" Work video"),
+                    custom(name="Work‮video"), custom(name=5), custom(link="http://video.example.org/x"), custom(link="https://vidoe.example.org/x"),
+                    custom(link="https://video.example.org.example.net/x"), custom(link="javascript:alert(1)"), custom(link="https://video.example.org/a b"),
+                    custom(host="video example"), custom(id="../x"), custom(extra=1), {"custom": [work, {**work, "name": "Other"}]},
+                    {"custom": [work, {**club, "name": "work VIDEO"}]}, {"custom": [{**work, "id": "c%08x" % n, "name": f"Room {n}"} for n in range(11)]},
+                    {"on": {"c12345678": True}}, {"last": "c12345678"}):
             try:
                 request("/api/settings", {"prefs": {"meetings": bad}})
                 raise RuntimeError("Invalid meeting links were accepted: " + json.dumps(bad))
@@ -4047,29 +4232,66 @@ def meeting_links_test():
 const wrong = [];
 const same = (what, got, want) => { if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push([what, got, want]); };
 const ids = (list) => list.map((service) => service.id);
-// Zoom is first and the default; Zoom and Jitsi are on at first.
+// Zoom is first and the default; all four are on at first.
 const fresh = meetingSettings(undefined);
 same('order', ids(MEETING_SERVICES), ['zoom', 'meet', 'teams', 'jitsi']);
-same('on at first', ids(meetingEnabled(fresh)), ['zoom', 'jitsi']);
+same('on at first', ids(meetingEnabled(fresh)), ['zoom', 'meet', 'teams', 'jitsi']);
 same('zoom the first time', meetingPreselected(fresh), 'zoom');
-same('jitsi needs nothing', [meetingReady(fresh, 'jitsi'), meetingReady(fresh, 'zoom')], [true, false]);
-same('summary', meetingSummary(fresh), 'Zoom or Jitsi Meet');
+same('jitsi needs nothing', [meetingReady(fresh, 'jitsi'), meetingReady(fresh, 'zoom'), meetingReady(fresh, 'teams')], [true, false, false]);
+same('no link yet leads to setup', [meetingDetail(fresh, 'meet'), meetingDetail(fresh, 'teams')], ['Save your own Google Meet link first', 'Save your own Microsoft Teams link first']);
+same('summary', meetingSummary(fresh), 'Zoom and 3 more');
 // The last one used is picked while it is still on.
 same('last used', meetingPreselected(meetingSettings({last: 'jitsi'})), 'jitsi');
-same('last used and turned on', meetingPreselected(meetingSettings({last: 'meet', on: {meet: true}})), 'meet');
-same('last used but off', meetingPreselected(meetingSettings({last: 'meet'})), 'zoom');
-same('zoom off', meetingPreselected(meetingSettings({last: 'zoom', on: {zoom: false}})), 'jitsi');
-same('nonsense', meetingPreselected(meetingSettings({last: 'other', on: 'yes', links: 4})), 'zoom');
+same('last used and on', meetingPreselected(meetingSettings({last: 'meet'})), 'meet');
+same('last used but off', meetingPreselected(meetingSettings({last: 'meet', on: {meet: false}})), 'zoom');
+same('zoom off', meetingPreselected(meetingSettings({last: 'zoom', on: {zoom: false}})), 'meet');
+same('nonsense', meetingPreselected(meetingSettings({last: 'other', on: 'yes', links: 4, custom: 'x'})), 'zoom');
 // Each service turns on or off, and one always stays on.
-const all = meetingSettings({on: {meet: true, teams: true}});
+const all = meetingSettings({});
 same('all on', ids(meetingEnabled(all)), ['zoom', 'meet', 'teams', 'jitsi']);
-same('summary of four', meetingSummary(all), 'Zoom and 3 more');
-const onlyTeams = meetingSettings({on: {zoom: false, jitsi: false, teams: true}});
+same('two on', meetingSummary(meetingSettings({on: {meet: false, teams: false}})), 'Zoom or Jitsi Meet');
+const onlyTeams = meetingSettings({on: {zoom: false, jitsi: false, meet: false}});
 same('one on', [ids(meetingEnabled(onlyTeams)), meetingCanTurnOff(onlyTeams, 'teams'), meetingCanTurnOff(all, 'zoom')], [['teams'], false, true]);
-same('none on still offers some', ids(meetingEnabled(meetingSettings({on: {zoom: false, jitsi: false}}))), ['zoom', 'jitsi']);
+same('none on still offers some', ids(meetingEnabled(meetingSettings({on: {zoom: false, jitsi: false, meet: false, teams: false}}))), ['zoom', 'meet', 'teams', 'jitsi']);
+// Your own services: a name, an https link, and the host it must be on.
+same('names', [cleanMeetingName('  Work   video '), cleanMeetingName('A'.repeat(32)), ...['', 'A'.repeat(33), 'Zoom', 'google meet', 'Teams', 'Jitsi Meet', 'Work‮video'].map(cleanMeetingName)],
+  ['Work video', 'A'.repeat(32), null, null, null, null, null, null, null]);
+same('name problems', [meetingNameProblem(' '), meetingNameProblem('A'.repeat(33)), meetingNameProblem('Zoom'), meetingNameProblem('work video', ['Work video']), meetingNameProblem('Book club')],
+  ['Give your service a name.', 'Use a shorter name, 32 letters or fewer.', 'Zoom is already on the list. Use another name.', 'You already have a service named work video.', null]);
+same('own links', [validCustomMeetingLink(' video.example.org/rooms/team '), validCustomMeetingLink('http://video.example.org/x'),
+  validCustomMeetingLink('https://eu.video.example.org/x', 'video.example.org'), validCustomMeetingLink('https://video.example.org:8443/x?y=1#z', 'video.example.org')],
+  ['https://video.example.org/rooms/team', 'https://video.example.org/x', 'https://eu.video.example.org/x', 'https://video.example.org:8443/x?y=1#z']);
+for (const bad of ['', 'ftp://video.example.org/x', 'javascript:alert(1)', 'https://video.example.org/a b', 'https://localhost/x',
+  'https://video.example.org@other.example.net/x', 'mailto:someone@example.org']) same('not an own link: ' + bad, validCustomMeetingLink(bad), null);
+for (const bad of ['https://vidoe.example.org/x', 'https://video.example.org.example.net/x', 'https://badvideo.example.org/x'])
+  same('not on the host: ' + bad, validCustomMeetingLink(bad, 'video.example.org'), null);
+same('hosts', [cleanMeetingHost(' https://Video.Example.org/ '), cleanMeetingHost(''), cleanMeetingHost('video example'), cleanMeetingHost('video.example.org/rooms')],
+  ['video.example.org', '', null, null]);
+same('link problems', [customMeetingLinkProblem('https://vidoe.example.org/x', 'video.example.org'), customMeetingLinkProblem('', ''), customMeetingLinkProblem('https://video.example.org/x', 'video.example.org')],
+  ['That link isn’t on video.example.org. Check it for a typo.', 'Paste your link first.', null]);
+same('own problems', [customMeetingProblem(fresh, '', '', 'https://video.example.org/x', ''), customMeetingProblem(fresh, '', 'Work video', 'https://video.example.org/x', 'not a host'),
+  customMeetingProblem(fresh, '', 'Work video', 'video.example.org/rooms/team', 'video.example.org')],
+  ['Give your service a name.', 'Enter just the web address, like video.example.org.', null]);
+let mine = withCustomMeeting(fresh, '', 'c0a1b2c3d', ' Work video ', 'video.example.org/rooms/team', 'video.example.org');
+const stored = JSON.parse(JSON.stringify(meetingStored(mine)));
+same('own stored', [stored.version, stored.custom, stored.on.c0a1b2c3d], [2, [{id: 'c0a1b2c3d', name: 'Work video', link: 'https://video.example.org/rooms/team', host: 'video.example.org'}], true]);
+mine = meetingSettings(stored);
+same('own read back', [ids(meetingEnabled(mine)), meetingReady(mine, 'c0a1b2c3d'), meetingDetail(mine, 'c0a1b2c3d'), meetingSavedLink(mine, 'c0a1b2c3d'), meetingSummary(mine)],
+  [['zoom', 'meet', 'teams', 'jitsi', 'c0a1b2c3d'], true, 'Your own service · sends your saved link', 'https://video.example.org/rooms/team', 'Zoom and 4 more']);
+same('own twice', [customMeetingProblem(mine, '', 'Work video', 'https://video.example.org/y', ''), customMeetingProblem(mine, 'c0a1b2c3d', 'Work video', 'https://video.example.org/y', '')],
+  ['You already have a service named Work video.', null]);
+same('own privacy', meetingPrivacy('c0a1b2c3d', mine), 'Whoever runs Work video can see who joins and may record. For a private call, use an encrypted call instead.');
+mine = meetingSettings(meetingStored({...withCustomMeeting(mine, 'c0a1b2c3d', '', 'Team room', 'https://meet.example.net/r/1', ''), last: 'c0a1b2c3d'}));
+same('own changed', [mine.custom.map((service) => [service.label, service.link, service.host]), meetingPreselected(mine)], [[['Team room', 'https://meet.example.net/r/1', '']], 'c0a1b2c3d']);
+const offMine = meetingSettings(meetingStored({...mine, on: {...mine.on, c0a1b2c3d: false}}));
+same('own off', [ids(meetingEnabled(offMine)), meetingPreselected(offMine)], [['zoom', 'meet', 'teams', 'jitsi'], 'zoom']);
+const gone = meetingStored(withoutCustomMeeting(mine, 'c0a1b2c3d'));
+same('own removed', [gone.custom, 'c0a1b2c3d' in gone.on, gone.last], [[], false, '']);
+same('broken own left out', meetingSettings({custom: [{id: 'c0a1b2c3d', name: 'Zoom', link: 'https://video.example.org/x'}, {id: '../x', name: 'A', link: 'https://a.example.org/'},
+  {id: 'cffffffff', name: 'No link'}]}).custom, []);
 // Someone who set up a Jitsi server of their own keeps it, and keeps Jitsi picked until they choose something else.
 const before = meetingSettings({jitsiServer: 'meet.example.org'});
-same('own jitsi server', [before.jitsiServer, ids(meetingEnabled(before)), meetingPreselected(before)], ['meet.example.org', ['zoom', 'jitsi'], 'jitsi']);
+same('own jitsi server', [before.jitsiServer, ids(meetingEnabled(before)), meetingPreselected(before)], ['meet.example.org', ['zoom', 'meet', 'teams', 'jitsi'], 'jitsi']);
 same('own jitsi server, then zoom', meetingPreselected(meetingSettings({jitsiServer: 'meet.example.org', last: 'zoom'})), 'zoom');
 same('broken server', meetingSettings({jitsiServer: 'not a server'}).jitsiServer, 'meet.jit.si');
 same('jitsi detail', meetingDetail(before, 'jitsi'), 'Makes a new room each time on meet.example.org. No account needed.');
@@ -4116,6 +4338,22 @@ same('older jitsi card', [older.service, older.place], ['', 'meet.example.org'])
 same('places', [parseMeeting('Join my Zoom call: https://zoom.us/my/river.room').place, parseMeeting('📞 Join my call: https://meet.jit.si/Room-1').place], ['Zoom', 'meet.jit.si']);
 same('preview', meetingPreview('📹 Join my Google Meet video call: https://meet.google.com/abc-defg-hij'), '📹 Video call · tap to join');
 same('not cards', [parseMeeting('Join my call: https://example.org/a/b?c=d'), parseMeeting('Can you join my call later?'), meetingPreview('Fictional')], [null, null, null]);
+// Your own service's message reads back as a call card on the other side, which only knows the name from the message.
+const work = {custom: [customMeetingService('c0a1b2c3d', 'Work video', 'https://video.example.org/rooms/team?pin=1234', 'video.example.org')]};
+same('own texts', [meetingText('c0a1b2c3d', true, work.custom[0].link, work), meetingText('c0a1b2c3d', false, work.custom[0].link, work)],
+  ['📹 Join my Work video call: https://video.example.org/rooms/team?pin=1234', '📞 Join my Work video call: https://video.example.org/rooms/team?pin=1234']);
+for (const [name, link] of [['Work video', 'https://video.example.org/rooms/team?pin=1234'], ['Video', 'https://v.example.org/a'],
+  ['Book club 📚', 'https://club.example.org/'], ['A'.repeat(32), 'https://v.example.org/a']]) for (const video of [true, false]) {
+  const own = {custom: [customMeetingService('c11111111', name, link)]};
+  const card = parseMeeting(meetingText('c11111111', video, link, own));
+  same('own card ' + name + ' ' + video, [card?.service, card?.video, card?.link, card?.place, card && meetingJoinLink(card.service, video, card.link)],
+    ['custom', video, link, (video ? name.replace(/ video$/, '') : name) + ' · ' + meetingHost(link), link]);
+}
+same('not own cards', [parseMeeting('📹 Join my Zoom video call: https://example.org/a/b'), parseMeeting('📹 Join my Work video video call: http://video.example.org/x'),
+  parseMeeting('📹 Join my Work‮ video call: https://video.example.org/x'), parseMeeting('📹 Join my ' + 'A'.repeat(40) + ' video call: https://video.example.org/x')],
+  [null, null, null, null]);
+same('older cards', [parseMeeting('📹 Join my Zoom video call: https://zoom.us/j/1234567890').service, parseMeeting('📹 Join my video call: https://meet.jit.si/Room-1').video,
+  parseMeeting('📞 Join my call: https://meet.jit.si/Room-1').video], ['zoom', true, false]);
 // A meeting link in an everyday message gets a Join button.
 same('found', [findMeetingLink('Trail club at 6: https://zoom.us/j/1234567890?pwd=Fictional1.'), findMeetingLink('See https://example.org first, then (https://meet.google.com/abc-defg-hij)'),
   findMeetingLink('https://meet.jit.si/TrailClub'), findMeetingLink('The map is at https://example.org/zoom.us/j/1234567890'), findMeetingLink('No link here')],
@@ -4135,9 +4373,125 @@ process.stdout.write(JSON.stringify(wrong));
     for name in ("zoom", "meet", "teams"):
         rule = re.search(name + r": /\^(.*?)\$/i", block).group(1).replace(r"\/", "/")
         check(rule in kotlin and rule in main_py, f"The {name} link rule differs between the web, the phone, and the server")
-    check(re.findall(r'^    [A-Z]+\("(\w+)", "([^"]+)"', kotlin, re.M) == re.findall(r"\{id: '(\w+)', label: '([^']+)'", block),
+    check(re.findall(r'^\s+@JvmField val [A-Z]+ = MeetingService\("(\w+)", "([^"]+)"', kotlin, re.M) == re.findall(r"\{id: '(\w+)', label: '([^']+)'", block),
           "The phone and the web list different meeting services")
-    print("PASS  meeting links: Zoom first, Zoom and Jitsi on at first, saved links checked for their service, the last one used, and call cards")
+    check(re.findall(r'@JvmField val [A-Z]+ = MeetingService\("\w+", "[^"]+", "[^"]*", (true|false)', kotlin) == ["true"] * 4
+          and re.findall(r"\{id: '\w+', label: '[^']+', short: '[^']+', company: '[^']*', on: (true|false)", block) == ["true"] * 4,
+          "Not every meeting service is on at first on the phone and the web")
+    check("NAME_MAX = 32" in kotlin and "CUSTOM_MAX = 10" in kotlin, "The phone's limits for your own services changed")
+    check("MEETING_NAME_MAX = 32, MEETING_CUSTOM_MAX = 10" in block and "MEETING_NAME_MAX, MEETING_CUSTOM_MAX = 32, 10" in main_py,
+          "The web and the server limit your own meeting services differently")
+    print("PASS  meeting links: Zoom first, all four on at first, older choices kept, your own services, saved links checked, the last one used, and call cards")
+
+
+def irc_calls_and_nickserv_test():
+    """IRC chats: call and meeting-link buttons off until turned on, and the NickServ card: its rules (the same on the
+    phone and the web), IDENTIFY over the connection only, and saving the password without reconnecting. Fictional
+    lines in Atheme, Anope, and OFTC wording; the password is a fixture."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import contextlib
+    import types
+    import irc_client
+    import protocol_gateway
+
+    with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
+        check(request("/api/settings")["prefs"]["ircCalls"] is False, "Call buttons in IRC chats aren't off by default")
+        check(request("/api/settings", {"prefs": {"ircCalls": True}})["prefs"]["ircCalls"] is True, "The IRC calls switch wasn't saved")
+        check(request("/api/settings")["prefs"]["callMeetings"] is True, "The IRC calls switch changed meeting links")
+        try:
+            request("/api/settings", {"prefs": {"ircCalls": "yes"}})
+            raise RuntimeError("A non-boolean IRC calls switch was accepted")
+        except HTTPError as error:
+            check(error.code == 400, f"Expected HTTP 400 for a bad IRC calls switch, got {error.code}")
+    commands_text = (ROOT / "server/chat-commands.js").read_text()
+    check("showModal" not in commands_text and "<dialog" not in commands_text, "The NickServ card uses a pop-up")
+    companion_js = (ROOT / "server/companion.js").read_text()
+    check(companion_js.count("ircCallsHidden(") >= 3, "The web doesn't hide meeting-link buttons in IRC chats")
+    settings_js = (ROOT / "server/settings.js").read_text()
+    check("Not recommended. Many IRC channels ban call and meeting links" in settings_js, "The IRC calls switch has no warning")
+    kotlin_calls = (ROOT / "app/src/main/kotlin/org/fluidmessages/IrcCalls.kt").read_text()
+    check("Not recommended. Many IRC channels ban call and meeting links" in kotlin_calls, "The phone's IRC calls switch has no warning")
+
+    # The NickServ rules in Node, with the same fixtures as NickServTest.kt.
+    node = os.environ.get("NODE") or shutil.which("node")
+    commands_js = (ROOT / "server/chat-commands.js").read_text()
+    block = re.search(r"// nickserv:start[^\n]*\n(.*?)// nickserv:end", commands_js, re.S).group(1)
+    kotlin = (ROOT / "app/src/main/kotlin/org/fluidmessages/NickServ.kt").read_text()
+    for phrase in ("invalid password|password incorrect", "you are now (identified|recognized|logged in)", "nick(name)? is owned by someone else",
+                   "change your nick", "This nickname is registered", "That password didn’t work", "NickServ answered below."):
+        check(phrase in block and phrase in kotlin, "The phone and the web NickServ rules differ: " + phrase)
+    if node:
+        script = block + r"""
+const wrong = [];
+const same = (what, got, want) => { if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push([what, got, want]); };
+const B = '\x02';
+const ns = (text) => ({author: 'NickServ', text, incoming: true, event: false});
+const athemeAsk = 'This nickname is registered. Please choose a different nickname, or identify via ' + B + '/msg NickServ IDENTIFY kit <password>' + B;
+const athemeTime = 'You have 30 seconds to identify to your nickname before it is changed.';
+const athemeOk = 'You are now identified for ' + B + 'kit' + B + '.';
+const athemeLast = 'Last login from: ~kit@example.test on Jan 01 12:00:00 2026.';
+const warning = 'kit!~kit@example.test failed to login to kit. There has been 1 failed login attempt since your last successful login.';
+const anopeAsk = 'This nickname is registered and protected. If it is your nick, type /msg NickServ IDENTIFY password. Otherwise, please choose a different nick.';
+const anopeChange = 'If you do not change within 1 minute, I will change your nick.';
+same('kinds', [athemeAsk, anopeAsk, athemeOk, 'Password accepted - you are now recognized.', 'You are successfully identified as kit.',
+  'Invalid password for kit.', 'Password incorrect.', 'Identify failed as kit. You may have entered an incorrect password.', athemeTime, anopeChange,
+  athemeLast, warning, 'Information on kit (account kit):', 'Registered : Jan 01 2026 (1y 2w ago)'].map(nickServKind),
+  ['ask', 'ask', 'identified', 'identified', 'identified', 'failed', 'failed', 'failed', 'note', 'note', 'note', null, null, null]);
+same('nicks', [nickServNick(athemeOk), nickServNick('Identify failed as kit.'), nickServNick('Password accepted - you are now recognized.')], ['kit', 'kit', '']);
+const cards = nickServFold([ns(athemeAsk), ns(athemeTime), ns(athemeOk), ns(athemeLast), ns(warning),
+  {author: '', text: '/msg NickServ INFO kit', incoming: false}, ns(anopeAsk), ns(anopeChange), ns('Password incorrect.')]);
+same('cards', cards.map((card) => [card.first, card.last, card.state, card.nick, card.answered]), [[0, 3, 'identified', 'kit', true], [6, 8, 'failed', '', false]]);
+same('said', cards[0].said[2], 'You are now identified for kit.');
+same('titles', [nickServTitle(cards[0], 'x'), nickServTitle(cards[1], 'kit'), nickServTitle({state: 'ask'}, 'kit')],
+  ['Identified as kit', 'That password didn’t work', 'This nickname is registered']);
+same('not nickserv', nickServFold([{author: 'maya', text: athemeAsk, incoming: true}, {author: 'NickServ', text: athemeAsk, incoming: false}]), []);
+same('own chat', nickServFold([{author: '', text: anopeAsk, incoming: true}], true).map((card) => card.state), ['ask']);
+process.stdout.write(JSON.stringify(wrong));
+"""
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+        check(result.returncode == 0 and result.stdout == "[]", "The web's NickServ rules are wrong: " + (result.stdout or result.stderr)[:600])
+    else:
+        print("SKIP  NickServ rules in Node: node is missing")
+
+    # IDENTIFY goes over the connection, paced, with the account name; nothing reaches chat history.
+    server, phone = socket.socketpair()
+    server.settimeout(5)
+    heard = []
+    client = irc_client.IrcClient({"server": "irc.example.test", "nick": "kit_", "sasl_user": "kit"}, lambda *args: heard.append(args), lambda *a: None)
+    client.sock = phone
+    client.ready.set()
+    client.identify_now("fixture-pass-1", save=True)
+    check(server.recv(4096) == b"PRIVMSG NickServ :IDENTIFY kit fixture-pass-1\r\n", "The card's IDENTIFY line is wrong")
+    check(client.account["nickserv_password"] == "fixture-pass-1" and not heard, "The password wasn't kept for the next connect, or went into a chat")
+    for bad in ("", "two words", "line\r\nQUIT", "x" * 301, None):
+        try:
+            client.identify_now(bad)
+            raise RuntimeError("An unsafe NickServ password was sent")
+        except ValueError:
+            pass
+    # The gateway: the route's account, saving through the account store, and no reconnect for the saved password.
+    saved = {}
+    values = {"server": "irc.example.test", "nick": "kit", "port": 6697}
+    store = types.SimpleNamespace(all=lambda: [{"id": "irc:kit@irc.example.test", "protocol": "irc", "source": "phone", "values": values}],
+                                  save=lambda protocol, fields, ident: saved.update(fields) or dict(fields))
+    fake = types.SimpleNamespace(route=lambda address, protocol: {"address": address, "protocol": "irc", "via": "irc", "account": "irc:kit@irc.example.test"}
+                                 if address == "irc-nickserv" else None,
+                                 enabled=lambda db: ["irc"], using=lambda ident: contextlib.nullcontext(), client=lambda protocol: client,
+                                 accounts=store, clients={"irc:kit@irc.example.test": ("old", client)}, default_account=lambda protocol: "")
+    result = protocol_gateway.Gateway.identify_nickserv(fake, None, {"address": "irc-nickserv", "password": "fixture-pass-2", "save": True})
+    check(result == {"ok": True, "saved": True} and saved["nickserv_password"] == "fixture-pass-2", "The card's password wasn't saved")
+    check(fake.clients["irc:kit@irc.example.test"] == (json.dumps(saved, sort_keys=True), client), "Saving the password would reconnect")
+    check(b"IDENTIFY kit fixture-pass-2" in server.recv(4096), "The gateway didn't send IDENTIFY")
+    check("fixture-pass-2" not in json.dumps(result), "The password came back in the reply")
+    for bad in ({"address": "nowhere", "password": "x"}, {"address": "irc-nickserv", "password": "has space"}):
+        try:
+            protocol_gateway.Gateway.identify_nickserv(fake, None, bad)
+            raise RuntimeError("A bad identify request was accepted")
+        except ValueError as error:
+            check("has space" not in str(error), "An error repeated the password")
+    server.close()
+    phone.close()
+    print("PASS  IRC: call and meeting-link buttons off until turned on with a warning, and the NickServ card's rules, IDENTIFY, and saved password")
 
 
 def web_parity_node_test():
@@ -4305,6 +4659,7 @@ def main():
         sample_onboarding_test()
         web_parity_test()
         meeting_links_test()
+        irc_calls_and_nickserv_test()
         android(args)
         if args.demo:
             demo(args.no_browser)

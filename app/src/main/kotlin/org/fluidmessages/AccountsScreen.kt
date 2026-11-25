@@ -171,6 +171,17 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
                     modifier = Modifier.padding(horizontal = 6.dp)) {
                     Text(if (shown > 0) "Add another" else "Add")
                 }
+                if (protocol == MessageProtocol.IRC) {
+                    // Call and meeting-link buttons in IRC chats: off by default, with the reason right under it (IrcCalls).
+                    HorizontalDivider(Modifier.padding(start = 15.dp))
+                    var ircCalls by remember { mutableStateOf(IrcCalls.allowed(prefs)) }
+                    SettingsSwitch(IrcCalls.TITLE, "Phone calls, video calls, and meeting links. Off by default.", ircCalls) {
+                        ircCalls = it
+                        prefs.edit().putBoolean(IrcCalls.KEY, it).apply()
+                    }
+                    Text(IrcCalls.WARNING, Modifier.padding(start = 15.dp, end = 15.dp, bottom = 14.dp),
+                        color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                }
             }
         }
         item {
@@ -474,6 +485,8 @@ private fun checkDirect(protocol: MessageProtocol, fields: JSONObject) {
     }
     if (protocol == MessageProtocol.MATRIX && !fields.getString("homeserver").startsWith("https://"))
         throw IllegalArgumentException("Enter an https:// homeserver")
+    // A nickname the network would refuse is caught here, in plain words, instead of failing to connect later.
+    if (protocol == MessageProtocol.IRC) IrcRules.nickProblem(fields.optString("nick"))?.let { throw IllegalArgumentException(it) }
     if (protocol == MessageProtocol.IRC && fields.optInt("port", 6697) in listOf(6667, 194))
         throw IllegalArgumentException("Use a TLS port such as 6697. FluidMessages doesn’t connect to IRC without TLS.")
     if (protocol == MessageProtocol.EMAIL && !fields.has("smtp_password")) fields.put("smtp_password", fields.getString("imap_password"))

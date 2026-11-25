@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.*
@@ -83,9 +84,41 @@ internal fun ProtocolTags(thread: ThreadRow, appearance: Appearance, mutedColor:
                 .padding(horizontal = 5.dp), color = ink, fontSize = 10.sp, lineHeight = 14.sp,
                 fontWeight = FontWeight.Medium, maxLines = 1)
         }
+        // An IRC, Matrix, or XMPP chat's connection, right beside its tag.
+        if (thread.connection.isNotEmpty()) ConnectionMark(thread.connection, appearance, mutedColor, Modifier.align(Alignment.CenterVertically))
         // Muted: the bell with a slash, right after the tags.
         if (thread.muted.isNotEmpty()) MutedMark(thread.muted, mutedColor, Modifier.align(Alignment.CenterVertically))
         if (thread.account.isNotEmpty()) AccountHint(thread.account, mutedColor, Modifier.align(Alignment.CenterVertically))
+    }
+}
+
+/**
+ * The inbox's connection mark for an IRC, Matrix, or XMPP chat, beside its tag: three signal bars, all filled in green
+ * while connected, one amber bar while connecting or waiting to try again, and empty bars with a slash while not
+ * connected. The shape tells them apart without color too, and it reads out as "Connected", "Connecting", or
+ * "Not connected". Never a dot or a badge, so it can't be mistaken for unread.
+ */
+@Composable
+internal fun ConnectionMark(state: String, appearance: Appearance, muted: Color, modifier: Modifier = Modifier) {
+    val label = IrcRules.connectionLabel(state)
+    if (label.isEmpty()) return
+    val ink = when (state) {
+        "connected" -> if (appearance.dark) Color(0xFF30D158) else Color(0xFF1B7F37)
+        "connecting" -> if (appearance.dark) Color(0xFFFFC233) else Color(0xFF8F5F00)
+        else -> muted
+    }
+    val faint = muted.copy(alpha = .45f)
+    androidx.compose.foundation.Canvas(modifier.size(13.dp).semantics { contentDescription = label }) {
+        val bar = size.width / 5f
+        val filled = when (state) { "connected" -> 3; "connecting" -> 1; else -> 0 }
+        for (index in 0 until 3) {
+            val height = size.height * (.4f + .3f * index)
+            val left = index * 2 * bar
+            drawRoundRect(if (index < filled) ink else faint, androidx.compose.ui.geometry.Offset(left, size.height - height),
+                androidx.compose.ui.geometry.Size(bar, height), androidx.compose.ui.geometry.CornerRadius(bar / 3f))
+        }
+        if (state == "disconnected") drawLine(ink, androidx.compose.ui.geometry.Offset(0f, size.height * .1f),
+            androidx.compose.ui.geometry.Offset(size.width, size.height * .95f), strokeWidth = 1.6.dp.toPx())
     }
 }
 
@@ -112,14 +145,24 @@ internal fun MessageProtocol.tint(appearance: Appearance): Color = when (this) {
 
 @Composable
 internal fun GroupMembers(members: List<GroupMember>) {
+    // More than ten people fold up to the first five, with a button to show everyone (MemberLists).
+    var expanded by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     PreferencesCard("Members") {
-        members.forEachIndexed { index, member ->
+        MemberLists.shown(members, expanded).forEachIndexed { index, member ->
             if (index > 0) HorizontalDivider(Modifier.padding(start = 58.dp))
             Row(Modifier.fillMaxWidth().then(member.open?.let { Modifier.clickable(onClick = it::run) } ?: Modifier)
                 .padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Avatar(member.initials(), member.name, 36, member.photoRes, member.photo)
                 PreferenceText(member.name, if (member.address != member.name) member.address else "",
                     Modifier.weight(1f).padding(12.dp))
+            }
+        }
+        val toggle = MemberLists.toggleLabel(members.size, expanded)
+        if (toggle.isNotEmpty()) {
+            HorizontalDivider(Modifier.padding(start = 12.dp))
+            TextButton(onClick = { expanded = !expanded }, Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                .semantics { stateDescription = if (expanded) "Showing all ${members.size}" else "Showing ${MemberLists.PREVIEW} of ${members.size}" }) {
+                Text(toggle)
             }
         }
     }

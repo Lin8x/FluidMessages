@@ -58,6 +58,81 @@ internal object IrcRules {
     /** Channels rejoined right after connecting: those with Keep joined on (the default). The rest join when opened. */
     @JvmStatic
     fun keepJoined(channels: List<String>, keep: (String) -> Boolean): List<String> = channels.filter(keep)
+
+    /** The nicknames IRC networks accept: a letter or one of []\`_^{|} first, then those, digits, or -. */
+    private val nickPattern = Regex("[A-Za-z\\[\\]\\\\`_^{|}][A-Za-z0-9\\[\\]\\\\`_^{|}-]{0,31}")
+
+    @JvmStatic
+    fun validNick(nick: String) = nickPattern.matches(nick)
+
+    /** What the account form says about a nickname a network won't take, or null when it's fine. */
+    @JvmStatic
+    fun nickProblem(nick: String): String? = when {
+        nick.isBlank() -> "Pick a nickname."
+        validNick(nick) -> null
+        nick.first().isDigit() || nick.first() == '-' -> "A nickname can’t start with a number or a dash. Start it with a letter."
+        nick.length > 32 -> "That nickname is too long. Use 16 letters or fewer."
+        else -> "A nickname can only use letters, numbers, and - _ [ ] { } \\ | ^ `. No spaces or dots."
+    }
+
+    /** A connection problem in plain words. [fatal]: trying again won't help until you change something or tap Reconnect. */
+    data class Problem(val text: String, val fatal: Boolean)
+
+    private val blocked = Regex("k-?lined|g-?lined|z-?lined|d-?lined|banned|not welcome|you are not allowed", RegexOption.IGNORE_CASE)
+
+    /** Whether a server notice or closing reason says this connection must sign in with SASL first. */
+    @JvmStatic
+    fun needsSasl(text: String) = Regex("\\bsasl\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
+        && Regex("requir|need|must|only|identify|authenticat", RegexOption.IGNORE_CASE).containsMatchIn(text)
+
+    /**
+     * Why [network] refused or closed the connection, in plain words with what to do, from the reply [command]
+     * ("ERROR", "465", "432", "904"…) and its [text], which is quoted as the network said it. [sasl]: a SASL password
+     * is set. Null for replies that aren't a problem with connecting.
+     */
+    @JvmStatic
+    fun explain(command: String, text: String, network: String, nick: String, sasl: Boolean): Problem? {
+        val said = text.trim().take(200)
+        val quote = if (said.isEmpty()) "" else " It said: “$said”"
+        return when (command) {
+            "ERROR" -> when {
+                needsSasl(said) -> Problem("$network only lets registered nicknames connect from your internet connection. This often happens on a VPN, "
+                    + "a work or school network, or a cloud server. " + (if (sasl) "Check your SASL account and SASL password." else
+                    "Register your nickname from another connection, then type its password in SASL password.") + quote, true)
+                blocked.containsMatchIn(said) -> Problem("$network blocked this connection.$quote Try another network, or another internet connection.", true)
+                Regex("ping timeout|connection reset|broken pipe", RegexOption.IGNORE_CASE).containsMatchIn(said) -> Problem("The connection to $network dropped.", false)
+                said.contains("Client Quit", ignoreCase = true) -> null
+                else -> Problem("$network closed the connection.$quote", false)
+            }
+            "465", "463", "464" -> Problem("$network won’t let you connect.$quote " + if (command == "464")
+                "Check the password in the account settings." else "Try another network, or another internet connection.", true)
+            "432" -> Problem("$network doesn’t allow the nickname “$nick”. Pick another one in the account settings: start it with a letter, "
+                + "and use only letters, numbers, - or _.", true)
+            "433", "436", "437" -> Problem("Every nickname we tried on $network is taken. Pick another nickname in the account settings.", true)
+            "904", "905" -> if (sasl) Problem("Signing in to $network didn’t work. Check your SASL account (your registered nickname) and SASL password "
+                + "in the account settings.$quote", false) else null
+            "906", "907" -> null
+            else -> null
+        }
+    }
+
+    /** "connected", "connecting" (also while waiting to try again), or "disconnected", from a connection's state; "" when unknown. */
+    @JvmStatic
+    fun connectionState(state: String): String = when (state) {
+        "connected" -> "connected"
+        "connecting", "reconnecting" -> "connecting"
+        "disconnected", "paused", "offline", "failed" -> "disconnected"
+        else -> ""
+    }
+
+    /** The words read out for the inbox's connection mark. */
+    @JvmStatic
+    fun connectionLabel(state: String): String = when (state) {
+        "connected" -> "Connected"
+        "connecting" -> "Connecting"
+        "disconnected" -> "Not connected"
+        else -> ""
+    }
 }
 
 /**

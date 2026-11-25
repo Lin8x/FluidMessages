@@ -135,15 +135,36 @@ function unmuteKeys(keys, state = chatState(), now = muteClock()) {
   return next;
 }
 
-/** "Muted", "Muted until 3:40 PM" (later today), or "Muted for 6 hours" / "1 day" / "1 week". Empty when not muted. */
-function muteLabel(ends, now = muteClock()) {
+/**
+ * When a timed mute ends, in this device's time zone, language, and clock: "3:45 PM" later today, "tomorrow 9:00 AM",
+ * "Tue 3:45 PM" within the week, or "Dec 1, 3:45 PM" further out. [locale] and [timeZone] are for tests; the browser's
+ * own are used otherwise. The same rule as the phone (Mutes.endsAt).
+ */
+function muteWhen(ends, now = muteClock(), locale = undefined, timeZone = undefined) {
+  const format = (options) => new Intl.DateTimeFormat(locale, {timeZone, ...options});
+  const dayNumber = (time) => {
+    const parts = Object.fromEntries(format({year: 'numeric', month: 'numeric', day: 'numeric'}).formatToParts(time)
+      .map((part) => [part.type, part.value]));
+    return Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)) / 86400000;
+  };
+  const days = Math.round(dayNumber(ends) - dayNumber(now));
+  const time = format({hour: 'numeric', minute: '2-digit'}).format(ends);
+  if (days <= 0) return time;
+  if (days === 1) return 'tomorrow ' + time;
+  if (days < 7) return format({weekday: 'short'}).format(ends) + ' ' + time;
+  return format({month: 'short', day: 'numeric'}).format(ends) + ', ' + time;
+}
+
+const MUTED_FOREVER = 'Muted until you turn it back on';
+
+/**
+ * "Muted until Tue 3:45 PM" and the like, [forever] for a mute with no end ("Muted" in small places, MUTED_FOREVER
+ * on a details row), or "" when not muted.
+ */
+function muteLabel(ends, now = muteClock(), forever = 'Muted', locale = undefined, timeZone = undefined) {
   if (ends === null || ends === undefined) return '';
-  if (!ends) return 'Muted';
-  if (new Date(ends).toDateString() === new Date(now).toDateString()) return 'Muted until ' + clock(ends);
-  const hours = Math.ceil((ends - now) / 3600000);
-  if (hours < 24) return 'Muted for ' + hours + (hours === 1 ? ' hour' : ' hours');
-  const days = Math.max(1, Math.round((ends - now) / 86400000));
-  return 'Muted for ' + (days === 7 ? '1 week' : days === 1 ? '1 day' : days + ' days');
+  if (!ends) return forever;
+  return 'Muted until ' + muteWhen(ends, now, locale, timeZone);
 }
 
 /** The small outlined bell with a slash through it. A button when [open] is given. */
@@ -201,9 +222,7 @@ function openMutePage({keys, title, what, back}) {
       row.type = 'button';
       row.dataset.duration = String(duration);
       const words = element('span', '', 'detail-words');
-      words.append(element('strong', label), element('small', duration ? 'Until ' + (new Date(now + duration).toDateString() === new Date(now).toDateString()
-        ? clock(now + duration) : new Date(now + duration).toLocaleString([], {weekday: 'short', hour: 'numeric', minute: '2-digit'}))
-        : 'Until you unmute'));
+      words.append(element('strong', label), element('small', duration ? 'Until ' + muteWhen(now + duration, now) : 'Until you turn it back on'));
       row.append(words, element('span', '›', 'chevron'));
       row.addEventListener('click', () => {
         saveChats(muteKeys(keys, duration));
@@ -236,7 +255,7 @@ function personMuteSection(person, chats) {
   row.type = 'button';
   row.disabled = !addresses.length;
   const words = element('span', '', 'detail-words');
-  words.append(element('strong', ends === null ? 'Mute ' + person.name : muteLabel(ends)),
+  words.append(element('strong', ends === null ? 'Mute ' + person.name : muteLabel(ends, muteClock(), MUTED_FOREVER)),
     element('small', ends === null ? 'All of their chats and numbers' : 'All of their chats and numbers · tap to change or unmute'));
   if (ends !== null) row.append(muteMark(muteLabel(ends)));
   row.append(words, element('span', '›', 'chevron'));
@@ -293,6 +312,52 @@ function toggleChat(address, key) {
   if (key === 'blocked' && next.blocked.includes(address)) next.archived = (next.archived || []).filter((item) => item !== address);
   saveChats(next);
   say(FOLDER_DONE[key][next[key].includes(address) ? 0 : 1]);
+}
+
+/**
+ * Blocks or unblocks [addresses] (one chat, or all of a person's chats and numbers) in Blocked here. Returns a note
+ * when some were blocked by the phone, which has to unblock them itself.
+ */
+function setBlockedAddresses(addresses, on) {
+  const state = chatState();
+  const phoneSet = addresses.filter((address) => inFolder(address, 'blocked') && !(state.blocked || []).includes(address));
+  saveChats({...state, blocked: on ? [...new Set([...(state.blocked || []), ...addresses])]
+    : (state.blocked || []).filter((item) => !addresses.includes(item)),
+  archived: on ? (state.archived || []).filter((item) => !addresses.includes(item)) : state.archived});
+  return !on && phoneSet.length ? 'Your phone blocked some of these. Unblock them there, or choose “This web app’s own” settings.' : '';
+}
+
+/** Block or Unblock one person, for a chat's details and their contact page. Block asks again right here, not in a pop-up. */
+function blockControl(name, addresses) {
+  const box = element('div', '', 'block-control');
+  const draw = (note = '') => {
+    box.replaceChildren();
+    const blocked = addresses.length > 0 && addresses.every((address) => inFolder(address, 'blocked'));
+    const button = element('button', (blocked ? 'Unblock ' : 'Block ') + name, blocked ? 'quiet' : 'danger-text');
+    button.type = 'button';
+    button.disabled = !addresses.length;
+    button.addEventListener('click', () => {
+      if (blocked) { const phone = setBlockedAddresses(addresses, false); say('Unblocked.'); draw(phone); return; }
+      box.replaceChildren();
+      const ask = element('p', '');
+      ask.append(element('strong', 'Block ' + name + '?'), document.createTextNode(' Their chats move to Blocked here and stop chiming. '
+        + 'It doesn’t stop delivery; block on your phone for that. You can unblock them here anytime.'));
+      const yes = element('button', 'Block', 'danger-button');
+      const no = element('button', 'Cancel');
+      yes.type = no.type = 'button';
+      yes.addEventListener('click', () => { setBlockedAddresses(addresses, true); say('Blocked.'); draw(); box.querySelector('button')?.focus(); });
+      no.addEventListener('click', () => { draw(); box.querySelector('button')?.focus(); });
+      const choices = element('div', '', 'button-row wrap');
+      choices.append(yes, no);
+      box.append(ask, choices);
+      yes.focus();
+    });
+    box.append(element('p', note || (blocked ? 'Blocked. Their chats are in Blocked here and don’t chime.'
+      : 'Moves their chats to Blocked here and stops their chimes.'), 'muted'), button);
+  };
+  draw();
+  if (!addresses.length) box.append(element('p', 'There’s no chat or number to block yet.', 'muted'));
+  return box;
 }
 
 /** Marks in the inbox row, and the menu from right-click, long-press, or the context-menu key (app.js showThreads). */
@@ -468,33 +533,36 @@ function lockCodeForm(section, lockKey, {title, on, off, wrong, saved = () => {}
 }
 
 /** A chat's own sections for its details page (companion.js openDetails): its folders, its code, and its wallpaper. */
-function detailsExtras(key) {
+function detailsExtras(key, {block = true} = {}) {
   const address = threadAddress(key);
   const chat = element('section', '', 'settings-section');
   chat.append(element('h3', 'Conversation'));
-  const row = element('div', '', 'button-row wrap');
+  const row = element('div', '', 'details-switches');
+  const backHere = () => (typeof openDetails === 'function' && active === key ? openDetails().catch(showError) : closeDetailsPage());
   const draw = () => {
     row.replaceChildren();
     const state = chatState();
-    for (const [folder, [on, off]] of Object.entries(FOLDER_ACTIONS)) {
-      const ends = folder === 'muted' ? chatMuteEnds(address, state) : null;
-      const set = folder === 'muted' ? ends !== null : inFolder(address, folder);
-      const button = element('button', folder === 'muted' && set ? muteLabel(ends) + '…' : set ? off : on);
-      button.type = 'button';
-      button.setAttribute('aria-pressed', String(set));
-      if (folder === 'muted' && set) button.prepend(muteMark(muteLabel(ends)), ' ');
-      button.addEventListener('click', () => {
-        if (folder !== 'muted') { toggleChat(address, folder); draw(); return; }
-        // Back from the mute page returns to these details.
-        openChatMute(key, () => (typeof openDetails === 'function' && active === key ? openDetails().catch(showError) : closeDetailsPage()));
-      });
-      row.append(button);
+    // On/off settings are switches. Turning Mute on asks how long, on its own page; turning it off unmutes.
+    const ends = chatMuteEnds(address, state);
+    row.append(checkbox('Mute notifications', ends !== null, (on) => {
+      if (on) { openChatMute(key, backHere); return; }
+      saveChats(unmuteKeys([address]));
+      say(chatMuteEnds(address) !== null ? 'Unmuted. Its whole server is still muted; unmute it from the server’s bar.' : 'Unmuted.');
+      draw();
+    }, ends !== null ? muteLabel(ends, muteClock(), MUTED_FOREVER) : 'Choose 1 hour, 6 hours, 1 day, 1 week, or forever'));
+    for (const [folder, title, onDetail, offDetail] of [['pinned', 'Pin conversation', 'Shown at the top of your inbox', 'Keep this chat at the top'],
+      ['archived', 'Archive conversation', 'In Archived', 'Move this chat out of your inbox']]) {
+      const set = inFolder(address, folder);
+      row.append(checkbox(title, set, () => { toggleChat(address, folder); draw(); }, set ? onDetail : offDetail));
     }
     const hide = typeof privateDetailsButton === 'function' ? privateDetailsButton(address) : null;
     if (hide) row.append(hide);
   };
   draw();
-  chat.append(row, element('p', 'Muted chats don’t notify or chime, for as long as you choose; messages still arrive. Blocking hides the chat in Blocked here; it doesn’t stop delivery.', 'muted'));
+  chat.append(row, element('p', 'Muted chats don’t notify or chime, for as long as you choose; messages still arrive.', 'muted'));
+  // Block is for one person; in a group, each member's own page has it.
+  // On a person's page, one Block for the whole person stands in for these.
+  if (block && !threadIsGroup(key)) chat.append(blockControl(threadTitle(key), [address]));
   // Sender type, for one-to-one texts as on the phone (its conversation details): merged with the phone's.
   if (['sms', 'mms', '', undefined].includes(threadProtocol(key)) && !address.startsWith('mms:')) {
     const select = element('select', '');
@@ -711,23 +779,52 @@ function memberThread(member) {
 }
 
 /** The Members card: everyone in the group. Tapping someone opens their details, with Back returning here. */
+// More than ten people fold up to the first five, with a button to show everyone. The phone uses the same numbers
+// (MemberLists.kt).
+const MEMBERS_FOLD_OVER = 10;
+const MEMBERS_PREVIEW = 5;
+
+/** The members to show: everyone when [expanded] or when there are ten or fewer, otherwise the first five. */
+function visibleMembers(members, expanded) {
+  return !expanded && members.length > MEMBERS_FOLD_OVER ? members.slice(0, MEMBERS_PREVIEW) : members;
+}
+
+/** The button under a folded list, or '' when the list doesn't fold. */
+function membersToggleLabel(count, expanded) {
+  if (count <= MEMBERS_FOLD_OVER) return '';
+  return expanded ? 'Show fewer' : 'Show all ' + count + ' members';
+}
+
 function memberList(key, members) {
   const section = element('section', '', 'settings-section');
   section.append(element('h3', 'Members'));
   const list = element('div', '', 'member-list');
-  for (const member of members) {
-    const row = element('button', '', 'member-row');
-    row.type = 'button';
-    const words = element('span', '', 'detail-words');
-    words.append(element('strong', member.name), element('small', [member.address !== member.name ? member.address : '', protocolName(member.protocol)].filter(Boolean).join(' · ')));
-    row.append(typeof avatarFor === 'function' ? avatarFor(member.name) : element('span', initials(member.name), 'avatar'), words,
-      element('span', '›', 'chevron'));
-    row.setAttribute('aria-label', member.name + ', ' + (member.address && member.address !== member.name ? member.address + ', ' : '') + protocolName(member.protocol) + '. Open details');
-    row.addEventListener('click', () => openMemberDetails(key, member));
-    list.append(row);
-  }
-  if (!members.length) list.append(element('p', 'No one else has written here yet.', 'muted'));
-  section.append(list);
+  list.id = 'member-list-' + Math.random().toString(36).slice(2, 8);
+  let expanded = false;
+  const toggle = element('button', '', 'quiet member-toggle');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-controls', list.id);
+  const draw = () => {
+    list.replaceChildren();
+    for (const member of visibleMembers(members, expanded)) {
+      const row = element('button', '', 'member-row');
+      row.type = 'button';
+      const words = element('span', '', 'detail-words');
+      words.append(element('strong', member.name), element('small', [member.address !== member.name ? member.address : '', protocolName(member.protocol)].filter(Boolean).join(' · ')));
+      row.append(typeof avatarFor === 'function' ? avatarFor(member.name) : element('span', initials(member.name), 'avatar'), words,
+        element('span', '›', 'chevron'));
+      row.setAttribute('aria-label', member.name + ', ' + (member.address && member.address !== member.name ? member.address + ', ' : '') + protocolName(member.protocol) + '. Open details');
+      row.addEventListener('click', () => openMemberDetails(key, member));
+      list.append(row);
+    }
+    if (!members.length) list.append(element('p', 'No one else has written here yet.', 'muted'));
+    toggle.textContent = membersToggleLabel(members.length, expanded);
+    toggle.hidden = !toggle.textContent;
+    toggle.setAttribute('aria-expanded', String(expanded));
+  };
+  toggle.addEventListener('click', () => { expanded = !expanded; draw(); toggle.focus(); });
+  draw();
+  section.append(list, toggle);
   return section;
 }
 

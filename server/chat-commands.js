@@ -264,3 +264,153 @@ if (typeof openDetails === 'function') {
     (members || body.children[1] || body.lastElementChild)?.after(section);
   };
 }
+
+// NickServ's identify notices as one card in an IRC chat, like the phone's (NickServ.kt): "This nickname is
+// registered" with a password field and Identify, "Identified as kit", or "That password didn’t work". NickServ's own
+// words stay under "Show what NickServ said". The password goes over the connection, never into a chat.
+
+// nickserv:start (plain rules with no page in them; scripts/test-local runs this part in Node)
+const NICKSERV_FORMATTING = /\x03(?:\d{1,2}(?:,\d{1,2})?)?|[\x00-\x1f\x7f]/g;
+const NICKSERV_PREFIX = /^nickserv:\s*/i;
+const NICKSERV_FAILED = /\b(invalid password|password incorrect|incorrect password|wrong password|identify failed|authentication failed)\b/i;
+const NICKSERV_IDENTIFIED = /\b(you are now (identified|recognized|logged in)|password accepted|(you are|you're) (successfully|already) (identified|logged in)|successfully identified)\b/i;
+const NICKSERV_ASK = /\b(this )?nick(name)? is registered\b|\bnick(name)? is owned by someone else\b|\bplease (identify|authenticate)\b/i;
+const NICKSERV_NOTE = /\bidentify\b|\bnick(name)? (will be|has been|is being|is now being) changed\b|\bchoose a different nick|\bchange your nick|\bif (this|it) is your nick|^last login from\b/i;
+const NICKSERV_NAMED = /(?:identified|recognized|logged in) (?:for|as) ([^\s.,]+)|password for ([^\s.,]+)|failed (?:for|as) ([^\s.,]+)/i;
+
+const isNickServ = (author) => String(author || '').trim().toLowerCase() === 'nickserv';
+const nickServPlain = (text) => String(text || '').replace(NICKSERV_FORMATTING, '').replace(NICKSERV_PREFIX, '').trim();
+
+/** 'ask', 'identified', 'failed', 'note' (another line of the same notice), or null for anything else. */
+function nickServKind(text) {
+  const words = nickServPlain(text);
+  if (!words || words.length > 400) return null;
+  if (NICKSERV_FAILED.test(words)) return 'failed';
+  if (NICKSERV_IDENTIFIED.test(words)) return 'identified';
+  if (NICKSERV_ASK.test(words)) return 'ask';
+  return NICKSERV_NOTE.test(words) ? 'note' : null;
+}
+
+function nickServNick(text) {
+  const match = NICKSERV_NAMED.exec(nickServPlain(text));
+  return match ? match.slice(1).find(Boolean) || '' : '';
+}
+
+/**
+ * Cards for runs of incoming NickServ lines about identifying, each with at least one that asks, accepts, or
+ * refuses: [{first, last, state, nick, said, answered}]. Lines: [{author, text, incoming, event}].
+ */
+function nickServFold(lines, nickServChat = false) {
+  const cards = [];
+  let start = -1;
+  const close = (end) => {
+    if (start < 0) return;
+    const run = lines.slice(start, end + 1);
+    const state = run.map((line) => nickServKind(line.text)).filter((kind) => kind && kind !== 'note').pop();
+    if (state) {
+      cards.push({first: start, last: end, state, nick: run.map((line) => nickServNick(line.text)).filter(Boolean).pop() || '',
+        said: run.map((line) => nickServPlain(line.text)), answered: false});
+    }
+    start = -1;
+  };
+  lines.forEach((line, index) => {
+    const from = line.incoming && !line.event && (isNickServ(line.author) || !line.author && nickServChat);
+    if (from && nickServKind(line.text)) { if (start < 0) start = index; } else close(index - 1);
+  });
+  close(lines.length - 1);
+  return cards.map((card, index) => ({...card, answered: index < cards.length - 1}));
+}
+
+function nickServTitle(card, fallbackNick) {
+  const who = card.nick || fallbackNick || '';
+  if (card.state === 'identified') return who ? 'Identified as ' + who : 'Identified';
+  return card.state === 'failed' ? 'That password didn’t work' : 'This nickname is registered';
+}
+
+function nickServDetail(card, saved) {
+  if (card.state === 'identified') return 'NickServ accepted your password.';
+  if (card.answered) return 'NickServ answered below.';
+  if (card.state === 'failed') return 'NickServ didn’t accept it. Check the password and try again.';
+  return saved ? 'Your saved password is sent each time you connect. If NickServ asks again, type it here.'
+    : 'Type your NickServ password to prove it’s yours. It goes only to NickServ, never to a channel.';
+}
+// nickserv:end
+
+// What's typed in the card survives a redraw (showMessages redraws when anything changes). Never saved anywhere.
+let nickServDraft = {key: '', password: '', save: true, open: false, result: '', focused: false};
+
+/** The cards for this chat's history: {at: Map(index → card), hidden: Set(index)}, or null outside IRC. */
+function nickServCards(history) {
+  if (!active || threadProtocol(active) !== 'irc' || sampleOn) return null;
+  const chat = isNickServ(routeFor(active)?.target);
+  const cards = nickServFold(history.map((message) => ({author: message.author, text: message.body, incoming: message.type === 1,
+    event: !!message.event || !!message.attachment})), chat);
+  if (!cards.length) return null;
+  const at = new Map(), hidden = new Set();
+  for (const card of cards) {
+    at.set(card.first, card);
+    for (let index = card.first + 1; index <= card.last; index++) hidden.add(index);
+  }
+  return {at, hidden};
+}
+
+/** One card, drawn in place of the lines it folds. */
+function nickServCardNode(card, history) {
+  const route = routeFor(active);
+  const account = chatAccounts.find((item) => item.protocol === 'irc' && item.id === route?.account)
+    || chatAccounts.find((item) => item.protocol === 'irc');
+  const saved = !!account?.fields?.nickserv_password?.set;
+  const key = active + ':' + (history[card.first]?.id || card.first);
+  if (nickServDraft.key !== key) nickServDraft = {key, password: '', save: !saved, open: false, result: '', focused: false};
+  const draft = nickServDraft;
+  const node = element('section', '', 'nickserv-card');
+  node.setAttribute('aria-label', 'NickServ');
+  node.append(element('h3', nickServTitle(card, account?.fields?.nick || '')), element('p', nickServDetail(card, saved), 'muted'));
+  if (!card.answered && card.state !== 'identified') {
+    const form = element('form', '', 'nickserv-form');
+    const label = element('label', '', 'nickserv-field');
+    const input = Object.assign(element('input', ''), {type: 'password', autocomplete: 'current-password', value: draft.password, maxLength: 300});
+    label.append(element('span', 'NickServ password'), input);
+    const keep = checkbox(saved ? 'Replace the saved password on this IRC account' : 'Save it to this IRC account', draft.save,
+      (value) => { draft.save = value; });
+    const go = element('button', 'Identify', 'primary');
+    go.type = 'submit';
+    const status = element('p', draft.result, 'muted');
+    status.setAttribute('role', 'status');
+    input.addEventListener('input', () => { draft.password = input.value; });
+    input.addEventListener('focus', () => { draft.focused = true; });
+    input.addEventListener('blur', () => { draft.focused = false; });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!input.value) return;
+      go.disabled = true;
+      go.textContent = 'Sending…';
+      try {
+        const result = await api('protocols/identify', {address: threadAddress(active), protocol: 'irc', password: input.value, save: draft.save});
+        draft.password = '';
+        input.value = '';
+        draft.result = result.notice || 'Sent to NickServ. Its answer shows here in a moment.';
+      } catch (error) { draft.result = error.message; }
+      status.textContent = draft.result;
+      go.disabled = false;
+      go.textContent = 'Identify';
+    });
+    form.append(label, keep, go, status);
+    node.append(form);
+    if (draft.focused) setTimeout(() => input.focus());
+  }
+  const more = element('button', draft.open ? 'Hide what NickServ said' : 'Show what NickServ said', 'nickserv-more');
+  more.type = 'button';
+  more.setAttribute('aria-expanded', String(draft.open));
+  const said = element('div', '', 'nickserv-said');
+  said.hidden = !draft.open;
+  for (const line of card.said) said.append(element('p', line));
+  more.addEventListener('click', () => {
+    draft.open = !draft.open;
+    said.hidden = !draft.open;
+    more.textContent = draft.open ? 'Hide what NickServ said' : 'Show what NickServ said';
+    more.setAttribute('aria-expanded', String(draft.open));
+  });
+  node.append(more, said);
+  return node;
+}

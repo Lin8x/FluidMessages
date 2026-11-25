@@ -449,9 +449,24 @@ final class GatewayClient {
         return result;
     }
 
+    /**
+     * The NickServ card in an IRC chat on FluidMessages Web: it sends IDENTIFY over its connection (never as a chat
+     * message) and with [save] keeps the password on that account. Returns {"ok", "saved", "notice"}.
+     */
+    static JSONObject identify(SharedPreferences prefs, String address, String password, boolean save) throws Exception {
+        return request(prefs, "protocols/identify", new JSONObject().put("address", address).put("protocol", "irc")
+            .put("password", password).put("save", save));
+    }
+
     /** The Reconnect button for an IRC network connected from FluidMessages Web. */
     static void reconnect(SharedPreferences prefs, String account) throws Exception {
         request(prefs, "protocols/reconnect", new JSONObject().put("account", account));
+        nextCheck = 0;
+    }
+
+    /** A server's Reconnect automatically setting on FluidMessages Web (IRC networks, XMPP and Matrix accounts). */
+    static void autoReconnect(SharedPreferences prefs, String account, boolean on) throws Exception {
+        request(prefs, "protocols/autoreconnect", new JSONObject().put("account", account).put("on", on));
         nextCheck = 0;
     }
 

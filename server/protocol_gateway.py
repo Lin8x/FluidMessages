@@ -88,23 +88,52 @@ def via_for(format, target):
 
 
 class Poller:
-    """A loop for services without a long-lived connection (Email, and Matrix without encryption), one per account."""
+    """A loop for services without a long-lived connection (Email, and Matrix without encryption), one per account.
 
-    def __init__(self, operation, interval):
+    With [auto] (Matrix: Reconnect automatically), it reports a connection state like IRC's for the inbox's mark and
+    the bar, and while [auto]() is off it checks only after Reconnect: not at start, and not again after a failure."""
+
+    def __init__(self, operation, interval, auto=None, network=""):
         self.operation = operation
         self.interval = interval
+        self.auto = auto
         self.stopped = threading.Event()
+        self.wake = threading.Event()
+        if auto is not None:
+            self.status = {"state": "connecting", "network": network, "retry_at": 0, "error": "", "manual": False}
 
     def run(self):
+        go = self.auto is None or self.auto()
+        error = ""
         while not self.stopped.is_set():
+            if not go:
+                self.status = {**self.status, "state": "disconnected", "error": error, "manual": True}
+                self.wake.wait()
+                self.wake.clear()
+                if self.stopped.is_set():
+                    break
+            go = True
             try:
                 self.operation()
-            except Exception:
-                pass
-            self.stopped.wait(self.interval() if callable(self.interval) else self.interval)
+                if self.auto is not None:
+                    self.status = {**self.status, "state": "connected", "error": "", "manual": False}
+            except Exception as problem:
+                if self.auto is not None:
+                    error = str(problem)[:300]
+                    if not self.auto():
+                        go = False
+                        continue
+                    self.status = {**self.status, "state": "reconnecting", "error": error, "manual": False}
+            self.wake.wait(self.interval() if callable(self.interval) else self.interval)
+            self.wake.clear()
+
+    def reconnect_now(self):
+        """The Reconnect button: checks again at once."""
+        self.wake.set()
 
     def stop(self):
         self.stopped.set()
+        self.wake.set()
 # Mirrors SmsReaction on Android so folded reactions read the same on every protocol.
 REACTION_VERBS = {"👍": "Liked", "❤️": "Loved", "👎": "Disliked", "😆": "Laughed at", "‼️": "Emphasized", "❓": "Questioned"}
 
@@ -527,7 +556,10 @@ class Gateway(ChatFeatures):
                 "connections": self.connections(),
                 "accounts": [{"protocol": account["protocol"], "source": account["source"], "id": account["id"],
                               "name": account["name"], "primary": bool(account.get("primary")),
-                              "recent": recent.get(account["protocol"]) == account["id"]} for account in listed]}
+                              "recent": recent.get(account["protocol"]) == account["id"],
+                              # Reconnect automatically (IRC, Matrix, and XMPP servers), on unless turned off.
+                              **({"reconnect": self.reconnects(account["id"])} if account["protocol"] in ("irc", "matrix", "xmpp") else {})}
+                             for account in listed]}
 
     @staticmethod
     def mark_read(db, data):
@@ -1473,7 +1505,8 @@ class Gateway(ChatFeatures):
                 secure = matrix_e2ee.available()
                 wanted[ident] = (json.dumps([account, secure], sort_keys=True),
                                  (lambda i=ident, a=account: self.secure_client(i, a)) if secure else
-                                 (lambda i=ident: Poller(lambda: self.receive_matrix(i), 5)), None)
+                                 (lambda i=ident, a=account: Poller(lambda: self.receive_matrix(i), 5, auto=lambda: self.reconnects(i),
+                                                                    network=urlsplit(a.get("homeserver", "")).hostname or "")), None)
             elif protocol == "email" and mine:
                 interval = lambda i=ident: 60 * int((self.accounts.get(i) or {}).get("poll_minutes", 1))
                 wanted[ident] = (json.dumps(account, sort_keys=True),
@@ -1523,14 +1556,21 @@ class Gateway(ChatFeatures):
 
     def chat_client(self, protocol, ident, account, rooms):
         if protocol == "irc":
+            # The network's server chat is in the list from the start, connected or not, so the network you added shows.
+            try:
+                self.irc_server_route(ident)
+            except Exception:
+                pass
             return irc_client.IrcClient({**account, "channels": list(rooms)},
                                         lambda *args: self.accept_irc(*args, account=ident),
                                         lambda channel, state: self.channel_state(channel, state, ident),
                                         on_invite=lambda channel, sender: self.add_invite(ident, "irc", "channel", channel,
                                                                                           sender, channel),
-                                        keep=lambda channel: self.keeps(ident, channel))
+                                        keep=lambda channel: self.keeps(ident, channel),
+                                        auto=lambda: self.reconnects(ident))
         return xmpp_client.XmppClient(account, lambda *args: self.accept_xmpp(*args, account=ident), rooms,
-                                      on_event=lambda *args: self.accept_xmpp_event(*args, account=ident))
+                                      on_event=lambda *args: self.accept_xmpp_event(*args, account=ident),
+                                      auto=lambda: self.reconnects(ident))
 
     def erase(self):
         """Erase everything: stops every chat connection and forgets recent calls, before the data behind them goes."""
@@ -1550,7 +1590,9 @@ class Gateway(ChatFeatures):
             # A failed encrypted session falls back to the plain Matrix poller until the next account change.
             entry = self.clients.get(ident)
             if entry and entry[1] is secure:
-                poller = Poller(lambda: self.receive_matrix(ident), 5)
+                account = self.accounts.get(ident) or {}
+                poller = Poller(lambda: self.receive_matrix(ident), 5, auto=lambda: self.reconnects(ident),
+                                network=urlsplit(account.get("homeserver", "")).hostname or "")
                 self.clients[ident] = (entry[0], poller)
                 threading.Thread(target=poller.run, daemon=True, name="protocol-matrix").start()
 
@@ -1817,6 +1859,32 @@ class Gateway(ChatFeatures):
             client.send(route["target"], message.get("text") if tagged and relation.get("kind") == "reply" else message["body"],
                         reply=reply if tagged else None, plain=bool(message.get("literal")))
         return {}
+
+    def identify_nickserv(self, db, data):
+        """The NickServ card's Identify: sends IDENTIFY over the chat's IRC connection, never as a chat message, and
+        with "save" keeps the password on that IRC account (encrypted like its other secrets) without reconnecting.
+        The password is never logged, put in an error, or kept in chat history."""
+        address, password, save = data.get("address"), data.get("password"), data.get("save") is True
+        route = self.route(address, "irc") if isinstance(address, str) else None
+        if route is None or route.get("via", "irc") != "irc":
+            raise ValueError("This chat isn’t on an IRC network")
+        if "irc" not in self.enabled(db):
+            raise ValueError("IRC is turned off. Turn it on in Settings → Chat services.")
+        ident = route["account"] or self.default_account("irc")
+        with self.using(ident):
+            client = self.client("irc")
+            client.identify_now(password, save)
+        if not save:
+            return {"ok": True, "saved": False}
+        entry = next((item for item in self.accounts.all() if item["id"] == ident), None)
+        if entry is None or entry["source"] != "phone":
+            return {"ok": True, "saved": False, "notice": "This account is set up outside FluidMessages, so the password wasn’t saved."}
+        clean = self.accounts.save("irc", {**entry["values"], "nickserv_password": password}, ident)
+        # The running connection already has the password, so the saved change doesn't reconnect it.
+        current = self.clients.get(ident)
+        if current is not None and current[1] is client:
+            self.clients[ident] = (json.dumps(clean, sort_keys=True), client)
+        return {"ok": True, "saved": True}
 
     # XMPP
 

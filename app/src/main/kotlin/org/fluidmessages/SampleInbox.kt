@@ -74,6 +74,20 @@ internal object SampleInbox {
 
     @JvmStatic fun server(id: String): Server? = SERVERS.firstOrNull { it.id == id }
 
+    /**
+     * The connection mark beside each IRC, Matrix, and XMPP sample chat's tag: #trail-maps shows a network that isn't
+     * connected and Amir Nasser's XMPP account one that's connecting, so every look is on screen. "" for texts and email.
+     */
+    @JvmStatic fun connection(name: String): String {
+        val service = CHATS.firstOrNull { it[0] == name }?.get(5) ?: return ""
+        return when {
+            name == "#trail-maps" -> "disconnected"
+            name == SECOND_ACCOUNT_CHAT -> "connecting"
+            service == "IRC" || service == "Matrix" || service == "XMPP" -> "connected"
+            else -> ""
+        }
+    }
+
     /** Sample contacts that start starred in the sample Phone tab, so the Favorites filter has chats to show. */
     @JvmField val FAVORITES: List<String> = listOf("demo:Maya Chen", "demo:Jordan Ellis", "demo:Nora Patel")
 

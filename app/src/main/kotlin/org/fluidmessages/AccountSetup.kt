@@ -170,7 +170,9 @@ internal object AccountSetup {
 /** What the full-page guide says before the form to add an account on a service. Plain words, for a first-timer. */
 internal data class ServiceGuide(val title: String, val about: String, val exampleTitle: String, val exampleLine: String,
                                  val examplePreset: Map<String, String>, val exampleUrl: String, val exampleUrlLabel: String,
-                                 val steps: List<String>)
+                                 val steps: List<String>,
+                                 /** When the network asks you to sign in: a heading, then short steps. Empty for none. */
+                                 val signIn: List<String> = emptyList())
 
 internal object ServiceGuides {
     /** The one-line descriptions, the same on the phone and in FluidMessages Web. */
@@ -178,6 +180,15 @@ internal object ServiceGuides {
     const val XMPP = "Simple, private one-to-one and group chat. It works like email: pick any provider and talk to people on all the others."
     const val EMAIL = "Your normal email, shown as chats. Only the conversations you choose show up."
     const val IRC = "Big public chat rooms for hobbies and open-source projects. No sign-up needed: just pick a nickname."
+
+    /** What to do when an IRC network wants a registered nickname, the same words as FluidMessages Web's guide. */
+    @JvmField val IRC_SIGN_IN = listOf(
+        "If the network asks you to sign in",
+        "Some networks, like Libera.Chat, only let registered nicknames connect from a VPN, a work or school network, or a cloud server. FluidMessages tells you when this happens.",
+        "To register, connect once from home Wi-Fi or mobile data. In the network’s chat, type /msg NickServ REGISTER, a new password, and your email.",
+        "Open the email the network sends you and follow its steps.",
+        "Then edit the account: put your nickname in SASL account and that password in SASL password, and save.",
+    )
 
     /** The public XMPP server offered as the ready-made example; it's in ServerDirectory's list. */
     const val XMPP_EXAMPLE = "jabber.org"
@@ -200,7 +211,7 @@ internal object ServiceGuides {
             ServerDirectory.irc.first { it.name == "Libera.Chat" }.preset, "", "",
             listOf("Pick a network. Libera.Chat is a good first one.",
                 "Pick a nickname. That’s the name other people see.",
-                "Browse the channels and join the ones you like."))
+                "Browse the channels and join the ones you like."), IRC_SIGN_IN)
         else -> ServiceGuide("Email as chats", EMAIL, "Use the email you already have",
             "Gmail, Outlook, Yahoo, iCloud, and most others work. You don’t need a new address.", emptyMap(), "", "",
             listOf("Type your email address. For well-known providers, we fill in the settings.",

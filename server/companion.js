@@ -31,7 +31,7 @@ const ACCOUNT_FIELDS = {
     ['smtp_host', 'SMTP server', 'smtp.example.org'], ['smtp_port', 'SMTP port', '465', false, EMAIL_PORT_HINTS.smtp],
     ['smtp_user', 'SMTP user (optional)', ''], ['smtp_password', 'SMTP password (optional)', '', true]],
   irc: [['server', 'Server', 'irc.libera.chat'], ['port', 'Port (optional)', '6697'], ['nick', 'Nickname', ''],
-    ['sasl_user', 'SASL user (optional)', ''], ['sasl_password', 'SASL password (optional)', '', true],
+    ['sasl_user', 'SASL account (optional, your registered nickname)', ''], ['sasl_password', 'SASL password (optional)', '', true],
     ['nickserv_password', 'NickServ password (optional, identify on connect when SASL isn’t used)', '', true],
     ['channels', 'Channels (comma-separated)', '#example'],
     ['ctcp_replies', 'Answer CTCP VERSION and PING (off keeps your client private)', '', 'check']],
@@ -925,7 +925,7 @@ function reachTiles(key) {
   if (callable(key)) {
     tile('voice', 'Call', 'Matrix', () => { back(); startCall(false).catch(showError); });
     tile('video', 'Video', 'Matrix', () => { back(); startCall(true).catch(showError); });
-  } else if (threadAddress(key) && (!get('schedule').hidden || sampleOn) && callWayOn('meeting')) {
+  } else if (threadAddress(key) && (!get('schedule').hidden || sampleOn) && callWayOn('meeting') && !ircCallsHidden(key)) {
     tile('voice', 'Call', 'Meeting link', () => { back(); startMeeting(false).catch(showError); });
     tile('video', 'Video', 'Meeting link', () => { back(); startMeeting(true).catch(showError); });
   }
@@ -1097,7 +1097,11 @@ function linkAddressForm(key, name, service, back, done) {
   const form = element('form', '', 'settings-section stack');
   const target = Object.assign(element('input', ''), {required: true, maxLength: 300, placeholder: LINK_HINTS[service], autocomplete: 'off',
     spellcheck: false, type: service === 'email' ? 'email' : 'text'});
-  form.append(field(labels[service] + ' address', target));
+  form.append(field(labels[service] + ' address', target, 'Type a new address, or pick someone from your ' + labels[service] + ' chats.'));
+  // Suggestions from your chats on this service (people.js), found in this browser only; nothing is sent to search.
+  if (typeof linkSuggestionBox === 'function') {
+    form.append(linkSuggestionBox(target, () => service, (item) => { target.value = item.address; target.focus(); }));
+  }
   const group = checkbox('This is a group chat', false, () => {});
   if (service === 'xmpp') form.append(group);
   const accounts = chatAccounts.filter((account) => account.protocol === service);
@@ -1160,9 +1164,9 @@ const CARRIER_COPY_NOTE = 'Your carrier and the other person’s phone can still
 
 /** A chat's own settings, also shown on the person's contact page (people.js): photos and files, wallpaper,
  * folders, security and its timer, and its code. [settings] is null in the sample chats. */
-function conversationSettings(key, settings) {
+function conversationSettings(key, settings, {block = true} = {}) {
   const address = threadAddress(key);
-  const extras = detailsExtras(key);
+  const extras = detailsExtras(key, {block});
   const nodes = [sharedMedia(key)];
   if (extras.wallpaper) nodes.push(extras.wallpaper);
   nodes.push(extras.conversation);
@@ -1222,6 +1226,12 @@ function callable(key) {
 /** Settings → Calls → Ways to call: Matrix voice and video, and meeting links, each on unless turned off. */
 function callWayOn(way) { return prefs[way === 'matrix' ? 'callMatrix' : 'callMeetings'] !== false; }
 
+/**
+ * IRC chats hide call and meeting-link buttons unless Settings → Accounts → IRC turns them on: many channels ban
+ * call and meeting links, and moderators may kick or ban you for posting them. Other protocols keep theirs.
+ */
+function ircCallsHidden(key) { return !!key && threadProtocol(key) === 'irc' && prefs.ircCalls !== true; }
+
 // The same traffic-light badge as the phone: red not encrypted, yellow in transit, green end to end.
 function fluidEncrypted(key) {
   const fluid = companionSettings?.fluid_encryption;
@@ -1245,7 +1255,7 @@ function updateCallButtons() {
   const matrix = callable(active);
   callButtons.voice.hidden = callButtons.video.hidden = !matrix;
   // Matrix chats call natively; everywhere else the camera button sends a meeting link.
-  if (callButtons.meeting) callButtons.meeting.hidden = !active || !threadAddress(active) || matrix || !callWayOn('meeting');
+  if (callButtons.meeting) callButtons.meeting.hidden = !active || !threadAddress(active) || matrix || !callWayOn('meeting') || ircCallsHidden(active);
   get('details').hidden = !active || !threadAddress(active);
   let badge = document.getElementById('security-badge');
   if (!badge) {

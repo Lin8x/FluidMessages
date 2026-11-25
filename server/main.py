@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from contextlib import closing
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -70,6 +71,9 @@ PREFS = ("effects", "reactionEffects", "games", "random", "gifs", "linkPreviews"
 # no items for them, so the phone keeps its own.
 WEB_SWITCHES = ("sendGifs", "sendStickers", "callMatrix", "callMeetings")
 PREFS += WEB_SWITCHES
+# Settings → Accounts → IRC: call and meeting-link buttons in IRC chats. Off unless turned on, since many channels ban
+# call and meeting links.
+OFF_PREFS = ("ircCalls",)
 # Messages → Communities' sort order, and Settings → Messaging → Inbox filters: which filters the inbox filter menu
 # shows, in order. A hidden filter is kept with a "-" in front, so its place survives turning it back on.
 COMMUNITY_SORTS = ("recent", "name", "joined")
@@ -89,33 +93,79 @@ def clean_inbox_filters(value):
 
 
 # Settings → Calls → Meeting links: the services you can pick when you send a meeting link (Zoom first), your own saved
-# links, the one used last, and the Jitsi server. FluidMessages has no account with Zoom, Google, or Microsoft, so those
-# three send a link you saved; Jitsi makes a new room each time. The same rules as meetings.js and MeetingServices.kt.
-MEETING_SERVICES = {"zoom": True, "meet": False, "teams": False, "jitsi": True}  # on at first
+# links, the services you added, the one used last, and the Jitsi server. FluidMessages has no account with Zoom,
+# Google, or Microsoft, so those three send a link you saved; Jitsi makes a new room each time. A service you added
+# ("custom") has a name, an https link, and optionally the host the link must be on. The same rules as meetings.js and
+# MeetingServices.kt.
+MEETING_SERVICES = {"zoom": True, "meet": True, "teams": True, "jitsi": True}  # on at first
 MEETING_LINKS = {
     "zoom": re.compile(r"https://(?:[a-z0-9-]+\.)*zoom\.us/(?:j/\d{9,11}|my/[A-Za-z0-9._-]{1,64})(?:[?#]\S*)?", re.I | re.A),
     "meet": re.compile(r"https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}(?:[?#]\S*)?", re.I | re.A),
     "teams": re.compile(r"https://teams\.(?:microsoft|live)\.com/(?:l/meetup-join/\S+|meet/[A-Za-z0-9]+(?:[?#]\S*)?)", re.I | re.A)}
 MEETING_SERVER = re.compile(r"[A-Za-z0-9.-]{3,253}(:[0-9]{1,5})?", re.A)
+MEETING_CUSTOM_LINK = re.compile(r"https://([A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+)(?::\d{1,5})?(?:[/?#]\S*)?", re.A)
+MEETING_HOST = re.compile(r"[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})+", re.A)
+MEETING_CUSTOM_ID = re.compile(r"c[0-9a-f]{8}", re.A)
+MEETING_NAME_MAX, MEETING_CUSTOM_MAX = 32, 10
+# The names the built-in services use in a message, which a service you add can't take.
+MEETING_BUILT_IN_NAMES = {"zoom", "google meet", "microsoft teams", "teams", "jitsi meet"}
+# Settings saved before Google Meet and Teams were on at first have no version. Those two were off unless turned on,
+# so they're turned on once; from version 2 on, what you chose stays.
+MEETING_VERSION = 2
 
 
 def default_meetings():
-    return {"on": dict(MEETING_SERVICES), "links": {}, "last": "", "jitsiServer": "meet.jit.si"}
+    return {"version": MEETING_VERSION, "on": dict(MEETING_SERVICES), "links": {}, "custom": [], "last": "", "jitsiServer": "meet.jit.si"}
+
+
+def clean_meeting_custom(items):
+    """Your own meeting services, checked: each has an id, a tidy name of 1 to 32 letters that isn't a built-in
+    service's or another of yours, an https link, and a host ("" for any) that the link must be on."""
+    if not isinstance(items, list) or len(items) > MEETING_CUSTOM_MAX:
+        raise ValueError("Invalid meeting links")
+    clean, names = [], set()
+    for item in items:
+        if not isinstance(item, dict) or any(key not in ("id", "name", "link", "host") for key in item):
+            raise ValueError("Invalid meeting links")
+        key, name, link, host = item.get("id"), item.get("name"), item.get("link"), item.get("host", "")
+        if not isinstance(key, str) or not MEETING_CUSTOM_ID.fullmatch(key) or any(key == other["id"] for other in clean):
+            raise ValueError("Invalid meeting links")
+        if (not isinstance(name, str) or name != " ".join(name.split()) or not 1 <= len(name.encode("utf-16-le")) // 2 <= MEETING_NAME_MAX
+                or any(unicodedata.category(char) in ("Cc", "Cf") for char in name)
+                or name.lower() in MEETING_BUILT_IN_NAMES or name.lower() in names):
+            raise ValueError("That name can't be used for a meeting service")
+        if not isinstance(host, str) or host and (len(host) > 253 or not MEETING_HOST.fullmatch(host)):
+            raise ValueError("Invalid meeting links")
+        match = MEETING_CUSTOM_LINK.fullmatch(link) if isinstance(link, str) and len(link) <= 2000 else None
+        on = match and match.group(1).lower()
+        if not match or any(char.isspace() for char in link) or host and on != host and not on.endswith("." + host):
+            raise ValueError("That isn't a meeting link for that service")
+        names.add(name.lower())
+        clean.append({"id": key, "name": name, "link": link, "host": host})
+    return clean
 
 
 def clean_meetings(value):
     """Meeting-link choices, checked. Missing parts keep their defaults, so settings saved before a part existed still
     load; anything of the wrong kind, an unknown service, or a link that isn't that service's own is refused."""
-    if not isinstance(value, dict) or any(key not in ("on", "links", "last", "jitsiServer") for key in value):
+    if not isinstance(value, dict) or any(key not in ("version", "on", "links", "custom", "last", "jitsiServer") for key in value):
+        raise ValueError("Invalid meeting links")
+    if value.get("version", 1) not in (1, MEETING_VERSION) or type(value.get("version", 1)) is not int:
         raise ValueError("Invalid meeting links")
     clean = default_meetings()
     on, links = value.get("on", {}), value.get("links", {})
     if not isinstance(on, dict) or not isinstance(links, dict):
         raise ValueError("Invalid meeting links")
+    clean["custom"] = clean_meeting_custom(value.get("custom", []))
+    ids = {**MEETING_SERVICES, **{item["id"]: True for item in clean["custom"]}}
+    clean["on"].update({item["id"]: True for item in clean["custom"]})
     for key, item in on.items():
-        if key not in MEETING_SERVICES or type(item) is not bool:
+        if key not in ids or type(item) is not bool:
             raise ValueError("Invalid meeting links")
         clean["on"][key] = item
+    if "version" not in value:
+        # From before Google Meet and Teams were on at first: off there meant "never turned on", so they're on now.
+        clean["on"]["meet"] = clean["on"]["teams"] = True
     if not any(clean["on"].values()):
         raise ValueError("One meeting service always stays on")
     for key, item in links.items():
@@ -123,14 +173,14 @@ def clean_meetings(value):
             raise ValueError("That isn't a meeting link for that service")
         clean["links"][key] = item
     last, server = value.get("last", ""), value.get("jitsiServer", "meet.jit.si")
-    if last not in ("", *MEETING_SERVICES) or not isinstance(server, str) or not MEETING_SERVER.fullmatch(server):
+    if last not in ("", *ids) or not isinstance(server, str) or not MEETING_SERVER.fullmatch(server):
         raise ValueError("Invalid meeting links")
     clean["last"], clean["jitsiServer"] = last, server
     return clean
 
 
 def default_prefs():
-    return {**{key: True for key in PREFS}, "communitySort": "recent", "inboxFilters": list(INBOX_FILTERS),
+    return {**{key: True for key in PREFS}, **{key: False for key in OFF_PREFS}, "communitySort": "recent", "inboxFilters": list(INBOX_FILTERS),
             "meetings": default_meetings(), **message_requests.defaults()}
 
 def appearance_snapshot(value):
@@ -450,6 +500,7 @@ def web_prefs(db):
     row = db.execute("SELECT value FROM protocol_state WHERE key='prefs'").fetchone()
     stored = json.loads(row[0]) if row else {}
     prefs = {key: stored.get(key, True) is not False for key in PREFS}
+    prefs.update({key: stored.get(key) is True for key in OFF_PREFS})
     prefs["communitySort"] = stored.get("communitySort") if stored.get("communitySort") in COMMUNITY_SORTS else "recent"
     try:
         prefs["inboxFilters"] = clean_inbox_filters(stored["inboxFilters"])
@@ -469,7 +520,7 @@ def clean_prefs(value, current):
         raise ValueError("Invalid preferences")
     clean = {}
     for key, item in value.items():
-        if key in PREFS and type(item) is bool:
+        if (key in PREFS or key in OFF_PREFS) and type(item) is bool:
             clean[key] = item
         elif key == "communitySort" and item in COMMUNITY_SORTS:
             clean[key] = item
@@ -1469,9 +1520,15 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/protocols/open":
                 # Opening a channel that isn't kept joined rejoins it.
                 return gateway.open_chat(data)
+            if self.path == "/api/protocols/identify":
+                # The NickServ card in an IRC chat (protocol_gateway.identify_nickserv). The password isn't logged.
+                return gateway.identify_nickserv(db, data)
             if self.path == "/api/protocols/reconnect":
                 # The Disconnected · Reconnect bar.
                 return gateway.reconnect(data)
+            if self.path == "/api/protocols/autoreconnect":
+                # A server's Reconnect automatically switch (IRC networks, Matrix and XMPP accounts).
+                return gateway.set_auto_reconnect(db, data)
             if self.path == "/api/protocols/accounts":
                 # Saving replaces the account; a blank password keeps the saved one.
                 # "id" edits that account and "add" adds another; neither (older phones) edits the first one.

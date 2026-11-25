@@ -95,6 +95,20 @@ object MeetingPages {
 
     private fun settings(prefs: SharedPreferences) = MeetingSettings.from(prefs.all)
 
+    private fun randomHex(bytes: Int): String =
+        ByteArray(bytes).also { java.security.SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
+
+    /** Writes [changes] to the app's settings: a null value removes that key. */
+    private fun write(prefs: SharedPreferences, changes: Map<String, Any?>) {
+        val editor = prefs.edit()
+        for ((key, value) in changes) when (value) {
+            null -> editor.remove(key)
+            is Boolean -> editor.putBoolean(key, value)
+            else -> editor.putString(key, value.toString())
+        }
+        editor.apply()
+    }
+
     /** The short line under "Meeting link" in the ways to reach someone. */
     @JvmStatic fun summary(prefs: SharedPreferences): String {
         val choices = settings(prefs).enabled
@@ -153,11 +167,12 @@ object MeetingPages {
         }
         val saved = now.link(service)
         when {
-            !service.needsSavedLink -> {
-                val bytes = ByteArray(8).also { java.security.SecureRandom().nextBytes(it) }
-                done(MeetingLinks.newJitsiRoom(now.jitsiServer, bytes.joinToString("") { "%02x".format(it) }))
-            }
+            !service.needsSavedLink -> done(MeetingLinks.newJitsiRoom(now.jitsiServer, randomHex(8)))
             saved != null && !once -> done(saved)
+            // Your own service with a link that no longer passes the check: fix it on its page, then it's sent.
+            service.custom && saved == null -> customService(activity, prefs, service) {
+                settings(prefs).service(service.id)?.let { fixed -> if (settings(prefs).ready(fixed)) choose(activity, prefs, fixed, false, ready) }
+            }
             else -> setup(activity, prefs, service, if (saved != null) Mode.ONCE else Mode.FIRST) { link -> if (link != null) done(link) }
         }
     }
@@ -191,7 +206,7 @@ object MeetingPages {
                                 Text(step, Modifier.weight(1f))
                             }
                         }
-                        Button(onClick = { if (!openLink(context, service.home)) problem = "No browser is available to open ${service.label}." },
+                        if (service.home.isNotEmpty()) Button(onClick = { if (!openLink(context, service.home)) problem = "No browser is available to open ${service.label}." },
                             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Open ${service.label}") }
                     }
                     OutlinedTextField(value, { value = it.take(2000); problem = null }, Modifier.fillMaxWidth(),
@@ -225,12 +240,71 @@ object MeetingPages {
         }
 
     /**
-     * The rows of Settings → Calls → Meeting links: each service on or off, your saved links, and the Jitsi server.
-     * [refresh] draws the page again; [jitsiServer] opens the server form.
+     * Settings → Calls → Meeting links → your own service, on a full page: its name, its link, and (if you like) the
+     * host the link must be on, so a typo is caught. [existing] is null to add a new one. [changed] runs after a save or
+     * a remove.
+     */
+    @JvmStatic fun customService(activity: ComponentActivity, prefs: SharedPreferences, existing: MeetingService?, changed: Runnable) =
+        SecurityDialogs.present(activity, prefs) { dismiss ->
+            var name by remember { mutableStateOf(existing?.label.orEmpty()) }
+            var link by remember { mutableStateOf(existing?.customLink.orEmpty()) }
+            var host by remember { mutableStateOf(existing?.customHost.orEmpty()) }
+            var problem by remember { mutableStateOf<String?>(null) }
+            var removing by remember { mutableStateOf(false) }
+            val clipboard = LocalClipboardManager.current
+            val shownName = MeetingLinks.cleanName(name) ?: "Work video"
+            FormPage(onDismissRequest = dismiss, title = { Text(existing?.label ?: "Add your own service") }, text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Use a different video app? Give it a name and save your meeting link. FluidMessages sends that link each time you pick it.",
+                        style = MaterialTheme.typography.bodyMedium)
+                    OutlinedTextField(name, { name = it.take(64); problem = null; removing = false }, Modifier.fillMaxWidth(),
+                        label = { Text("Name") }, placeholder = { Text("Work video") }, singleLine = true, isError = problem != null,
+                        supportingText = { Text("Up to ${MeetingService.NAME_MAX} letters. People see it in your message.") })
+                    OutlinedTextField(link, { link = it.take(2000); problem = null; removing = false }, Modifier.fillMaxWidth(),
+                        label = { Text("Meeting link") }, placeholder = { Text("https://video.example.org/your-room") }, singleLine = true,
+                        isError = problem != null, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+                    OutlinedButton(onClick = { clipboard.getText()?.text?.let { link = it.trim().take(2000); problem = null } },
+                        modifier = Modifier.heightIn(min = 48.dp)) { Text("Paste") }
+                    OutlinedTextField(host, { host = it.take(253); problem = null; removing = false }, Modifier.fillMaxWidth(),
+                        label = { Text("Web address it must be on (optional)") }, placeholder = { Text("video.example.org") }, singleLine = true,
+                        isError = problem != null, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        supportingText = { Text("Catches a typo: the link has to be on this web address.") })
+                    problem?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
+                    Text("They get: " + MeetingLinks.text(MeetingService.custom("preview", shownName, "https://example.org"), true, "https://…"), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Notice("Whoever runs your service can see who joins and may record. For a private call, use an encrypted call instead.")
+                }
+            }, confirmButton = {
+                TextButton(onClick = {
+                    val now = settings(prefs)
+                    now.customProblem(existing?.id, name, link, host)?.let { problem = it; return@TextButton }
+                    var id = MeetingSettings.newCustomId(randomHex(4))
+                    while (now.service(id) != null) id = MeetingSettings.newCustomId(randomHex(4))
+                    write(prefs, now.customWrites(existing?.id, id, name, link, host))
+                    dismiss()
+                    changed.run()
+                }) { Text("Save") }
+            }, dismissButton = {
+                Row {
+                    // Remove asks again in place instead of opening a pop-up.
+                    if (existing != null) TextButton(onClick = {
+                        if (!removing) { removing = true; return@TextButton }
+                        write(prefs, settings(prefs).customRemoval(existing.id))
+                        dismiss()
+                        changed.run()
+                    }) { Text(if (removing) "Tap again to remove" else "Remove", color = MaterialTheme.colorScheme.error) }
+                    TextButton(onClick = dismiss) { Text("Cancel") }
+                }
+            })
+        }
+
+    /**
+     * The rows of Settings → Calls → Meeting links: each service on or off, your saved links, your own services, and
+     * the Jitsi server. [refresh] draws the page again; [jitsiServer] opens the server form.
      */
     @JvmStatic fun settingsSections(activity: ComponentActivity, prefs: SharedPreferences, refresh: Runnable, jitsiServer: Runnable): List<SettingsSection> {
         val now = settings(prefs)
-        val services = MeetingService.entries.map { service ->
+        val services = now.all.map { service ->
             val on = now.isOn(service)
             SettingsAction(service.label, now.detail(service), Runnable {
                 if (on && !now.canTurnOff(service)) {
@@ -245,12 +319,18 @@ object MeetingPages {
             SettingsAction("${service.label} link", now.link(service) ?: "Not saved yet · tap to add yours",
                 Runnable { editLink(activity, prefs, service, refresh) })
         }
+        val own = now.custom.map { service ->
+            SettingsAction(service.label, (now.link(service) ?: "Your link needs a fix") + if (now.isOn(service)) "" else " · off",
+                Runnable { customService(activity, prefs, service, refresh) })
+        } + (if (now.canAddCustom) listOf(SettingsAction("Add your own service", "A name and your meeting link, for any other video app",
+            Runnable { customService(activity, prefs, null, refresh) })) else emptyList())
         val sections = mutableListOf(SettingsSection("Services you can pick when you send a link", services))
         if (links.isNotEmpty()) sections += SettingsSection("Your saved links", links)
+        sections += SettingsSection("Your own services", own)
         if (now.isOn(MeetingService.JITSI)) sections += SettingsSection("Jitsi Meet", listOf(
             SettingsAction("Jitsi server", now.jitsiServer + " · free and open source, or use your own", jitsiServer)))
         sections += SettingsSection("Good to know", listOf(
-            SettingsAction("FluidMessages sends your link", "It can’t make Zoom, Google Meet, or Teams meetings for you. Jitsi Meet makes a new room each time.",
+            SettingsAction("FluidMessages sends your link", "It can’t make Zoom, Google Meet, Teams, or your own service’s meetings for you. Jitsi Meet makes a new room each time.",
                 Runnable {}, true),
             SettingsAction("Who can see a meeting", "Zoom, Google, or Microsoft can see who joins and may record. On Jitsi, the meeting " +
                 "server can access the call. For a private call, use an encrypted call instead.", Runnable {}, true)))

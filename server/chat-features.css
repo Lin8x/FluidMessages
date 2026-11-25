@@ -35,3 +35,41 @@
   background: color-mix(in srgb, #ff9f0a 12%, var(--raised, var(--surface))); color: var(--ink); font-size: .85rem; }
 .connection-bar button { min-height: 36px; }
 .community > .connection-bar { margin: 2px 8px 6px; }
+
+/* The NickServ card: NickServ's identify notices folded into one card, with its own words under a button. */
+.nickserv-card { display: grid; gap: .5rem; align-self: stretch; width: min(100%, 520px); margin: 10px auto; padding: .9rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--irc) 55%, var(--line)); border-radius: 18px; background: var(--raised, var(--surface)); color: var(--ink); }
+.nickserv-card h3 { margin: 0; font-size: 1rem; }
+.nickserv-card p { margin: 0; }
+.nickserv-form { display: grid; gap: .5rem; }
+.nickserv-field { display: grid; gap: .25rem; }
+.nickserv-field input { min-height: 40px; }
+.nickserv-form button[type="submit"] { justify-self: start; min-height: 40px; }
+.nickserv-more { justify-self: start; min-height: 36px; padding: 0; border: 0; background: transparent; color: var(--action, var(--accent));
+  font-weight: 600; text-decoration: underline; }
+.nickserv-said { display: grid; gap: .25rem; padding: .6rem .7rem; border-radius: 10px; background: var(--bg, transparent);
+  font-size: .88rem; overflow-wrap: anywhere; }
+.nickserv-said[hidden] { display: none; }
+
+/* The inbox's connection mark beside an IRC, Matrix, or XMPP chat's tag: signal bars, never a dot (connections.js). */
+.connection-mark { display: inline-flex; align-items: center; margin-inline-start: .3rem; vertical-align: middle; }
+.connection-mark svg { width: 12px; height: 12px; fill: color-mix(in srgb, var(--muted) 45%, transparent); }
+.connection-mark line { stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; }
+.connection-mark.connected svg rect { fill: #1b7f37; }
+.connection-mark.connecting svg .b1 { fill: #8f5f00; }
+:root[data-mode="dark"] .connection-mark.connected svg rect { fill: #30d158; }
+:root[data-mode="dark"] .connection-mark.connecting svg .b1 { fill: #ffc233; }
+@media (forced-colors: active) { .connection-mark svg, .connection-mark svg rect { fill: CanvasText; } .connection-mark line { stroke: CanvasText; } }
+
+/* On/off rows in chat and server details are switches at the row's end, as on the phone. */
+.switch-row { justify-content: space-between; gap: .9rem; }
+.switch-row > span { display: grid; gap: .15rem; }
+.switch-row > input[role="switch"] { -webkit-appearance: none; appearance: none; position: relative; flex: none; width: 51px; height: 31px;
+  margin: 0; border-radius: 999px; background: var(--outline, var(--line)); cursor: pointer; transition: background-color .2s; }
+.switch-row > input[role="switch"]::after { content: ''; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%;
+  background: #fff; box-shadow: 0 2px 4px rgb(0 0 0 / .22); transition: transform .2s; }
+.switch-row > input[role="switch"]:checked { background: var(--accent); }
+.switch-row > input[role="switch"]:checked::after { transform: translateX(20px); }
+:root[dir="rtl"] .switch-row > input[role="switch"]:checked::after { transform: translateX(-20px); }
+@media (forced-colors: active) { .switch-row > input[role="switch"] { appearance: auto; width: 20px; height: 20px; } .switch-row > input[role="switch"]::after { display: none; } }
+@media (prefers-reduced-motion: reduce) { .switch-row > input[role="switch"], .switch-row > input[role="switch"]::after { transition: none; } }

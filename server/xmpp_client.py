@@ -27,7 +27,7 @@ def available():
 
 
 class XmppClient:
-    def __init__(self, account, on_message, rooms, on_event=None):
+    def __init__(self, account, on_message, rooms, on_event=None, auto=None):
         if slixmpp is None:
             raise RuntimeError("Install slixmpp on the companion to use XMPP")
         self.account = account
@@ -42,6 +42,12 @@ class XmppClient:
         self.client = None
         self.ready = threading.Event()
         self.stopped = False
+        # Reconnect automatically (on by default): off, it connects only when you tap Reconnect.
+        self.auto = auto or (lambda: True)
+        self.wake = threading.Event()
+        # What the apps show: connected, connecting, reconnecting, or disconnected ("manual" while auto is off).
+        self.status = {"state": "connecting", "network": account.get("jid", "").partition("@")[2], "retry_at": 0, "error": "",
+                       "manual": False}
 
     def run(self):
         self.loop = asyncio.new_event_loop()
@@ -70,11 +76,28 @@ class XmppClient:
         client.add_event_handler("groupchat_direct_invite", self.invited)
         client.add_event_handler("presence_subscribe", self.subscribe)
         self.client = client
-        address = (self.account["host"], int(self.account.get("port", 5222))) if self.account.get("host") else None
-        client.connect(*(address or ()))
+        if not self.auto():
+            self.status = {**self.status, "state": "disconnected", "manual": True}
+            self.wake.wait()
+            self.wake.clear()
+            if self.stopped:
+                return
+        self.status = {**self.status, "state": "connecting", "manual": False}
+        client.connect(*(self.address() or ()))
         self.loop.run_forever()
 
+    def address(self):
+        return (self.account["host"], int(self.account.get("port", 5222))) if self.account.get("host") else None
+
+    def reconnect_now(self):
+        """The Reconnect button: connects now, also while Reconnect automatically is off."""
+        self.wake.set()
+        if self.loop and self.loop.is_running() and self.client and not self.ready.is_set() and self.status["state"] in ("disconnected", "reconnecting"):
+            self.status = {**self.status, "state": "connecting", "manual": False}
+            self.loop.call_soon_threadsafe(lambda: self.client.connect(*(self.address() or ())))
+
     async def started(self, _event):
+        self.status = {**self.status, "state": "connected", "error": "", "manual": False}
         self.client.send_presence()
         await self.client.get_roster()
         await self.client.plugin["xep_0280"].enable()
@@ -175,12 +198,22 @@ class XmppClient:
     def disconnected(self, _event):
         self.ready.clear()
         self.last_seen = self.last_seen or time.time()
-        if not self.stopped:
+        if not self.stopped and not self.auto():
+            # Reconnect automatically off: wait for Reconnect.
+            self.status = {**self.status, "state": "disconnected", "manual": True}
+        elif not self.stopped:
             # Reconnect with a pause, so an unreachable server doesn't spin.
-            self.loop.call_later(30, self.client.connect)
+            self.status = {**self.status, "state": "reconnecting", "retry_at": int((time.time() + 30) * 1000), "manual": False}
+            self.loop.call_later(30, self.reconnect_later)
+
+    def reconnect_later(self):
+        if not self.stopped and not self.ready.is_set() and self.status["state"] == "reconnecting":
+            self.status = {**self.status, "state": "connecting"}
+            self.client.connect(*(self.address() or ()))
 
     def stop(self):
         self.stopped = True
+        self.wake.set()
         if self.loop and self.client:
             self.loop.call_soon_threadsafe(self.client.disconnect)
 

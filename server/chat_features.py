@@ -590,8 +590,36 @@ class ChatFeatures:
                 return {"joined": False}
         return {"joined": True}
 
+    def reconnect_map(self):
+        return json.loads(self.state("auto_reconnect") or "{}")
+
+    def reconnects(self, account):
+        """Reconnect automatically (the default): connects at start and after a drop. Off: only after Reconnect."""
+        try:
+            return self.reconnect_map().get(account, True) is not False
+        except Exception:
+            return True  # The setting can't be read right now: keep the default.
+
+    def set_auto_reconnect(self, db, data):
+        ident = data.get("account") if isinstance(data.get("account"), str) else None
+        if ident is None or type(data.get("on")) is not bool or not any(
+                entry["id"] == ident and entry["protocol"] in ("irc", "matrix", "xmpp") for entry in self.accounts.all()):
+            raise ValueError("Reconnect automatically is for IRC networks and Matrix and XMPP accounts")
+        auto = self.reconnect_map()
+        if data["on"]:
+            auto.pop(ident, None)
+        else:
+            auto[ident] = False
+        db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('auto_reconnect', ?)", (json.dumps(auto),))
+        entry = self.clients.get(ident)
+        # Turned back on: connect now rather than waiting for a Reconnect tap. Off leaves a working connection alone.
+        if data["on"] and entry is not None and hasattr(entry[1], "reconnect_now"):
+            entry[1].reconnect_now()
+        return {"reconnect": data["on"]}
+
     def connections(self):
-        """Each IRC network's connection: connected, connecting, reconnecting (retry_at), or paused by the hourly limit."""
+        """Each IRC network's, XMPP account's, and Matrix account's connection: connected, connecting, reconnecting
+        (retry_at), paused by the hourly limit, or disconnected (with "manual" while Reconnect automatically is off)."""
         return {ident: dict(entry[1].status) for ident, entry in list(self.clients.items())
                 if isinstance(getattr(entry[1], "status", None), dict)}
 

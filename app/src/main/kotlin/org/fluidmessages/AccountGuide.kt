@@ -112,6 +112,13 @@ internal fun AccountGuide(protocol: MessageProtocol, picked: String, start: (Map
                 }
             }
         }
+        // IRC: registering a nickname for networks that ask you to sign in, and where its password goes.
+        if (guide.signIn.size > 1) item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(guide.signIn.first(), style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+                for (line in guide.signIn.drop(1)) Text(line, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
         item {
             Column(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 AppButton(onClick = { start(if (useExample) guide.examplePreset else emptyMap()) }, modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp)) {

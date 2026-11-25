@@ -225,6 +225,12 @@ const SERVICE_GUIDES = {
     exampleNote: 'Just pick a nickname',
     steps: ['Pick a network. We fill in its address for you.', 'Pick a nickname. This is the name other people see.',
       'Join rooms, called channels. We show you popular ones to start with.'],
+    // When a network wants a registered nickname: the same words as the phone's guide (ServiceGuides.IRC_SIGN_IN).
+    signIn: ['If the network asks you to sign in',
+      'Some networks, like Libera.Chat, only let registered nicknames connect from a VPN, a work or school network, or a cloud server. FluidMessages tells you when this happens.',
+      'To register, connect once from home Wi-Fi or mobile data. In the network’s chat, type /msg NickServ REGISTER, a new password, and your email.',
+      'Open the email the network sends you and follow its steps.',
+      'Then edit the account: put your nickname in SASL account and that password in SASL password, and save.'],
   },
 };
 
@@ -332,6 +338,11 @@ function serviceGuide(protocol, {start, example, expert, more}) {
   const steps = element('ol', '', 'service-guide-steps');
   for (const text of guide.steps) steps.append(element('li', text));
   next.append(element('h3', 'What happens next'), steps);
+  if (guide.signIn) {
+    // IRC: registering a nickname for networks that ask you to sign in, and where its password goes.
+    next.append(element('h3', guide.signIn[0]));
+    for (const line of guide.signIn.slice(1)) next.append(element('p', line, 'muted'));
+  }
 
   const go = element('div', '', 'service-guide-go');
   const begin = element('button', 'Get started', 'primary service-guide-begin');

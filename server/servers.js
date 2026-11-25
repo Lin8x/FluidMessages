@@ -421,6 +421,8 @@ function openServerDetails(account) {
   section.append(row);
   // Mute every channel, room, and DM on this server (chats.js); its mark shows on the server's header while it's muted.
   if (typeof serverMuteControls === 'function') section.append(...serverMuteControls(account.id, serverName(account)));
+  // Reconnect automatically (connections.js): off, it connects only when you tap Reconnect.
+  if (typeof autoReconnectToggle === 'function') section.append(autoReconnectToggle(account));
   const remove = element('section', '', 'settings-section');
   remove.append(element('h3', 'Remove server'));
   if (account.source === 'phone') {
@@ -478,6 +480,10 @@ async function joinTarget(account, target, title, status) {
   try {
     const result = await api('protocols/join', {account: account.id, target, title});
     if (!routes.some((route) => route.address === result.route.address && route.protocol === result.route.protocol)) routes.push(result.route);
+    // Joined again after Remove: back out of Archived, where Remove put its earlier messages.
+    if (typeof inFolder === 'function' && typeof chatState === 'function' && (chatState().archived || []).includes(result.route.address)) {
+      toggleChat(result.route.address, 'archived');
+    }
     await refresh().catch(() => {});
     closeDetailsPage(false);
     select(result.route.address + '\u001f' + result.route.protocol);
@@ -743,7 +749,11 @@ function openBrowse(account, service = '', {fresh = false} = {}) {
   search.focus();
 }
 
-/** Leave, in a channel's or room's details. */
+/**
+ * Remove channel (or room, or group chat), in its details, confirmed inline with a second tap: it's left on the server
+ * (IRC parts it) and taken out of the list. Earlier messages stay, as Leave always kept them, in Archived; joining
+ * again brings the chat back (joinTarget).
+ */
 function leaveSection(route) {
   if (!route?.group || !route.account || !SERVER_PROTOCOLS.includes(route.protocol)) return null;
   const section = element('section', '', 'settings-section');
@@ -751,16 +761,17 @@ function leaveSection(route) {
   const status = element('p', '', 'muted');
   status.setAttribute('role', 'status');
   section.append(element('h3', 'Server'), element('p', labels[route.protocol] + ' · ' + (route.account_name || route.account.split(':').slice(1).join(':')), 'muted'),
-    confirmButton('Leave this ' + noun, 'Tap again to leave', async () => {
+    confirmButton('Remove ' + noun, 'Tap again to remove it', async () => {
       try {
         await api('protocols/leave', {address: route.address, protocol: route.protocol});
         const index = routes.findIndex((item) => item.address === route.address && item.protocol === route.protocol);
         if (index >= 0) routes.splice(index, 1);
+        if (typeof chatState === 'function' && !(chatState().archived || []).includes(route.address)) toggleChat(route.address, 'archived');
         closeDetailsPage(false);
         await refresh().catch(() => {});
       } catch (error) { status.textContent = error.message; }
     }, 'danger'),
-    element('p', 'You stop getting its messages. Earlier messages stay here.', 'muted'), status);
+    element('p', 'Leaves it and takes it out of your list. You stop getting its messages. Earlier messages stay in Archived.', 'muted'), status);
   return section;
 }
 
@@ -1014,12 +1025,13 @@ function channelButton(route, open) {
 
 /**
  * Joined channels and rooms with no messages yet, as [key, []] inbox rows, so a channel shows in the inbox as soon as
- * it's joined. [has] says whether the inbox already has the key.
+ * it's joined, connected or not, and each IRC network's server chat, so a network you added shows before it says
+ * anything. [has] says whether the inbox already has the key.
  */
 function emptyServerRows(has) {
   // In the sample inbox these are the sample servers and the rooms joined on this page (sampleJoin).
   const ids = new Set(serverAccounts().map((account) => account.id));
-  const keys = routes.filter((route) => route.group && ids.has(route.account))
+  const keys = routes.filter((route) => (route.group || route.server_chat) && ids.has(route.account))
     .map((route) => threadKey({address: route.address, protocol: route.protocol}));
   return [...new Set(keys)].filter((key) => !has(key)).map((key) => [key, []]);
 }

@@ -41,6 +41,8 @@ final class DirectProtocols {
     interface DirectClient {
         void start(Context context, JSONObject account);
         void stop();
+        /** The Reconnect automatically switch changed while connected. */
+        default void autoReconnectChanged() {}
         /** Checks for new messages once, for background jobs and protocols without an open connection. */
         default void poll(Context context) throws Exception {}
         /** Prepares for poll() without starting a connection. */
@@ -116,7 +118,8 @@ final class DirectProtocols {
     }
 
     static void removeAccount(Context context, MessageProtocol protocol) {
-        prefs(context).edit().remove("direct.account." + protocol.name()).remove(key(protocol)).remove(key(protocol) + ".always").apply();
+        prefs(context).edit().remove("direct.account." + protocol.name()).remove(key(protocol)).remove(key(protocol) + ".always")
+            .remove(key(protocol) + ".reconnect").apply();
         restart(context);
     }
 
@@ -195,13 +198,22 @@ final class DirectProtocols {
         if (extra != null) for (var keys = extra.keys(); keys.hasNext(); ) { String key = keys.next(); route.put(key, extra.get(key)); }
         items.put(route);
         prefs.edit().putString(ROUTES, items.toString()).apply();
+        // The inbox shows the new chat now, before its first message.
+        MmsTransport.changed(context);
         return route;
     }
 
-    /** "connected", "connecting", "reconnecting" (retry_at), or "disconnected" after the hourly limit, for the bar. */
+    /**
+     * "connected", "connecting", "reconnecting" (retry_at), "disconnected" (after the hourly limit, a refusal in "error",
+     * or with "manual" while Reconnect automatically is off), or "off" while this phone isn't connecting at all.
+     */
     static JSONObject status(SharedPreferences prefs, MessageProtocol protocol) {
         try { return new JSONObject(prefs.getString("direct.status." + protocol.name(), "{}")); }
         catch (Exception error) { return new JSONObject(); }
+    }
+
+    private static JSONObject statusOff() {
+        try { return new JSONObject().put("state", "off"); } catch (Exception error) { return new JSONObject(); }
     }
 
     static void saveStatus(Context context, MessageProtocol protocol, JSONObject status) {
@@ -267,6 +279,25 @@ final class DirectProtocols {
         return ircOrThrow(context).list(search, limit);
     }
 
+    /**
+     * The NickServ card on the phone's own IRC connection: sends IDENTIFY, and with [save] keeps the password sealed
+     * on the account like its other secrets, without reconnecting. The password is never logged or put in a chat.
+     */
+    static void ircIdentify(Context context, String password, boolean save) throws Exception {
+        ircOrThrow(context).identifyNow(password, save);
+        if (!save) return;
+        synchronized (DirectProtocols.class) {
+            var account = account(context, MessageProtocol.IRC);
+            if (account == null) return;
+            account.put("nickserv_password", password);
+            String sealed = account.toString();
+            prefs(context).edit().putString("direct.account." + MessageProtocol.IRC.name(), seal(sealed)).apply();
+            // The running connection already has it, so the next restart() check doesn't reconnect for it.
+            var client = irc();
+            if (client != null) client.resign(sealed);
+        }
+    }
+
     static void reconnect(Context context, MessageProtocol format) {
         DirectClient client;
         synchronized (DirectProtocols.class) { client = clients.get(format); }
@@ -279,6 +310,35 @@ final class DirectProtocols {
         DirectClient client;
         synchronized (DirectProtocols.class) { client = clients.get(format); }
         if (route != null && client != null) client.opened(route);
+    }
+
+    /**
+     * Reconnect automatically (default on) for this phone's account on [protocol]. Off: it doesn't connect when the app
+     * opens or after a drop, only when you tap Reconnect; its chats stay in the list.
+     */
+    static boolean autoReconnect(SharedPreferences prefs, MessageProtocol protocol) {
+        return prefs.getBoolean(key(protocol) + ".reconnect", true);
+    }
+
+    static void setAutoReconnect(Context context, MessageProtocol protocol, boolean on) {
+        prefs(context).edit().putBoolean(key(protocol) + ".reconnect", on).apply();
+        DirectClient client;
+        synchronized (DirectProtocols.class) { client = clients.get(protocol); }
+        if (client != null) client.autoReconnectChanged();
+        // Turned back on: connect now rather than waiting for the next Reconnect.
+        if (on) reconnect(context, protocol);
+    }
+
+    /** Remove channel: takes a channel or group chat out of the list; an open IRC connection parts it at once. */
+    static void removeChannel(Context context, String address, MessageProtocol protocol) {
+        // Matrix and XMPP: leave the room on the server too, when connected (IRC parts it in syncChannels below).
+        if (protocol != MessageProtocol.IRC && route(prefs(context), address, protocol) != null) {
+            try { command(context, address, protocol, new ChatCommand("part", "", java.util.List.of())); } catch (Exception ignored) {}
+        }
+        if (route(prefs(context), address, protocol) != null) unlink(context, address, protocol);
+        prefs(context).edit().remove("keepJoined." + address).apply();
+        restart(context);
+        MmsTransport.changed(context);
     }
 
     /** Keep joined (default on): rejoined right after reconnecting. Off: rejoined when you open the channel. */
@@ -337,6 +397,8 @@ final class DirectProtocols {
                 existing.stop();
                 clients.remove(protocol);
                 existing = null;
+                // Not connecting from this phone now: the inbox shows no connection mark rather than an old one.
+                if (!wanted) saveStatus(app, protocol, statusOff());
             }
             if (wanted && existing == null) {
                 DirectClient client = switch (protocol) {
@@ -359,6 +421,8 @@ final class DirectProtocols {
         var prefs = prefs(app);
         for (MessageProtocol protocol : new MessageProtocol[]{MessageProtocol.MATRIX, MessageProtocol.EMAIL}) {
             if (!on(prefs, protocol) || !protocol.enabled(prefs)) continue;
+            // Reconnect automatically off: no checks in the background either, until you tap Reconnect.
+            if (protocol == MessageProtocol.MATRIX && !autoReconnect(prefs, protocol)) continue;
             var account = account(app, protocol);
             if (account == null) continue;
             DirectClient client;

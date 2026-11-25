@@ -109,6 +109,8 @@ internal data class ThreadRow @JvmOverloads constructor(
     val muted: String = "",
     /** A small hint of the account a chat is on, when it isn't the service's first of several (FromAccount.inboxHint). */
     val account: String = "",
+    /** An IRC, Matrix, or XMPP chat's connection: "connected", "connecting", "disconnected", or "" for no mark (IrcRules). */
+    val connection: String = "",
 )
 
 /**
@@ -481,8 +483,9 @@ internal fun ConversationRow(thread: ThreadRow, palette: Palette, showProtocol: 
                     DrawGlyph(Glyph.Forward, palette.muted, Modifier.size(12.dp))
                 }
                 if (showProtocol) ProtocolTags(thread, palette.appearance, palette.muted)
-                else if (thread.muted.isNotEmpty() || thread.account.isNotEmpty()) Row(Modifier.padding(top = 3.dp, bottom = 1.dp),
+                else if (thread.muted.isNotEmpty() || thread.account.isNotEmpty() || thread.connection.isNotEmpty()) Row(Modifier.padding(top = 3.dp, bottom = 1.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (thread.connection.isNotEmpty()) ConnectionMark(thread.connection, palette.appearance, palette.muted)
                     if (thread.muted.isNotEmpty()) MutedMark(thread.muted, palette.muted)
                     if (thread.account.isNotEmpty()) AccountHint(thread.account, palette.muted)
                 }
@@ -551,6 +554,12 @@ internal class ConversationScreen @JvmOverloads constructor(
     var helpFamily by mutableStateOf<String?>(null)
     /** Accept, Delete, Block, and Block and report spam, while this chat is a message request (MessageRequests). */
     var request by mutableStateOf<RequestBar?>(null)
+    /** The NickServ card's Identify in an IRC chat (NickServ.kt); null elsewhere and in the sample inbox. */
+    var nickServ by mutableStateOf<NickServIdentify?>(null)
+    /** Whether this IRC account has a NickServ password saved, your nick on it, and whether this is NickServ's own chat. */
+    var nickServSaved by mutableStateOf(false)
+    var nickServNick by mutableStateOf("")
+    var nickServChat by mutableStateOf(false)
 
     init {
         mount(root, prefs, profile) { palette ->
@@ -672,6 +681,12 @@ internal class ConversationScreen @JvmOverloads constructor(
             DisposableEffect(Unit) { onDispose { saveDraft?.accept(draft) } }
             val ircMode = active == MessageProtocol.IRC && routing?.combined != true
             val messages = remember(lines) { foldSmsReactions(lines) }
+            // NickServ's identify notices fold into one card each in IRC chats (NickServ.kt); the rest show as usual.
+            val nickServCards = remember(messages, ircMode, nickServChat) {
+                if (!ircMode) emptyMap() else NickServRules.fold(messages.map { NickServRules.Heard(it.line.id, it.line.author, it.line.text,
+                    !it.line.outgoing, it.line.event || it.line.media != null) }, nickServChat).associateBy { it.first }
+            }
+            val nickServFolded = remember(nickServCards) { nickServCards.values.flatMap { (it.first + 1)..it.last }.toSet() }
             val currentSubmit by rememberUpdatedState<(String) -> Boolean>({ text -> submit(text) })
             val previewsOn = remember { GifSettings.linkPreviews(prefs) }
             val picturesOn = remember { GifSettings.autoPictures(prefs) }
@@ -796,6 +811,7 @@ internal class ConversationScreen @JvmOverloads constructor(
                         }
                         itemsIndexed(messages, key = { _, message -> message.line.id }) { index, display ->
                             val line = display.line
+                            if (index in nickServFolded) return@itemsIndexed
                             val previous = messages.getOrNull(index - 1)?.line
                             val next = messages.getOrNull(index + 1)?.line
                             val beginsDay = line.day.isNotEmpty() && line.day != previous?.day
@@ -804,6 +820,10 @@ internal class ConversationScreen @JvmOverloads constructor(
                                     contentAlignment = Alignment.Center) {
                                     Text(line.day, color = palette.muted, fontSize = 12.sp)
                                 }
+                            }
+                            nickServCards[index]?.let { card ->
+                                NickServCard(card, palette, nickServNick, nickServSaved, nickServ)
+                                return@itemsIndexed
                             }
                             if (line.event) {
                                 // Channel events (joins, parts, topic changes) are small outlined notes in the IRC color.

@@ -301,6 +301,13 @@ dialog.sheet { border: 0; border-radius: 24px; box-shadow: 0 20px 60px rgb(0 0 0
 .meeting-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 .meeting-problem { margin: 0; color: #c4141f; background: color-mix(in srgb, #c4141f 10%, transparent); }
 :root[data-mode="dark"] .meeting-problem { color: #ff7a72; }
+/* Settings → Calls → Meeting links: your own services are changed in place. (The switches use the settings switch style.) */
+.meeting-own { display: flex; align-items: center; gap: .75rem; min-height: 44px; }
+.meeting-own > span { display: grid; flex: 1; min-width: 0; }
+.meeting-own small { overflow-wrap: anywhere; }
+.meeting-custom { display: grid; gap: .6rem; max-width: 560px; }
+.meeting-custom h4 { margin: .25rem 0 0; }
+.meeting-custom > p { margin: 0; }
 
 /* Cards: pictures, stickers, polls, events, games, link previews, and the full-screen viewer (cards.js). */
 .picture { display: block; padding: 0; border: 0; background: none; border-radius: 14px; overflow: hidden; cursor: zoom-in; max-width: 260px; }
@@ -1267,26 +1274,35 @@ body[data-section="settings"] .sidebar, body[data-section="settings"] .thread-pa
 .settings-icon svg { width: 20px; height: 20px; }
 .settings-words strong { font-size: 1rem; font-weight: 500; }
 .settings-chevron { color: var(--action, var(--accent)); }
-/* On/off settings are switches at the row's end, as on the phone (51×31 track, 27px thumb). */
-.settings-page-body .settings-section label.check:has(> input[type="checkbox"]) { flex-direction: row-reverse; justify-content: space-between;
+/* On/off settings are switches at the row's end, as on the phone (51×31 track, 27px thumb), in Settings and in a
+   chat's or person's details. */
+:is(.settings-page-body, .details-body) .settings-section label.check:has(> input[type="checkbox"]) { flex-direction: row-reverse; justify-content: space-between;
   align-items: center; gap: .9rem; min-height: 44px; }
-.settings-page-body .settings-section label.check > input[type="checkbox"] { -webkit-appearance: none; appearance: none; position: relative;
+:is(.settings-page-body, .details-body) .settings-section label.check > input[type="checkbox"] { -webkit-appearance: none; appearance: none; position: relative;
   flex: none; width: 51px; height: 31px; margin: 0; padding: 0; border: 0; border-radius: 999px; background: var(--outline, var(--line));
   cursor: pointer; transition: background-color .2s; }
-.settings-page-body .settings-section label.check > input[type="checkbox"]::after { content: ''; position: absolute; top: 2px; left: 2px;
+:is(.settings-page-body, .details-body) .settings-section label.check > input[type="checkbox"]::after { content: ''; position: absolute; top: 2px; left: 2px;
   width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 2px 4px rgb(0 0 0 / .22); transition: transform .2s; }
-.settings-page-body .settings-section label.check > input[type="checkbox"]:checked { background: var(--accent); }
-.settings-page-body .settings-section label.check > input[type="checkbox"]:checked::after { transform: translateX(20px); }
-:root[dir="rtl"] .settings-page-body .settings-section label.check > input[type="checkbox"]:checked::after { transform: translateX(-20px); }
-.settings-page-body .settings-section label.check > input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
+:is(.settings-page-body, .details-body) .settings-section label.check > input[type="checkbox"]:checked { background: var(--accent); }
+:is(.settings-page-body, .details-body) .settings-section label.check > input[type="checkbox"]:checked::after { transform: translateX(20px); }
+:root[dir="rtl"] :is(.settings-page-body, .details-body) .settings-section label.check > input[type="checkbox"]:checked::after { transform: translateX(-20px); }
+:is(.settings-page-body, .details-body) .settings-section label.check > input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
 @media (forced-colors: active) {
-  .settings-page-body .settings-section label.check > input[type="checkbox"] { appearance: auto; width: 20px; height: 20px; }
-  .settings-page-body .settings-section label.check > input[type="checkbox"]::after { display: none; }
+  :is(.settings-page-body, .details-body) .settings-section label.check > input[type="checkbox"] { appearance: auto; width: 20px; height: 20px; }
+  :is(.settings-page-body, .details-body) .settings-section label.check > input[type="checkbox"]::after { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .settings-page-body .settings-section label.check > input[type="checkbox"],
-  .settings-page-body .settings-section label.check > input[type="checkbox"]::after { transition: none; }
+  :is(.settings-page-body, .details-body) .settings-section label.check > input[type="checkbox"],
+  :is(.settings-page-body, .details-body) .settings-section label.check > input[type="checkbox"]::after { transition: none; }
 }
+.details-switches { display: grid; gap: .25rem; }
+.details-switches > button { justify-self: start; }
+.block-control { display: grid; gap: .5rem; justify-items: start; margin-top: .5rem; }
+.member-toggle { justify-self: start; margin-top: .35rem; }
+/* Suggestions from your chats under an address field, full width in the contact editor's address rows. */
+.link-suggestions { display: grid; gap: .3rem; grid-column: 1 / -1; }
+.link-suggestions[hidden] { display: none; }
+.link-suggestion .person-tag { flex: none; }
 
 /* ==== Phones and narrow windows: no top bar, full-height screens, and tabs at the bottom of the inbox only. ==== */
 @media (max-width: 700px) {

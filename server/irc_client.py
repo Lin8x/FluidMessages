@@ -124,6 +124,57 @@ class ReconnectBudget:
         self.times.append(when)
 
 
+def identify_line(account, password):
+    """NickServ IDENTIFY with the account name first, which Atheme (Libera.Chat) and Anope both accept."""
+    return "PRIVMSG NickServ :IDENTIFY " + (account.get("sasl_user") or account["nick"]) + " " + password
+
+
+BLOCKED = re.compile(r"k-?lined|g-?lined|z-?lined|d-?lined|banned|not welcome|you are not allowed", re.IGNORECASE)
+
+
+def needs_sasl(text):
+    """Whether a server notice or closing reason says this connection must sign in with SASL first."""
+    return bool(re.search(r"\bsasl\b", text or "", re.IGNORECASE)
+                and re.search(r"requir|need|must|only|identify|authenticat", text or "", re.IGNORECASE))
+
+
+def explain(command, text, network, nick, sasl):
+    """Why [network] refused or closed the connection, in plain words with what to do, as (text, fatal), or None.
+    [fatal]: trying again won't help until you change something or tap Reconnect. The phone says the same
+    (IrcRules.explain)."""
+    said = (text or "").strip()[:200]
+    quote = f" It said: “{said}”" if said else ""
+    if command == "ERROR":
+        if needs_sasl(said):
+            return (f"{network} only lets registered nicknames connect from your internet connection. This often happens on a VPN, "
+                    "a work or school network, or a cloud server. "
+                    + ("Check your SASL account and SASL password." if sasl else
+                       "Register your nickname from another connection, then type its password in SASL password.") + quote, True)
+        if BLOCKED.search(said):
+            return f"{network} blocked this connection.{quote} Try another network, or another internet connection.", True
+        if re.search(r"ping timeout|connection reset|broken pipe", said, re.IGNORECASE):
+            return f"The connection to {network} dropped.", False
+        if "client quit" in said.lower():
+            return None
+        return f"{network} closed the connection.{quote}", False
+    if command in ("465", "463", "464"):
+        return (f"{network} won’t let you connect.{quote} " + ("Check the password in the account settings." if command == "464"
+                                                                else "Try another network, or another internet connection."), True)
+    if command == "432":
+        return (f"{network} doesn’t allow the nickname “{nick}”. Pick another one in the account settings: start it with a letter, "
+                "and use only letters, numbers, - or _.", True)
+    if command in ("433", "436", "437"):
+        return f"Every nickname we tried on {network} is taken. Pick another nickname in the account settings.", True
+    if command in ("904", "905") and sasl:
+        return (f"Signing in to {network} didn’t work. Check your SASL account (your registered nickname) and SASL password "
+                f"in the account settings.{quote}", False)
+    return None
+
+
+class Refused(ConnectionError):
+    """The network said no in a way trying again can't fix (IrcClient.run waits for Reconnect)."""
+
+
 def keep_joined_channels(channels, keep):
     """The channels rejoined as soon as a connection opens: those set to Keep joined (the default). The others rejoin
     when you open them (IrcClient.ensure_joined)."""
@@ -154,7 +205,7 @@ class Flood:
 
 class IrcClient:
     def __init__(self, account, on_message, on_state, connect=None, on_invite=None, flood=None, keep=None,
-                 clock=time.time, rand=random.random):
+                 clock=time.time, rand=random.random, auto=None):
         self.account = account
         self.on_message = on_message  # (target, nick, text, tags, date_ms, outgoing)
         self.on_state = on_state      # (channel, {"topic":..., "members": [...], "modes": {nick: "@"}})
@@ -177,6 +228,10 @@ class IrcClient:
         self.ready = threading.Event()
         self.wake = threading.Event()   # Reconnect now (the Reconnect button)
         self.keep = keep or (lambda channel: True)
+        # Reconnect automatically (on by default): off, it connects only when you tap Reconnect.
+        self.auto = auto or (lambda: True)
+        self.problem = None             # (text, fatal) from explain(): why the network said no
+        self.sasl_notice = ""
         self.joined = set()             # channels (lowercase) this connection is in
         self.clock, self.rand = clock, rand
         self.budget = ReconnectBudget()
@@ -211,15 +266,33 @@ class IrcClient:
         except (OSError, ConnectionError, ValueError):
             pass
 
+    def wait_for_reconnect(self, error="", manual=False):
+        """Waits until Reconnect (or stop): after a refusal trying again can't fix, or while Reconnect automatically
+        is off. Returns False once stopped."""
+        self.status = {**self.status, "state": "disconnected", "retry_at": 0, "error": error, "manual": manual}
+        self.wake.wait()
+        self.wake.clear()
+        self.budget = ReconnectBudget()
+        return not self.stopped.is_set()
+
+    def network(self):
+        return self.account.get("server", "") or "the network"
+
+    def explain(self, command, text):
+        return explain(command, text, self.network(), self.wanted, bool(self.account.get("sasl_password")))
+
     def run(self):
         attempt = 0
+        if not self.auto() and not self.wait_for_reconnect(manual=True):
+            return
         while not self.stopped.is_set():
             error = ""
-            self.status = {**self.status, "state": "connecting", "retry_at": 0}
+            self.problem, self.sasl_notice = None, ""
+            self.status = {**self.status, "state": "connecting", "retry_at": 0, "error": "", "manual": False}
             try:
                 self.session()
             except (OSError, ValueError, ConnectionError) as problem:
-                error = str(problem)[:120]
+                error = str(problem)[:300]
             finally:
                 self.ready.clear()
                 with self.lock:
@@ -231,6 +304,22 @@ class IrcClient:
                     self.sock = None
             if self.stopped.is_set():
                 break
+            # Closed before signing in, right after a notice that SASL is needed: that's the reason.
+            if self.problem is None and not self.registered and self.sasl_notice:
+                self.problem = self.explain("ERROR", self.sasl_notice)
+            if self.problem:
+                error = self.problem[0]
+            if self.problem and self.problem[1]:
+                # A nickname the network refuses, SASL needed, a ban: wait for Reconnect instead of retrying.
+                if not self.wait_for_reconnect(error):
+                    break
+                attempt = 0
+                continue
+            if not self.auto():
+                if not self.wait_for_reconnect(error, manual=True):
+                    break
+                attempt = 0
+                continue
             if self.registered:
                 attempt = 0  # It was working: start the schedule again.
             delay = self.next_delay(attempt)
@@ -306,7 +395,15 @@ class IrcClient:
             self.write("AUTHENTICATE " + token)
         elif command in ("903", "904", "905", "906", "907"):
             self.sasl_ok = self.sasl_ok or command == "903"
+            # A wrong SASL account or password: say so in the server chat, then carry on without signing in.
+            found = self.explain(command, params[-1] if params else "")
+            if found:
+                self.event(SERVER, found[0], message, "error")
             self.write("CAP END")
+        elif command in ("465", "463", "464"):
+            found = self.explain(command, params[-1] if params else "")
+            self.problem = found
+            self.event(SERVER, found[0], message, "error")
         elif command == "001":
             self.nick = params[0] if params else self.nick
             self.registered = True
@@ -330,14 +427,21 @@ class IrcClient:
                     del rows[listing["limit"]:]
         elif command in ("323", "416") and self.listing is not None:
             self.listing["done"].set()
-        elif command in ("433", "432", "436", "437") and not self.registered:
-            # Taken (or not allowed) while connecting: try nick_, nick__, then nick1…
+        elif command == "432" and not self.registered:
+            # A nickname the network doesn't allow: nick_ wouldn't be allowed either, so say why and stop.
+            self.problem = self.explain("432", params[-1] if params else "")
+            raise Refused(self.problem[0])
+        elif command in ("433", "436", "437") and not self.registered:
+            # Taken while connecting: try nick_, nick__, then nick1…
             self.nick_tries += 1
             if self.nick_tries > 8:
-                raise ConnectionError("No free nickname")
+                self.problem = self.explain("433", "")
+                raise Refused(self.problem[0])
             self.nick = fallback_nick(self.wanted, self.nick_tries)
             self.write("NICK " + self.nick)
         elif command in ("PRIVMSG", "NOTICE") and len(params) == 2:
+            if command == "NOTICE" and not self.registered and needs_sasl(params[1]):
+                self.sasl_notice = params[1]
             self.message(message)
         elif command == "TAGMSG" and params:
             self.message(message)
@@ -425,14 +529,29 @@ class IrcClient:
             self.event(where, (about + ": " if about and where == SERVER else "") + params[-1], message, "error")
         elif command == "ERROR" and params:
             self.event(SERVER, "Disconnected: " + params[0], message, "error")
+            found = self.explain("ERROR", params[0])
+            # The SASL notice before it says more than "Closing Link".
+            if found and not found[1] and not self.registered and self.sasl_notice:
+                found = self.explain("ERROR", self.sasl_notice)
+            if found and (self.problem is None or found[1]):
+                self.problem = found
 
     def identify(self):
         """Identify on connect: NickServ IDENTIFY when there's a NickServ password and SASL didn't sign you in."""
         password = self.account.get("nickserv_password")
         if not password or self.sasl_ok:
             return
-        account = self.account.get("sasl_user") or self.account["nick"]
-        self.write("PRIVMSG NickServ :IDENTIFY " + account + " " + password)
+        self.write(identify_line(self.account, password))
+
+    def identify_now(self, password, save=False):
+        """The NickServ card's Identify: IDENTIFY over the connection, never a chat message. With [save] the password
+        is also used on the next connect. The password is never logged or kept in chat history."""
+        if not isinstance(password, str) or not 0 < len(password) <= 300 or any(c in password for c in "\r\n\0 "):
+            raise ValueError("Enter your NickServ password, with no spaces")
+        self.connected()
+        self.say(identify_line(self.account, password))
+        if save:
+            self.account = {**self.account, "nickserv_password": password}
 
     def mode(self, message):
         """Channel modes: +o/-o and the other prefixes change who shows as @ or +; each change is one event line."""

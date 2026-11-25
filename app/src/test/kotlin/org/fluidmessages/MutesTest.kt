@@ -4,6 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.util.Locale
 
 /** Muting for a while or for good (Mutes): expiry, forever, people and servers, and the older muted list. */
 class MutesTest {
@@ -77,16 +80,34 @@ class MutesTest {
         assertEquals(0L, Mutes.allEnds(onServer.first, onServer.second, listOf("kestrel"), now) { server })
     }
 
-    @Test fun labels() {
-        val clock = { time: Long -> "T" + (time - now) / 60_000 }
-        val sameDay = { a: Long, b: Long -> a / (24 * hour) == b / (24 * hour) }
-        val start = (now / (24 * hour)) * (24 * hour) + 21 * hour  // 9 PM on a fictional day
-        fun label(end: Long) = Mutes.label(end, start, clock, sameDay)
+    @Test fun labelsSayWhenTheMuteEnds() {
+        // A fixed clock and zone: Tuesday, November 24, 2026, 9:00 PM in New York.
+        val zone = ZoneId.of("America/New_York")
+        val start = ZonedDateTime.of(2026, 11, 24, 21, 0, 0, 0, zone).toInstant().toEpochMilli()
+        fun label(end: Long, now: Long = start, forever: String = "Muted") =
+            Mutes.label(end, now, zone, Locale.US, "h:mm a", "MMM d", forever)
         assertEquals("", label(Mutes.NOT_MUTED))
         assertEquals("Muted", label(0))
-        assertEquals("Muted until " + clock(start + hour), label(start + hour))
-        assertEquals("Muted for 6 hours", label(start + 6 * hour))
-        assertEquals("Muted for 1 day", label(start + 24 * hour))
-        assertEquals("Muted for 1 week", label(start + 7 * 24 * hour))
+        assertEquals("Muted until you turn it back on", label(0, forever = Mutes.FOREVER))
+        assertEquals("Muted until 10:00 PM", label(start + hour))
+        assertEquals("Muted until tomorrow 3:00 AM", label(start + 6 * hour))
+        assertEquals("Muted until tomorrow 9:00 PM", label(start + 24 * hour))
+        // Within the week: the weekday.
+        val sunday = ZonedDateTime.of(2026, 11, 22, 10, 0, 0, 0, zone).toInstant().toEpochMilli()
+        val tuesday = ZonedDateTime.of(2026, 11, 24, 15, 45, 0, 0, zone).toInstant().toEpochMilli()
+        assertEquals("Muted until Tue 3:45 PM", label(tuesday, sunday))
+        // A week or more away: the date is clearer.
+        assertEquals("Muted until Dec 1, 9:00 PM", label(start + 7 * 24 * hour))
+        // The phone's 24-hour clock and its language.
+        assertEquals("Muted until 22:00", Mutes.label(start + hour, start, zone, Locale.UK, "HH:mm", "d MMM"))
+        assertEquals("Muted until 1 Dec, 21:00", Mutes.label(start + 7 * 24 * hour, start, zone, Locale.UK, "HH:mm", "d MMM"))
+    }
+
+    @Test fun labelsUseThePhonesTimeZone() {
+        // The same moments in Tokyo: 11:00 AM and noon on Wednesday, the same day there.
+        val tokyo = ZoneId.of("Asia/Tokyo")
+        val start = ZonedDateTime.of(2026, 11, 25, 11, 0, 0, 0, tokyo).toInstant().toEpochMilli()
+        assertEquals("Muted until 12:00 PM", Mutes.label(start + hour, start, tokyo, Locale.US, "h:mm a", "MMM d"))
+        assertEquals("Muted until tomorrow 2:00 AM", Mutes.label(start + 15 * hour, start, tokyo, Locale.US, "h:mm a", "MMM d"))
     }
 }

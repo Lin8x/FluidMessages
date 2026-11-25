@@ -25,6 +25,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ComposeView
@@ -87,13 +88,16 @@ object ContactEditor {
               save: Consumer<ContactDraft>) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-        view.setContent { AppTheme(Appearance.read(prefs)) { EditorForm(state, sample, pickPhoto, save) } }
+        // Linking an address suggests people from your chats on this phone (fictional ones in the sample inbox).
+        val known = if (sample) LinkSuggestions.SAMPLE else LinkSuggestions.known(prefs)
+        view.setContent { AppTheme(Appearance.read(prefs)) { EditorForm(state, sample, pickPhoto, save, known) } }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
     }
 }
 
 @Composable
-private fun EditorForm(state: ContactEditorState, sample: Boolean, pickPhoto: Runnable, save: Consumer<ContactDraft>) {
+private fun EditorForm(state: ContactEditorState, sample: Boolean, pickPhoto: Runnable, save: Consumer<ContactDraft>,
+                       known: List<LinkSuggestion>) {
     val scheme = MaterialTheme.colorScheme
     val context = androidx.compose.ui.platform.LocalContext.current
     val allowed = ContactWriter.allowed(context)
@@ -133,7 +137,7 @@ private fun EditorForm(state: ContactEditorState, sample: Boolean, pickPhoto: Ru
                     style = MaterialTheme.typography.bodySmall)
             }
         }
-        items(state.addresses.size) { index -> AddressRow(state, state.addresses[index]) }
+        items(state.addresses.size) { index -> AddressRow(state, state.addresses[index], known) }
         item { TextButton(onClick = { state.addresses.add(AddressField("matrix", "", false)) }) { Text("+ Add chat address") } }
         item {
             Text(when {
@@ -154,7 +158,12 @@ private fun EditorForm(state: ContactEditorState, sample: Boolean, pickPhoto: Ru
 }
 
 @Composable
-private fun AddressRow(state: ContactEditorState, field: AddressField) {
+private fun AddressRow(state: ContactEditorState, field: AddressField, known: List<LinkSuggestion>) {
+    var focused by remember { mutableStateOf(false) }
+    // People from your chats on this service (any of them until you pick one), searched on this phone only.
+    val suggestions = remember(field.address, field.service, field.chosen, focused) {
+        if (!focused) emptyList() else LinkSuggestions.match(known, field.address, field.service.takeIf { field.chosen })
+    }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(field.address, { value ->
@@ -163,10 +172,16 @@ private fun AddressRow(state: ContactEditorState, field: AddressField) {
                 if (!field.chosen) NewAddress.detect(value).firstOrNull { !it.guess && it.service in ContactMapping.SERVICES }?.let {
                     field.service = it.service
                 }
-            }, Modifier.weight(1f), singleLine = true, label = { Text(NewAddress.label(field.service)) },
+            }, Modifier.weight(1f).onFocusChanged { focused = it.isFocused }, singleLine = true, label = { Text(NewAddress.label(field.service)) },
                 placeholder = { Text("@maya:example.org") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, capitalization = KeyboardCapitalization.None))
             TextButton(onClick = { state.addresses.remove(field) }, Modifier.semantics { contentDescription = "Remove this chat address" }) { Text("Remove") }
+        }
+        LinkSuggestionList(suggestions) { picked ->
+            field.address = picked.address
+            field.service = picked.service
+            field.chosen = true
+            state.status = ""
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             for (service in ContactMapping.SERVICES) {

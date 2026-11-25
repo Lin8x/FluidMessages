@@ -43,12 +43,32 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
         load(context, account);
         thread = new Thread(() -> {
             long delay = 5_000;
+            // Reconnect automatically off: no syncing until you tap Reconnect, and again after a failure.
+            boolean go = autoReconnect();
+            String error = "";
             while (!stopped) {
-                try {
-                    sync(30_000);
+                if (!go) {
+                    status("disconnected", error);
+                    if (!waitForManual()) return;
                     delay = 5_000;
-                } catch (Exception error) {
-                    try { Thread.sleep(delay); } catch (InterruptedException interrupted) { return; }
+                }
+                go = true;
+                try {
+                    if (!synced) status("connecting", "");
+                    sync(30_000);
+                    if (!synced) status("connected", "");
+                    synced = true;
+                    delay = 5_000;
+                } catch (Exception failure) {
+                    if (stopped) return;
+                    synced = false;
+                    error = failure.getMessage() == null ? "" : failure.getMessage();
+                    if (!autoReconnect()) { go = false; continue; }
+                    status("reconnecting", error);
+                    synchronized (wake) {
+                        try { if (!manual) wake.wait(delay); } catch (InterruptedException interrupted) { return; }
+                        manual = false;
+                    }
                     delay = Math.min(delay * 2, 300_000);
                 }
             }
@@ -56,8 +76,37 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
         thread.start();
     }
 
+    private final Object wake = new Object();
+    private volatile boolean manual, synced;
+
+    private boolean autoReconnect() { return DirectProtocols.autoReconnect(DirectProtocols.prefs(context), MessageProtocol.MATRIX); }
+
+    private void status(String state, String error) {
+        try {
+            DirectProtocols.saveStatus(context, MessageProtocol.MATRIX, new JSONObject().put("state", state)
+                .put("network", account == null ? "" : account.optString("homeserver")).put("error", error == null ? "" : error)
+                .put("manual", state.equals("disconnected") && !autoReconnect()));
+        } catch (Exception ignored) {}
+    }
+
+    private boolean waitForManual() {
+        synchronized (wake) {
+            while (!manual && !stopped) {
+                try { wake.wait(); } catch (InterruptedException interrupted) { return false; }
+            }
+            manual = false;
+        }
+        return !stopped;
+    }
+
+    /** The Reconnect button: syncs now, also while Reconnect automatically is off. */
+    @Override public void reconnectNow() {
+        synchronized (wake) { manual = true; wake.notifyAll(); }
+    }
+
     @Override public void stop() {
         stopped = true;
+        synchronized (wake) { wake.notifyAll(); }
         if (thread != null) thread.interrupt();
     }
 

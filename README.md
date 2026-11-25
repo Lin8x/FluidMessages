@@ -12,7 +12,7 @@ A free messaging app with no ads, no tracking, and no big company in the middle.
 
 <br>
 
-<a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="#-on-a-computer"><img src="docs/images/button-desktop.svg" height="56" alt="Use it on any computer"></a>
+<a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="#-get-it"><img src="docs/images/button-desktop.svg" height="56" alt="Use it on any computer"></a>
 
 **🌐 [fluidmessages.danieljalali.com](https://fluidmessages.danieljalali.com)**
 
@@ -269,40 +269,29 @@ Typing on a phone is slow. Link your Android phone to FluidMessages on your comp
 
 # 🚀 Get it
 
-## 📱 On an Android phone
+Free. No account. No ads.
 
 <p align="center">
-  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/get-android.svg" height="60" alt="Get it for Android"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Windows.exe"><img src="docs/images/get-windows.svg" height="60" alt="Get it for Windows"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-macOS.dmg"><img src="docs/images/get-mac.svg" height="60" alt="Get it for Mac"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage"><img src="docs/images/get-linux.svg" height="60" alt="Get it for Linux"></a>
+  <a href="#iphone-and-ipad"><img src="docs/images/get-iphone.svg" height="60" alt="Use it on iPhone or iPad"></a>
 </p>
 
-<p align="center">
-  <img src="docs/images/fm-install.svg" width="600" alt="Three steps: download, install, and make it your texting app.">
-</p>
+<details>
+<summary><b>Need help installing?</b></summary>
 
-1. **Download** it with the green button, on your phone. It needs Android 13 or newer.
-2. **Install** it. Open the file and tap **Install**. Your phone may ask if it is okay to install an app from your browser. That is normal for apps that are not in the Play Store.
-3. **Make it your texting app.** The app walks you through it and asks for the few permissions it needs. Your old texts are already there.
+**Android** (Android 13 or newer): open the file and tap **Install**. If your phone asks, allow installs from your browser. Then the app helps you make it your texting app. You can switch back any time.
 
-You can switch back to your old app any time. Nothing is lost.
+- On Android 15, if the last step is blocked: **Settings → Apps → FluidMessages → ⋮ → Allow restricted settings**.
+- Coming from an iPhone? Turn off iMessage on it first (**Settings → Apps → Messages**), or texts from iPhone friends can get lost.
 
-> [!TIP]
-> On Android 15, if your phone blocks the last step, go to **Settings → Apps → FluidMessages → ⋮ → Allow restricted settings** and try again.
+**Windows or Mac**: your computer may warn you the first time. [Here's what to do.](docs/self-hosting.md#desktop-apps) To see your texts there, link your Android phone in **Settings → Phone and other devices**.
 
-**Moving from an iPhone to Android?** Turn off iMessage on the iPhone first (**Settings → Apps → Messages**). If you don't, texts from iPhone friends can get lost.
+<a id="iphone-and-ipad"></a>**iPhone or iPad**: run FluidMessages on a computer at home, open its address in Safari, and tap **Share → Add to Home Screen**. Alerts only come while it is open.
 
-## 💻 On a computer
-
-| Your computer | Download | Good to know |
-|---|---|---|
-| 🪟 **Windows** | [Windows app](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Windows.exe) | Windows may warn you the first time. [Here's why, and what to do.](docs/self-hosting.md#desktop-apps) |
-| 🍎 **Mac** | [Mac app](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-macOS.dmg) | Your Mac may warn you the first time. [Here's what to do.](docs/self-hosting.md#desktop-apps) |
-| 🐧 **Linux** | [Linux app](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage) | If you're not sure what Linux is, you don't have it. |
-
-Open it and follow the welcome steps. To see your texts, link your Android phone in **Settings → Phone and other devices**.
-
-## 🍎 On an iPhone or iPad
-
-Run FluidMessages on a computer at home (see *Run it yourself* below). Then open its address in Safari on your iPhone and tap **Share → Add to Home Screen**. It opens like any other app. You get alerts while it is open; it can't wake your iPhone when it is closed yet.
+</details>
 
 <br>
 

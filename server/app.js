@@ -32,7 +32,7 @@ let refreshNumber = 0;
 let lastLook = '';
 // Fun and effects, set in Settings for this server. Everything is on until turned off.
 let prefs = {effects: true, reactionEffects: true, games: true, random: true, gifs: true, linkPreviews: true,
-  sendGifs: true, sendStickers: true, callMatrix: true, callMeetings: true, meetings: null};
+  sendGifs: true, sendStickers: true, callMatrix: true, callMeetings: true, meetings: null, ircCalls: false};
 // Chat accounts on this server (Matrix, XMPP, Email, IRC), for empty states and New chat.
 let chatAccounts = [];
 // Signed in as this computer, which opens without a password, so there's nothing to sign out of.
@@ -740,11 +740,15 @@ function showMessages(preserve = false) {
   // Runs of bubbles from one sender sit closer together and round their inner corners less, like the phone's.
   const notice = (message) => typeof parseChatNotice === 'function' && !message.attachment && !!parseChatNotice(message.body);
   const sender = (message) => message && !message.event && !notice(message) ? (message.type !== 1 ? 'me' : 'from:' + (message.author || '')) : null;
+  // NickServ's identify notices fold into one card each in IRC chats (chat-commands.js).
+  const nickServ = typeof nickServCards === 'function' ? nickServCards(history) : null;
   for (const message of history) {
     position++;
+    if (nickServ?.hidden.has(position)) continue;
     const messageDay = day(timeOf(message));
     if (messageDay !== lastDay) conversation.append(element('p', messageDay, 'day'));
     lastDay = messageDay;
+    if (nickServ?.at.has(position)) { conversation.append(nickServCardNode(nickServ.at.get(position), history)); continue; }
     const outgoing = message.type !== 1;
     if (message.event) {
       // Joins, leaves, topic changes, and /whois replies: outlined notes, or hidden by choice (chat-commands.js).
