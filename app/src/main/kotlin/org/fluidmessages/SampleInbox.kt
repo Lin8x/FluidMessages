@@ -75,13 +75,13 @@ internal object SampleInbox {
     @JvmStatic fun server(id: String): Server? = SERVERS.firstOrNull { it.id == id }
 
     /**
-     * The connection mark beside each IRC, Matrix, and XMPP sample chat's tag: #trail-maps shows a network that isn't
-     * connected and Amir Nasser's XMPP account one that's connecting, so every look is on screen. "" for texts and email.
+     * The connection mark beside each IRC, Matrix, and XMPP sample chat's tag: Lakeside Commons' rooms show a server
+     * that isn't connected and Amir Nasser's XMPP account one that's connecting, so every look is on screen. "" for texts and email.
      */
     @JvmStatic fun connection(name: String): String {
         val service = CHATS.firstOrNull { it[0] == name }?.get(5) ?: return ""
         return when {
-            name == "#trail-maps" -> "disconnected"
+            serverOf(name) == "sample:matrix" -> "disconnected"
             name == SECOND_ACCOUNT_CHAT -> "connecting"
             service == "IRC" || service == "Matrix" || service == "XMPP" -> "connected"
             else -> ""

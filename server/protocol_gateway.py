@@ -99,6 +99,7 @@ class Poller:
         self.auto = auto
         self.stopped = threading.Event()
         self.wake = threading.Event()
+        self.dropped = False  # Disconnect: no checks until Connect or Reconnect
         if auto is not None:
             self.status = {"state": "connecting", "network": network, "retry_at": 0, "error": "", "manual": False}
 
@@ -106,13 +107,13 @@ class Poller:
         go = self.auto is None or self.auto()
         error = ""
         while not self.stopped.is_set():
-            if not go:
-                self.status = {**self.status, "state": "disconnected", "error": error, "manual": True}
+            while not go or self.dropped:
+                self.status = {**self.status, "state": "disconnected", "error": "" if self.dropped else error, "manual": True}
                 self.wake.wait()
                 self.wake.clear()
+                go = True
                 if self.stopped.is_set():
-                    break
-            go = True
+                    return
             try:
                 self.operation()
                 if self.auto is not None:
@@ -129,6 +130,14 @@ class Poller:
 
     def reconnect_now(self):
         """The Reconnect button: checks again at once."""
+        self.dropped = False
+        self.wake.set()
+
+    def disconnect_now(self):
+        """Disconnect: stops checking until Connect or Reconnect."""
+        self.dropped = True
+        if self.auto is not None:
+            self.status = {**self.status, "state": "disconnected", "error": "", "manual": True}
         self.wake.set()
 
     def stop(self):
@@ -524,6 +533,7 @@ class Gateway(ChatFeatures):
         listed = [account for account in self.accounts.redacted() if "error" not in account]
         names = {account["id"]: account["name"] for account in listed}
         keep = self.keep_map()
+        first = self.join_first_map()
         def shown(route):
             item = {key: value for key, value in route.items() if key != "via"}
             if not item.get("account"):
@@ -533,6 +543,10 @@ class Gateway(ChatFeatures):
                 item["account_name"] = names[item["account"]]
             if route.get("via") == "irc" and route.get("group"):
                 item["keep_joined"] = keep.get(route["address"], True) is not False
+                # "Also joins #lobby first (this network needs it)" in the channel's details.
+                before = irc_client.first_for(first.get(route.get("account")), route["target"])
+                if before:
+                    item["join_first"] = before
             secure = self.secure(route.get("account")) if route.get("via") == "matrix" else None
             if secure is not None:
                 item["encrypted"] = secure.encrypted(route["target"])
@@ -1567,7 +1581,10 @@ class Gateway(ChatFeatures):
                                         on_invite=lambda channel, sender: self.add_invite(ident, "irc", "channel", channel,
                                                                                           sender, channel),
                                         keep=lambda channel: self.keeps(ident, channel),
-                                        auto=lambda: self.reconnects(ident))
+                                        auto=lambda: self.reconnects(ident),
+                                        # Channels the network says to join first, remembered for every reconnect.
+                                        first=lambda channel: self.join_first(ident, channel),
+                                        on_first=lambda channel, before: self.remember_join_first(ident, channel, before))
         return xmpp_client.XmppClient(account, lambda *args: self.accept_xmpp(*args, account=ident), rooms,
                                       on_event=lambda *args: self.accept_xmpp_event(*args, account=ident),
                                       auto=lambda: self.reconnects(ident))
@@ -1756,6 +1773,34 @@ class Gateway(ChatFeatures):
                                      "title": bounded(title, 120) or target, "account": entry["id"]})
         result["joined"] = True
         return result
+
+    def join_outcome(self, data, result):
+        """After joining an IRC channel (saved by join): joins it now and waits a few seconds for the network's answer,
+        so a refusal comes back as {"refused": {"code", "text", "channel"}} in plain words instead of an empty chat. A
+        channel locked with a password (475) can then ask for it, and join again with "key". A channel added just now
+        that said no is taken back out. Not connected: the channel joins once connected."""
+        route = (result or {}).get("route") or {}
+        target = route.get("target") or ""
+        if route.get("protocol") != "irc" or not route.get("group") or target[:1] not in "#&":
+            return result
+        key = data.get("key") if isinstance(data.get("key"), str) else ""
+        try:
+            with self.using(route.get("account")):
+                client = self.client("irc")
+            if not hasattr(client, "join_wait"):
+                return result
+            refused = client.join_wait(target, key.strip())
+        except (ConnectionError, OSError):
+            return result
+        if refused is None:
+            return result
+        if result.get("joined"):
+            with closing(self.connect()) as db, db:
+                db.execute("DELETE FROM protocol_routes WHERE address=? AND protocol=?", (route["address"], "irc"))
+            client.account = {**client.account, "channels": [c for c in client.account.get("channels", [])
+                                                             if irc_client.fold(c) != irc_client.fold(target)]}
+            threading.Timer(0.5, self.refresh_clients).start()
+        return {**result, "refused": {"code": refused[0], "text": refused[1], "channel": target}}
 
     def leave(self, db, data):
         """Leaves a channel or room on its server and takes it out of the inbox. Its earlier messages stay."""

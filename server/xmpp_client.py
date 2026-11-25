@@ -45,6 +45,7 @@ class XmppClient:
         # Reconnect automatically (on by default): off, it connects only when you tap Reconnect.
         self.auto = auto or (lambda: True)
         self.wake = threading.Event()
+        self.dropped = False  # Disconnect: closed by you, so it waits for Connect or Reconnect
         # What the apps show: connected, connecting, reconnecting, or disconnected ("manual" while auto is off).
         self.status = {"state": "connecting", "network": account.get("jid", "").partition("@")[2], "retry_at": 0, "error": "",
                        "manual": False}
@@ -91,6 +92,7 @@ class XmppClient:
 
     def reconnect_now(self):
         """The Reconnect button: connects now, also while Reconnect automatically is off."""
+        self.dropped = False
         self.wake.set()
         if self.loop and self.loop.is_running() and self.client and not self.ready.is_set() and self.status["state"] in ("disconnected", "reconnecting"):
             self.status = {**self.status, "state": "connecting", "manual": False}
@@ -195,10 +197,17 @@ class XmppClient:
         if jid and jid != slixmpp.JID(self.account["jid"]).bare:
             self.on_event("subscribe", jid.lower(), {"name": presence["nick"]["nick"] if "nick" in presence.plugins else ""})
 
+    def disconnect_now(self):
+        """Disconnect: closes the connection and waits for Connect or Reconnect. Its chats stay in the list."""
+        self.dropped = True
+        self.status = {**self.status, "state": "disconnected", "retry_at": 0, "error": "", "manual": True}
+        if self.loop and self.client and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.client.disconnect)
+
     def disconnected(self, _event):
         self.ready.clear()
         self.last_seen = self.last_seen or time.time()
-        if not self.stopped and not self.auto():
+        if not self.stopped and (self.dropped or not self.auto()):
             # Reconnect automatically off: wait for Reconnect.
             self.status = {**self.status, "state": "disconnected", "manual": True}
         elif not self.stopped:

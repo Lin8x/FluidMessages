@@ -217,7 +217,13 @@ final class DirectProtocols {
     }
 
     static void saveStatus(Context context, MessageProtocol protocol, JSONObject status) {
+        var before = status(prefs(context), protocol);
         prefs(context).edit().putString("direct.status." + protocol.name(), status.toString()).apply();
+        // The inbox's plug follows: it reloads when the connection's mark changes (not on every retry time).
+        if (!IrcRules.connectionState(before.optString("state"), before.optBoolean("manual"))
+                .equals(IrcRules.connectionState(status.optString("state"), status.optBoolean("manual")))) {
+            try { MmsTransport.changed(context); } catch (Exception ignored) {}
+        }
     }
 
     /**
@@ -271,7 +277,12 @@ final class DirectProtocols {
 
     /** Joins a channel by name (with or without #) and returns its chat's link. */
     static JSONObject ircJoin(Context context, String channel) throws Exception {
-        return ircOrThrow(context).join(context.getApplicationContext(), channel, "");
+        return ircJoin(context, channel, "");
+    }
+
+    /** Joins with the channel's password ([key]), for a channel that asked for one (IrcJoinRefused code 475). */
+    static JSONObject ircJoin(Context context, String channel, String key) throws Exception {
+        return ircOrThrow(context).join(context.getApplicationContext(), channel, key == null ? "" : key.trim());
     }
 
     /** The network's public channels matching [search], busiest first, capped at [limit]. */
@@ -327,6 +338,26 @@ final class DirectProtocols {
         if (client != null) client.autoReconnectChanged();
         // Turned back on: connect now rather than waiting for the next Reconnect.
         if (on) reconnect(context, protocol);
+    }
+
+    /**
+     * Disconnect, from a chat's or server's Connection section, the inbox, or the Connections page: turns Reconnect
+     * automatically off, so nothing connects again until Connect or Reconnect (also when the app opens next), and
+     * closes the connection now. A fresh client then waits for Reconnect; the chats stay in the list.
+     */
+    static void disconnect(Context context, MessageProtocol protocol) {
+        var app = context.getApplicationContext();
+        prefs(app).edit().putBoolean(key(protocol) + ".reconnect", false).apply();
+        synchronized (DirectProtocols.class) {
+            var existing = clients.remove(protocol);
+            if (existing != null) existing.stop();
+            var account = account(app, protocol);
+            try {
+                saveStatus(app, protocol, new JSONObject().put("state", "disconnected").put("manual", true).put("retry_at", 0)
+                    .put("error", "").put("network", account == null ? "" : account.optString(protocol == MessageProtocol.IRC ? "server" : "homeserver")));
+            } catch (Exception ignored) {}
+            restart(app);
+        }
     }
 
     /** Remove channel: takes a channel or group chat out of the list; an open IRC connection parts it at once. */

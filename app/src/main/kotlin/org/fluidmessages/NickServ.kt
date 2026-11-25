@@ -131,7 +131,8 @@ internal object NickServRules {
         card.answered -> "NickServ answered below."
         card.state == Kind.FAILED -> "NickServ didn’t accept it. Check the password and try again."
         saved -> "Your saved password is sent each time you connect. If NickServ asks again, type it here."
-        else -> "Type your NickServ password to prove it’s yours. It goes only to NickServ, never to a channel."
+        else -> "This nickname belongs to a registered account. If it’s yours, type its password. It goes only to NickServ, never to a channel. " +
+            "If it isn’t yours, pick another nickname in the IRC account settings."
     }
 }
 
@@ -223,6 +224,19 @@ internal fun NickServCard(card: NickServRules.Card, palette: Palette, nick: Stri
         if (open) Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(palette.bg).padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
             for (line in card.said) Text(line, color = palette.ink, fontSize = 13.sp)
+        }
+    }
+}
+
+/** One line at the top of an IRC chat (IrcIntro). [seen] marks the channel explainer as read; the server chat's has no button. */
+@Composable
+internal fun IrcIntroNote(words: String, palette: Palette, seen: Runnable?, close: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
+    Column(Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(shape).background(palette.wash).padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(words, color = palette.ink, fontSize = 14.sp)
+        if (seen != null) TextButton(onClick = { seen.run(); close() }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+            Text("Got it", color = MessageProtocol.IRC.tint(palette.appearance))
         }
     }
 }

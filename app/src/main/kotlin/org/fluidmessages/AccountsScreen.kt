@@ -55,10 +55,12 @@ private val forms = mapOf(
     MessageProtocol.IRC to listOf(
         Field("server", "Network", "irc.libera.chat"),
         Field("port", "TLS port", "6697", number = true, optional = true),
-        Field("nick", "Nickname"),
-        Field("sasl_user", "SASL account", "Leave blank to use your nickname", optional = true),
-        Field("sasl_password", "SASL password", secret = true, optional = true),
-        Field("nickserv_password", "NickServ password", "Identifies on connect when SASL isn’t used", secret = true, optional = true),
+        // The stored keys stay sasl_user, sasl_password, and nickserv_password; only the words changed (IrcWords).
+        Field("nick", "Nickname", help = IrcWords.NICK),
+        Field("sasl_user", "Account name", "Leave blank to use your nickname", optional = true, help = IrcWords.ACCOUNT),
+        Field("sasl_password", "Password", secret = true, optional = true, help = IrcWords.PASSWORD),
+        Field("nickserv_password", "Older networks: NickServ password", "Only if Password above doesn’t sign you in", secret = true,
+            optional = true, help = IrcWords.NICKSERV),
         Field("channels", "Channels to join", "#example, #another", optional = true, help = "You can also browse and join channels later."),
     ),
 )
@@ -362,6 +364,15 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
             }
         }
         for (field in forms.getValue(protocol)) {
+          // IRC: what a nickname and a registered account are, right above the account name and password.
+          if (field.key == "sasl_user") item("irc-names") {
+              Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.large) {
+                  Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                      Text(IrcWords.WHATS_THIS_TITLE, style = MaterialTheme.typography.titleSmall)
+                      Text(IrcWords.WHATS_THIS, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                  }
+              }
+          }
           if (field.key !in tucked) item(field.key) {
             val isSet = stored.optJSONObject(field.key)?.optBoolean("set") == true
             val value = values[field.key].orEmpty()

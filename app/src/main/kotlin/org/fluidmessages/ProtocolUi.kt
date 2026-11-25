@@ -93,33 +93,24 @@ internal fun ProtocolTags(thread: ThreadRow, appearance: Appearance, mutedColor:
 }
 
 /**
- * The inbox's connection mark for an IRC, Matrix, or XMPP chat, beside its tag: three signal bars, all filled in green
- * while connected, one amber bar while connecting or waiting to try again, and empty bars with a slash while not
- * connected. The shape tells them apart without color too, and it reads out as "Connected", "Connecting", or
- * "Not connected". Never a dot or a badge, so it can't be mistaken for unread.
+ * The connection mark for an IRC, Matrix, or XMPP chat, in the same place, size, and line style as the muted bell: a
+ * plug while connected (green, like the lock's) or connecting (gray), and the plug with a slash while not connected
+ * (red, so it stands out) or turned off (gray). The shape tells them apart without color too, and it reads out as
+ * "Connected", "Connecting", "Not connected", or "Turned off". Never a dot or a badge, so it can't be mistaken for unread.
  */
 @Composable
-internal fun ConnectionMark(state: String, appearance: Appearance, muted: Color, modifier: Modifier = Modifier) {
+internal fun ConnectionMark(state: String, appearance: Appearance, muted: Color, modifier: Modifier = Modifier, size: Int = 13) {
     val label = IrcRules.connectionLabel(state)
     if (label.isEmpty()) return
-    val ink = when (state) {
-        "connected" -> if (appearance.dark) Color(0xFF30D158) else Color(0xFF1B7F37)
-        "connecting" -> if (appearance.dark) Color(0xFFFFC233) else Color(0xFF8F5F00)
-        else -> muted
-    }
-    val faint = muted.copy(alpha = .45f)
-    androidx.compose.foundation.Canvas(modifier.size(13.dp).semantics { contentDescription = label }) {
-        val bar = size.width / 5f
-        val filled = when (state) { "connected" -> 3; "connecting" -> 1; else -> 0 }
-        for (index in 0 until 3) {
-            val height = size.height * (.4f + .3f * index)
-            val left = index * 2 * bar
-            drawRoundRect(if (index < filled) ink else faint, androidx.compose.ui.geometry.Offset(left, size.height - height),
-                androidx.compose.ui.geometry.Size(bar, height), androidx.compose.ui.geometry.CornerRadius(bar / 3f))
-        }
-        if (state == "disconnected") drawLine(ink, androidx.compose.ui.geometry.Offset(0f, size.height * .1f),
-            androidx.compose.ui.geometry.Offset(size.width, size.height * .95f), strokeWidth = 1.6.dp.toPx())
-    }
+    DrawGlyph(if (state == "connected" || state == "connecting") Glyph.Plug else Glyph.Unplugged, connectionInk(state, appearance.dark, muted),
+        modifier.size(size.dp).semantics { contentDescription = label })
+}
+
+/** The mark's color: the lock's green and red (lockColor), and the row's gray for connecting and turned off. */
+internal fun connectionInk(state: String, dark: Boolean, muted: Color): Color = when (state) {
+    "connected" -> if (dark) Color(0xFF4CD964) else Color(0xFF1B7F3B)
+    "disconnected" -> if (dark) Color(0xFFFF6B60) else Color(0xFFC62828)
+    else -> muted
 }
 
 /** The inbox's tiny account hint, "from alice@work.example.org", for a chat on another account than the first. */

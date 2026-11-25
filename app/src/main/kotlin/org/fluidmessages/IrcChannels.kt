@@ -92,17 +92,23 @@ internal object IrcChannels {
         listOf(if (row.people > 0) "${row.people} ${if (row.people == 1) "person" else "people"}" else "", row.topic)
             .filter { it.isNotEmpty() }.joinToString(" · ")
 
-    /** Why a channel didn't let you in, in plain words, from the network's reply number. */
+    /**
+     * Why a channel didn't let you in, in plain words with what to do, from the network's reply number and its words
+     * ([said]). [saved]: a NickServ password is saved on the account. FluidMessages Web says the same (irc_client.join_error).
+     */
     @JvmStatic
-    fun joinError(code: String, channel: String, network: String, said: String): String = when (code) {
-        "403", "476", "479" -> "$network has no channel called $channel. Check the spelling."
-        "405" -> "You’re in as many channels as $network allows. Leave one, then try again."
-        "471" -> "$channel is full right now. Try again later."
-        "473" -> "$channel is invite-only. Someone in it has to invite you first."
-        "474" -> "You can’t join $channel because you’re banned there."
-        "475" -> "$channel needs a password. Type /join $channel and the password in any $network chat."
-        "477" -> "$channel only lets in registered nicknames. Register your nickname with NickServ on $network, then try again."
-        else -> "Couldn’t join $channel" + if (said.isBlank()) "." else ": ${said.trim()}"
+    @JvmOverloads
+    fun joinError(code: String, channel: String, network: String, said: String, saved: Boolean = false): String = when {
+        IrcJoins.needsSignIn(code, said) -> IrcJoins.signInNeeded(channel, saved)
+        code == "403" || code == "476" || code == "479" -> "$network has no channel called $channel. Check the spelling, or browse the channel list."
+        code == "405" -> "You’re in as many channels as $network allows. Leave one, then try again."
+        code == "471" -> "$channel is full right now. Try again later."
+        code == "473" -> "$channel is invite-only: only people someone invited can join. Ask someone in it to invite you. " +
+            "The invitation shows up in Invitations."
+        code == "474" -> "You can’t join $channel because its moderators banned you."
+        code == "475" -> "$channel is locked with a password. Ask someone in it for the password, then join with it."
+        code == "520" -> "$channel is only for the people who run $network."
+        else -> "Couldn’t join $channel" + if (said.isBlank()) "." else ". $network said: “${said.trim().take(200)}”"
     }
 
     /** What the Join and Browse pages say while the phone's connection isn't ready, and the button that helps ("" for none). */

@@ -64,8 +64,8 @@ function notificationFor(message, {test = false} = {}) {
     else if (message.author && (test || threadIsGroup(key))) words = message.author + ': ' + words;
     if (words.length > 180) words = words.slice(0, 179) + '…';
   }
-  // A chat with a code doesn't even say whose it is.
-  const title = sealed ? 'FluidMessages' : (test ? message.title + ' · test' : (message.title || threadTitle(key)));
+  // A chat with a code, or the switch turned off, doesn't even say whose it is (the phone's NotificationContent).
+  const title = sealed || (!test && !notifyPreview()) ? 'FluidMessages' : (test ? message.title + ' · test' : (message.title || threadTitle(key)));
   return {title, options: {body: words, tag: test ? 'fluid-test' : 'fluid-chat-' + notifyTag(key), renotify: true,
     icon: '/icons/icon-192.png', badge: '/icons/favicon-32.png', data: {chat: key}, timestamp: message.date || Date.now()}};
 }
@@ -204,8 +204,8 @@ function soundsPage() {
   const toggles = element('div', '', 'stack');
   const enabled = checkbox('Notify me in this browser', notifyOn(), (value) => { localStorage.setItem(NOTIFY_KEY, value ? 'on' : 'off'); draw(); },
     'New messages, while you’re in another tab, another app, or another chat. Muted, blocked, and private chats never notify.');
-  const preview = checkbox('Show message text in notifications', notifyPreview(), (value) => localStorage.setItem(NOTIFY_PREVIEW_KEY, value ? 'on' : 'off'),
-    'Off shows only who it’s from. Chats with a code never show either.');
+  const preview = checkbox('Show names and message text in notifications', notifyPreview(), (value) => localStorage.setItem(NOTIFY_PREVIEW_KEY, value ? 'on' : 'off'),
+    'Off: a new message only says “New message”. Chats with a code, and chats in the private folder, never show names or text.');
   toggles.append(enabled, preview);
   const test = element('button', 'Send a test notification');
   test.type = 'button';

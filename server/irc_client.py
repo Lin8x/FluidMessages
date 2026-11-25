@@ -146,10 +146,11 @@ def explain(command, text, network, nick, sasl):
     quote = f" It said: “{said}”" if said else ""
     if command == "ERROR":
         if needs_sasl(said):
-            return (f"{network} only lets registered nicknames connect from your internet connection. This often happens on a VPN, "
-                    "a work or school network, or a cloud server. "
-                    + ("Check your SASL account and SASL password." if sasl else
-                       "Register your nickname from another connection, then type its password in SASL password.") + quote, True)
+            return (f"{network} only lets people signed in to a registered nickname connect from your internet connection. "
+                    "This often happens on a VPN, a work or school network, or a cloud server. "
+                    + ("Check the account name and password in the IRC account settings." if sasl else
+                       "Register your nickname from another connection, then type its password in Password in the IRC account settings.")
+                    + quote, True)
         if BLOCKED.search(said):
             return f"{network} blocked this connection.{quote} Try another network, or another internet connection.", True
         if re.search(r"ping timeout|connection reset|broken pipe", said, re.IGNORECASE):
@@ -164,11 +165,173 @@ def explain(command, text, network, nick, sasl):
         return (f"{network} doesn’t allow the nickname “{nick}”. Pick another one in the account settings: start it with a letter, "
                 "and use only letters, numbers, - or _.", True)
     if command in ("433", "436", "437"):
-        return f"Every nickname we tried on {network} is taken. Pick another nickname in the account settings.", True
+        return f"Every nickname we tried on {network} is taken. Pick another nickname in the IRC account settings.", True
     if command in ("904", "905") and sasl:
-        return (f"Signing in to {network} didn’t work. Check your SASL account (your registered nickname) and SASL password "
-                f"in the account settings.{quote}", False)
+        return (f"Signing in to your nickname on {network} didn’t work. Check the account name (the name you registered) "
+                f"and password in the IRC account settings.{quote}", False)
     return None
+
+
+# Join requirements, the same rules as the phone's (IrcJoins.kt): which "you can't join" replies mean you must be
+# signed in to your nickname, and which name another channel to join first. scripts/test-local checks both.
+JOIN_CODES = {"403", "405", "471", "473", "474", "475", "476", "477", "479", "489", "520"}
+MOST_FIRST = 3
+SIGN_IN_WAIT = 12.0
+_NAME = r"([#&][^\s,:\x07()\"'`<>\[\]]+)"
+_FIRST = (re.compile(r"\b(?:must|need to|needs to|have to|has to|required to|please)\s+(?:first\s+)?(?:join|be in|be on|be a member of)\s+"
+                     r"(?:channel\s+)?" + _NAME, re.IGNORECASE),
+          re.compile(r"\bjoin\s+(?:channel\s+)?" + _NAME + r"\s+(?:first|before)\b", re.IGNORECASE))
+_SIGN_IN = re.compile(r"identif|regist|logged in|log in|signed in|sign in|authenticat|services account|\(\+r\)|\+r\b", re.IGNORECASE)
+_MUST = re.compile(r"\bneed|\bmust\b|\bonly\b|\brequire|\bhave to\b|\(\+r\)", re.IGNORECASE)
+_CHANNEL = re.compile(r"[#&][^\s,\x07]{1,49}")
+IRC_FOLD = str.maketrans("[]\\~", "{}|^")
+
+
+def fold(name):
+    """A channel or nick as IRC compares them: case folded by RFC 1459 ([]\\~ are the capitals of {}|^)."""
+    return (name or "").lower().translate(IRC_FOLD)
+
+
+def needs_sign_in(code, text):
+    """Whether a join reply means the channel only lets in people signed in to their nickname."""
+    text = text or ""
+    if code == "477":
+        return not re.search(r"support|modes", text, re.IGNORECASE) or bool(_SIGN_IN.search(text))
+    return code in JOIN_CODES and code != "475" and bool(_SIGN_IN.search(text)) and bool(_MUST.search(text))
+
+
+def prerequisite(code, text, channel):
+    """The channel a join reply says to join first ("You must join #help first"), or None. Never [channel] itself."""
+    if code not in JOIN_CODES:
+        return None
+    for pattern in _FIRST:
+        for match in pattern.finditer(text or ""):
+            name = match.group(1).rstrip(".!?;")
+            if _CHANNEL.fullmatch(name) and fold(name) != fold(channel):
+                return name
+    return None
+
+
+def join_order(channels, first):
+    """[channels] in the order to join them: the channels each needs first ([first]) come before it, without repeats
+    or loops."""
+    done, visiting = {}, set()
+
+    def visit(channel, depth):
+        key = fold(channel)
+        if key in done or key in visiting or depth > MOST_FIRST:
+            return
+        visiting.add(key)
+        for before in first(channel):
+            visit(before, depth + 1)
+        visiting.discard(key)
+        done[key] = channel
+
+    for channel in channels:
+        visit(channel, 0)
+    return list(done.values())
+
+
+def first_for(saved, channel):
+    """The channels to join before [channel], from a saved {folded channel: [channels]} map."""
+    found = (saved or {}).get(fold(channel)) or []
+    return [name for name in found if isinstance(name, str) and _CHANNEL.fullmatch(name)][:MOST_FIRST]
+
+
+def remember_first(saved, channel, first):
+    saved = dict(saved or {})
+    now = first_for(saved, channel)
+    if fold(first) != fold(channel) and all(fold(name) != fold(first) for name in now):
+        saved[fold(channel)] = (now + [first])[-MOST_FIRST:]
+    while len(saved) > 200:
+        saved.pop(next(iter(saved)))
+    return saved
+
+
+def forget_first(saved, channel, first):
+    saved = dict(saved or {})
+    left = [name for name in first_for(saved, channel) if fold(name) != fold(first)]
+    if left:
+        saved[fold(channel)] = left
+    else:
+        saved.pop(fold(channel), None)
+    return saved
+
+
+def joining_first(first, channel, network):
+    return (f"{network} only lets people into {channel} after they join {first}, so FluidMessages joined {first} first. It does "
+            "this every time you connect. You can change it in this channel’s details.")
+
+
+def waiting_for_sign_in(channel):
+    return f"{channel} only lets in people who are signed in to their nickname. FluidMessages is signing you in, then it tries again."
+
+
+def sign_in_needed(channel, saved):
+    if saved:
+        return (f"{channel} only lets in people who are signed in to their nickname, and signing in didn’t work. Check the account "
+                "name and password in the IRC account settings, then try again.")
+    return (f"{channel} only lets in people who are signed in to their nickname. Sign in with NickServ, then try again. "
+            "Type your password in the NickServ card, or save it as Password in the IRC account settings.")
+
+
+def join_error(code, channel, network, said, saved=False):
+    """Why a channel didn't let you in, in plain words with what to do (IrcChannels.joinError on the phone)."""
+    said = (said or "").strip()
+    if needs_sign_in(code, said):
+        return sign_in_needed(channel, saved)
+    return {
+        "403": f"{network} has no channel called {channel}. Check the spelling, or browse the channel list.",
+        "476": f"{network} has no channel called {channel}. Check the spelling, or browse the channel list.",
+        "479": f"{network} has no channel called {channel}. Check the spelling, or browse the channel list.",
+        "405": f"You’re in as many channels as {network} allows. Leave one, then try again.",
+        "471": f"{channel} is full right now. Try again later.",
+        "473": f"{channel} is invite-only: only people someone invited can join. Ask someone in it to invite you. "
+               "The invitation shows up in Invitations.",
+        "474": f"You can’t join {channel} because its moderators banned you.",
+        "475": f"{channel} is locked with a password. Ask someone in it for the password, then join with it.",
+        "520": f"{channel} is only for the people who run {network}.",
+    }.get(code) or (f"Couldn’t join {channel}." if not said else f"Couldn’t join {channel}. {network} said: “{said[:200]}”")
+
+
+def error_text(code, about, said):
+    """An error reply to something you did, in plain words with what to do (IrcRules.errorText on the phone)."""
+    it = about or "that"
+    return {
+        "401": f"{it} isn’t on the network right now. Check the spelling, or try again later.",
+        "406": f"{it} isn’t on the network right now. Check the spelling, or try again later.",
+        "402": "That server isn’t part of this network.",
+        "403": f"There’s no channel called {it}. Check the spelling, or browse the channel list.",
+        "404": f"You can’t write in {it} right now. You may need to join it first, or its moderators only let some people talk.",
+        "405": "You’re in as many channels as this network allows. Leave one, then try again.",
+        "411": "There was nothing to send. Type a message first.",
+        "412": "There was nothing to send. Type a message first.",
+        "421": f"The network doesn’t know the command “{it}”. Type /help to see the commands you can use.",
+        "432": f"The network doesn’t allow the nickname “{it}”. Start it with a letter, and use only letters, numbers, - or _.",
+        "433": f"The nickname {it} is already taken. Pick another one.",
+        "436": f"The nickname {it} is already taken. Pick another one.",
+        "437": f"{it} can’t be used right now. Try again in a few minutes, or pick another one.",
+        "441": f"{it} isn’t in that channel.",
+        "442": f"You’re not in {it}. Join it first.",
+        "443": f"{it} is already in that channel.",
+        "461": "That command is missing something. Type /help to see how to use it.",
+        "472": "The network doesn’t know that setting.",
+        "501": "The network doesn’t know that setting.",
+        "478": f"That list in {it} is full. A moderator has to remove an entry first.",
+        "481": "Only the people who run the network can do that.",
+        "482": f"Only moderators of {it} can do that. Moderators show with @ before their name.",
+        "484": "The network limits what this connection can do, so it can’t do that.",
+        "485": "Only the channel’s owner can do that.",
+        "489": f"{it} only lets in people on a secure connection.",
+        "491": "This network doesn’t let you become one of its staff from here.",
+        "502": "You can only change your own settings.",
+    }.get(code) or ((said or "").strip() or "The network said no, without a reason.")
+
+
+NICKSERV_IDENTIFIED = re.compile(r"\b(you are now (identified|recognized|logged in)|password accepted|(you are|you're) (successfully|already) "
+                                 r"(identified|logged in)|successfully identified)\b", re.IGNORECASE)
+NICKSERV_FAILED = re.compile(r"\b(invalid password|password incorrect|incorrect password|wrong password|identify failed|authentication failed)\b",
+                             re.IGNORECASE)
 
 
 class Refused(ConnectionError):
@@ -205,7 +368,7 @@ class Flood:
 
 class IrcClient:
     def __init__(self, account, on_message, on_state, connect=None, on_invite=None, flood=None, keep=None,
-                 clock=time.time, rand=random.random, auto=None):
+                 clock=time.time, rand=random.random, auto=None, first=None, on_first=None):
         self.account = account
         self.on_message = on_message  # (target, nick, text, tags, date_ms, outgoing)
         self.on_state = on_state      # (channel, {"topic":..., "members": [...], "modes": {nick: "@"}})
@@ -227,6 +390,7 @@ class IrcClient:
         self.stopped = threading.Event()
         self.ready = threading.Event()
         self.wake = threading.Event()   # Reconnect now (the Reconnect button)
+        self.dropped = False            # Disconnect: closed by you, so it waits for Connect or Reconnect
         self.keep = keep or (lambda channel: True)
         # Reconnect automatically (on by default): off, it connects only when you tap Reconnect.
         self.auto = auto or (lambda: True)
@@ -240,6 +404,17 @@ class IrcClient:
         # A channel LIST in progress: {"rows": [...], "limit": n, "done": Event}.
         self.listing = None
         self.list_lock = threading.Lock()
+        # Join requirements (join_need, prerequisite): with a password saved, joins wait until you're signed in to your
+        # nickname (SIGN_IN_WAIT at most), a channel that needs it tries once more after, and a channel the network
+        # says to join after another one gets that one joined first. [first] reads and [on_first] saves that order.
+        self.first = first or (lambda channel: [])
+        self.on_first = on_first or (lambda channel, before: None)
+        self.signed_in = self.sign_in_pending = False
+        self.joins_sent = False
+        self.after_sign_in, self.retried, self.first_tried = set(), set(), set()
+        self.join_errors = {}           # folded channel → (code, text), for join_wait
+        self.sessions = 0
+        self.sign_in_lock = threading.Lock()
 
     def open_tls(self):
         raw = socket.create_connection((self.account["server"], int(self.account.get("port", 6697))), timeout=30)
@@ -286,6 +461,15 @@ class IrcClient:
         if not self.auto() and not self.wait_for_reconnect(manual=True):
             return
         while not self.stopped.is_set():
+            if self.dropped:
+                # Disconnect: nothing connects again until Connect or Reconnect.
+                self.dropped = False
+                self.wake.clear()
+                if not self.wait_for_reconnect(manual=True):
+                    break
+                attempt = 0
+                if self.dropped:
+                    continue
             error = ""
             self.problem, self.sasl_notice = None, ""
             self.status = {**self.status, "state": "connecting", "retry_at": 0, "error": "", "manual": False}
@@ -304,6 +488,8 @@ class IrcClient:
                     self.sock = None
             if self.stopped.is_set():
                 break
+            if self.dropped:
+                continue
             # Closed before signing in, right after a notice that SASL is needed: that's the reason.
             if self.problem is None and not self.registered and self.sasl_notice:
                 self.problem = self.explain("ERROR", self.sasl_notice)
@@ -345,13 +531,30 @@ class IrcClient:
 
     def reconnect_now(self):
         """The Reconnect button: tries again at once, outside the hourly limit."""
+        self.dropped = False
         self.wake.set()
+
+    def disconnect_now(self):
+        """Disconnect: says goodbye to the network and waits for Connect or Reconnect. Its chats stay in the list."""
+        self.dropped = True
+        self.status = {**self.status, "state": "disconnected", "retry_at": 0, "error": "", "manual": True}
+        self.wake.set()  # Leaves a wait to try again.
+        try:
+            self.write("QUIT :FluidMessages")
+        except (OSError, ConnectionError, ValueError):
+            pass
+        with self.lock:
+            if self.sock is not None and hasattr(self.sock, "shutdown"):
+                try:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
 
     def ensure_joined(self, channel, wait=0.0):
         """Joins a channel that isn't kept joined when you open or write to it."""
         if not self.ready.is_set() or channel.lower() in self.joined or channel[:1] not in "#&":
             return
-        self.write("JOIN " + channel)
+        self.join_in_order(channel)
         deadline = time.monotonic() + wait
         while wait and channel.lower() not in self.joined and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -366,6 +569,10 @@ class IrcClient:
         # Each connection asks for your own nick again, even if the last one fell back to nick_.
         self.nick, self.nick_tries, self.registered, self.sasl_ok = self.wanted, 0, False, False
         self.joined = set()
+        self.signed_in = self.sign_in_pending = self.joins_sent = False
+        self.after_sign_in, self.retried, self.first_tried = set(), set(), set()
+        self.join_errors = {}
+        self.sessions += 1
         self.write("CAP LS 302")
         self.write("NICK " + self.nick)
         self.write("USER " + self.account["nick"] + " 0 * :" + self.account.get("real_name", "FluidMessages"))
@@ -395,6 +602,7 @@ class IrcClient:
             self.write("AUTHENTICATE " + token)
         elif command in ("903", "904", "905", "906", "907"):
             self.sasl_ok = self.sasl_ok or command == "903"
+            self.signed_in = self.signed_in or command == "903"
             # A wrong SASL account or password: say so in the server chat, then carry on without signing in.
             found = self.explain(command, params[-1] if params else "")
             if found:
@@ -407,10 +615,14 @@ class IrcClient:
         elif command == "001":
             self.nick = params[0] if params else self.nick
             self.registered = True
-            self.identify()
-            # Only channels set to Keep joined rejoin now; the rest rejoin when you open them.
-            for channel in keep_joined_channels(self.account.get("channels", []), self.keep):
-                self.write("JOIN " + channel)
+            if self.identify():
+                # Signing in to NickServ first: channels for signed-in nicknames only would refuse you before it.
+                session = self.sessions
+                timer = threading.Timer(SIGN_IN_WAIT, lambda: self.sign_in_over() if session == self.sessions else None)
+                timer.daemon = True
+                timer.start()
+            else:
+                self.join_kept()
             self.status = {**self.status, "state": "connected", "retry_at": 0, "error": ""}
             self.ready.set()
         elif command == "322" and len(params) >= 3 and self.listing is not None:
@@ -439,9 +651,13 @@ class IrcClient:
                 raise Refused(self.problem[0])
             self.nick = fallback_nick(self.wanted, self.nick_tries)
             self.write("NICK " + self.nick)
+        elif command == "900":
+            self.now_signed_in()  # Signed in to your account (RPL_LOGGEDIN), after SASL or NickServ IDENTIFY.
         elif command in ("PRIVMSG", "NOTICE") and len(params) == 2:
             if command == "NOTICE" and not self.registered and needs_sasl(params[1]):
                 self.sasl_notice = params[1]
+            if message["nick"].lower() == "nickserv":
+                self.nickserv_said(params[1])
             self.message(message)
         elif command == "TAGMSG" and params:
             self.message(message)
@@ -519,6 +735,13 @@ class IrcClient:
             self.event(SERVER, params[-1], message, "info")
         elif command in WHOIS and len(params) >= 3:
             self.whois_line(message)
+        elif command in JOIN_CODES and len(params) >= 3 and params[1][:1] in "#&":
+            channel, text = params[1], params[-1]
+            if self.join_failed(command, channel, text, message):
+                return  # Handled on its own: a channel to join first, or signing in first. It's tried again.
+            self.join_errors[fold(channel)] = (command, text)
+            # Why, in plain words, in that channel.
+            self.event(channel, join_error(command, channel, self.network(), text, self.has_password()), message, "error")
         elif command in ERRORS and len(params) >= 2:
             about = params[1] if len(params) >= 3 else ""
             if command == "433" and self.registered:
@@ -526,7 +749,7 @@ class IrcClient:
                 return
             where = about if about[:1] in "#&" or about.lower() in self.whois_for else SERVER
             where = self.whois_for.get(about.lower(), where)
-            self.event(where, (about + ": " if about and where == SERVER else "") + params[-1], message, "error")
+            self.event(where, error_text(command, about, (about + ": " if about and where == SERVER else "") + params[-1]), message, "error")
         elif command == "ERROR" and params:
             self.event(SERVER, "Disconnected: " + params[0], message, "error")
             found = self.explain("ERROR", params[0])
@@ -537,11 +760,119 @@ class IrcClient:
                 self.problem = found
 
     def identify(self):
-        """Identify on connect: NickServ IDENTIFY when there's a NickServ password and SASL didn't sign you in."""
-        password = self.account.get("nickserv_password")
+        """Identify on connect when SASL didn't sign you in: NickServ IDENTIFY with the NickServ password, or else the
+        account's Password (most networks use one password for both). True when IDENTIFY went out."""
+        password = self.account.get("nickserv_password") or self.account.get("sasl_password")
         if not password or self.sasl_ok:
-            return
+            return False
         self.write(identify_line(self.account, password))
+        self.sign_in_pending = True
+        return True
+
+    def has_password(self):
+        return bool(self.account.get("nickserv_password") or self.account.get("sasl_password"))
+
+    # Join requirements
+
+    def join_in_order(self, channel, key="", paced=False):
+        """Joins [channel] (with its password [key]) after the channels it needs first."""
+        for name in join_order([channel], self.first):
+            target = fold(name) == fold(channel)
+            if not target and fold(name) in {fold(c) for c in self.joined}:
+                continue
+            line = "JOIN " + name + (" " + key if target and key else "")
+            (self.say if paced else self.write)(line)
+
+    def join_kept(self):
+        """Only channels set to Keep joined join on connect, after the channels they need first; the rest join when
+        you open them."""
+        with self.sign_in_lock:
+            if self.joins_sent:
+                return
+            self.joins_sent = True
+        for channel in join_order(keep_joined_channels(self.account.get("channels", []), self.keep), self.first):
+            self.write("JOIN " + channel)
+
+    def now_signed_in(self):
+        """Signed in to your nickname: joins wait no longer, and channels that wanted it try once more."""
+        self.signed_in, self.sign_in_pending = True, False
+        if self.registered:
+            self.join_kept()
+        for channel in list(self.after_sign_in):
+            self.after_sign_in.discard(channel)
+            if channel not in {fold(c) for c in self.joined} and channel not in self.retried:
+                self.retried.add(channel)
+                self.join_in_order(channel)
+
+    def nickserv_said(self, text):
+        """"You are now identified" signs you in; a wrong password ends the wait."""
+        words = re.sub(r"\x03(?:\d{1,2}(?:,\d{1,2})?)?|[\x00-\x1f\x7f]", "", text or "")
+        if NICKSERV_FAILED.search(words):
+            if self.sign_in_pending:
+                self.sign_in_over()
+        elif NICKSERV_IDENTIFIED.search(words):
+            self.now_signed_in()
+
+    def sign_in_over(self):
+        """Signing in didn't happen in time, or the password was wrong: join anyway, and say which channels still
+        need it."""
+        if self.signed_in:
+            return
+        self.sign_in_pending = False
+        try:
+            self.join_kept()
+            for channel in list(self.after_sign_in):
+                self.event(channel, sign_in_needed(channel, True), {"tags": {}}, "error")
+        except (OSError, ConnectionError, ValueError):
+            pass
+
+    def join_failed(self, code, channel, text, message):
+        """A channel said no. Handles what it can on its own and returns True: a channel named to join first is joined
+        first (and remembered); a channel for signed-in nicknames waits for signing in, or tries once more right
+        after it. False when the reason should be shown."""
+        key = fold(channel)
+        before = prerequisite(code, text, channel)
+        if before and (key, fold(before)) not in self.first_tried:
+            self.first_tried.add((key, fold(before)))
+            self.on_first(channel, before)
+            self.event(channel, joining_first(before, channel, self.network()), message, "info")
+            for name in [before, channel]:
+                self.write("JOIN " + name)
+            return True
+        if not needs_sign_in(code, text):
+            return False
+        if self.signed_in and key not in self.retried:
+            self.retried.add(key)
+            self.write("JOIN " + channel)
+            return True
+        self.after_sign_in.add(key)
+        if self.sign_in_pending:
+            self.event(channel, waiting_for_sign_in(channel), message, "info")
+            return True
+        return False
+
+    def join_wait(self, channel, key="", wait=8.0):
+        """Joins [channel] now (with its password [key]) and waits for the network's answer: None once in (or no
+        answer yet), else (code, plain words) for why it said no. Things it handles on its own (a channel to join
+        first, signing in first) keep it waiting."""
+        self.connected()
+        if key and (len(key) > 100 or re.search(r"[\s,\x00]", key)):
+            raise ValueError("A channel password can’t have spaces or commas. Check it and try again.")
+        if fold(channel) in {fold(c) for c in self.joined}:
+            return None
+        if fold(channel) not in {fold(c) for c in self.account.get("channels", [])}:
+            self.account = {**self.account, "channels": sorted(self.account.get("channels", []) + [channel], key=str.lower)}
+        self.join_errors.pop(fold(channel), None)
+        self.join_in_order(channel, key, paced=True)
+        deadline = time.monotonic() + (SIGN_IN_WAIT if self.sign_in_pending else wait)
+        while time.monotonic() < deadline and self.ready.is_set():
+            if fold(channel) in {fold(c) for c in self.joined}:
+                return None
+            refused = self.join_errors.get(fold(channel))
+            if refused:
+                return refused[0], join_error(refused[0], channel, self.network(), refused[1], self.has_password())
+            time.sleep(0.05)
+        return None
 
     def identify_now(self, password, save=False):
         """The NickServ card's Identify: IDENTIFY over the connection, never a chat message. With [save] the password
@@ -724,8 +1055,9 @@ class IrcClient:
         if not self.ready.is_set():
             return  # Joined on connect (001).
         for key, channel in wanted.items():
-            if key not in joined:
-                self.write("JOIN " + channel)
+            # While signing in, joins wait (join_kept runs once it's done).
+            if key not in joined and (self.joins_sent or not self.sign_in_pending):
+                self.join_in_order(channel)
         for key, channel in joined.items():
             if key not in wanted:
                 self.write("PART " + channel + " :Left in FluidMessages")

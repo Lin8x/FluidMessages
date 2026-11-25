@@ -96,9 +96,10 @@ internal object IrcRules {
         val quote = if (said.isEmpty()) "" else " It said: “$said”"
         return when (command) {
             "ERROR" -> when {
-                needsSasl(said) -> Problem("$network only lets registered nicknames connect from your internet connection. This often happens on a VPN, "
-                    + "a work or school network, or a cloud server. " + (if (sasl) "Check your SASL account and SASL password." else
-                    "Register your nickname from another connection, then type its password in SASL password.") + quote, true)
+                needsSasl(said) -> Problem("$network only lets people signed in to a registered nickname connect from your internet connection. "
+                    + "This often happens on a VPN, a work or school network, or a cloud server. " + (if (sasl)
+                    "Check the account name and password in the IRC account settings." else
+                    "Register your nickname from another connection, then type its password in Password in the IRC account settings.") + quote, true)
                 blocked.containsMatchIn(said) -> Problem("$network blocked this connection.$quote Try another network, or another internet connection.", true)
                 Regex("ping timeout|connection reset|broken pipe", RegexOption.IGNORE_CASE).containsMatchIn(said) -> Problem("The connection to $network dropped.", false)
                 said.contains("Client Quit", ignoreCase = true) -> null
@@ -108,21 +109,61 @@ internal object IrcRules {
                 "Check the password in the account settings." else "Try another network, or another internet connection.", true)
             "432" -> Problem("$network doesn’t allow the nickname “$nick”. Pick another one in the account settings: start it with a letter, "
                 + "and use only letters, numbers, - or _.", true)
-            "433", "436", "437" -> Problem("Every nickname we tried on $network is taken. Pick another nickname in the account settings.", true)
-            "904", "905" -> if (sasl) Problem("Signing in to $network didn’t work. Check your SASL account (your registered nickname) and SASL password "
-                + "in the account settings.$quote", false) else null
+            "433", "436", "437" -> Problem("Every nickname we tried on $network is taken. Pick another nickname in the IRC account settings.", true)
+            "904", "905" -> if (sasl) Problem("Signing in to your nickname on $network didn’t work. Check the account name (the name you registered) "
+                + "and password in the IRC account settings.$quote", false) else null
             "906", "907" -> null
             else -> null
         }
     }
 
-    /** "connected", "connecting" (also while waiting to try again), or "disconnected", from a connection's state; "" when unknown. */
+    /**
+     * An error reply to something you did (a command, a message), in plain words with what to do. [about] is the
+     * nickname or channel it's about, [said] the network's own words, used when the reply is one this doesn't know.
+     * FluidMessages Web says the same (irc_client.error_text).
+     */
     @JvmStatic
-    fun connectionState(state: String): String = when (state) {
-        "connected" -> "connected"
-        "connecting", "reconnecting" -> "connecting"
-        "disconnected", "paused", "offline", "failed" -> "disconnected"
-        else -> ""
+    fun errorText(code: String, about: String, said: String): String {
+        val it = about.ifEmpty { "that" }
+        return when (code) {
+            "401", "406" -> "$it isn’t on the network right now. Check the spelling, or try again later."
+            "402" -> "That server isn’t part of this network."
+            "403" -> "There’s no channel called $it. Check the spelling, or browse the channel list."
+            "404" -> "You can’t write in $it right now. You may need to join it first, or its moderators only let some people talk."
+            "405" -> "You’re in as many channels as this network allows. Leave one, then try again."
+            "411", "412" -> "There was nothing to send. Type a message first."
+            "421" -> "The network doesn’t know the command “$it”. Type /help to see the commands you can use."
+            "432" -> "The network doesn’t allow the nickname “$it”. Start it with a letter, and use only letters, numbers, - or _."
+            "433", "436" -> "The nickname $it is already taken. Pick another one."
+            "437" -> "$it can’t be used right now. Try again in a few minutes, or pick another one."
+            "441" -> "$it isn’t in that channel."
+            "442" -> "You’re not in $it. Join it first."
+            "443" -> "$it is already in that channel."
+            "461" -> "That command is missing something. Type /help to see how to use it."
+            "472", "501" -> "The network doesn’t know that setting."
+            "478" -> "That list in $it is full. A moderator has to remove an entry first."
+            "481" -> "Only the people who run the network can do that."
+            "482" -> "Only moderators of $it can do that. Moderators show with @ before their name."
+            "484" -> "The network limits what this connection can do, so it can’t do that."
+            "485" -> "Only the channel’s owner can do that."
+            "489" -> "$it only lets in people on a secure connection."
+            "491" -> "This network doesn’t let you become one of its staff from here."
+            "502" -> "You can only change your own settings."
+            else -> said.trim().ifEmpty { "The network said no, without a reason." }
+        }
+    }
+
+    /**
+     * The inbox mark's state, from a connection's state: "connected", "connecting" (also while waiting to try again),
+     * "off" (the service is turned off, or you turned the connection off: [manual]), or "disconnected". Nothing known
+     * yet counts as not connected, so a server chat never shows no mark. The same rule as connections.js.
+     */
+    @JvmStatic @JvmOverloads
+    fun connectionState(state: String, manual: Boolean = false): String = when {
+        state == "connected" -> "connected"
+        state == "connecting" || state == "reconnecting" -> "connecting"
+        state == "off" || manual -> "off"
+        else -> "disconnected"
     }
 
     /** The words read out for the inbox's connection mark. */
@@ -131,7 +172,24 @@ internal object IrcRules {
         "connected" -> "Connected"
         "connecting" -> "Connecting"
         "disconnected" -> "Not connected"
+        "off" -> "Turned off"
         else -> ""
+    }
+
+    /**
+     * The first line of a Connection section: "Connected to Libera.Chat as kit", "Connecting to Libera.Chat…",
+     * "Not connected to Libera.Chat · <why>", or "Turned off · …". [serviceOff]: the service itself is off.
+     */
+    @JvmStatic
+    fun connectionSummary(state: String, network: String, nick: String, error: String, serviceOff: Boolean): String {
+        val why = error.trim().let { if (it.isEmpty()) "" else " · $it" }
+        return when (state) {
+            "connected" -> "Connected to $network" + if (nick.isEmpty()) "" else " as $nick"
+            "connecting" -> "Connecting to $network…"
+            "off" -> if (serviceOff) "Turned off · Turn this service on in Settings → Chat services"
+                else "Turned off · Tap Connect to connect to $network$why"
+            else -> "Not connected to $network$why"
+        }
     }
 }
 

@@ -1497,6 +1497,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def mutate(self, data):
         now = int(time.time() * 1000)
+        if self.path == "/api/protocols/join":
+            # Saved first, then a few seconds for an IRC network's answer outside the database transaction, so a
+            # refusal comes back in plain words (and a channel locked with a password can ask for it on the Join page).
+            with closing(connect()) as db, db:
+                joined = gateway.join(db, data)
+            return gateway.join_outcome(data, joined)
         with closing(connect()) as db, db:
             if self.path == "/api/protocols":
                 if self.kind == "session" and data.get("enabled") is not None:
@@ -1514,6 +1520,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/protocols/invites":
                 # Accept or decline an invitation or contact request.
                 return gateway.answer_invite(db, data)
+            if self.path == "/api/protocols/joinfirst":
+                # A channel's details: stop joining another channel before it (chat_features.forget_join_first).
+                return gateway.forget_join_first(db, data)
             if self.path == "/api/protocols/keep":
                 # An IRC channel's Keep joined setting.
                 return gateway.set_keep(db, data)
@@ -1526,6 +1535,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/protocols/reconnect":
                 # The Disconnected · Reconnect bar.
                 return gateway.reconnect(data)
+            if self.path == "/api/protocols/disconnect":
+                # Disconnect a server (IRC network, Matrix or XMPP account) until you connect it again.
+                return gateway.disconnect(db, data)
             if self.path == "/api/protocols/autoreconnect":
                 # A server's Reconnect automatically switch (IRC networks, Matrix and XMPP accounts).
                 return gateway.set_auto_reconnect(db, data)

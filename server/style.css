@@ -374,6 +374,9 @@ button.grid-cell:hover { filter: brightness(.94); }
 .link-preview.video { position: relative; }
 .link-preview.video::before { content: '▶'; position: absolute; top: 50px; left: 50%; transform: translateX(-50%); width: 44px; height: 44px; display: grid;
   place-items: center; border-radius: 50%; background: rgb(0 0 0 / 60%); color: #fff; }
+.tap-to-load { display: block; margin-top: .4rem; padding: .55rem .75rem; min-height: 40px; border: 0; border-radius: 12px; font: inherit; font-size: .82rem;
+  font-weight: 600; color: inherit; background: color-mix(in srgb, currentColor 12%, transparent); cursor: pointer; }
+.tap-to-load:hover { background: color-mix(in srgb, currentColor 18%, transparent); }
 .link-words { display: grid; gap: .15rem; padding: .55rem .7rem; }
 .link-words small { font-weight: 600; opacity: .75; }
 .link-words .muted { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-size: .82rem; }
@@ -811,6 +814,13 @@ details.more[open] > summary::after { transform: rotate(180deg); }
 @media (prefers-reduced-motion: reduce) { details.more > summary::after { transition: none; } }
 /* Light, dark, and automatic share one row, even on a phone. */
 .choices.segmented .choice { flex: 1 1 0; min-width: 0; padding-inline: .6rem; gap: .5rem; }
+/* On a phone the three don't fit with their round buttons, so the row reads like a segmented control: the picked one is
+   outlined and tinted, the radio stays there for keyboards and screen readers, and each label keeps to one line. */
+@media (max-width: 520px) {
+  .choices.segmented .choice { flex: 1 1 auto; justify-content: center; position: relative; padding-inline: .5rem; }
+  .choices.segmented .choice > span { white-space: nowrap; }
+  .choices.segmented .choice input { position: absolute; opacity: 0; pointer-events: none; }
+}
 
 /* ---- Setup guide and phone sync guide, drawn like the Android app's (OnboardingScreen.kt). ---- */
 body:has(#welcome:not([hidden])) { background: var(--canvas); }
@@ -1128,6 +1138,10 @@ body[data-section="settings"] .sidebar, body[data-section="settings"] .thread-pa
 .settings-facts { display: block; margin: 0; }
 .settings-facts dt { font-weight: 650; }
 .settings-facts dd { margin: .1rem 0 .7rem; color: var(--muted); }
+.recipient-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; }
+.recipient-list li { display: grid; gap: .1rem; padding: .55rem 0; border-bottom: 1px solid var(--line, rgb(128 128 128 / 25%)); }
+.recipient-list li:last-child { border-bottom: 0; }
+.several-texts textarea { width: 100%; resize: vertical; }
 .erase-list { margin: 0; padding-inline-start: 1.2rem; display: grid; gap: .4rem; line-height: 1.45; }
 .danger-button { background: #c4141f; color: #fff; border-color: transparent; font-weight: 650; min-height: 44px; }
 .danger-button:disabled { opacity: .5; cursor: not-allowed; }

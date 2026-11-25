@@ -202,14 +202,66 @@ function chatActionText(message, bubble, row) {
 
 /** The setting beside a channel's or room's members: show or hide joins, leaves, and quits (this browser). */
 function joinsToggle() {
-  const label = element('label', '', 'check-row');
+  // A switch at the row's end, like the other on/off rows in details (switch-row in chat-features.css).
+  const label = element('label', '', 'check-row switch-row');
   const box = Object.assign(element('input', ''), {type: 'checkbox', checked: !hideJoins()});
+  box.setAttribute('role', 'switch');
   box.addEventListener('change', () => {
     localStorage.setItem(HIDE_JOINS_KEY, box.checked ? 'off' : 'on');
     showMessages(true);
   });
-  label.append(box, element('span', 'Show joins, leaves, and quits in channels and rooms'));
+  label.append(element('span', 'Show joins, leaves, and quits in channels and rooms'), box);
   return label;
+}
+
+// IRC explainers, the same words as the phone's (IrcIntro in IrcJoins.kt): a channel is a public room (said once, the
+// first time you open one), and the server chat is the network talking to you, named "Libera.Chat · network messages".
+
+// irc-intro:start (plain rules with no page in them; scripts/test-local runs this part in Node)
+const IRC_SERVER_SUFFIX = ' · network messages';
+const IRC_SERVER_INTRO = 'This is the network talking to you: welcome notes, sign-in answers, and problems joining channels. '
+  + 'You can type commands here, like /join #channel or /msg NickServ help.';
+const ircChannelIntro = (channel) => 'IRC channels are public rooms. Anyone in ' + channel + ' can read what you write. Moderators can remove people.';
+
+/** "Libera.Chat · network messages" for a server chat stored under its host (irc.libera.chat). */
+function serverChatTitle(stored, directory) {
+  const text = String(stored || '').trim();
+  if (text.endsWith(IRC_SERVER_SUFFIX)) return text;
+  const known = (directory || []).find((entry) => entry.host === text.toLowerCase());
+  return (known ? known.name : text || 'IRC') + IRC_SERVER_SUFFIX;
+}
+// irc-intro:end
+
+const IRC_INTRO_SEEN = 'fluid.ircChannelIntroSeen';
+
+/** The line at the top of an IRC channel (until Got it) or server chat, or null. */
+function ircIntroNode(key) {
+  if (!key || threadProtocol(key) !== 'irc' || (typeof sampleOn !== 'undefined' && sampleOn)) return null;
+  const route = typeof routeFor === 'function' ? routeFor(key) : null;
+  if (!route) return null;
+  const channel = route.group && /^[#&]/.test(route.target || '');
+  if (!route.server_chat && (!channel || localStorage.getItem(IRC_INTRO_SEEN) === '1')) return null;
+  const node = element('div', '', 'notice irc-intro');
+  node.setAttribute('role', 'note');
+  node.append(element('p', route.server_chat ? IRC_SERVER_INTRO : ircChannelIntro(route.target)));
+  if (!route.server_chat) {
+    const ok = element('button', 'Got it');
+    ok.type = 'button';
+    ok.addEventListener('click', () => { localStorage.setItem(IRC_INTRO_SEEN, '1'); node.remove(); });
+    node.append(ok);
+  }
+  return node;
+}
+
+if (typeof threadTitle === 'function') {
+  const plainTitle = threadTitle;
+  // eslint-disable-next-line no-func-assign
+  threadTitle = function (key) {
+    const title = plainTitle(key);
+    const route = key && typeof routeFor === 'function' ? routeFor(key) : null;
+    return route?.server_chat && route.protocol === 'irc'
+      ? serverChatTitle(route.title || title, typeof SERVER_DIRECTORY === 'object' ? SERVER_DIRECTORY.irc : []) : title;
+  };
 }
 
 // Headers and members: bots are automated, channels show their topic, and @ and + mark operators and voice.
@@ -259,6 +311,24 @@ if (typeof openDetails === 'function') {
     help.addEventListener('click', () => openCommandHelp(commandFamily(key)));
     section.append(element('h3', 'Chat'));
     if (typeof threadIsGroup === 'function' && threadIsGroup(key)) section.append(joinsToggle());
+    // Channels this network needs joined first (irc_client.prerequisite), each with Remove.
+    const route = typeof routeFor === 'function' ? routeFor(key) : null;
+    for (const first of route?.protocol === 'irc' ? route.join_first || [] : []) {
+      const line = element('div', '', 'join-first');
+      const remove = element('button', 'Remove');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', 'Stop joining ' + first + ' first');
+      remove.addEventListener('click', async () => {
+        remove.disabled = true;
+        try {
+          const result = await api('protocols/joinfirst', {address: route.address, protocol: 'irc', remove: first});
+          route.join_first = result.join_first;
+          line.replaceChildren(element('p', 'Stopped. If the network still needs ' + first + ', FluidMessages adds it back.', 'muted'));
+        } catch (error) { remove.disabled = false; line.append(element('p', error.message, 'muted')); }
+      });
+      line.append(element('span', 'Also joins ' + first + ' first (this network needs it)'), remove);
+      section.append(line);
+    }
     section.append(help);
     const members = [...body.children].find((node) => node.querySelector?.('.member-list'));
     (members || body.children[1] || body.lastElementChild)?.after(section);
@@ -332,7 +402,8 @@ function nickServDetail(card, saved) {
   if (card.answered) return 'NickServ answered below.';
   if (card.state === 'failed') return 'NickServ didn’t accept it. Check the password and try again.';
   return saved ? 'Your saved password is sent each time you connect. If NickServ asks again, type it here.'
-    : 'Type your NickServ password to prove it’s yours. It goes only to NickServ, never to a channel.';
+    : 'This nickname belongs to a registered account. If it’s yours, type its password. It goes only to NickServ, never to a channel. '
+      + 'If it isn’t yours, pick another nickname in the IRC account settings.';
 }
 // nickserv:end
 

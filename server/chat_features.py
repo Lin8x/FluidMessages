@@ -578,6 +578,36 @@ class ChatFeatures:
         db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('keep_joined', ?)", (json.dumps(keep),))
         return {"keep_joined": data["keep"]}
 
+    # IRC: channels a network says to join first (irc_client.prerequisite), per account, so reconnecting and Rejoin
+    # join them in the same order. Shown in the channel's details, where they can be removed.
+
+    def join_first_map(self):
+        try:
+            saved = json.loads(self.state("irc_join_first") or "{}")
+        except ValueError:
+            return {}
+        return saved if isinstance(saved, dict) else {}
+
+    def join_first(self, account, channel):
+        return irc_client.first_for(self.join_first_map().get(account), channel)
+
+    def remember_join_first(self, account, channel, first):
+        with self.route_lock:
+            saved = self.join_first_map()
+            saved[account] = irc_client.remember_first(saved.get(account), channel, first)
+            self.save_state("irc_join_first", json.dumps(saved))
+
+    def forget_join_first(self, db, data):
+        """Details → Remove: stop joining a channel before this one."""
+        route = self.route(data.get("address"), data.get("protocol")) if isinstance(data.get("address"), str) else None
+        if route is None or route.get("via") != "irc" or not route.get("group") or not isinstance(data.get("remove"), str):
+            raise ValueError("Choose an IRC channel and the channel to stop joining first")
+        with self.route_lock:
+            saved = self.join_first_map()
+            saved[route["account"]] = irc_client.forget_first(saved.get(route["account"]), route["target"], data["remove"])
+            db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('irc_join_first', ?)", (json.dumps(saved),))
+        return {"join_first": irc_client.first_for(saved[route["account"]], route["target"])}
+
     def open_chat(self, data):
         """Opening a channel that isn't kept joined joins it again."""
         route = self.route(data.get("address"), data.get("protocol")) if isinstance(data.get("address"), str) else None
@@ -619,9 +649,34 @@ class ChatFeatures:
 
     def connections(self):
         """Each IRC network's, XMPP account's, and Matrix account's connection: connected, connecting, reconnecting
-        (retry_at), paused by the hourly limit, or disconnected (with "manual" while Reconnect automatically is off)."""
-        return {ident: dict(entry[1].status) for ident, entry in list(self.clients.items())
-                if isinstance(getattr(entry[1], "status", None), dict)}
+        (retry_at), paused by the hourly limit, or disconnected (with "manual" while Reconnect automatically is off or
+        after Disconnect). An account whose service is turned off here is "off", so the apps never show no state."""
+        found = {}
+        for ident, entry in list(self.clients.items()):
+            status = getattr(entry[1], "status", None)
+            if isinstance(status, dict):
+                found[ident] = dict(status)
+            elif hasattr(entry[1], "ready"):
+                # Encrypted Matrix keeps its own session: signed in and syncing, or still starting.
+                found[ident] = {"state": "connected" if entry[1].ready.is_set() else "connecting", "retry_at": 0, "error": "",
+                                "manual": False}
+        for entry in self.accounts.all():
+            if entry["protocol"] in ("irc", "matrix", "xmpp") and entry["id"] not in found:
+                found[entry["id"]] = {"state": "off", "retry_at": 0, "error": "", "manual": False}
+        return found
+
+    def disconnect(self, db, data):
+        """Disconnect, from a chat's or server's Connection section, the inbox, or the Connections page: turns
+        Reconnect automatically off (so nothing connects at start either) and closes the connection now. Connect turns
+        it back on (set_auto_reconnect). Its chats stay in the list."""
+        ident = data.get("account") if isinstance(data.get("account"), str) else None
+        entry = self.clients.get(ident)
+        if entry is not None and not hasattr(entry[1], "disconnect_now"):
+            raise ValueError("Encrypted Matrix can’t disconnect on its own yet. Turn Matrix off in Settings → Chat services.")
+        self.set_auto_reconnect(db, {"account": ident, "on": False})
+        if entry is not None:
+            entry[1].disconnect_now()
+        return {"reconnect": False}
 
     def reconnect(self, data):
         ident = data.get("account") if isinstance(data.get("account"), str) else None

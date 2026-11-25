@@ -83,8 +83,8 @@ class IrcChannelsTest {
 
     @Test fun refusalsAndWaitingAreInPlainWords() {
         assertTrue(IrcChannels.joinError("473", "#pond", "Libera.Chat", "Cannot join channel (+i)").contains("invite-only"))
-        assertTrue(IrcChannels.joinError("477", "#pond", "Libera.Chat", "").contains("registered"))
-        assertEquals("Couldn’t join #pond: Try later", IrcChannels.joinError("999", "#pond", "Libera.Chat", " Try later "))
+        assertTrue(IrcChannels.joinError("477", "#pond", "Libera.Chat", "").contains("signed in to their nickname"))
+        assertEquals("Couldn’t join #pond. Libera.Chat said: “Try later”", IrcChannels.joinError("999", "#pond", "Libera.Chat", " Try later "))
         assertEquals("Couldn’t join #pond.", IrcChannels.joinError("999", "#pond", "Libera.Chat", ""))
         for (state in listOf("", "connecting", "reconnecting", "offline", "disconnected")) {
             val (line, button) = IrcChannels.waiting(state, "Libera.Chat", true)

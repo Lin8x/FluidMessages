@@ -47,6 +47,11 @@ object SettingsPages {
         mountCards(root, prefs, sections)
     }
 
+    /** Cards with a live card of their own above them (a server's Connection, ConnectionsUi). */
+    internal fun mountWithHeader(root: LinearLayout, prefs: SharedPreferences, sections: List<SettingsSection>, header: @Composable () -> Unit) {
+        mountCards(root, prefs, sections) { header() }
+    }
+
     @JvmStatic
     fun mountBackupProvider(root: LinearLayout, prefs: SharedPreferences, phone: Boolean,
                             description: String, sections: List<SettingsSection>, changed: Consumer<Boolean>) {

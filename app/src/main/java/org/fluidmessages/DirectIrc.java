@@ -66,6 +66,15 @@ final class DirectIrc implements DirectProtocols.DirectClient {
     private final Set<String> joining = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Map<String, String[]> joinErrors = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, String> forwards = new java.util.concurrent.ConcurrentHashMap<>();
+    // Join requirements (IrcJoins): with a password saved, channels wait until you're signed in to your nickname
+    // (SIGN_IN_WAIT at most); a channel that needs it is tried once more after; and a channel the network says to join
+    // after another one gets that one joined first, remembered for every reconnect.
+    private static final long SIGN_IN_WAIT = 12_000;
+    private volatile boolean signedIn, signInPending, holdJoins;
+    private final java.util.concurrent.atomic.AtomicBoolean joinsSent = new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicInteger sessions = new java.util.concurrent.atomic.AtomicInteger();
+    private final Set<String> afterSignIn = java.util.concurrent.ConcurrentHashMap.newKeySet(),
+        retried = java.util.concurrent.ConcurrentHashMap.newKeySet(), firstTried = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private volatile IrcChannelList listing;
     private volatile boolean listStreaming;
     private volatile long listAt;
@@ -263,6 +272,12 @@ final class DirectIrc implements DirectProtocols.DirectClient {
         nick = wanted;
         nickTries = 0;
         registered = saslOk = false;
+        signedIn = signInPending = holdJoins = false;
+        joinsSent.set(false);
+        afterSignIn.clear();
+        retried.clear();
+        firstTried.clear();
+        sessions.incrementAndGet();
         write("CAP LS 302");
         write("NICK " + nick);
         write("USER " + account.getString("nick") + " 0 * :" + account.optString("real_name", "FluidMessages"));
@@ -347,6 +362,7 @@ final class DirectIrc implements DirectProtocols.DirectClient {
             }
             case "903", "904", "905", "906", "907" -> {
                 saslOk |= command.equals("903");
+                signedIn |= command.equals("903");
                 // A wrong SASL account or password: say so in the server chat, then carry on without signing in.
                 var found = command.equals("904") || command.equals("905") ? explain(command, p.isEmpty() ? "" : p.get(p.size() - 1)) : null;
                 if (found != null) event(SERVER, found.getText(), line, "error");
@@ -356,11 +372,15 @@ final class DirectIrc implements DirectProtocols.DirectClient {
             case "001" -> {
                 if (!p.isEmpty()) nick = p.get(0);
                 registered = true;
-                identify();
-                // Only channels set to Keep joined rejoin now; the others rejoin when you open them.
-                for (String channel : IrcRules.keepJoined(DirectProtocols.targets(context, MessageProtocol.IRC, true), this::keeps)) {
-                    write("JOIN " + channel);
-                }
+                if (identify()) {
+                    // Signing in to NickServ first: channels for signed-in nicknames only would refuse you before it.
+                    holdJoins = true;
+                    int mine = sessions.get();
+                    new Thread(() -> {
+                        try { Thread.sleep(SIGN_IN_WAIT); } catch (InterruptedException interrupted) { return; }
+                        if (mine == sessions.get() && !stopped) try { signInOver(); } catch (Exception ignored) {}
+                    }, "fluid-irc-sign-in").start();
+                } else joinKept();
                 ready = true;
                 status("connected", 0, "");
             }
@@ -372,8 +392,11 @@ final class DirectIrc implements DirectProtocols.DirectClient {
             case "263" -> { if (listStreaming) { listProblem = "busy"; listStreaming = false; } }
             // A channel that sends newcomers to another one (such as an overflow channel for unregistered nicknames).
             case "470" -> { if (p.size() >= 3 && joining.contains(lower(p.get(1)))) forwards.put(lower(p.get(1)), p.get(2)); }
+            // Signed in to your account (RPL_LOGGEDIN), after SASL or NickServ IDENTIFY.
+            case "900" -> signedIn();
             case "PRIVMSG", "NOTICE", "TAGMSG" -> {
                 if (command.equals("NOTICE") && !registered && p.size() > 1 && IrcRules.needsSasl(p.get(p.size() - 1))) saslNotice = p.get(p.size() - 1);
+                if (p.size() > 1 && NickServRules.isNickServ(line.nick())) nickServSaid(p.get(p.size() - 1));
                 if (!p.isEmpty()) message(line);
             }
             case "332" -> { if (p.size() >= 3) { topics.put(lower(p.get(1)), p.get(2)); publish(p.get(1)); } }
@@ -470,13 +493,20 @@ final class DirectIrc implements DirectProtocols.DirectClient {
                     write("NICK " + nick);
                 } else if (WHOIS.contains(command) && p.size() >= 3) {
                     whois(line);
+                } else if (IrcJoins.CODES.contains(command) && p.size() >= 3 && channelName(p.get(1))
+                    && joinFailed(command, p.get(1), p.get(p.size() - 1), line)) {
+                    // Handled on its own: a channel to join first, or signing in first. It's tried again.
                 } else if (ERRORS.contains(command) && p.size() >= 3 && joining.contains(lower(p.get(1)))) {
                     // The Join page is waiting on this channel: it shows why the network said no.
                     joinErrors.put(lower(p.get(1)), new String[]{command, p.get(p.size() - 1)});
+                } else if (IrcJoins.CODES.contains(command) && p.size() >= 3 && channelName(p.get(1))) {
+                    // A channel joined on its own (on connect, or when opened) said no: why, in plain words, in that channel.
+                    event(p.get(1), IrcChannels.joinError(command, p.get(1), network(), p.get(p.size() - 1), hasPassword()), line, "error");
                 } else if (ERRORS.contains(command) && p.size() >= 2) {
                     String about = p.size() >= 3 ? p.get(1) : "";
                     String where = whoisFor.getOrDefault(lower(about), about.startsWith("#") || about.startsWith("&") ? about : SERVER);
-                    event(where, (where.equals(SERVER) && !about.isEmpty() ? about + ": " : "") + p.get(p.size() - 1), line, "error");
+                    event(where, IrcRules.errorText(command, about, (where.equals(SERVER) && !about.isEmpty() ? about + ": " : "")
+                        + p.get(p.size() - 1)), line, "error");
                 }
             }
         }
@@ -487,10 +517,122 @@ final class DirectIrc implements DirectProtocols.DirectClient {
         return route == null || DirectProtocols.keepJoined(DirectProtocols.prefs(context), route.optString("address"));
     }
 
-    private void identify() throws Exception {
+    /**
+     * Identifies to NickServ on connect when SASL didn't sign you in: with the NickServ password, or else the account's
+     * Password (most networks use the same one for both). True when IDENTIFY went out.
+     */
+    private boolean identify() throws Exception {
         String password = account.optString("nickserv_password");
-        if (password.isEmpty() || saslOk) return;
+        if (password.isEmpty()) password = account.optString("sasl_password");
+        if (password.isEmpty() || saslOk) return false;
         write(identifyLine(password));
+        signInPending = true;
+        return true;
+    }
+
+    private boolean hasPassword() {
+        return !account.optString("nickserv_password").isEmpty() || !account.optString("sasl_password").isEmpty();
+    }
+
+    private static boolean channelName(String name) { return name.startsWith("#") || name.startsWith("&"); }
+
+    // Join requirements
+
+    private static String joinFirstKey(String server) { return "ircJoinFirst." + server.toLowerCase(Locale.ROOT); }
+
+    /** The channels to join before [channel] on the phone's IRC network (IrcJoins), for its details page. */
+    static List<String> joinFirst(Context context, String channel) {
+        var account = DirectProtocols.account(context, MessageProtocol.IRC);
+        if (account == null) return List.of();
+        return IrcJoins.firstFor(DirectProtocols.prefs(context).getString(joinFirstKey(account.optString("server")), "{}"), channel);
+    }
+
+    /** The details page's Remove: stop joining [first] before [channel]. */
+    static void forgetJoinFirst(Context context, String channel, String first) {
+        var account = DirectProtocols.account(context, MessageProtocol.IRC);
+        if (account == null) return;
+        var prefs = DirectProtocols.prefs(context);
+        String key = joinFirstKey(account.optString("server"));
+        synchronized (DirectIrc.class) { prefs.edit().putString(key, IrcJoins.forget(prefs.getString(key, "{}"), channel, first)).apply(); }
+    }
+
+    private List<String> firstFor(String channel) {
+        return IrcJoins.firstFor(DirectProtocols.prefs(context).getString(joinFirstKey(account.optString("server")), "{}"), channel);
+    }
+
+    private void rememberFirst(String channel, String first) {
+        var prefs = DirectProtocols.prefs(context);
+        String key = joinFirstKey(account.optString("server"));
+        synchronized (DirectIrc.class) { prefs.edit().putString(key, IrcJoins.remember(prefs.getString(key, "{}"), channel, first)).apply(); }
+    }
+
+    /** Joins [channel] (with its password [key], or "") after the channels it needs first. [paced]: a line you asked for. */
+    private void joinInOrder(String channel, String key, boolean paced) throws Exception {
+        for (String name : IrcJoins.order(List.of(channel), this::firstFor)) {
+            boolean target = lower(name).equals(lower(channel));
+            if (!target && joined.contains(lower(name))) continue;
+            String line = "JOIN " + name + (target && key != null && !key.isEmpty() ? " " + key : "");
+            if (paced) say(line); else write(line);
+        }
+    }
+
+    /** Only channels set to Keep joined join on connect, after the channels they need first; the others join when opened. */
+    private void joinKept() throws Exception {
+        if (!joinsSent.compareAndSet(false, true)) return;
+        holdJoins = false;
+        var kept = IrcRules.keepJoined(DirectProtocols.targets(context, MessageProtocol.IRC, true), this::keeps);
+        for (String channel : IrcJoins.order(kept, this::firstFor)) write("JOIN " + channel);
+    }
+
+    /** Signed in to your nickname (SASL, NickServ, or 900): joins wait no longer, and channels that wanted it try once more. */
+    private void signedIn() throws Exception {
+        signedIn = true;
+        signInPending = false;
+        if (registered) joinKept();
+        for (String channel : new ArrayList<>(afterSignIn)) {
+            afterSignIn.remove(channel);
+            if (!joined.contains(channel) && retried.add(channel)) joinInOrder(channel, "", false);
+        }
+    }
+
+    /** What NickServ said: "You are now identified" signs you in; a wrong password ends the wait. */
+    private void nickServSaid(String text) throws Exception {
+        var kind = NickServRules.kind(text);
+        if (kind == NickServRules.Kind.IDENTIFIED) signedIn();
+        else if (kind == NickServRules.Kind.FAILED && signInPending) signInOver();
+    }
+
+    /** Signing in didn't happen in time, or the password was wrong: join anyway, and say which channels still need it. */
+    private void signInOver() throws Exception {
+        if (signedIn) return;
+        signInPending = false;
+        joinKept();
+        var line = new Line(Map.of(), "", "", "NOTICE", List.of());
+        for (String channel : new ArrayList<>(afterSignIn)) event(channel, IrcJoins.signInNeeded(channel, true), line, "error");
+    }
+
+    /**
+     * A channel said no. Handles what FluidMessages can on its own and returns true: a channel named to join first is
+     * joined first (and remembered); a channel for signed-in nicknames waits for signing in, or tries once more right
+     * after it. False when the reason should be shown.
+     */
+    private boolean joinFailed(String code, String channel, String text, Line line) throws Exception {
+        String key = lower(channel);
+        String first = IrcJoins.prerequisite(code, text, channel);
+        if (first != null && firstTried.add(key + " " + lower(first))) {
+            rememberFirst(channel, first);
+            event(channel, IrcJoins.joiningFirst(first, channel, network()), line, "info");
+            joinInOrder(channel, "", false);
+            return true;
+        }
+        if (!IrcJoins.needsSignIn(code, text)) return false;
+        if (signedIn && retried.add(key)) { write("JOIN " + channel); return true; }
+        afterSignIn.add(key);
+        if (signInPending) {
+            event(channel, IrcJoins.waitingForSignIn(channel), line, "info");
+            return true;
+        }
+        return false;
     }
 
     /** NickServ IDENTIFY with the account name first, which Atheme (Libera.Chat) and Anope both accept. */
@@ -710,7 +852,7 @@ final class DirectIrc implements DirectProtocols.DirectClient {
     /** Joins a channel that isn't kept joined when you open or write to it. */
     private void ensureJoined(String channel, long waitMillis) throws Exception {
         if (!ready || !(channel.startsWith("#") || channel.startsWith("&")) || joined.contains(lower(channel))) return;
-        write("JOIN " + channel);
+        joinInOrder(channel, "", false);
         long deadline = System.currentTimeMillis() + waitMillis;
         while (!joined.contains(lower(channel)) && System.currentTimeMillis() < deadline) Thread.sleep(50);
     }
@@ -732,6 +874,9 @@ final class DirectIrc implements DirectProtocols.DirectClient {
         String target = IrcChannels.channelName(typed);
         if (target == null) throw new IllegalArgumentException("“" + typed.trim() + "” isn’t a channel name. Channel names look like #linux.");
         if (!ready) throw new IllegalStateException("You’re not connected to " + network() + " yet. Connect, then try again.");
+        if (key != null && !key.isEmpty() && (key.length() > 100 || !key.matches("[^\\s,\\x00]+"))) {
+            throw new IllegalArgumentException("A channel password can’t have spaces or commas. Check it and try again.");
+        }
         var chat = DirectProtocols.routeForTarget(context, MessageProtocol.IRC, target);
         boolean added = chat == null;
         if (added) chat = DirectProtocols.linkQuietly(context, MessageProtocol.IRC, target, target, true, null);
@@ -741,8 +886,9 @@ final class DirectIrc implements DirectProtocols.DirectClient {
         forwards.remove(name);
         joining.add(name);
         try {
-            say("JOIN " + target + (key == null || key.isEmpty() ? "" : " " + key));
-            long deadline = System.currentTimeMillis() + 8000;
+            joinInOrder(target, key, true);
+            // A little longer while signing in: the channel may let you in once you are.
+            long deadline = System.currentTimeMillis() + (signInPending ? SIGN_IN_WAIT : 8000);
             while (ready && System.currentTimeMillis() < deadline) {
                 if (joined.contains(name)) return chat;
                 String forward = forwards.get(name);
@@ -755,7 +901,7 @@ final class DirectIrc implements DirectProtocols.DirectClient {
                 String[] refused = joinErrors.get(name);
                 if (refused != null) {
                     if (added) DirectProtocols.unlink(context, chat.getString("address"), MessageProtocol.IRC);
-                    throw new IllegalStateException(IrcChannels.joinError(refused[0], target, network(), refused[1]));
+                    throw new IrcJoinRefused(IrcChannels.joinError(refused[0], target, network(), refused[1], hasPassword()), refused[0]);
                 }
                 Thread.sleep(50);
             }
@@ -820,7 +966,8 @@ final class DirectIrc implements DirectProtocols.DirectClient {
                 var wantedChannels = new HashSet<String>();
                 for (String channel : DirectProtocols.targets(context, MessageProtocol.IRC, true)) {
                     wantedChannels.add(lower(channel));
-                    if (!joined.contains(lower(channel)) && keeps(channel)) write("JOIN " + channel);
+                    // While signing in, joins wait (joinKept runs once it's done).
+                    if (!joined.contains(lower(channel)) && keeps(channel) && !holdJoins) joinInOrder(channel, "", false);
                 }
                 for (String channel : new ArrayList<>(joined)) {
                     if (!wantedChannels.contains(channel)) { write("PART " + channel + " :Left in FluidMessages"); joined.remove(channel); }

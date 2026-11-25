@@ -227,10 +227,11 @@ const SERVICE_GUIDES = {
       'Join rooms, called channels. We show you popular ones to start with.'],
     // When a network wants a registered nickname: the same words as the phone's guide (ServiceGuides.IRC_SIGN_IN).
     signIn: ['If the network asks you to sign in',
-      'Some networks, like Libera.Chat, only let registered nicknames connect from a VPN, a work or school network, or a cloud server. FluidMessages tells you when this happens.',
+      'Your nickname is the name people see. Anyone can use a free one. Registering it with the network’s NickServ keeps it yours, with a password.',
+      'Some networks, like Libera.Chat, only let registered nicknames connect from a VPN, a work or school network, or a cloud server. Some channels only let in people signed in to their nickname. FluidMessages tells you when this happens.',
       'To register, connect once from home Wi-Fi or mobile data. In the network’s chat, type /msg NickServ REGISTER, a new password, and your email.',
       'Open the email the network sends you and follow its steps.',
-      'Then edit the account: put your nickname in SASL account and that password in SASL password, and save.'],
+      'Then edit the account: put the name you registered in Account name and that password in Password, and save. FluidMessages signs you in each time it connects.'],
   },
 };
 
@@ -569,7 +570,7 @@ function setUpIrcForm(form, inputs, simple, preset) {
   });
 
   const nick = fieldOf(inputs.nick);
-  const nickHint = element('small', 'The name other people see. Letters and numbers, no spaces.', 'hint');
+  const nickHint = element('small', 'Nickname: the name people see. Letters and numbers, no spaces.', 'hint');
   nick.append(nickHint);
   inputs.nick.required = true;
   inputs.nick.maxLength = 32;
@@ -578,8 +579,12 @@ function setUpIrcForm(form, inputs, simple, preset) {
   inputs.nick.addEventListener('change', () => { inputs.nick.value = inputs.nick.value.replace(/\s+/g, ''); });
 
   const extra = ['sasl_user', 'sasl_password', 'nickserv_password', 'channels', 'ctcp_replies'].map((name) => fieldOf(inputs[name]));
+  // What a registered nickname is, right above the account name and password (IRC_WORDS in companion.js).
+  const words = typeof IRC_WORDS === 'object' ? IRC_WORDS : null;
+  const explain = words ? element('div', '', 'setup-note irc-names') : null;
+  if (explain) explain.append(element('strong', words.whatsThisTitle), element('p', words.whatsThis, 'muted'));
   const more = moreOptions('More options', [element('p', 'You can skip all of these. They are for nicknames you registered with the network, '
-    + 'and for channels to join right away.', 'muted'), ...extra], !simple);
+    + 'and for channels to join right away.', 'muted'), explain, ...extra], !simple);
   nick.after(more);
   inputs.channels.addEventListener('change', () => {
     inputs.channels.value = inputs.channels.value.split(',').map(channelName).filter(Boolean).join(', ');

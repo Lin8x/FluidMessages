@@ -840,6 +840,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         inboxScreen.setPickView(side -> { sampleCommunities = side; fillSampleInbox(); });
         inboxScreen.setSortChanged(choice -> sampleSort = Communities.Sort.parse(choice));
         inboxScreen.setServerAction(this::sampleServerAction);
+        // The filter menu's Connections page, with the sample's pretend servers.
+        inboxScreen.setConnections(() -> connectionsPage(true));
         fillSampleInbox();
     }
 
@@ -1439,6 +1441,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             // asked right after choosing FluidMessages as the SMS app. Ask once here too.
             if (!prefs.getBoolean("lock", false) || unlocked) askNotificationsOnce();
             inboxScreen.setResync(this::resync);
+            // Connections, in the filter menu once there's an IRC network or a Matrix or XMPP account (not in decoy mode).
+            if (!Privacy.decoyMode(prefs) && !PhoneChat.connectionServers(this).isEmpty()) inboxScreen.setConnections(() -> connectionsPage(false));
             if (!communitiesShowing) seedInbox(inboxScreen);
             fillInbox();
         }
@@ -2026,8 +2030,59 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                         inbox();
                     }, texts));
         }
+        // An IRC channel (in Communities, or Chats): leave it and take it out of the list, unless another needs it.
+        var channel = PhoneJoinFirst.channelLink(prefs, number);
+        if (channel != null && !Privacy.decoyMode(prefs)) add.accept("Leave and remove channel", () -> removeChannel(number, channel));
+        // IRC, Matrix, and XMPP chats: turn their server's connection off (it stays off, also after a restart) or on.
+        String server = PhoneChat.chatServer(this, number);
+        if (!server.isEmpty() && !PhoneChat.serviceOff(this, server)) {
+            boolean off = PhoneChat.turnedOff(this, server);
+            String serverName = AccountKeys.INSTANCE.serverName(server);
+            add.accept((off ? "Connect " : "Disconnect ") + serverName, () -> new Thread(() -> {
+                try {
+                    if (off) PhoneChat.connect(this, server); else PhoneChat.disconnect(this, server);
+                    runOnUiThread(() -> { toast(off ? "Connecting to " + serverName : "Disconnected from " + serverName
+                        + ". It stays off until you connect."); inbox(); });
+                } catch (Exception error) { runOnUiThread(() -> toast(error.getMessage())); }
+            }, "fluid-connection").start());
+        }
         add.accept("Conversation details", () -> contactDetails(number, number, this::inbox));
         SecurityDialogs.options(this, prefs, name, "", labels, index -> runs.get(index).run());
+    }
+
+    /**
+     * Leave and remove an IRC channel, with the same Remove channel page as its details (confirmLeave). A channel that
+     * another joined channel needs first says so on its own page and offers to remove them together.
+     */
+    private void removeChannel(String key, JSONObject link) {
+        String account = link.optBoolean("direct") ? PhoneChat.directAccountId(this, MessageProtocol.IRC) : link.optString("account");
+        String server = MessageProtocol.IRC.label + " · " + (account.isEmpty() ? link.optString("target") : AccountKeys.INSTANCE.serverName(account))
+            + (link.optBoolean("direct") ? " · on this phone" : "");
+        var needs = PhoneJoinFirst.neededBy(this, link);
+        if (needs.isEmpty()) { confirmLeave(key, MessageProtocol.IRC, "channel", server, this::inbox); return; }
+        var names = new ArrayList<String>();
+        for (var other : needs) names.add(other.optString("target"));
+        String channel = link.optString("target");
+        SecurityDialogs.page(this, prefs, "Remove " + channel + "?", IrcJoins.neededText(channel, names) + " Removing it means leaving "
+                + (names.size() == 1 ? names.get(0) : "those channels") + " too. Earlier messages stay in Archived. " + server,
+            "Remove all " + (names.size() + 1), () -> new Thread(() -> {
+                try {
+                    // The channels that need it go first, so none is left behind without what it needs.
+                    var all = new ArrayList<>(needs);
+                    all.add(link);
+                    for (var item : all) {
+                        String address = item.optString("address");
+                        if (DirectProtocols.route(prefs, address, MessageProtocol.IRC) != null) DirectProtocols.removeChannel(this, address, MessageProtocol.IRC);
+                        else GatewayClient.leave(prefs, address, MessageProtocol.IRC);
+                        if (!list("archived").contains(address)) toggleAddress("archived", address);
+                    }
+                    if (!link.optBoolean("direct")) GatewayClient.refresh(this, prefs);
+                    invalidateRows();
+                    runOnUiThread(() -> { toast("Removed " + (names.size() + 1) + " channels"); inbox(); });
+                } catch (Exception error) {
+                    runOnUiThread(() -> toast(error.getMessage()));
+                }
+            }, "fluid-leave").start(), "Keep them", null, true);
     }
 
     /** Moves a chat into or out of hidden chats. Moving in takes its texts out of Android's shared message store. */
@@ -2841,6 +2896,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             conversationScreen.setNickServSaved(PhoneNickServ.saved(this, number));
             conversationScreen.setNickServNick(PhoneNickServ.nick(this, number));
             conversationScreen.setNickServChat(NickServRules.isNickServ(PhoneChat.target(prefs, number, format)));
+            // What a channel (the first time) or the server chat is, in one line at the top (IrcIntro).
+            String intro = IrcIntro.forChat(prefs, number);
+            conversationScreen.setIrcIntro(intro);
+            conversationScreen.setIrcIntroSeen(intro == null || intro.equals(IrcIntro.SERVER) ? null
+                : () -> prefs.edit().putBoolean(IrcIntro.SEEN, true).apply());
         }
         PhoneChat.opened(this, number, format);
         showRequestBar(number, format);
@@ -3285,6 +3345,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case PREVIEW -> "RCS isn't available in FluidMessages yet, so nothing is sent this way.";
             default -> "Your carrier and anyone along the way can read these messages.";
         }, () -> {}, true, protection));
+        // IRC, Matrix, and XMPP chats: a Connection section with the status, Reconnect or Connect, Disconnect, and
+        // Reconnect automatically (ConnectionsUi); a channel's Rejoin automatically goes there too.
+        String connectionAccount = sample ? (SampleInbox.connection(original).isEmpty() ? "" : ConnectionNow.SAMPLE_CHAT + original)
+            : PhoneChat.chatServer(this, key);
+        List<SettingsAction> connection = new ArrayList<>();
         if (!sample && (CloudBackup.paired(this) || DirectProtocols.anyOn(prefs))) {
             // Linked addresses let one contact be reached on several protocols, in one chat when combined.
             for (var link : GatewayClient.links(prefs, key)) {
@@ -3292,15 +3357,23 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 String via = GatewayClient.via(prefs, key, format);
                 if (format == MessageProtocol.IRC && link.optBoolean("group")) {
                     // Rejoin automatically (Keep joined): join as soon as the connection opens, or only when you open
-                    // the channel (ChatExtras). A real switch.
+                    // the channel (ChatExtras). A real switch, in the Connection section.
                     boolean keep = PhoneChat.keepJoined(prefs, link);
-                    actions.add(toggleRow("Rejoin automatically", keep
+                    (connectionAccount.isEmpty() ? actions : connection).add(toggleRow("Rejoin automatically", keep
                         ? "Joins this channel as soon as you connect"
                         : "Off: joins only when you open this channel. It stays in your list.",
                         keep, () -> { PhoneChat.setKeepJoined(this, link, !keep); returnToDetails.run(); }));
                     boolean shown = !PhoneChat.hideJoins(prefs);
                     actions.add(toggleRow("Show joins and leaves", "In every channel and room", shown,
                         () -> { prefs.edit().putBoolean("hideJoins", shown).apply(); returnToDetails.run(); }));
+                    // Channels this network needs joined first (IrcJoins): tap one to stop joining it first.
+                    for (String first : PhoneJoinFirst.of(this, link)) {
+                        actions.add(action(IrcJoins.detailsLine(first), "Tap to stop. If the network still needs it, FluidMessages adds it back.",
+                            () -> new Thread(() -> {
+                                try { PhoneJoinFirst.forget(this, link, first); } catch (Exception ignored) {}
+                                runOnUiThread(returnToDetails);
+                            }, "fluid-join-first").start()));
+                    }
                 }
                 boolean directChannel = link.optBoolean("direct") && link.optBoolean("group") && !link.optBoolean("server_chat");
                 if (link.optBoolean("group") && (directChannel || !link.optString("account").isEmpty())
@@ -3345,7 +3418,15 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             : new BlockChoice(name, list("blocked").contains(key), on -> setBlocked(List.of(key), on));
         ConversationDetails.mount(root, prefs, name, initials(name), subtitle, sample ? samplePhoto(name) : 0,
             contact == null ? null : contact.photo(), key, reachOptions(key, original, name, sample),
-            phone ? () -> editContact(key) : null, actions, members, security, info, block);
+            phone ? () -> editContact(key) : null, actions, members, security, info, block, connectionAccount, connection);
+    }
+
+    /** The Connections page, from the inbox's filter menu: every server, with its status, a switch, and Reconnect. */
+    private void connectionsPage(boolean sample) {
+        Runnable back = sample ? this::sampleInbox : this::inbox;
+        render("connections");
+        heading("Connections", "Back", back);
+        ConnectionsScreen.mount(root, prefs, sample, this::protocolSettings);
     }
 
     /** Blocks or unblocks [keys] (a chat, or all of a person's chats and numbers): the inbox's Blocked folder. */
@@ -4499,16 +4580,6 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             || onPhone && route.optBoolean("direct") && service.equals(route.optString("protocol")))).count();
         render("server-details");
         heading(AccountKeys.INSTANCE.serverName(id), "Back", this::inbox);
-        // Reconnect automatically (on by default): off, it connects only when you tap Reconnect. Chats stay listed.
-        boolean auto = PhoneChat.autoReconnect(this, id);
-        var connection = new ArrayList<SettingsAction>();
-        connection.add(new SettingsAction("Reconnect automatically", auto
-            ? "Connects when FluidMessages opens and after the connection drops"
-            : "Off: connects only when you tap Reconnect. Your " + noun + "s stay in your list.",
-            () -> new Thread(() -> {
-                PhoneChat.setAutoReconnect(this, id, !auto);
-                runOnUiThread(() -> { if (page.equals("server-details")) serverDetails(account); });
-            }, "fluid-auto-reconnect").start(), false, null, auto));
         var actions = new ArrayList<SettingsAction>();
         actions.add(action("Browse " + AccountKeys.INSTANCE.serverName(id), "Find public " + noun + "s to join", () -> serverAction("browse", id)));
         actions.add(action("Join a " + noun, "By name or address", () -> serverAction("join", id)));
@@ -4516,7 +4587,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         account2.add(action(AccountKeys.INSTANCE.address(id), ServersScreen.INSTANCE.serviceTitle(service) + " · " + joined + " " + noun + (joined == 1 ? "" : "s")
             + " joined. Leave one from its chat details.", this::accounts));
         account2.add(action("Remove server", "Signs out in Settings → Accounts. Earlier messages stay.", this::accounts));
-        SettingsPages.mount(root, prefs, List.of(new SettingsSection("Server", account2), new SettingsSection("Connection", connection),
+        // Connection first (ConnectionsUi): the status, Reconnect or Connect, Disconnect, and Reconnect automatically.
+        ConnectionsScreen.mountServer(root, prefs, id, List.of(new SettingsSection("Server", account2),
             new SettingsSection("Channels and rooms", actions)));
     }
 

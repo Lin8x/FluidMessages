@@ -51,15 +51,30 @@
   font-size: .88rem; overflow-wrap: anywhere; }
 .nickserv-said[hidden] { display: none; }
 
-/* The inbox's connection mark beside an IRC, Matrix, or XMPP chat's tag: signal bars, never a dot (connections.js). */
-.connection-mark { display: inline-flex; align-items: center; margin-inline-start: .3rem; vertical-align: middle; }
-.connection-mark svg { width: 12px; height: 12px; fill: color-mix(in srgb, var(--muted) 45%, transparent); }
-.connection-mark line { stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; }
-.connection-mark.connected svg rect { fill: #1b7f37; }
-.connection-mark.connecting svg .b1 { fill: #8f5f00; }
-:root[data-mode="dark"] .connection-mark.connected svg rect { fill: #30d158; }
-:root[data-mode="dark"] .connection-mark.connecting svg .b1 { fill: #ffc233; }
-@media (forced-colors: active) { .connection-mark svg, .connection-mark svg rect { fill: CanvasText; } .connection-mark line { stroke: CanvasText; } }
+/* The inbox's connection mark beside an IRC, Matrix, or XMPP chat's tag (connections.js): a plug, crossed out while
+   not connected. Same size, line, and place as the muted bell (.mute-mark); green while connected, red while it should
+   be connected but isn't, gray while connecting or turned off. Never a dot. */
+.connection-mark { display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--muted); vertical-align: -2px; }
+.connection-mark svg { width: 13px; height: 13px; }
+.tags .connection-mark { margin-inline-start: .1rem; }
+.thread strong .connection-mark { margin-inline-start: .3rem; }
+.connection-mark.connected { color: #1b7f3b; }
+.connection-mark.disconnected { color: #c62828; }
+:root[data-mode="dark"] .connection-mark.connected { color: #4cd964; }
+:root[data-mode="dark"] .connection-mark.disconnected { color: #ff6b60; }
+@media (forced-colors: active) { .connection-mark { color: CanvasText; } }
+
+/* The Connection section in chat and server details, and the Connections page. */
+.connection-status { display: flex; gap: .5rem; align-items: center; margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.connection-status .connection-mark svg, .connection-row .connection-mark svg { width: 18px; height: 18px; }
+.connection-row { display: flex; gap: .7rem; align-items: center; min-height: 56px; }
+.connection-row + .connection-row { border-top: 1px solid var(--line); }
+.connection-row .switch-row { min-height: 44px; }
+.connection-row button { min-height: 36px; }
+.connection-bar .connection-mark svg { width: 16px; height: 16px; }
+.head-connection:empty { display: none; }
+.head-connection { display: inline-flex; margin-inline-start: .3rem; vertical-align: -2px; }
+.connection-bar > span:not(.connection-mark) { flex: 1; min-width: 12rem; }
 
 /* On/off rows in chat and server details are switches at the row's end, as on the phone. */
 .switch-row { justify-content: space-between; gap: .9rem; }
@@ -73,3 +88,13 @@
 :root[dir="rtl"] .switch-row > input[role="switch"]:checked::after { transform: translateX(-20px); }
 @media (forced-colors: active) { .switch-row > input[role="switch"] { appearance: auto; width: 20px; height: 20px; } .switch-row > input[role="switch"]::after { display: none; } }
 @media (prefers-reduced-motion: reduce) { .switch-row > input[role="switch"], .switch-row > input[role="switch"]::after { transition: none; } }
+
+/* IRC: the one-line explainer at the top of a channel or server chat, a channel joined first, a channel's password. */
+.irc-intro { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .8rem; width: min(100%, 560px); margin: 8px auto; }
+.irc-intro p { flex: 1 1 16rem; margin: 0; line-height: 1.45; }
+.join-first { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem .8rem; padding: .3rem 0; }
+.join-first p { margin: 0; }
+.channel-key { display: grid; gap: .6rem; margin-top: .4rem; }
+.thread-actions > p { flex-basis: 100%; margin: 0 0 .3rem; }
+/* A switch row is always one line: words, then the switch at the end (details pages set labels to stack). */
+.settings-section label.check-row.switch-row { display: flex; flex-direction: row; align-items: center; }

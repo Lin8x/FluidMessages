@@ -706,6 +706,57 @@ function previewableLink(text) {
 
 const previews = new Map();
 
+// Tap to load, like the phone's LinkLoading. Loading a preview or a linked picture makes this server contact the
+// link's website, which tells that site the message was opened. So only your own messages, the sample chats, and
+// messages from people you know load by themselves; anyone else's show "Tap to load preview" first.
+const TAP_PREVIEW = 'Tap to load preview';
+const TAP_PICTURE = 'Tap to load picture';
+/** Messages whose links you tapped to load, for this visit. Synced texts have no id, so their chat and time stand in. */
+const loadedLinks = new Set();
+const linkKey = (message) => message.id || threadKey(message) + '@' + message.date;
+
+/** The rule on plain facts, so it can be tested: the phone's LinkLoading.auto. */
+function linkLoadsByItself({outgoing, senderSaved, sample}) {
+  return !!(outgoing || senderSaved || sample);
+}
+
+/**
+ * Whether whoever sent [message] counts as known. A one-to-one text: the number has a name from your phone or is a
+ * web contact. A group text: the author shows by name, not a number. A chat service: a one-to-one chat you started
+ * or linked, not a request or an invite. Rooms and channels always wait for a tap.
+ */
+function linkSenderSaved(message) {
+  const key = threadKey(message);
+  const route = typeof routeFor === 'function' && typeof routes !== 'undefined' ? routeFor(key) : null;
+  const known = typeof requestKnownContact === 'function' && requestKnownContact(threadAddress(key), route?.target);
+  if (!internet(message.protocol || 'sms')) {
+    if (threadIsGroup(key)) return !!message.author && !/^\+?[\d ().-]+$/.test(message.author);
+    return known || (threadsFor(key).some((row) => row.title));
+  }
+  if (threadIsGroup(key)) return false;
+  return known || !!(route && !route.group && !route.request && !route.invite);
+}
+
+const threadsFor = (key) => (typeof threads !== 'undefined' && threads.get(key)) || [];
+
+function linkLoads(message) {
+  return loadedLinks.has(linkKey(message)) || linkLoadsByItself({outgoing: message.type !== 1, sample: typeof sampleOn !== 'undefined' && sampleOn,
+    senderSaved: linkSenderSaved(message)});
+}
+
+/** The small button shown in place of a preview or picture that hasn't loaded. */
+function tapToLoad(label, message, load) {
+  const button = element('button', label, 'tap-to-load');
+  button.type = 'button';
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    loadedLinks.add(linkKey(message));
+    button.remove();
+    load();
+  });
+  return button;
+}
+
 function linkPreview(link, bubble) {
   if (!prefs.linkPreviews) return;
   if (!previews.has(link)) previews.set(link, fetch('/api/preview?url=' + encodeURIComponent(link), {headers: REQUEST_HEADERS})
@@ -737,6 +788,13 @@ function richCard(message, bubble, history) {
   if (message.attachment) return false;
   // Fun and effects in Settings can turn GIFs, games, and dice into plain text.
   const picture = prefs.gifs ? pictureLink(body) : null;
+  if (picture && !linkLoads(message)) {
+    bubble.append(tapToLoad(TAP_PICTURE, message, () => {
+      bubble.replaceChildren(pictureElement('/api/picture?url=' + encodeURIComponent(picture.url), picture.sticker ? 'Sticker' : 'GIF', picture.sticker));
+      if (picture.sticker) bubble.classList.add('sticker-bubble');
+    }));
+    return true;
+  }
   if (picture) {
     bubble.replaceChildren(pictureElement('/api/picture?url=' + encodeURIComponent(picture.url), picture.sticker ? 'Sticker' : 'GIF', picture.sticker));
     if (picture.sticker) bubble.classList.add('sticker-bubble');
@@ -759,7 +817,10 @@ function richCard(message, bubble, history) {
   const place = LOCATION.exec(body.trim());
   if (place) { bubble.replaceChildren(locationCard(place)); return true; }
   const link = previewableLink(body);
-  if (link && !/^FM1:/.test(body)) linkPreview(link, bubble);
+  if (link && !/^FM1:/.test(body) && prefs.linkPreviews) {
+    if (linkLoads(message)) linkPreview(link, bubble);
+    else bubble.append(tapToLoad(TAP_PREVIEW, message, () => linkPreview(link, bubble)));
+  }
   return false;
 }
 

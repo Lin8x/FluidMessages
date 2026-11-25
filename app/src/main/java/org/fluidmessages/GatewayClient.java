@@ -62,7 +62,9 @@ final class GatewayClient {
         var items = routes(prefs);
         for (int i = 0; i < items.length(); i++) {
             var route = items.optJSONObject(i);
-            if (route != null && address.equals(route.optString("address"))) return route.optString("title");
+            if (route == null || !address.equals(route.optString("address"))) continue;
+            // An IRC network's server chat reads "Libera.Chat · network messages", not just the server's address.
+            return route.optBoolean("server_chat") ? IrcIntro.serverChatTitle(route.optString("title")) : route.optString("title");
         }
         return "";
     }
@@ -171,6 +173,8 @@ final class GatewayClient {
         // Invitations waiting on the Invitations page, and each IRC network's connection for the Reconnect bar.
         var invites = response.optJSONArray("invites");
         var connections = response.optJSONObject("connections");
+        // The inbox's plugs follow a server connecting, dropping, or being turned off.
+        boolean marks = !connectionMarks(prefs.getString("gatewayConnections", "{}")).equals(connectionMarks(connections == null ? "{}" : connections.toString()));
         prefs.edit().putString("gatewayInvites", invites == null ? "[]" : invites.toString())
             .putString("gatewayConnections", connections == null ? "{}" : connections.toString()).apply();
         var endpoints = response.optJSONArray("routes");
@@ -179,7 +183,21 @@ final class GatewayClient {
         // With no internet accounts on the companion, check back rarely instead of every minute.
         if (endpoints == null || endpoints.length() == 0) nextCheck = SystemClock.elapsedRealtime() + 15 * 60_000;
         prefs.edit().putString(ROUTES, value).apply();
-        return changed || messages != null && messages.length() > 0;
+        return changed || marks || messages != null && messages.length() > 0;
+    }
+
+    /** Each server's inbox mark (IrcRules.connectionState), to tell whether a sync changed any. */
+    private static Map<String, String> connectionMarks(String connections) {
+        var marks = new HashMap<String, String>();
+        try {
+            var all = new JSONObject(connections == null ? "{}" : connections);
+            for (var names = all.keys(); names.hasNext(); ) {
+                String id = names.next();
+                var status = all.optJSONObject(id);
+                if (status != null) marks.put(id, IrcRules.connectionState(status.optString("state"), status.optBoolean("manual")));
+            }
+        } catch (Exception ignored) {}
+        return marks;
     }
 
     /**
@@ -427,10 +445,27 @@ final class GatewayClient {
 
     /** Joins a channel or room on a server; returns its link. */
     static JSONObject join(SharedPreferences prefs, String account, String target, String title) throws Exception {
-        var route = request(prefs, "protocols/join", new JSONObject().put("account", account).put("target", target)
-            .put("title", title == null ? "" : title)).optJSONObject("route");
+        return join(prefs, account, target, title, "");
+    }
+
+    /**
+     * Joins with the channel's password ([key], "" for none). An IRC channel that said no comes back as
+     * IrcJoinRefused, with the reason in plain words and the network's reply number (475 asks for a password).
+     */
+    static JSONObject join(SharedPreferences prefs, String account, String target, String title, String key) throws Exception {
+        var body = new JSONObject().put("account", account).put("target", target).put("title", title == null ? "" : title);
+        if (key != null && !key.isEmpty()) body.put("key", key);
+        var result = request(prefs, "protocols/join", body);
         nextCheck = 0;
-        return route;
+        var refused = result.optJSONObject("refused");
+        if (refused != null) throw new IrcJoinRefused(refused.optString("text", "Couldn’t join."), refused.optString("code"));
+        return result.optJSONObject("route");
+    }
+
+    /** Stops joining [first] before an IRC channel on FluidMessages Web (the channel's details). */
+    static void forgetJoinFirst(SharedPreferences prefs, String address, String first) throws Exception {
+        request(prefs, "protocols/joinfirst", new JSONObject().put("address", address).put("protocol", "irc").put("remove", first));
+        nextCheck = 0;
     }
 
     /** Runs a slash command typed in a chat on FluidMessages Web: {"notice", "open": {"address", "protocol"}}. */
@@ -467,6 +502,12 @@ final class GatewayClient {
     /** A server's Reconnect automatically setting on FluidMessages Web (IRC networks, XMPP and Matrix accounts). */
     static void autoReconnect(SharedPreferences prefs, String account, boolean on) throws Exception {
         request(prefs, "protocols/autoreconnect", new JSONObject().put("account", account).put("on", on));
+        nextCheck = 0;
+    }
+
+    /** Disconnect a server on FluidMessages Web until Connect: Reconnect automatically goes off there too. */
+    static void disconnect(SharedPreferences prefs, String account) throws Exception {
+        request(prefs, "protocols/disconnect", new JSONObject().put("account", account));
         nextCheck = 0;
     }
 

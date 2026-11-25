@@ -23,6 +23,8 @@ import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -229,6 +231,8 @@ private fun Join(prefs: SharedPreferences, account: JSONObject, browse: Runnable
     var target by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var needsKey by remember(target) { mutableStateOf(false) }
+    var key by remember(target) { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Join a ${noun(service)} on ${AccountKeys.serverName(id)}", style = MaterialTheme.typography.headlineSmall) }
         if (link != null && !link.ready) item { PhoneIrcWaiting(link, AccountKeys.serverName(id)) }
@@ -245,21 +249,33 @@ private fun Join(prefs: SharedPreferences, account: JSONObject, browse: Runnable
             }, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         status?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
+        // A channel locked with a password (475): its password, right here, then Join again.
+        if (needsKey) item {
+            OutlinedTextField(key, { key = it.take(100) }, Modifier.fillMaxWidth(), singleLine = true, enabled = !busy,
+                label = { Text("Channel password") }, visualTransformation = PasswordVisualTransformation(),
+                supportingText = { Text("Ask someone in the channel for it. It isn’t saved, so you may need it again after reconnecting.") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
+        }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = browse::run) { Text(if (service == "irc") "Browse channels instead" else "Browse instead") }
                 Spacer(Modifier.weight(1f))
-                AppButton(enabled = !busy && target.isNotBlank() && link?.ready != false, onClick = {
+                AppButton(enabled = !busy && target.isNotBlank() && link?.ready != false && (!needsKey || key.isNotBlank()), onClick = {
                     busy = true
                     status = null
+                    val password = if (needsKey) key.trim() else ""
                     scope.launch {
                         runCatching { withContext(Dispatchers.IO) {
-                            if (phone) DirectProtocols.ircJoin(context, target) else GatewayClient.join(prefs, id, target.trim(), "")
+                            if (phone) DirectProtocols.ircJoin(context, target, password) else GatewayClient.join(prefs, id, target.trim(), "", password)
                         } }
                             .onSuccess { route -> busy = false; route?.let { opened.accept(it.optString("address"), it.optString("protocol")) } }
-                            .onFailure { status = it.message ?: "Couldn’t join."; busy = false }
+                            .onFailure {
+                                status = it.message ?: "Couldn’t join."
+                                if (it is IrcJoinRefused && it.code == "475") needsKey = true
+                                busy = false
+                            }
                     }
-                }) { Text(if (busy) "Joining…" else "Join") }
+                }) { Text(if (busy) "Joining…" else if (needsKey) "Join with password" else "Join") }
             }
         }
     }

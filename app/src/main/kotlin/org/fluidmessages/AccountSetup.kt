@@ -184,10 +184,11 @@ internal object ServiceGuides {
     /** What to do when an IRC network wants a registered nickname, the same words as FluidMessages Web's guide. */
     @JvmField val IRC_SIGN_IN = listOf(
         "If the network asks you to sign in",
-        "Some networks, like Libera.Chat, only let registered nicknames connect from a VPN, a work or school network, or a cloud server. FluidMessages tells you when this happens.",
+        "Your nickname is the name people see. Anyone can use a free one. Registering it with the network’s NickServ keeps it yours, with a password.",
+        "Some networks, like Libera.Chat, only let registered nicknames connect from a VPN, a work or school network, or a cloud server. Some channels only let in people signed in to their nickname. FluidMessages tells you when this happens.",
         "To register, connect once from home Wi-Fi or mobile data. In the network’s chat, type /msg NickServ REGISTER, a new password, and your email.",
         "Open the email the network sends you and follow its steps.",
-        "Then edit the account: put your nickname in SASL account and that password in SASL password, and save.",
+        "Then edit the account: put the name you registered in Account name and that password in Password, and save. FluidMessages signs you in each time it connects.",
     )
 
     /** The public XMPP server offered as the ready-made example; it's in ServerDirectory's list. */

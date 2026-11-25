@@ -159,7 +159,9 @@ object ConversationDetails {
     @JvmStatic @JvmOverloads
     fun mount(root: LinearLayout, prefs: SharedPreferences, name: String, initials: String, subtitle: String, photo: Int, photoUri: Uri?,
               person: String, reach: List<ReachOption>, edit: Runnable?, actions: List<SettingsAction>, members: List<GroupMember>,
-              security: List<SettingsAction>, info: List<SettingsAction> = emptyList(), block: BlockChoice? = null) {
+              security: List<SettingsAction>, info: List<SettingsAction> = emptyList(), block: BlockChoice? = null,
+              /** An IRC, Matrix, or XMPP chat's server account: its Connection section (ConnectionsUi), with [connection]'s rows. */
+              connectionAccount: String = "", connection: List<SettingsAction> = emptyList()) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -187,6 +189,7 @@ object ConversationDetails {
                     if (members.isNotEmpty()) item { GroupMembers(members) }
                     item { DetailGroup("Customize", actions.take(1)) }
                     if (actions.size > 1) item { DetailGroup("Conversation", actions.drop(1)) }
+                    if (connectionAccount.isNotEmpty()) item { ConnectionCard(connectionAccount, connection) }
                     if (security.isNotEmpty()) item { DetailGroup("Security", security) }
                     // One person's chat only: in a group, each member's own details has Block.
                     if (block != null) item {

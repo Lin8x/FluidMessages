@@ -373,6 +373,11 @@ function drawCommunities(list, rows, row) {
     action('Join a ' + noun, () => openJoin(account));
     if (serverMuteKey) action(serverEnds === null ? 'Mute notifications' : 'Muted · change', () => openMutePage({keys: [serverMuteKey],
       title: group.server.name, what: 'Every channel, room, and direct message on ' + group.server.name + '.'}));
+    // Disconnect or Connect the whole server (connections.js), as in each of its chats' menus.
+    if (typeof setConnected === 'function') {
+      const off = connectionOff(account.id);
+      action(off ? 'Connect' : 'Disconnect', () => setConnected(account.id, off).catch(showError));
+    }
     action('Server details', () => openServerDetails(account));
     more.addEventListener('click', () => {
       actions.hidden = !actions.hidden;
@@ -421,8 +426,6 @@ function openServerDetails(account) {
   section.append(row);
   // Mute every channel, room, and DM on this server (chats.js); its mark shows on the server's header while it's muted.
   if (typeof serverMuteControls === 'function') section.append(...serverMuteControls(account.id, serverName(account)));
-  // Reconnect automatically (connections.js): off, it connects only when you tap Reconnect.
-  if (typeof autoReconnectToggle === 'function') section.append(autoReconnectToggle(account));
   const remove = element('section', '', 'settings-section');
   remove.append(element('h3', 'Remove server'));
   if (account.source === 'phone') {
@@ -435,7 +438,9 @@ function openServerDetails(account) {
         } catch (error) { status.textContent = error.message; }
       }, 'danger'), status);
   } else remove.append(element('p', 'This server is set on FluidMessages Web itself (Docker Compose or its config file). Remove it there.', 'muted'));
-  detailsPage(serverName(account), [section, remove], () => closeDetailsPage());
+  // Connection (connections.js): its status, Reconnect or Connect, Disconnect, and Reconnect automatically.
+  const connection = typeof connectionSection === 'function' ? connectionSection(account.id) : null;
+  detailsPage(serverName(account), [section, connection, remove], () => closeDetailsPage());
 }
 
 /** Settings → Messaging → Show community chats in Chats. */
@@ -468,7 +473,27 @@ function serverConnection(account) {
 /** Whether an IRC network is connected right now. Matrix and XMPP answer for themselves when asked. */
 const serverConnected = (account) => account.protocol !== 'irc' || serverConnection(account)?.state === 'connected';
 
-async function joinTarget(account, target, title, status) {
+/**
+ * A channel locked with a password (IRC 475): a password field right under the Join page's status, inline, that joins
+ * again with it. The password goes only to the network with the JOIN; it isn't saved.
+ */
+function channelKeyForm(account, target, title, status) {
+  status.parentElement?.querySelector('.channel-key')?.remove();
+  const form = element('form', '', 'channel-key');
+  const input = Object.assign(element('input', ''), {type: 'password', autocomplete: 'off', maxLength: 100, required: true});
+  const go = Object.assign(element('button', 'Join with password', 'primary'), {type: 'submit'});
+  form.append(field('Channel password', input, 'Ask someone in ' + target + ' for it. It isn’t saved, so you may need it again after reconnecting.'), go);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    go.disabled = true;
+    const done = await joinTarget(account, target, title, status, input.value.trim());
+    if (!done) go.disabled = false;
+  });
+  status.after(form);
+  input.focus();
+}
+
+async function joinTarget(account, target, title, status, key = '') {
   if (account.sample) return sampleJoin(account, target, title, status);
   if (account.protocol === 'irc' && typeof channelName === 'function') {
     // "python", "#python", and " #python " all join #python.
@@ -478,7 +503,14 @@ async function joinTarget(account, target, title, status) {
   }
   status.textContent = 'Joining…';
   try {
-    const result = await api('protocols/join', {account: account.id, target, title});
+    const result = await api('protocols/join', {account: account.id, target, title, ...(key ? {key} : {})});
+    if (result.refused) {
+      // The network said no, in plain words (irc_client.join_error); a password-locked channel asks for it here.
+      status.textContent = result.refused.text;
+      if (result.refused.code === '475') channelKeyForm(account, target, title, status);
+      else status.parentElement?.querySelector('.channel-key')?.remove();
+      return false;
+    }
     if (!routes.some((route) => route.address === result.route.address && route.protocol === result.route.protocol)) routes.push(result.route);
     // Joined again after Remove: back out of Archived, where Remove put its earlier messages.
     if (typeof inFolder === 'function' && typeof chatState === 'function' && (chatState().archived || []).includes(result.route.address)) {
@@ -1188,4 +1220,78 @@ function sampleServerPage(account, mode) {
   joinInstead.addEventListener('click', join);
   detailsPage('Browse', [section, joinInstead], () => closeDetailsPage());
   search.focus();
+}
+
+// join-first:start (plain rules with no page in them; scripts/test-local runs this part in Node)
+/** An IRC name folded the way IRC compares them ([]\~ are the capitals of {}|^), like irc_client.fold. */
+const ircFold = (name) => String(name || '').toLowerCase().replace(/\[/g, '{').replace(/]/g, '}').replace(/\\/g, '|').replace(/~/g, '^');
+
+/** The other joined channels on [route]'s network that need it joined first (their join_first lists name it). */
+function channelNeededBy(route, all) {
+  if (!route || route.protocol !== 'irc' || !route.group) return [];
+  return all.filter((other) => other !== route && other.protocol === 'irc' && other.group && other.account === route.account
+    && ircFold(other.target) !== ircFold(route.target) && (other.join_first || []).some((name) => ircFold(name) === ircFold(route.target)));
+}
+
+/** "#lobby is needed to stay in #chat on this network." */
+function channelNeededText(target, needs) {
+  const names = needs.map((route) => route.target);
+  const list = names.length < 3 ? names.join(' and ') : names.slice(0, -1).join(', ') + ', and ' + names.at(-1);
+  return target + ' is needed to stay in ' + list + ' on this network.';
+}
+// join-first:end
+
+/**
+ * Communities: right-click or long-press an IRC channel for "Leave and remove channel", confirmed inline in the same
+ * row of choices (no pop-up). It uses the same Remove channel as the channel's details (leaveSection). A channel
+ * another joined channel needs first can't be removed alone: it says which, and offers to remove them together.
+ */
+async function removeChannels(list, status) {
+  try {
+    for (const route of list) {
+      await api('protocols/leave', {address: route.address, protocol: route.protocol});
+      const index = routes.findIndex((item) => item.address === route.address && item.protocol === route.protocol);
+      if (index >= 0) routes.splice(index, 1);
+      if (typeof chatState === 'function' && !(chatState().archived || []).includes(route.address)) toggleChat(route.address, 'archived');
+    }
+    await refresh().catch(() => {});
+    return true;
+  } catch (error) {
+    if (status) status.textContent = error.message;
+    return false;
+  }
+}
+
+if (typeof threadMenu === 'function') {
+  const plainThreadMenu = threadMenu;
+  // eslint-disable-next-line no-func-assign
+  threadMenu = function (key, button) {
+    plainThreadMenu(key, button);
+    const route = typeof routeFor === 'function' ? routeFor(key) : null;
+    const row = document.querySelector('.thread-actions');
+    if (!row || !route || route.protocol !== 'irc' || !route.group || !route.account || route.server_chat || inSample()) return;
+    const leave = element('button', 'Leave and remove channel');
+    leave.type = 'button';
+    leave.addEventListener('click', () => {
+      const needs = channelNeededBy(route, routes);
+      const status = element('p', '', 'muted');
+      status.setAttribute('role', 'status');
+      const keep = element('button', needs.length ? 'Keep them' : 'Cancel');
+      keep.type = 'button';
+      keep.addEventListener('click', () => { row.remove(); button.focus(); });
+      const words = needs.length
+        ? channelNeededText(route.target, needs) + ' Removing it means leaving ' + (needs.length === 1 ? 'that channel' : 'those channels') + ' too.'
+        : 'Leave ' + route.target + ' and take it out of your list? You stop getting its messages. Earlier messages stay in Archived.';
+      const go = element('button', needs.length ? 'Remove all ' + (needs.length + 1) : 'Remove channel', 'danger');
+      go.type = 'button';
+      go.addEventListener('click', async () => {
+        go.disabled = true;
+        // The channels that need it go first, so none is left behind without what it needs.
+        if (!await removeChannels([...needs, route], status)) go.disabled = false;
+      });
+      row.replaceChildren(element('p', words), go, keep, status);
+      go.focus();
+    });
+    row.querySelector('button:last-of-type')?.before(leave);
+  };
 }

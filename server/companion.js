@@ -20,6 +20,18 @@ const EMAIL_PORT_HINTS = {
 };
 const validPort = (text) => /^[0-9]{1,5}$/.test(String(text)) && Number(text) >= 1 && Number(text) <= 65535;
 
+// The IRC form's words for a nickname and a registered account, the same as the phone's (IrcWords in IrcJoins.kt).
+const IRC_WORDS = {
+  nick: 'Nickname: the name people see.',
+  account: 'Account name: the name you registered with the network’s NickServ. Usually the same as your nickname. '
+    + 'Leave blank to use your nickname.',
+  password: 'Password: your NickServ password. FluidMessages signs you in with it each time it connects.',
+  nickserv: 'Leave this blank unless signing in with Password doesn’t work on this network. It’s sent to NickServ after connecting.',
+  whatsThisTitle: 'What’s this?',
+  whatsThis: 'Anyone can pick a free nickname. Some people also register theirs with the network’s NickServ, so no one else can '
+    + 'use it. If you registered, fill in the account name and password. If you didn’t, leave them blank.',
+};
+
 const ACCOUNT_FIELDS = {
   matrix: [['homeserver', 'Homeserver', 'https://matrix.example.org'], ['user_id', 'Matrix ID', '@you:example.org'],
     ['access_token', 'Access token', '', true]],
@@ -31,8 +43,10 @@ const ACCOUNT_FIELDS = {
     ['smtp_host', 'SMTP server', 'smtp.example.org'], ['smtp_port', 'SMTP port', '465', false, EMAIL_PORT_HINTS.smtp],
     ['smtp_user', 'SMTP user (optional)', ''], ['smtp_password', 'SMTP password (optional)', '', true]],
   irc: [['server', 'Server', 'irc.libera.chat'], ['port', 'Port (optional)', '6697'], ['nick', 'Nickname', ''],
-    ['sasl_user', 'SASL account (optional, your registered nickname)', ''], ['sasl_password', 'SASL password (optional)', '', true],
-    ['nickserv_password', 'NickServ password (optional, identify on connect when SASL isn’t used)', '', true],
+    // The stored keys stay sasl_user, sasl_password, and nickserv_password; only the words are plainer (IrcWords on the phone).
+    ['sasl_user', 'Account name (optional)', 'Leave blank to use your nickname', false, IRC_WORDS.account],
+    ['sasl_password', 'Password (optional)', '', true, IRC_WORDS.password],
+    ['nickserv_password', 'Older networks: NickServ password (optional)', 'Only if Password doesn’t sign you in', true, IRC_WORDS.nickserv],
     ['channels', 'Channels (comma-separated)', '#example'],
     ['ctcp_replies', 'Answer CTCP VERSION and PING (off keeps your client private)', '', 'check']],
 };
@@ -497,7 +511,7 @@ function funSections(settings) {
   links.id = 'settings-links';
   links.append(element('h3', 'Links'),
     checkbox('Show pictures and GIFs from links', current.gifs, save('gifs'), 'GIFs, stickers, and pictures from links. Off shows the link instead.'),
-    checkbox('Link previews', current.linkPreviews, save('linkPreviews'), 'A card with the page’s title and picture. Your server fetches it, so the site never sees your browser.'));
+    checkbox('Link previews', current.linkPreviews, save('linkPreviews'), 'A card with the page’s title and picture. Your server fetches it, so the site never sees your browser. Links from people you don’t know wait for Tap to load preview, since loading tells the site the message was opened.'));
   const fun = element('section', '', 'settings-section');
   fun.id = 'settings-fun';
   const motion = matchMedia('(prefers-reduced-motion: reduce)').matches ? ' Your device asks for reduced motion, so animations stay off.' : '';
@@ -702,6 +716,62 @@ async function startInternetChat({service, target, name = '', account = '', grou
  * read from the format (people.js detectAddress); when it could be more than one, or you have more than one account
  * there, you pick. [prefill] waits in the new chat's message box; [to] fills the "To" box.
  */
+/**
+ * Several phone numbers typed into New chat, split by commas or semicolons, like the phone's smsto: list. Null unless
+ * there are at least two and every one is a phone number. Repeats of the same number count once.
+ */
+function splitRecipients(text) {
+  const parts = String(text || '').split(/[,;]/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2 || parts.length > 50 || !parts.every((part) => /^\+?[\d ().-]+$/.test(part) && part.replace(/\D/g, '').length >= 3)) return null;
+  const seen = new Set();
+  return parts.filter((part) => { const digits = part.replace(/\D/g, ''); if (seen.has(digits)) return false; seen.add(digits); return true; });
+}
+
+/**
+ * Multiple recipients, like the phone's: one message box, and each person gets their own text through your phone and
+ * replies in their own chat.
+ */
+function openSeveralTexts(numbers, prefill = '', back) {
+  const card = element('form', '', 'settings-section several-texts');
+  card.noValidate = true;
+  card.append(element('p', 'Each recipient gets their own SMS. Replies appear in individual chats.', 'muted'));
+  const list = element('ul', '', 'recipient-list');
+  list.setAttribute('aria-label', 'Recipients');
+  for (const number of numbers) {
+    const person = typeof personFor === 'function' ? personFor({address: number}) : null;
+    const shown = typeof displayNumber === 'function' ? displayNumber(number) : number;
+    const item = element('li', '');
+    item.append(element('strong', person?.named ? person.name : shown), ...(person?.named ? [element('small', shown, 'muted')] : []));
+    list.append(item);
+  }
+  const body = Object.assign(element('textarea', ''), {rows: 4, maxLength: 1600, value: prefill, required: true});
+  const status = element('p', '', 'muted');
+  status.setAttribute('role', 'status');
+  const send = element('button', 'Send separate SMS', 'primary');
+  const ready = () => { send.disabled = !body.value.trim(); };
+  body.addEventListener('input', ready);
+  card.append(element('h3', 'Recipients'), list, field('Message', body,
+    phonePaired() ? 'Your phone sends them.' : 'They wait here until you connect your phone in Settings → Phone and other devices.'), send, status);
+  card.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const text = body.value.trim();
+    if (!text) return;
+    if (sampleOn) { status.textContent = 'Sample inbox · nothing was sent.'; return; }
+    send.disabled = body.disabled = true;
+    status.textContent = 'Submitting…';
+    let queued = 0;
+    for (const address of numbers) {
+      try { await api('schedule', {address, body: text, due: Date.now()}); queued++; } catch (error) { /* counted below */ }
+    }
+    const failed = numbers.length - queued;
+    status.textContent = queued + ' queued for your phone' + (failed ? ' · ' + failed + ' could not be queued' : '');
+    refresh().catch(() => {});
+  });
+  detailsPage('Multiple recipients', [card], back || (() => closeDetailsPage()));
+  ready();
+  body.focus();
+}
+
 function openNewChat(prefill = '', {to = '', back} = {}) {
   const leave = back || (() => closeDetailsPage());
   const form = element('form', '', 'settings-section new-chat-form');
@@ -710,7 +780,7 @@ function openNewChat(prefill = '', {to = '', back} = {}) {
     placeholder: 'Name, phone number, or address'});
   target.setAttribute('autocapitalize', 'off');
   target.setAttribute('aria-describedby', 'new-chat-formats');
-  const formats = element('small', 'Phone number · Matrix @name:server · XMPP or email name@server · IRC nickname, riley@irc.network, or #channel', 'hint');
+  const formats = element('small', 'Phone number (several, with commas between) · Matrix @name:server · XMPP or email name@server · IRC nickname, riley@irc.network, or #channel', 'hint');
   formats.id = 'new-chat-formats';
   const toField = element('label', 'To');
   toField.append(target, formats);
@@ -735,6 +805,7 @@ function openNewChat(prefill = '', {to = '', back} = {}) {
   const accountsFor = (service) => chatAccounts.filter((item) => item.protocol === service && item.id);
   const hasService = (service) => chatAccounts.some((item) => item.protocol === service);
   const describe = (option) => {
+    if (option.several) return ['Text ' + option.several.length + ' people separately', 'Each person gets their own text and replies in their own chat'];
     if (option.service === 'sms') return ['Text ' + (typeof displayNumber === 'function' ? displayNumber(option.target) : option.target),
       phonePaired() ? 'SMS through your phone' : 'SMS · waits here until you connect your phone'];
     const label = labels[option.service] || option.service;
@@ -745,7 +816,9 @@ function openNewChat(prefill = '', {to = '', back} = {}) {
   };
   const draw = () => {
     const text = target.value.trim();
-    options = (typeof detectAddress === 'function' ? detectAddress(text) : []).filter((option) => option.service !== 'irc' || !option.guess || hasService('irc'));
+    const several = splitRecipients(text);
+    options = several ? [{service: 'sms', target: several.join(', '), several}]
+      : (typeof detectAddress === 'function' ? detectAddress(text) : []).filter((option) => option.service !== 'irc' || !option.guess || hasService('irc'));
     picked = Math.min(picked, Math.max(0, options.length - 1));
     // People you already know, by name, number, or address.
     people.replaceChildren();
@@ -802,7 +875,7 @@ function openNewChat(prefill = '', {to = '', back} = {}) {
     groupLabel.hidden = service !== 'xmpp';
     group.checked = !!option?.group;
     note.replaceChildren();
-    start.textContent = !option ? 'Start chat' : service === 'sip' ? 'Open the keypad' : option.group ? 'Join and open' : 'Start chat';
+    start.textContent = !option ? 'Start chat' : option.several ? 'Next' : service === 'sip' ? 'Open the keypad' : option.group ? 'Join and open' : 'Start chat';
     start.disabled = !option;
     if (chat && !hasService(service) && !sampleOn) {
       start.disabled = true;
@@ -832,6 +905,10 @@ function openNewChat(prefill = '', {to = '', back} = {}) {
     if (option.service === 'sip') {
       closeDetailsPage(false);
       if (typeof openKeypad === 'function') openKeypad({address: option.target});
+      return;
+    }
+    if (option.several) {
+      openSeveralTexts(option.several, prefill, () => openNewChat(prefill, {to: target.value, back}));
       return;
     }
     if (option.service === 'sms') {

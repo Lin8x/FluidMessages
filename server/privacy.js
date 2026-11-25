@@ -8,6 +8,8 @@
 
 const PRIVATE_FOLDER = 'Private folder';
 const QUICK_HIDE = 'Quick hide (decoy mode)';
+// The phone's Resync in the filter menu: reloads everything from this server, for when chats look out of date.
+const RESYNC = 'Resync';
 
 Object.assign(SETTINGS_ICONS, {
   folder: 'M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2zm2 6a2 2 0 0 1 2 2v1h.5c.28 0 .5.22.5.5v3c0 .28-.22.5-.5.5h-5a.5.5 0 0 1-.5-.5v-3c0-.28.22-.5.5-.5h.5v-1a2 2 0 0 1 2-2zm0 1a1 1 0 0 0-1 1v1h2v-1a1 1 0 0 0-1-1z',
@@ -74,11 +76,26 @@ if (typeof lookNoticeIncoming === 'function') {
  * phone), and Quick hide once the private folder is set up. Neither in the sample inbox. */
 function syncFolderOptions() {
   const select = get('folder');
-  for (const [label, shown] of [[PRIVATE_FOLDER, !sampleOn], [QUICK_HIDE, !sampleOn && !!privacyStatus?.quick_hide]]) {
+  for (const [label, shown] of [[PRIVATE_FOLDER, !sampleOn], [QUICK_HIDE, !sampleOn && !!privacyStatus?.quick_hide], [RESYNC, !sampleOn]]) {
     let option = [...select.options].find((item) => item.value === label);
     if (!option && shown) { option = element('option', label); select.append(option); }
     if (option && !shown) { if (select.value === label) select.value = 'Inbox'; option.remove(); }
   }
+  // Resync stays last, after the folders.
+  const resync = [...select.options].find((item) => item.value === RESYNC);
+  if (resync && resync !== select.options[select.options.length - 1]) select.append(resync);
+}
+
+/** Resync: everything again from the server, as if the page had just opened: messages, contacts, accounts, settings. */
+async function resyncInbox() {
+  say('Resyncing…');
+  refreshed = false;
+  lastLook = '';
+  await loadPrivacy().catch(() => {});
+  await refresh();
+  showThreads();
+  showMessages(true);
+  say('Up to date.');
 }
 
 /** Clears the chat on screen, for switching between the real and the decoy inbox. */
@@ -113,6 +130,12 @@ get('folder').addEventListener('change', () => {
   const before = folderBefore;
   folderBefore = folder;
   if (folder === QUICK_HIDE) { quickHide().catch(showError); return; }
+  if (folder === RESYNC) {
+    get('folder').value = folderBefore = before;
+    showThreads();
+    resyncInbox().catch(showError);
+    return;
+  }
   // Leaving the open private folder asks for the passcode again, then locks it, as on the phone (Ask for the
   // passcode to close it). Until then the folder stays on screen.
   if (inPrivateFolder(before) && !inPrivateFolder(folder) && privateOpen() && !decoyLike() && privacyStatus?.private?.close_code !== false) {

@@ -733,6 +733,9 @@ function showMessages(preserve = false) {
   if (typeof chatLockGate === 'function' && chatLockGate(conversation)) return;
   // A message request: Accept, Delete, Block, and Block and report spam at the top (requests.js).
   if (typeof requestBanner === 'function') requestBanner(conversation, active);
+  // IRC: what a channel or the network's server chat is, in one line at the top (chat-commands.js).
+  const ircIntro = typeof ircIntroNode === 'function' ? ircIntroNode(active) : null;
+  if (ircIntro) conversation.append(ircIntro);
   const history = threads.get(active) || [];
   let lastDay = '';
   let position = -1;
@@ -957,7 +960,9 @@ function select(key) {
   get('readonly').textContent = off ? (labels[protocol] || 'This protocol') + ' is turned off on your phone. This conversation is read-only.' : '';
   get('schedule').hidden = off || !!address && !senderAddress(address) && !internet(protocol);
   get('send').setAttribute('aria-label', internet(protocol) ? 'Send ' + labels[protocol] + ' message' : 'Send text message');
-  get('body').placeholder = internet(protocol) ? labels[protocol] + ' message' : phonePaired() ? 'Text message' : 'Text message · sends when your phone connects';
+  get('body').placeholder = internet(protocol) ? labels[protocol] + ' message' : phonePaired() ? 'Text message'
+    // A phone-sized window has room for about 30 letters in the box.
+    : matchMedia('(max-width: 520px)').matches ? 'Text · waits for your phone' : 'Text message · sends when your phone connects';
   get('later').hidden = false;  // Internet chats schedule on FluidMessages Web; texts wait on the phone.
   // Click-to-call: your phone shows a "Tap to call" notification with the number ready to dial.
   get('call').hidden = !key || !phonePaired() || internet(protocol) || !senderAddress(address) || automatedThread(key);
