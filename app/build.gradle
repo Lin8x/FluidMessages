@@ -10,8 +10,8 @@ android {
         applicationId 'org.fluidmessages'
         minSdk 33
         targetSdk 35
-        versionCode 49
-        versionName '0.41.0'
+        versionCode 50
+        versionName '0.42.0'
     }
     buildFeatures { compose true }
     // The call screen runs the same WebRTC code as the browser companion.
