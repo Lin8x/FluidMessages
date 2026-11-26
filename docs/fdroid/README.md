@@ -14,8 +14,8 @@ These steps need your own accounts and your name on a merge request, so nobody e
 
 1. **Make a GitLab account** at [gitlab.com](https://gitlab.com/users/sign_up). F-Droid lives on GitLab, not GitHub.
 2. **Fork fdroiddata.** Open [gitlab.com/fdroid/fdroiddata](https://gitlab.com/fdroid/fdroiddata) and choose **Fork**.
-3. **Make a release with the flag in it.** Version 0.44.0 came out before the `fdroid` flag, so F-Droid can't use it. Release the next version as usual, then in the recipe change `versionName`, `versionCode`, `commit` (the tag, like `v0.45.0`), `CurrentVersion`, and `CurrentVersionCode` to match it. Add `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` for it (500 characters at most).
-4. **Choose who signs the app** (see below), and edit the recipe to match.
+3. **The recipe is ready.** It points at v0.45.0, the first release with the `fdroid` flag, and uses Option A below (F-Droid signs its own copy). For later versions you don't need to edit it: F-Droid finds new `vX.Y.Z` tags by itself.
+4. **Signing:** Option A is set up. Switch to Option B later if you want (see below).
 5. **Add the recipe.** In your fork, make a new branch called `org.fluidmessages` and add the file as `metadata/org.fluidmessages.yml`.
 6. **Check it, if you can.** With [fdroidserver](https://f-droid.org/docs/Installing_the_Server_and_Repo_Tools/) installed, run these in your fork:
 
@@ -46,7 +46,7 @@ The things below stand in the way of Option B today. Check them first.
 
 ## What could break reproducible builds
 
-- **The releases are debug builds.** `scripts/release` publishes `app-debug.apk`, which is marked debuggable and signed with the Android SDK's automatic debug key (its certificate is named "Android Debug"). F-Droid builds the release variant, so it can never match a debug APK. A release `signingConfig` is needed. If you make a new release key, its fingerprint changes: Android won't update existing installs signed with the old key, so update `SigningKey.OFFICIAL`, `docs/verify.md`, and this recipe together, and plan how current users move over. Keeping the current key as the release key avoids that, but then keep that keystore file safe and backed up, because it lives on one computer.
+- **Key rotation.** Since 0.45.0, releases are release builds signed with the new key, with the old key's handover (rotation lineage) attached by `scripts/sign-apk`. A reproducible `-fdroid.apk` would need the same signing step, and F-Droid's check of rotated APKs should be confirmed with their reviewers first.
 - **The F-Droid flag changes the app.** `BuildConfig.FDROID` is compiled in, so the regular GitHub APK and the F-Droid APK are different files. Option B needs the separate `-fdroid.apk` above; the regular APK can't be used.
 - **Baseline profile.** Release builds include `assets/dexopt/baseline.prof`. Some Android Gradle Plugin versions wrote it differently from build to build. AGP 8.9 should be stable, but compare two clean builds to be sure.
 - **Build tools and paths.** Different JDK, Kotlin, or build-tools versions change the output. Build from a clean checkout of the tag. The Gradle files don't stamp dates, git hashes, or build paths into the app.

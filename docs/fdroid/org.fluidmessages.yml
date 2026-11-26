@@ -1,6 +1,6 @@
 # Draft recipe for fdroiddata (https://gitlab.com/fdroid/fdroiddata), saved there as metadata/org.fluidmessages.yml.
-# See docs/fdroid/README.md before submitting. In particular, the Builds entry must point at the first release that
-# has the fdroid Gradle flag (the release after 0.44.0), and the two reproducible-build lines need a matching APK.
+# See docs/fdroid/README.md before submitting. The Builds entry points at v0.45.0, the first release with the fdroid
+# Gradle flag. Ready to submit as is: F-Droid signs its own copy (Option A).
 Categories:
   - Phone & SMS
   - Messaging
@@ -34,8 +34,9 @@ Builds:
     gradleprops:
       - fdroid=true
 
-# The official signing certificate (SHA-256, docs/verify.md). Only valid together with Binaries above.
-AllowedAPKSigningKeys: 2d0980ee4c11bf655482e7ee9279c6e66b56636e8e18c8ac063e1f08785df5bc
+# Option A (used now): F-Droid builds and signs the app itself, so there is no AllowedAPKSigningKeys line.
+# Option B (reproducible builds, later): uncomment Binaries above and this line together (see README).
+#AllowedAPKSigningKeys: 2d0980ee4c11bf655482e7ee9279c6e66b56636e8e18c8ac063e1f08785df5bc
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags ^v[0-9]+\.[0-9]+\.[0-9]+$
