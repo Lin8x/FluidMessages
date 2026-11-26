@@ -1,0 +1,1 @@
+- Builds with any JDK 17 or newer, so F-Droid's build server can build it.
