@@ -12,7 +12,7 @@ A free messaging app with no ads, no tracking, and no big company in the middle.
 
 <br>
 
-<a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="#get-it"><img src="docs/images/button-desktop.svg" height="56" alt="Use it on any computer"></a>
+<a href="#android"><img src="docs/images/button-android.svg" height="56" alt="Install for Android"></a> <a href="#get-it"><img src="docs/images/button-desktop.svg" height="56" alt="Use it on any computer"></a>
 
 </div>
 
@@ -393,56 +393,105 @@ Typing on a phone is slow. Link your Android phone to FluidMessages on your comp
 
 # Get it
 
-Free. No account. No ads.
+Free. No account. No ads. Pick your device to see the ways to install it.
 
 <p align="center">
-  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/get-android.svg" height="60" alt="Get it for Android"></a>
-  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Windows.exe"><img src="docs/images/get-windows.svg" height="60" alt="Get it for Windows"></a>
-  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-macOS.dmg"><img src="docs/images/get-mac.svg" height="60" alt="Get it for Mac"></a>
-  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage"><img src="docs/images/get-linux.svg" height="60" alt="Get it for Linux"></a>
+  <a href="#android"><img src="docs/images/get-android.svg" height="60" alt="Get it for Android"></a>
+  <a href="#windows"><img src="docs/images/get-windows.svg" height="60" alt="Get it for Windows"></a>
+  <a href="#mac"><img src="docs/images/get-mac.svg" height="60" alt="Get it for Mac"></a>
+  <a href="#linux"><img src="docs/images/get-linux.svg" height="60" alt="Get it for Linux"></a>
   <a href="#iphone-and-ipad"><img src="docs/images/get-iphone.svg" height="60" alt="Use it on iPhone or iPad"></a>
 </p>
 
+## Android
+
+For Android 13 or newer. Pick one:
+
 <p align="center">
-  <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22org.fluidmessages%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FLin8x%2FFluidMessages%22%2C%22author%22%3A%22Lin8x%22%2C%22name%22%3A%22FluidMessages%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22%5EFluidMessages-%5B0-9.%5D%2B%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D"><img src="docs/images/badge-obtainium.png" height="60" alt="Get it on Obtainium (for Android)"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/get-github.svg" height="60" alt="Download the APK from GitHub"></a>
+  <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22org.fluidmessages%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FLin8x%2FFluidMessages%22%2C%22author%22%3A%22Lin8x%22%2C%22name%22%3A%22FluidMessages%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22%5EFluidMessages-%5B0-9.%5D%2B%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D"><img src="docs/images/badge-obtainium.png" height="60" alt="Get it on Obtainium"></a>
 </p>
 
-**Or install the computer app with one command.** It checks the download against the release's SHA-256 first, and running it again updates the app.
+- **From GitHub:** download `FluidMessages.apk` on your phone, open it, and tap **Install**. If your phone asks, allow installs from your browser. FluidMessages checks for updates itself in **Settings → About and updates**.
+- **With Obtainium:** Obtainium installs FluidMessages from GitHub and keeps it up to date for you. With Obtainium on your phone, tap **Get it on Obtainium**. That button opens a page on Obtainium's own website, which has ads and analytics. To skip it, open Obtainium, tap **Add app**, paste `https://github.com/Lin8x/FluidMessages`, and set **Filter APKs by regular expression** to `^FluidMessages-[0-9.]+\.apk$`.
 
-Linux or Mac (Apple silicon):
+Then the app helps you make it your texting app. You can switch back any time.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.sh | bash
-```
-
-Windows (PowerShell):
-
-```powershell
-irm https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.ps1 | iex
-```
-
-Mac with Homebrew:
-
-```bash
-brew install --cask lin8x/tap/fluidmessages-web
-```
-
-<details>
-<summary><b>Need help installing?</b></summary>
-
-**Android** (Android 13 or newer): open the file and tap **Install**. If your phone asks, allow installs from your browser. Then the app helps you make it your texting app. You can switch back any time.
-
-- On Android 15, if the last step is blocked: **Settings → Apps → FluidMessages → ⋮ → Allow restricted settings**.
-- **Obtainium** installs FluidMessages from GitHub and keeps it up to date for you. With Obtainium on your phone, tap **Get it on Obtainium** above. That button opens a page on Obtainium's own website, which has ads and analytics. To skip it, open Obtainium, tap **Add app**, paste `https://github.com/Lin8x/FluidMessages`, and set **Filter APKs by regular expression** to `^FluidMessages-[0-9.]+\.apk$`.
+- On Android 15, if that last step is blocked: **Settings → Apps → FluidMessages → ⋮ → Allow restricted settings**.
 - Coming from an iPhone? Turn off iMessage on it first (**Settings → Apps → Messages**), or texts from iPhone friends can get lost.
 
-**Windows or Mac**: if you downloaded the file yourself, your computer may warn you the first time. [Here's what to do.](docs/self-hosting.md#desktop-apps) To see your texts there, link your Android phone in **Settings → Phone and other devices**.
+## Windows
 
-<a id="iphone-and-ipad"></a>**iPhone or iPad**: run FluidMessages on a computer at home, open its address in Safari, and tap **Share → Add to Home Screen**. Alerts only come while it is open.
+For Windows 10 or 11. Pick one:
 
-**Check your download**: make sure your copy is the real one and nobody changed it. On Android, open **Settings → About and updates** and look for "Matches the official FluidMessages key". [How to check any download](docs/verify.md).
+<p align="center">
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Windows.exe"><img src="docs/images/get-github.svg" height="60" alt="Download the .exe from GitHub"></a>
+  <a href="#windows-command"><img src="docs/images/get-command.svg" height="60" alt="Install with one command"></a>
+</p>
 
-</details>
+- **From GitHub:** download `FluidMessages-Web-Windows.exe` and open it. Windows may warn you the first time. [Here's what to do.](docs/self-hosting.md#desktop-apps)
+- <a id="windows-command"></a>**With one command:** open PowerShell and paste this. It checks the download first, puts FluidMessages Web in your Start menu, and needs no administrator. Run it again to update.
+
+  ```powershell
+  irm https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.ps1 | iex
+  ```
+
+  To remove it: `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.ps1))) -Uninstall`
+- **Microsoft Store:** coming soon.
+
+## Mac
+
+For Macs with Apple silicon (M1 or newer). Pick one:
+
+<p align="center">
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-macOS.dmg"><img src="docs/images/get-github.svg" height="60" alt="Download the .dmg from GitHub"></a>
+  <a href="#homebrew"><img src="docs/images/get-homebrew.svg" height="60" alt="Install with Homebrew"></a>
+  <a href="#mac-command"><img src="docs/images/get-command.svg" height="60" alt="Install with one command"></a>
+</p>
+
+- **From GitHub:** download `FluidMessages-Web-macOS.dmg`, open it, and drag **FluidMessages Web** to **Applications**. Your Mac may warn you the first time. [Here's what to do.](docs/self-hosting.md#desktop-apps)
+- <a id="homebrew"></a>**With Homebrew:** open Terminal and paste this:
+
+  ```bash
+  brew install --cask lin8x/tap/fluidmessages-web
+  ```
+
+  To update: `brew upgrade --cask fluidmessages-web`. To remove it: `brew uninstall --cask fluidmessages-web`.
+- <a id="mac-command"></a>**With one command:** open Terminal and paste this. It checks the download first and installs the app in Applications. Run it again to update.
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.sh | bash
+  ```
+
+  To remove it, add `-s -- --uninstall` after `bash`.
+
+## Linux
+
+For 64-bit PCs (x86_64). Pick one:
+
+<p align="center">
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage"><img src="docs/images/get-github.svg" height="60" alt="Download the AppImage from GitHub"></a>
+  <a href="#linux-command"><img src="docs/images/get-command.svg" height="60" alt="Install with one command"></a>
+</p>
+
+- **From GitHub:** download `FluidMessages-Web-Linux-x86_64.AppImage`, allow it to run (right-click → **Properties → Allow executing**, or `chmod +x` it), and open it.
+- <a id="linux-command"></a>**With one command:** paste this in a terminal. It checks the download first, adds FluidMessages Web to your app menu, and needs no sudo. Run it again to update.
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.sh | bash
+  ```
+
+  To remove it, add `-s -- --uninstall` after `bash`.
+
+On a computer, link your Android phone in **Settings → Phone and other devices** to see your texts there too.
+
+## iPhone and iPad
+
+Run FluidMessages on a computer at home, open its address in Safari, and tap **Share → Add to Home Screen**. Alerts only come while it is open.
+
+## Check your download
+
+Make sure your copy is the real one and nobody changed it. On Android, open **Settings → About and updates** and look for "Matches the official FluidMessages key". [How to check any download](docs/verify.md).
 
 <br>
 
