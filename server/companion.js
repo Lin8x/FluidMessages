@@ -462,7 +462,10 @@ function accountForm(protocol, account, done, {add = false, preset = {}, simple 
       const result = await api('protocols/accounts', {protocol, fields, ...(account?.id ? {id: account.id} : add ? {add: true} : {})});
       // The account just added, for callers that carry on with it (Add server goes on to Browse).
       const added = add && !account ? (result.accounts || []).filter((item) => item.protocol === protocol && item.id && !before.has(item.id)).pop() : null;
-      done(added || null);
+      // The first IRC, Matrix, or XMPP account shows the Communities page once, full page, before carrying on (welcome.js).
+      if (typeof communitiesIntroDue === 'function' && communitiesIntroDue(protocol, add && !account)) {
+        showCommunitiesIntro({then: () => done(added || null), markSeen: true});
+      } else done(added || null);
     } catch (error) {
       status.textContent = error.message;
       if (form.afterError) form.afterError();
@@ -589,7 +592,7 @@ function devicesSection(settings, rebuild) {
       }
       others.append(change, row);
     }
-    if (plain) others.append(element('p', 'This page isn’t using HTTPS, so passwords and messages cross the network unencrypted. Put an HTTPS reverse proxy in front of it.', 'notice'));
+    if (plain) others.append(element('p', 'This page starts with http://, so anyone on the same Wi-Fi could read your password and messages. That’s fine for testing at home. For everyday use, use an https:// address.', 'notice'));
   };
   phone.append(element('p', 'Loading…', 'muted'));
   api('auth/security').then(draw).catch((error) => { phone.replaceChildren(element('p', error.message, 'muted')); });
@@ -625,6 +628,53 @@ function passwordForm(changing, done) {
   return form;
 }
 
+const REACH_GUIDE = 'https://github.com/Lin8x/FluidMessages/blob/main/docs/self-hosting.md#reach-it-from-outside-your-home';
+const PLAIN_WARNING = 'This address starts with http://, so anyone on the same Wi-Fi could read your messages and the link code. '
+  + 'That’s fine for testing at home. For everyday use, use an https:// address.';
+
+/**
+ * The address to type on the phone, from the server's phone_reach (auth/security "reach"): each one with a Copy
+ * button, what an IP address and a port are in plain words, the http:// warning, and what to do when the phone
+ * can't reach this computer yet. Everything is set as text, never as HTML.
+ */
+function phoneAddressCard(reach) {
+  const card = element('div', '', 'stack phone-address');
+  const list = reach?.addresses || [];
+  const labels = {page: 'The address of this page', wifi: 'On the same Wi-Fi', private: 'On your private network (like Tailscale)'};
+  for (const item of list) {
+    const row = element('div', '', 'token-box');
+    const input = Object.assign(element('input', ''), {value: item.url, readOnly: true, spellcheck: false, autocomplete: 'off'});
+    input.setAttribute('aria-label', labels[item.kind] || 'Address');
+    input.addEventListener('focus', () => input.select());
+    const copy = element('button', 'Copy', 'primary');
+    copy.type = 'button';
+    copy.setAttribute('aria-label', 'Copy ' + item.url);
+    copy.addEventListener('click', () => {
+      const done = () => { copy.textContent = 'Copied'; setTimeout(() => { copy.textContent = 'Copy'; }, 2500); };
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(item.url).then(done).catch(() => input.select());
+      else { input.focus(); input.select(); }
+    });
+    row.append(input, copy);
+    card.append(element('span', labels[item.kind] || 'Address', 'guide-copy-label'), row);
+  }
+  if (!list.length) {
+    card.append(element('p', reach?.container
+      ? 'Your phone can’t reach FluidMessages yet. It runs in Docker, which only lets this computer in. Remove FLUID_LOCAL_ONLY and publish the port to your network (like "8080:8080") in compose.yaml, then use this computer’s address, like http://192.168.1.20:8080.'
+      : 'Your phone can’t reach FluidMessages yet: it only answers this computer. Start it with FLUID_BIND=0.0.0.0 so other devices on your Wi-Fi can reach it, then open this page again to see the address.', 'notice'));
+  } else if (reach && !reach.listening && list.every((item) => item.kind === 'page')) {
+    card.append(element('p', 'This is the address you opened this page at. If your phone can’t reach it, start FluidMessages with FLUID_BIND=0.0.0.0.', 'hint'));
+  }
+  if (list.some((item) => item.url.startsWith('http://'))) card.append(element('p', PLAIN_WARNING, 'notice'));
+  const explain = element('details', '', 'more');
+  explain.append(element('summary', 'What do these numbers mean?'),
+    element('p', 'The IP address (like 192.168.1.20) is this computer’s number on your home network. The port (the number after the colon, like 8080) is which “door” FluidMessages answers on. Your phone must be on the same Wi-Fi to use these.', 'hint'));
+  const outside = Object.assign(element('a', 'Reach it from outside your home'), {href: REACH_GUIDE, target: '_blank', rel: 'noopener noreferrer'});
+  const more = element('p', '', 'hint');
+  more.append(outside);
+  card.append(explain, more);
+  return card;
+}
+
 /**
  * Connecting the phone, step by step: a password first (the phone reaches this server over the network, and
  * your other devices will sign in with it), then a pairing token to type into the Android app.
@@ -648,9 +698,9 @@ function phoneConnect(state, changed) {
       token.hidden = false;
     }
     const steps = element('ol', '', 'steps');
-    steps.append(element('li', 'Make FluidMessages reachable from your phone over HTTPS (a reverse proxy such as Caddy). See the self-hosting guide.'),
-      element('li', 'On Android, open Settings → FluidMessages Web, enter this server’s HTTPS address and the pairing token, and save.'));
-    if (current.pairing.web || current.pairing.compose || value) box.append(steps);
+    steps.append(element('li', 'Find the address your phone can reach, below. https:// is safest; http:// works for testing at home.'),
+      element('li', 'On Android, open Settings → FluidMessages Web, enter that address and the pairing token, and save.'));
+    if (current.pairing.web || current.pairing.compose || value) box.append(steps, phoneAddressCard(current.reach));
     box.append(token, actions);
     if (current.pairing.web && !value) box.append(element('p', 'A pairing token is active (made ' + new Date(current.pairing.created).toLocaleDateString() + ').', 'hint'));
     const make = () => api('auth/pairing', {}).then((result) => draw(result, result.token)).catch(showError);
@@ -1066,6 +1116,8 @@ async function openDetails({back} = {}) {
       : sampleOn ? 'Sample contact · ' + protocolName(threadProtocol(key))
         : automatedThread(key) ? 'Automated sender · ' + address : route?.target || address;
   const nodes = [detailsHero(title, subtitle), reachTiles(key)];
+  // Right under Message and Call: + Add another way to reach them, then their linked addresses. One person only.
+  if (!group) nodes.push(linkedSection(key, title, back));
   if (!group) {
     const info = element('section', '', 'settings-section');
     info.append(element('h3', 'Contact info'));
@@ -1106,7 +1158,6 @@ async function openDetails({back} = {}) {
   }
   // Leave a channel or room on its server (servers.js).
   if (typeof leaveSection === 'function' && !sampleOn) nodes.push(leaveSection(route));
-  if (!group && !sampleOn) nodes.push(linkedSection(key, title, back));
   nodes.push(...conversationSettings(key, settings));
   detailsPage('Conversation details', nodes, back);
 }
@@ -1139,17 +1190,33 @@ function detailsRowButton(title, detail, run) {
   return row;
 }
 
+/** The words for Ways to reach, the same as the phone's (ProfileEditor.kt ReachWays). */
+const REACH_WAYS = {
+  title: 'Ways to reach them',
+  button: (name) => '+ Add another way to reach ' + name,
+  detail: (ready) => ready ? 'Link their Matrix, XMPP, email, or IRC to this chat. Your past chats are searched to help you find them.'
+    : 'First sign in to Matrix, XMPP, Email, or IRC in Accounts. Then link their address here.',
+};
+
 function linkedSection(key, name, back) {
   const section = element('section', '', 'settings-section');
   section.id = 'details-links';
-  section.append(element('h3', 'Linked addresses'));
+  section.append(element('h3', REACH_WAYS.title));
   const reopen = () => openDetails({back}).catch(showError);
+  // A clear button first. With no chat account yet it opens Accounts; the sample inbox links nothing.
+  const ready = !sampleOn && chatAccounts.length > 0;
+  const add = element('button', REACH_WAYS.button(name), 'primary add-way');
+  add.type = 'button';
+  add.addEventListener('click', () => (sampleOn ? say('Sample: nothing is linked. Try it in a real chat.')
+    : ready ? openLinkAddress(key, name, reopen) : openSettings('accounts').catch(showError)));
+  section.append(add, element('p', REACH_WAYS.detail(ready || sampleOn), 'muted'));
+  if (sampleOn) return section;
+  if (linkedRoutes(key).length) section.append(element('h4', 'Linked addresses'));
   for (const route of linkedRoutes(key)) {
     const via = typeof accountVia === 'function' ? accountVia(route).replace(/^ · /, '') : '';
     section.append(detailsRowButton(protocolName(route.protocol) + ' · ' + route.target, (via ? via + ' · ' : '') + 'Linked · tap to unlink',
       () => confirmUnlink(key, route, reopen)));
   }
-  section.append(detailsRowButton('Link an address', 'Reach ' + name + ' on Matrix, XMPP, Email, or IRC', () => openLinkAddress(key, name, reopen)));
   if (!webLook.combineProtocols && !usingPhoneLook()) {
     section.append(element('p', 'To see every way you talk to them in this one chat, turn on Combine linked conversations in Settings → Chat services.', 'muted'));
   }
@@ -1856,6 +1923,8 @@ function showSection(next) {
   if (next !== 'settings' && section === 'settings' && /^#settings/.test(location.hash)) history.pushState(null, '', location.pathname + location.search);
   // A contact or chat details page belongs to the section it was opened in.
   if (next !== section && typeof closeDetailsPage === 'function') closeDetailsPage(false);
+  // Leaving Messages for another section locks a locked chat again (chats.js).
+  if (next !== section && section === 'messages' && typeof leaveChatLock === 'function') leaveChatLock();
   section = next;
   document.body.dataset.section = next;
   for (const button of document.querySelectorAll('.rail button[data-section]')) {

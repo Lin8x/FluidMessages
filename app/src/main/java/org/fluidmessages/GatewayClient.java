@@ -248,7 +248,7 @@ final class GatewayClient {
         String origin = prefs.getString("server", "");
         String token = Privacy.token(prefs);
         if (!CloudBackup.paired(origin, token)) throw new IOException("Pair FluidMessages Web first.");
-        var connection = (HttpsURLConnection) new URL(origin + "/api/protocols/upload").openConnection();
+        var connection = (java.net.HttpURLConnection) new URL(origin + "/api/protocols/upload").openConnection();
         try {
             connection.setConnectTimeout(8000);
             connection.setReadTimeout(120_000);
@@ -288,7 +288,7 @@ final class GatewayClient {
         String token = Privacy.token(prefs);
         String id = message.getString("id");
         if (!CloudBackup.paired(origin, token)) throw new IOException("Pair FluidMessages Web first.");
-        var connection = (HttpsURLConnection) new URL(origin + "/api/protocols/file?id="
+        var connection = (java.net.HttpURLConnection) new URL(origin + "/api/protocols/file?id="
             + java.net.URLEncoder.encode(id, StandardCharsets.UTF_8)).openConnection();
         try {
             connection.setConnectTimeout(8000);
@@ -719,7 +719,7 @@ final class GatewayClient {
         String origin = prefs.getString("server", "");
         String token = Privacy.token(prefs);
         if (!CloudBackup.paired(origin, token)) throw new IOException("Pair FluidMessages Web first.");
-        var connection = (HttpsURLConnection) new URL(origin + "/api/" + endpoint).openConnection();
+        var connection = (java.net.HttpURLConnection) new URL(origin + "/api/" + endpoint).openConnection();
         try {
             connection.setConnectTimeout(8000);
             connection.setReadTimeout(15000);

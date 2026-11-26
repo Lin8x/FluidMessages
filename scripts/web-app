@@ -6,6 +6,7 @@
 #   ./scripts/web-app --port 9090  use another port
 #   ./scripts/web-app --full       also install the optional XMPP and encrypted-Matrix support (into a private venv)
 #   ./scripts/web-app --no-open    don't open a window, just print the address
+#   FLUID_BIND=0.0.0.0 ./scripts/web-app   also answer other devices on your Wi-Fi, like your phone (set a password first)
 #
 # Your messages and accounts stay in a private folder on this computer. To install it as an app, use your browser's
 # "Install FluidMessages" button (Chrome, Edge, Brave) once it opens. localhost counts as secure, so it installs
@@ -44,7 +45,7 @@ if [[ ! -s "$DATA/token" ]]; then
 fi
 TOKEN=$(cat "$DATA/token")
 
-FLUID_TOKEN="$TOKEN" FLUID_DB="$DATA/fluid.sqlite" FLUID_BIND=127.0.0.1 FLUID_PORT="$PORT" "$PYTHON" server/main.py &
+FLUID_TOKEN="$TOKEN" FLUID_DB="$DATA/fluid.sqlite" FLUID_BIND="${FLUID_BIND:-127.0.0.1}" FLUID_PORT="$PORT" "$PYTHON" server/main.py &
 SERVER=$!
 trap 'kill $SERVER 2>/dev/null; wait $SERVER 2>/dev/null' EXIT INT TERM
 URL="http://localhost:$PORT"

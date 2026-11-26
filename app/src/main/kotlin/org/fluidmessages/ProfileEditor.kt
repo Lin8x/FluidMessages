@@ -161,7 +161,9 @@ object ConversationDetails {
               person: String, reach: List<ReachOption>, edit: Runnable?, actions: List<SettingsAction>, members: List<GroupMember>,
               security: List<SettingsAction>, info: List<SettingsAction> = emptyList(), block: BlockChoice? = null,
               /** An IRC, Matrix, or XMPP chat's server account: its Connection section (ConnectionsUi), with [connection]'s rows. */
-              connectionAccount: String = "", connection: List<SettingsAction> = emptyList()) {
+              connectionAccount: String = "", connection: List<SettingsAction> = emptyList(),
+              /** One person's other addresses, linked to this chat; [addWay] links another (null in a group or channel). */
+              ways: List<SettingsAction> = emptyList(), addWay: Runnable? = null, addWayDetail: String = "") {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -184,6 +186,8 @@ object ConversationDetails {
                     if (reach.isNotEmpty()) item {
                         ReachTiles(prefs, person, reach, Palette(appearance).inboxAction, scheme.surfaceContainer)
                     }
+                    // Right under Message and Call: + Add another way to reach them, then the addresses already linked.
+                    if (addWay != null) item { WaysToReach(name, ways, addWay, addWayDetail) }
                     // Every number, email, and other detail saved on the contact, like a contact card.
                     if (info.isNotEmpty()) item { DetailGroup("Contact info", info) }
                     if (members.isNotEmpty()) item { GroupMembers(members) }
@@ -205,6 +209,36 @@ object ConversationDetails {
             }
         }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+    }
+}
+
+/** The words for Ways to reach in a person's conversation details, the same as FluidMessages Web's (companion.js). */
+internal object ReachWays {
+    const val TITLE = "Ways to reach them"
+    fun button(name: String) = "+ Add another way to reach $name"
+    /** One line under the button: what it does, or, with no chat account yet, what to do first. */
+    @JvmStatic
+    fun detail(ready: Boolean) = if (ready)
+        "Link their Matrix, XMPP, email, or IRC to this chat. Your past chats are searched to help you find them."
+    else "First sign in to Matrix, XMPP, Email, or IRC in Accounts. Then link their address here."
+}
+
+/** Ways to reach them: a clear, labelled button to link another address of theirs, and the ones already linked. */
+@Composable
+private fun WaysToReach(name: String, ways: List<SettingsAction>, addWay: Runnable, detail: String) {
+    val scheme = MaterialTheme.colorScheme
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(ReachWays.TITLE, Modifier.padding(horizontal = 10.dp), style = MaterialTheme.typography.labelLarge,
+            color = scheme.onSurfaceVariant)
+        Surface(shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainer) {
+            Column(Modifier.padding(horizontal = 15.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = addWay::run, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                    Text(ReachWays.button(name), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                }
+                Text(detail, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        if (ways.isNotEmpty()) DetailGroup("Linked addresses", ways)
     }
 }
 

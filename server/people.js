@@ -1015,7 +1015,7 @@ async function openPersonPage(person, {back} = {}) {
       const words = element('span', '', 'detail-words');
       const sealed = typeof chatLocked === 'function' && chatLocked(key);
       words.append(element('strong', via(key) + ' · ' + (routeFor(key)?.target || threadAddress(key))),
-        element('small', sealed ? '🔒 Chat code' : last ? excerpt(last.body || '', 80) : 'No messages yet'));
+        element('small', sealed ? '🔒 Locked' : last ? excerpt(last.body || '', 80) : 'No messages yet'));
       row.append(words, element('span', '›', 'chevron'));
       row.addEventListener('click', () => openChat(key));
       list.append(row);

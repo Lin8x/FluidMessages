@@ -57,6 +57,15 @@ function lockCounts(state = chatState()) {
   return {chats: keys.filter((key) => !key.startsWith('service:')).length, kinds: keys.filter((key) => key.startsWith('service:')).length};
 }
 
+/** A lock that opens with this computer's screen lock (WebAuthn) instead of a code: only its credential id is kept. */
+const deviceLock = (lock) => !!lock && typeof lock.credential === 'string' && lock.credential !== '';
+
+/**
+ * Which chat stays unlocked after moving to [next] (a chat's address, or '' for the chat list): only the one you
+ * stay in. Going back to the list or opening another chat locks it again, as on the phone (ChatLocks.kt).
+ */
+function stillUnlocked(unlocked, next) { return unlocked && unlocked === next ? unlocked : ''; }
+
 // Muting, for a while or for good: a chat, everyone's chats with one person, or every channel and room on a server.
 // Muted chats don't notify, chime, or vibrate, and don't count on the tabs; their messages still arrive and show
 // unread. Keys are kept in web_chats.muted as before: a chat's address, or "server:<account id>" for a whole
@@ -364,7 +373,7 @@ function blockControl(name, addresses) {
 function decorateThread(key, button, copy) {
   const address = threadAddress(key);
   const time = button.querySelector('time');
-  if (chatLocked(key)) copy.lastElementChild.textContent = '🔒 Chat code';
+  if (chatLocked(key)) copy.lastElementChild.textContent = '🔒 Locked';
   // Muted: the bell with a slash, beside the protocol tags (or the name when tags are hidden).
   const muted = chatMuteEnds(address);
   if (muted !== null) {
@@ -437,33 +446,107 @@ async function codeHash(code, salt) {
 async function codeMatches(address, code) {
   // [address] is a chat's address, or a kind's lock ("service:email").
   const lock = chatState().locks[address];
-  return !!lock && await codeHash(code, lock.salt) === lock.hash;
+  return !!lock && !deviceLock(lock) && await codeHash(code, lock.salt) === lock.hash;
 }
 
-/** Called before a chat is drawn (app.js showMessages). Returns true when the chat waits for its code. */
+// This computer's screen lock (Windows Hello, Touch ID, or the device PIN), through WebAuthn with user verification
+// required. Like the codes, it's a privacy screen in this browser: only the credential id is kept with the lock.
+
+const toBase64Url = (buffer) => btoa(String.fromCharCode(...new Uint8Array(buffer))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromBase64Url = (text) => Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((text.length + 3) % 4)),
+  (letter) => letter.charCodeAt(0));
+
+/** '' when this browser can use the computer's screen lock; otherwise why not, in one line. null until checked. */
+let deviceSupport = null;
+const deviceSupportReady = (async () => {
+  if (!window.isSecureContext || !window.PublicKeyCredential || !navigator.credentials) {
+    return 'Locks use a code here, because this page isn’t opened over HTTPS (or at localhost), so it can’t use your computer’s screen lock.';
+  }
+  try { if (await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()) return ''; } catch {}
+  return 'Locks use a code here, because this computer has no screen lock (like Windows Hello or Touch ID) that the browser can use.';
+})().then((reason) => { deviceSupport = reason; return reason; });
+
+/** Makes a screen-lock credential for a lock on this computer and returns its id. */
+async function createDeviceLock() {
+  const credential = await navigator.credentials.create({publicKey: {
+    challenge: crypto.getRandomValues(new Uint8Array(32)),
+    rp: {name: 'FluidMessages'},
+    user: {id: crypto.getRandomValues(new Uint8Array(16)), name: 'FluidMessages chat lock', displayName: 'Chat lock'},
+    pubKeyCredParams: [{type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}],
+    authenticatorSelection: {authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged'},
+    attestation: 'none', timeout: 60000,
+  }});
+  if (!credential) throw new Error('Your screen lock didn’t confirm it.');
+  return toBase64Url(credential.rawId);
+}
+
+/** Asks for this computer's screen lock for [credential]. True only when it confirmed it's you. */
+async function confirmDeviceLock(credential) {
+  try {
+    const result = await navigator.credentials.get({publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      allowCredentials: [{type: 'public-key', id: fromBase64Url(credential)}],
+      userVerification: 'required', timeout: 60000,
+    }});
+    // Byte 32 of the authenticator data holds the flags; 0x04 says the person was verified, not only present.
+    return !!result && (new Uint8Array(result.response.authenticatorData)[32] & 0x04) !== 0;
+  } catch { return false; }
+}
+
+const DEVICE_LABEL = 'Use this computer’s screen lock (Windows Hello, Touch ID, or your device PIN)';
+const DEVICE_FAILED = 'That didn’t unlock it. A screen lock from another computer can’t open it here.';
+
+/**
+ * Called before a chat is drawn (app.js showMessages). Returns true when the chat waits to be unlocked. It never
+ * asks on its own: the screen lock prompt opens only when you press Unlock, so a redraw can't ask again and again.
+ */
 function chatLockGate(conversation) {
   if (typeof applyChatWallpaper === 'function') applyChatWallpaper();
   const address = active ? threadAddress(active) : '';
-  if (address !== gateLast) { gateLast = address; if (unlockedAddress !== address) unlockedAddress = ''; }
+  if (address !== gateLast) { gateLast = address; unlockedAddress = stillUnlocked(unlockedAddress, address); }
   if (sampleOn && active) get('schedule').hidden = false;
   const lockKey = chatLockKey(active);
   if (!address || !lockKey || unlockedAddress === address) return false;
   get('schedule').hidden = true;
-  const box = element('form', '', 'empty-state lock-gate');
+  const lock = chatState().locks[lockKey];
   const kind = LOCK_KINDS.find(([name]) => serviceLock(name) === lockKey);
+  const status = element('p', '', 'error');
+  status.setAttribute('role', 'alert');
+  // Opens the chat only if you're still on it when the unlock finishes.
+  const opened = () => {
+    if (!active || threadAddress(active) !== address) return;
+    unlockedAddress = address;
+    select(active);
+  };
+  if (deviceLock(lock)) {
+    const box = element('div', '', 'empty-state lock-gate');
+    box.append(element('span', '🔒', 'lock-mark'), element('h2', 'This chat is locked'),
+      element('p', (kind ? kind[1] + ' open' : 'It opens') + ' with this computer’s screen lock.', 'muted'));
+    const open = element('button', 'Unlock', 'primary');
+    open.type = 'button';
+    open.addEventListener('click', async () => {
+      open.disabled = true;
+      status.textContent = '';
+      if (await confirmDeviceLock(lock.credential)) opened();
+      else { status.textContent = DEVICE_FAILED; open.disabled = false; }
+    });
+    box.append(status, open);
+    conversation.append(box);
+    requestAnimationFrame(() => open.focus());
+    return true;
+  }
+  const box = element('form', '', 'empty-state lock-gate');
   box.append(element('span', '🔒', 'lock-mark'), element('h2', kind ? 'This chat is locked' : 'This chat has a code'),
     element('p', kind ? kind[1] + ' ask for a passcode. Enter it to open the chat.' : 'Enter it to open the chat.', 'muted'));
   const input = Object.assign(element('input', ''), {type: 'password', autocomplete: 'off', required: true, maxLength: 64, inputMode: 'numeric'});
   input.setAttribute('aria-label', 'Chat code');
-  const status = element('p', '', 'error');
-  status.setAttribute('role', 'alert');
   const open = element('button', 'Open chat', 'primary');
   box.append(input, status, open);
   box.addEventListener('submit', async (event) => {
     event.preventDefault();
     open.disabled = true;
     try {
-      if (await codeMatches(lockKey, input.value)) { unlockedAddress = address; select(active); }
+      if (await codeMatches(lockKey, input.value)) opened();
       else { status.textContent = kind ? 'That isn’t the passcode.' : 'That isn’t this chat’s code.'; input.select(); }
     } catch (error) { status.textContent = error.message; }
     finally { open.disabled = false; }
@@ -473,15 +556,23 @@ function chatLockGate(conversation) {
   return true;
 }
 
+/** Locks the open chat again when you leave it for the chat list (app.js Back) or another section. */
+function leaveChatLock() {
+  if (!unlockedAddress) return;
+  unlockedAddress = '';
+  gateLast = '';
+  showMessages();
+}
+
 function lockSection(address, key = '') {
   const section = element('section', '', 'settings-section');
   const kind = key ? LOCK_KINDS.find(([name]) => chatState().locks[serviceLock(name)] && serviceLock(name) === serviceLock(family(threadProtocol(key)))) : null;
-  section.append(element('h3', 'Chat code'));
   lockCodeForm(section, address, {
-    title: 'Chat code',
-    on: 'This chat asks for its code before it opens, and its preview is hidden in the inbox and search.',
+    title: 'Chat lock',
+    label: 'Chat lock',
+    on: 'On. This chat asks you to unlock it before it opens, and its preview is hidden in the inbox and search.',
     off: kind ? 'This chat is locked with ' + kind[1].toLowerCase() + ' (Settings → Privacy and security → Chat locks). '
-      + 'Add a code of its own to use that one instead.' : 'Add a code to hide this chat’s preview and ask for the code before it opens.',
+      + 'Turn this on to give it a lock of its own.' : 'Off. Turn it on to hide this chat’s preview and ask before it opens.',
     wrong: 'That isn’t this chat’s code.',
     saved: () => { if (address === threadAddress(active || '')) unlockedAddress = address; showMessages(true); },
   });
@@ -489,46 +580,92 @@ function lockSection(address, key = '') {
 }
 
 /**
- * The form that adds or removes a code: a chat's own ([lockKey] is its address) or a kind's ("service:email").
- * Draws into [section] and redraws there after each change. Only a salted hash is saved.
+ * The lock switches for a chat ([lockKey] is its address) or a kind ("service:email"), the same in a chat's details
+ * and in Settings: the lock itself, and once it's on, "Use this computer's screen lock" under it. Turning a lock on
+ * uses the screen lock when this browser can; otherwise a code, with a line saying why. Turning it off, or switching
+ * between the two, asks for the current one first. Draws into [section] and redraws there after each change.
  */
-function lockCodeForm(section, lockKey, {title, on, off, wrong, saved = () => {}}) {
+function lockCodeForm(section, lockKey, {title, label = 'Lock', on, off, wrong, saved = () => {}}) {
+  // What the form below the switches asks for: '' (nothing), 'new' (a new code), 'off' (the code, to turn the lock
+  // off), or 'device' (the code, to switch to the screen lock).
+  let pending = '';
+  let problem = '';
+  const save = (value) => { const state = chatState(); saveChats({...state, locks: {...state.locks, [lockKey]: value}}); };
+  const remove = () => { const state = chatState(); const locks = {...state.locks}; delete locks[lockKey]; saveChats({...state, locks}); };
   const draw = () => {
     section.replaceChildren(element('h3', title));
-    const locked = !!chatState().locks[lockKey];
-    section.append(element('p', locked ? on : off, 'muted'));
-    const form = element('form', '', 'stack');
-    const code = Object.assign(element('input', ''), {type: 'password', autocomplete: 'new-password', required: true, minLength: 4, maxLength: 64});
-    const again = Object.assign(element('input', ''), {type: 'password', autocomplete: 'new-password', required: true, minLength: 4, maxLength: 64});
-    const status = element('p', '', 'error');
-    status.setAttribute('role', 'alert');
-    const save = element('button', locked ? 'Remove code' : 'Add code', locked ? '' : 'primary');
-    form.append(field(locked ? 'Current code' : 'Code (at least 4 characters)', code));
-    if (!locked) form.append(field('Type it again', again));
-    form.append(status, save);
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      save.disabled = true;
-      try {
-        const state = chatState();
-        if (locked) {
-          if (!await codeMatches(lockKey, code.value)) { status.textContent = wrong; return; }
-          const locks = {...state.locks};
-          delete locks[lockKey];
-          saveChats({...state, locks});
-        } else {
-          if (code.value !== again.value) { status.textContent = 'The two codes don’t match.'; return; }
-          const salt = hexOf2(crypto.getRandomValues(new Uint8Array(16)));
-          saveChats({...state, locks: {...state.locks, [lockKey]: {salt, hash: await codeHash(code.value, salt)}}});
-        }
-        draw();
-        saved(!locked);
-      } catch (error) { status.textContent = error.message; }
-      finally { save.disabled = false; }
-    });
-    section.append(form, element('small', 'A forgotten code can’t be recovered here, but removing the code needs it.', 'hint'));
+    const lock = chatState().locks[lockKey];
+    const locked = !!lock, device = deviceLock(lock);
+    const fail = (text) => { problem = text; draw(); };
+    const done = (added) => { pending = ''; problem = ''; draw(); saved(added); };
+    const switches = element('div', '', 'details-switches');
+    switches.append(checkbox(label, locked, async (wanted) => {
+      problem = '';
+      if (wanted) {
+        if ((deviceSupport ?? await deviceSupportReady) !== '') { pending = 'new'; draw(); return; }
+        try { save({credential: await createDeviceLock()}); done(true); }
+        catch { fail('Your screen lock didn’t confirm it, so the lock is still off.'); }
+        return;
+      }
+      if (!device) { pending = 'off'; draw(); return; }
+      if (await confirmDeviceLock(lock.credential)) { remove(); done(false); }
+      else fail(DEVICE_FAILED);
+    }, locked ? on : off));
+    if (locked && (device || deviceSupport === '')) {
+      switches.append(checkbox(DEVICE_LABEL, device, async (wanted) => {
+        problem = '';
+        if (wanted) { pending = 'device'; draw(); return; }
+        // Back to a code: the screen lock confirms it's you, then you choose the code.
+        if (await confirmDeviceLock(lock.credential)) { pending = 'new'; draw(); }
+        else fail(DEVICE_FAILED);
+      }, device ? 'Asks for this computer’s screen lock to open.' : 'Off · asks for a code instead.'));
+    }
+    section.append(switches);
+    if (deviceSupport) section.append(element('small', deviceSupport, 'hint'));
+    if (pending) {
+      const form = element('form', '', 'stack');
+      const code = Object.assign(element('input', ''), {type: 'password', autocomplete: 'new-password', required: true, minLength: 4, maxLength: 64});
+      const again = Object.assign(element('input', ''), {type: 'password', autocomplete: 'new-password', required: true, minLength: 4, maxLength: 64});
+      const status = element('p', problem, 'error');
+      status.setAttribute('role', 'alert');
+      const fresh = pending === 'new';
+      const go = element('button', fresh ? 'Save code' : pending === 'off' ? 'Turn off the lock' : 'Continue', 'primary');
+      const cancel = element('button', 'Cancel');
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => { pending = ''; problem = ''; draw(); });
+      form.append(field(fresh ? 'Code (at least 4 characters)' : 'Current code', code));
+      if (fresh) form.append(field('Type it again', again));
+      form.append(status, go, cancel);
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        go.disabled = true;
+        try {
+          if (fresh) {
+            if (code.value !== again.value) { status.textContent = 'The two codes don’t match.'; return; }
+            const salt = hexOf2(crypto.getRandomValues(new Uint8Array(16)));
+            save({salt, hash: await codeHash(code.value, salt)});
+            done(true);
+          } else if (!await codeMatches(lockKey, code.value)) status.textContent = wrong;
+          else if (pending === 'off') { remove(); done(false); }
+          else {
+            try { save({credential: await createDeviceLock()}); done(true); }
+            catch { status.textContent = 'Your screen lock didn’t confirm it, so this lock still uses its code.'; }
+          }
+        } catch (error) { status.textContent = error.message; }
+        finally { go.disabled = false; }
+      });
+      section.append(form);
+      requestAnimationFrame(() => code.focus());
+    } else if (problem) {
+      const status = element('p', problem, 'error');
+      status.setAttribute('role', 'alert');
+      section.append(status);
+    }
+    if (locked && !device) section.append(element('small', 'A forgotten code can’t be recovered here, but removing the code needs it.', 'hint'));
   };
   draw();
+  // The screen lock switch shows once this browser has said whether it can use one.
+  if (deviceSupport === null) deviceSupportReady.then(() => { if (section.isConnected && !pending) draw(); });
   return section;
 }
 

@@ -36,7 +36,7 @@ $token = (Get-Content $tokenFile -Raw).Trim()
 
 $env:FLUID_TOKEN = $token
 $env:FLUID_DB = Join-Path $data 'fluid.sqlite'
-$env:FLUID_BIND = '127.0.0.1'
+if (-not $env:FLUID_BIND) { $env:FLUID_BIND = '127.0.0.1' }
 $env:FLUID_PORT = "$Port"
 $server = Start-Process -FilePath $runner -ArgumentList 'server\main.py' -NoNewWindow -PassThru
 $url = "http://localhost:$Port"

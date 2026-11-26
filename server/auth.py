@@ -108,8 +108,11 @@ class Limiter:
     """Slows down guessing: after five misses from one address it waits 30 seconds, doubling up to 15 minutes.
     More than 60 misses in 10 minutes from everywhere together pauses password and setup-code sign-in for a minute."""
 
-    def __init__(self, clock=time.time):
+    def __init__(self, clock=time.time, overall=True):
         self.clock = clock
+        # overall=False (bearer tokens): only the address that missed waits, so someone guessing tokens from
+        # elsewhere can't stop your phone from syncing.
+        self.overall = overall
         self.lock = threading.Lock()
         self.misses = {}
         self.recent = []
@@ -120,7 +123,7 @@ class Limiter:
             self.recent = [moment for moment in self.recent if now - moment < 600]
             failures, until = self.misses.get(key, (0, 0))
             wait = max(0, until - now)
-            if len(self.recent) >= 60:
+            if self.overall and len(self.recent) >= 60:
                 wait = max(wait, 60 - (now - self.recent[-1]))
             return int(wait + .999)
 
@@ -147,6 +150,8 @@ class Auth:
         self.token = token
         self.clock = clock
         self.limiter = Limiter(clock)
+        # Wrong Authorization: Bearer tokens, counted apart from passwords so a phone with an old token only slows itself.
+        self.token_limiter = Limiter(clock, overall=False)
 
     # State
 
@@ -280,6 +285,19 @@ class Auth:
             return True
         pairing = self._get(db, "pairing")
         return bool(pairing) and hmac.compare_digest(_digest(value), pairing["hash"])
+
+    def bearer(self, db, client, value):
+        """An Authorization: Bearer token from a phone or script (never from the address or query string). Wrong
+        ones count toward a wait for that address, like wrong passwords: Refused(429) while it waits."""
+        wait = self.token_limiter.wait(client)
+        if wait:
+            raise Refused(429, "Too many wrong access tokens. Wait " + (f"{wait} seconds" if wait < 90 else f"{(wait + 59) // 60} minutes")
+                          + " and try again.")
+        if self.check_token(db, value):
+            self.token_limiter.success(client)
+            return True
+        self.token_limiter.miss(client)
+        return False
 
     def make_pairing(self, db):
         value = secrets.token_hex(32)

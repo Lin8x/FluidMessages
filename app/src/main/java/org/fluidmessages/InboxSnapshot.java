@@ -69,7 +69,8 @@ final class InboxSnapshot {
             if (!shown(folder, archived.contains(number), blocked.contains(number), Privacy.hidden(prefs, number, format),
                     entry.expires(), now)) continue;
             var old = entry.row();
-            String preview = Privacy.locked(prefs, number, format) ? "Locked · enter the passcode to read" : old.getPreview();
+            String locked = Privacy.lockedPreview(prefs, number, format);
+            String preview = locked != null ? locked : old.getPreview();
             boolean pin = pinned.contains(number);
             var row = new ThreadRow(old.getId(), old.getName(), old.getInitials(), preview, time.apply(entry.date()), old.getUnread(),
                 pin, old.getPhoto(), old.getPhotoUri(), photoRevision, old.getProtocol(), old.getAutomated(), old.getMembers());

@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="650" viewBox="0 0 720 650" role="img" aria-label="Every message shows how it was sent. Top: a message to Jo goes as a text through the phone carrier. It gets a red open lock that says Not locked, your carrier could read it. Bottom: a message to Nia goes through Matrix, an open chat service. It gets a green lock that says Locked, only you and Nia can read it.">
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".12"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .fly1 { animation: fly1 10s ease-in-out infinite; }
+      .fly2 { animation: fly2 10s ease-in-out infinite; }
+      @keyframes fly1 { 0% { opacity: 0; transform: translateX(-250px); } 4% { opacity: 1; transform: translateX(-250px); } 18%, 92% { opacity: 1; transform: none; } 97%, 100% { opacity: 0; transform: none; } }
+      @keyframes fly2 { 0%, 30% { opacity: 0; transform: translateX(-250px); } 34% { opacity: 1; transform: translateX(-250px); } 48%, 92% { opacity: 1; transform: none; } 97%, 100% { opacity: 0; transform: none; } }
+      .tag1 { animation: tag1 10s ease-out infinite; }
+      .tag2 { animation: tag2 10s ease-out infinite; }
+      @keyframes tag1 { 0%, 18% { opacity: 0; transform: translateY(8px); } 23%, 92% { opacity: 1; transform: none; } 97%, 100% { opacity: 0; } }
+      @keyframes tag2 { 0%, 48% { opacity: 0; transform: translateY(8px); } 53%, 92% { opacity: 1; transform: none; } 97%, 100% { opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { .fly1, .fly2, .tag1, .tag2 { animation: none !important; opacity: 1 !important; transform: none !important; } }
+    </style>
+  </defs>
+  <rect width="720" height="650" rx="32" fill="#f2f4f8"/>
+  <text x="360" y="64" fill="#141820" font-size="38" font-weight="800" text-anchor="middle">Every message shows how it went</text>
+  <text x="360" y="104" fill="#5b6070" font-size="23" text-anchor="middle">So you always know if it is locked.</text>
+
+  <!-- Lane 1: text (SMS) -->
+  <rect x="24" y="132" width="672" height="232" rx="26" fill="#fff" filter="url(#shadow)"/>
+  <text x="52" y="174" fill="#8a8f9c" font-size="20" font-weight="800" letter-spacing="1.2">TEXT (SMS) · THROUGH YOUR PHONE CARRIER</text>
+  <circle cx="78" cy="236" r="28" fill="#dfe3ec"/><text x="78" y="244" fill="#3a3e4a" font-size="20" font-weight="700" text-anchor="middle">You</text>
+  <circle cx="642" cy="236" r="28" fill="#ffe1cc"/><text x="642" y="244" fill="#a04a12" font-size="20" font-weight="700" text-anchor="middle">Jo</text>
+  <path d="M112 236 H606" stroke="#d3d7e0" stroke-width="3" stroke-dasharray="4 10" stroke-linecap="round"/>
+  <g class="fly1">
+    <rect x="370" y="210" width="226" height="52" rx="26" fill="#1fa84a"/>
+    <text x="483" y="245" fill="#fff" font-size="22" font-weight="600" text-anchor="middle">Running 5 min late!</text>
+  </g>
+  <g class="tag1">
+    <rect x="52" y="290" width="168" height="46" rx="23" fill="#d32f2f"/>
+    <g transform="translate(70 300)"><path d="M10 11V6a5 5 0 0 1 10 0" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/><rect x="0" y="11" width="16" height="13" rx="3" fill="#fff"/></g>
+    <text x="102" y="321" fill="#fff" font-size="20" font-weight="700">Not locked</text>
+    <text x="238" y="321" fill="#141820" font-size="21">Your carrier could read it.</text>
+  </g>
+
+  <!-- Lane 2: Matrix -->
+  <rect x="24" y="388" width="672" height="232" rx="26" fill="#fff" filter="url(#shadow)"/>
+  <text x="52" y="430" fill="#8a8f9c" font-size="20" font-weight="800" letter-spacing="1.2">MATRIX · AN OPEN CHAT SERVICE</text>
+  <circle cx="78" cy="492" r="28" fill="#dfe3ec"/><text x="78" y="500" fill="#3a3e4a" font-size="20" font-weight="700" text-anchor="middle">You</text>
+  <circle cx="642" cy="492" r="28" fill="#e6dcff"/><text x="642" y="500" fill="#5a3bbf" font-size="20" font-weight="700" text-anchor="middle">Nia</text>
+  <path d="M112 492 H606" stroke="#d3d7e0" stroke-width="3" stroke-dasharray="4 10" stroke-linecap="round"/>
+  <g class="fly2">
+    <rect x="370" y="466" width="226" height="52" rx="26" fill="#6c4cdc"/>
+    <text x="483" y="501" fill="#fff" font-size="22" font-weight="600" text-anchor="middle">Saved you a seat</text>
+  </g>
+  <g class="tag2">
+    <rect x="52" y="546" width="136" height="46" rx="23" fill="#1e8e3e"/>
+    <g transform="translate(70 556)"><path d="M3 11V7a5 5 0 0 1 10 0v4" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/><rect x="0" y="11" width="16" height="13" rx="3" fill="#fff"/></g>
+    <text x="96" y="577" fill="#fff" font-size="20" font-weight="700">Locked</text>
+    <text x="206" y="577" fill="#141820" font-size="21">Only you and Nia can read it.</text>
+  </g>
+</svg>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Plain http:// is allowed only so a person can connect this phone to their own FluidMessages Web at an http://
+  address (for testing at home, with a warning; see CompanionAddress). Android can't limit cleartext to an address
+  the person types in, so the limit is in the code: only the FluidMessages Web connections (CloudBackup, SyncJob,
+  GatewayClient, SyncMergeDevice) accept http://. Everything else (media, link previews, Matrix homeservers, WebDAV,
+  updates, GIF sites) still checks for https:// itself. Only the system's certificates are trusted, never user-added ones.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -176,6 +176,29 @@ function sampleConversation() {
   return card;
 }
 
+/** The setup guide's first page: an ordinary chat between two made-up friends, no service names or tags (ThemeEditor.kt). */
+const WELCOME_MESSAGES = [['Hi! Are we still on for lunch?', 'incoming'], ['Yes! Noon at the park?', 'sms'], ['Perfect. See you there!', 'incoming']];
+
+function welcomeConversation() {
+  const card = element('div', '', 'g-sample');
+  card.append(element('span', 'Maya Chen', 'g-sample-label'));
+  WELCOME_MESSAGES.forEach(([text, kind], index) => {
+    const bubble = element('span', text, 'g-bubble b-' + kind);
+    bubble.style.setProperty('--i', index);
+    card.append(bubble);
+  });
+  return card;
+}
+
+/** The first page's tips, as on the phone (OnboardingScreen.kt WelcomeWords). */
+const WELCOME_TIPS = (practice) => [
+  {icon: 'chat', title: 'Chat right from your browser', line: 'Your chats and calls, in one simple place'},
+  {icon: 'people', title: 'Reach friends on other chat apps too', line: 'We’ll show you how in a minute'},
+  {icon: 'practice', title: 'Practice with pretend chats first', line: 'Nothing in them is sent', run: practice}];
+
+/** What a chat service is, said where one is first named. */
+const CHAT_SERVICES_ARE = 'Chat services are other ways to message people over the internet, like Matrix or Email. You don’t need any to start.';
+
 /** Three chats on three services, each with its tag (WaysIllustration). */
 function waysIllustration() {
   const card = element('div', '', 'g-card g-ways');
@@ -1365,6 +1388,47 @@ function phoneShowcase(flow) {
   ], 'Connect your phone');
 }
 
+// ---- Communities, after the first community account ----
+
+/** The services whose accounts bring servers with channels and rooms (servers.js), as on the phone (CommunitiesIntro.kt). */
+const COMMUNITY_SERVICES = ['irc', 'matrix', 'xmpp'];
+
+/** Whether saving an account shows the Communities page: a new account on a community service, not shown before. */
+function communitiesIntroDue(protocol, isNew, seen = typeof prefs === 'object' && prefs?.communitiesIntroSeen === true) {
+  return !!isNew && !seen && COMMUNITY_SERVICES.includes(protocol);
+}
+
+/**
+ * The Communities page, full page with one Continue button. It used to be a setup guide step; now it shows once,
+ * right after the first IRC, Matrix, or XMPP account is saved, and any time from Settings → Help → Communities.
+ * [then] runs after Continue.
+ */
+function showCommunitiesIntro({then, markSeen = false} = {}) {
+  if (markSeen) {
+    prefs = {...prefs, communitiesIntroSeen: true};
+    api('settings', {prefs: {communitiesIntroSeen: true}}).then((result) => { companionSettings = result; }).catch(() => {});
+  }
+  const sheet = element('dialog', '', 'guide-dialog');
+  sheet.id = 'communities-intro';
+  document.body.append(sheet);
+  const close = () => {
+    flow.stop();
+    if (sheet.open) sheet.close();
+    sheet.remove();
+    if (then) then();
+  };
+  sheet.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
+  const page = [{title: 'Communities', subtitle: 'IRC networks, Matrix homeservers, and XMPP servers, each with its channels and rooms.',
+    body: (flow) => [communitiesShowcase(flow), guideTips([
+      {icon: 'people', title: 'Chats | Communities', line: 'The switch under Messages. Unread rooms count on Communities'},
+      {icon: 'folder', title: 'Tidy and sorted', line: 'Collapse a server, and sort by activity, name, or date joined'},
+      {icon: 'gear', title: 'In Chats too, if you like', line: 'Settings → Messaging → Show community chats in Chats'}]),
+    element('p', 'See this again any time in Settings → Help → Communities.', 'hint')],
+    actions: () => [['Continue', close]]}];
+  sheet.showModal();
+  const flow = guideFlow(sheet, {steps: page, brand: 'FluidMessages'});
+}
+
 // ---- First run ----
 
 /**
@@ -1411,24 +1475,22 @@ function showWelcome({at = 0} = {}) {
 
   const steps = [
     {title: 'Welcome', subtitle: 'Your chats and calls, all in one place, right in your browser.',
-      body: () => [sampleConversation(), element('p', 'New here? The sample inbox has fictional chats to click around in. Nothing in it is sent.', 'hint')],
+      // An ordinary chat, not the color preview: nothing here a new user has to know yet.
+      body: () => [welcomeConversation(), guideTips(WELCOME_TIPS(trySample))],
       actions: (flow) => [['Get started', () => flow.next()], ['Try the sample inbox', trySample]]},
     {title: 'Two tabs', subtitle: 'Calls and Messages, along the side or at the bottom.',
       body: (flow) => [tabsShowcase(flow), guideTips([
         {icon: 'phone', title: 'Calls', line: 'Recents, favorites, and contacts. Voice and video with Matrix, and meeting links'},
         {icon: 'people', title: 'Contacts you make', line: 'Calls → Contacts → New contact. Saved for every browser; a connected phone can add them too'},
         {icon: 'chat', title: 'Messages', line: 'Every chat in one place'},
-        {icon: 'gear', title: 'Settings', line: 'Accounts, themes, and an optional phone, next to the tabs'}])]},
+        {icon: 'gear', title: 'Settings', line: 'Accounts, themes, and an optional phone, next to the tabs'}]),
+      // The first page that names a chat service, so it says what one is.
+      element('p', CHAT_SERVICES_ARE, 'hint')]},
     {title: 'One inbox', subtitle: 'Chat services side by side, and texts too if you connect your phone.',
       body: () => [waysIllustration(), guideTips([
         {icon: 'chat', title: 'Chat services work right away', line: 'Matrix, XMPP, Email, and IRC, straight from this browser'},
         {icon: 'tag', title: 'Tags show how', line: 'Matrix, Email, SMS, and more'},
         {icon: 'laptop', title: 'Texts, if you like', line: 'Connect FluidMessages for Android and your texts join in'}])]},
-    {title: 'Communities', subtitle: 'IRC networks, Matrix homeservers, and XMPP servers, each with its channels and rooms.',
-      body: (flow) => [communitiesShowcase(flow), guideTips([
-        {icon: 'people', title: 'Chats | Communities', line: 'The switch under Messages. Unread rooms count on Communities'},
-        {icon: 'folder', title: 'Tidy and sorted', line: 'Collapse a server, and sort by activity, name, or date joined'},
-        {icon: 'gear', title: 'In Chats too, if you like', line: 'Settings → Messaging → Show community chats in Chats'}])]},
     {title: 'Stay organized', subtitle: 'Find the chats you want, and quiet the ones you don’t, for as long as you like.',
       body: (flow) => [filtersShowcase(flow), guideTips([
         {icon: 'tag', title: 'The filter button', line: 'Top right of the list: Unread, Favorites, Groups, Direct messages, and each service'},
@@ -1494,7 +1556,7 @@ function showWelcome({at = 0} = {}) {
         {icon: 'optional', title: 'Not needed', line: 'Chat services work here without a phone'}])],
       actions: (flow) => [['Continue', () => flow.next()], ['Connect your phone now', phoneGuide]]},
     {title: 'Chat services', subtitle: 'Sign in to the services you chat on. Passwords stay on your FluidMessages server. You can add more later in Settings.',
-      body: () => [chatServices()]},
+      body: () => [chatServices(), ...(typeof serviceBatteryCard === 'function' ? [serviceBatteryCard(phonePaired())] : [])]},
     {title: 'Calls', subtitle: 'Voice and video from this browser. Phone calls stay on your phone.',
       body: () => [meetingPicture(), callServices(), guideTips([
         {icon: 'phone', title: 'Phone calls stay on your phone', line: 'This browser can’t place phone calls. With your phone connected, Call in a text chat rings it so you can talk there.'}])]},
@@ -1601,11 +1663,9 @@ async function showSyncGuide({fromSettings = false, connectedStep = false} = {})
     {title: 'Enter these on your phone', subtitle: 'Copy the address and the pairing token into FluidMessages on your phone.',
       body: (flow) => {
         const out = [tokenIllustration()];
-        const https = location.protocol === 'https:';
-        out.push(copyRow('Address', origin, false));
-        if (!https || loopback) out.push(element('p', loopback
-          ? 'This address only works on this computer. Your phone needs the https:// address it can reach, for example one from a reverse proxy such as Caddy.'
-          : 'Your phone needs an https:// address. Put FluidMessages behind an HTTPS reverse proxy such as Caddy, then use that address.', 'notice'));
+        // The addresses this computer answers at (main.py phone_reach), each with a Copy button and plain-words help.
+        if (security.reach) out.push(phoneAddressCard(security.reach));
+        else if (!loopback) out.push(copyRow('Address', origin, false));
         if (token) {
           out.push(copyRow('Pairing token', token, true),
             element('p', 'Shown only now. Keep it private: it lets the phone read and send your messages.', 'hint'));
@@ -1660,7 +1720,7 @@ async function showSyncGuide({fromSettings = false, connectedStep = false} = {})
         check();
         return [linkIllustration('moving'), status, guideTips([
           {icon: 'chat', title: 'Turn on browser messaging', line: 'On the phone. It needs FluidMessages as the default SMS app.'},
-          {icon: 'wifi', title: 'Not connecting?', line: 'Check the https:// address and that the phone can reach it'},
+          {icon: 'wifi', title: 'Not connecting?', line: 'Check the address, and that the phone is on the same Wi-Fi (or can reach it another way)'},
           {icon: 'key', title: 'Token not accepted?', line: 'Go back and make a new one'}])];
       },
       actions: () => [['Finish later', close]]},

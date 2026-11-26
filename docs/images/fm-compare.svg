@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="760" viewBox="0 0 720 760" role="img" aria-label="The same chat with Ava, two ways. On the left, plain texting: Ava asks Movie at 8, you ask Which one, a like shows up as the sentence Liked Movie at 8, and Ava's answer The space one has no link to your question. There is no lock, so you can't tell who could read it. On the right, the same chat in FluidMessages: the like is a real heart on Ava's bubble, Ava's answer shows a reply card quoting Which one, and a green lock says only you and Ava can read it, because Ava uses FluidMessages too.">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".12"/></filter>
+    <linearGradient id="bub" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1fa84a"/><stop offset="1" stop-color="#1b8f40"/></linearGradient>
+    <style>text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }</style>
+  </defs>
+  <rect width="720" height="760" rx="32" fill="#f2f4f8"/>
+  <text x="360" y="66" fill="#141820" font-size="38" font-weight="800" text-anchor="middle">Same chat, two ways</text>
+
+  <!-- PLAIN TEXTING -->
+  <rect x="24" y="100" width="328" height="636" rx="28" fill="#fff" filter="url(#shadow)"/>
+  <text x="48" y="146" fill="#8a8f9c" font-size="20" font-weight="800" letter-spacing="1.2">PLAIN TEXTING</text>
+  <rect x="44" y="166" width="288" height="384" rx="22" fill="#f1f1f4"/>
+  <rect x="60" y="186" width="150" height="48" rx="24" fill="#dedfe5"/>
+  <text x="135" y="217" fill="#3a3e4a" font-size="21" text-anchor="middle">Movie at 8?</text>
+  <rect x="176" y="250" width="140" height="48" rx="24" fill="#c9cbd3"/>
+  <text x="246" y="281" fill="#3a3e4a" font-size="21" text-anchor="middle">Which one?</text>
+  <rect x="60" y="314" width="226" height="48" rx="24" fill="#dedfe5"/>
+  <text x="173" y="345" fill="#3a3e4a" font-size="20" text-anchor="middle">Liked “Movie at 8?”</text>
+  <rect x="60" y="378" width="170" height="48" rx="24" fill="#dedfe5"/>
+  <text x="145" y="409" fill="#3a3e4a" font-size="21" text-anchor="middle">The space one</text>
+  <text x="188" y="512" fill="#8a8f9c" font-size="18" text-anchor="middle">No lock. Who could read it?</text>
+  <g font-size="19" fill="#3a3e4a">
+    <g><circle cx="62" cy="600" r="14" fill="#fbe9e7"/><path d="M56 594 l12 12 M68 594 l-12 12" stroke="#b3261e" stroke-width="3.5" stroke-linecap="round"/><text x="86" y="607">No replies to one message</text></g>
+    <g><circle cx="62" cy="644" r="14" fill="#fbe9e7"/><path d="M56 638 l12 12 M68 638 l-12 12" stroke="#b3261e" stroke-width="3.5" stroke-linecap="round"/><text x="86" y="651">Reactions turn into words</text></g>
+    <g><circle cx="62" cy="688" r="14" fill="#fbe9e7"/><path d="M56 682 l12 12 M68 682 l-12 12" stroke="#b3261e" stroke-width="3.5" stroke-linecap="round"/><text x="86" y="695">No sign if it is private</text></g>
+  </g>
+
+  <!-- FLUIDMESSAGES -->
+  <rect x="368" y="100" width="328" height="636" rx="28" fill="#fff" filter="url(#shadow)"/>
+  <rect x="369.500" y="101.500" width="325" height="633" rx="26.500" fill="none" stroke="#1fa84a" stroke-width="3"/>
+  <text x="392" y="146" fill="#1b8f40" font-size="18" font-weight="800" letter-spacing="1">FLUIDMESSAGES</text>
+  <rect x="586" y="120" width="94" height="36" rx="18" fill="#1e8e3e"/>
+  <g transform="translate(598 127)"><path d="M3 9V6a4 4 0 0 1 8 0v3" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><rect x="0" y="9" width="14" height="11" rx="2.5" fill="#fff"/></g>
+  <text x="618" y="145" fill="#fff" font-size="16" font-weight="700">Locked</text>
+  <rect x="388" y="166" width="288" height="384" rx="22" fill="#eef8f1"/>
+  <rect x="404" y="186" width="150" height="48" rx="24" fill="#e1e4ea"/>
+  <text x="479" y="217" fill="#141820" font-size="21" text-anchor="middle">Movie at 8?</text>
+  <circle cx="550" cy="236" r="18" fill="#fff" stroke="#e0567a" stroke-width="2.5"/>
+  <text x="550" y="243" font-size="18" text-anchor="middle">❤️</text>
+  <rect x="520" y="266" width="140" height="48" rx="24" fill="url(#bub)"/>
+  <text x="590" y="297" fill="#fff" font-size="21" font-weight="600" text-anchor="middle">Which one?</text>
+  <rect x="404" y="334" width="214" height="104" rx="22" fill="#e1e4ea"/>
+  <rect x="418" y="346" width="186" height="42" rx="12" fill="#f4f5f8"/>
+  <rect x="418" y="346" width="5" height="42" rx="2.5" fill="#1fa84a"/>
+  <text x="434" y="374" fill="#5b6070" font-size="17">↩ You: Which one?</text>
+  <text x="420" y="421" fill="#141820" font-size="21">The space one 🚀</text>
+  <g transform="translate(404 494)"><path d="M3 8V5.5a3.5 3.5 0 0 1 7 0V8" fill="none" stroke="#1b7f3b" stroke-width="2.2" stroke-linecap="round"/><rect x="0" y="8" width="13" height="10" rx="2.5" fill="#1b7f3b"/></g>
+  <text x="424" y="511" fill="#1b7f3b" font-size="17" font-weight="600">Only you and Ava can read it</text>
+  <g font-size="19" fill="#141820" font-weight="600">
+    <g><circle cx="406" cy="600" r="14" fill="#1fa84a"/><path d="M399 600 l5 5 l10 -11" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><text x="430" y="607">Reply to one message</text></g>
+    <g><circle cx="406" cy="644" r="14" fill="#1fa84a"/><path d="M399 644 l5 5 l10 -11" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><text x="430" y="651">Real reactions</text></g>
+    <g><circle cx="406" cy="688" r="14" fill="#1fa84a"/><path d="M399 688 l5 5 l10 -11" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><text x="430" y="695">A lock on every chat</text></g>
+  </g>
+</svg>

@@ -9,7 +9,6 @@ import java.io.IOException
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.Locale
-import javax.net.ssl.HttpsURLConnection
 
 /**
  * This phone's side of the merge (SyncMerge): what it keeps, as items, and writing merged values back.
@@ -542,11 +541,11 @@ object SyncMergeRun {
 
     class HttpProblem(val code: Int, message: String) : IOException(message)
 
-    private fun open(prefs: SharedPreferences, endpoint: String): HttpsURLConnection {
+    private fun open(prefs: SharedPreferences, endpoint: String): java.net.HttpURLConnection {
         val origin = prefs.getString("server", "").orEmpty()
         val token = Privacy.token(prefs)
         if (!CloudBackup.paired(origin, token)) throw IOException("Pair FluidMessages Web first.")
-        val connection = URL("$origin/api/$endpoint").openConnection() as HttpsURLConnection
+        val connection = URL("$origin/api/$endpoint").openConnection() as java.net.HttpURLConnection
         connection.connectTimeout = 8000
         connection.readTimeout = 20000
         connection.instanceFollowRedirects = false

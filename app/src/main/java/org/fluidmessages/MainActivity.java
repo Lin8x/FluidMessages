@@ -344,7 +344,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         // Waits until the inbox has loaded, so it doesn't slow the first screen.
         if (Disappearing.anyTimers(prefs) || Disappearing.alarmSet(this)) handler.postDelayed(() ->
             new Thread(() -> Disappearing.sweep(getApplicationContext()), "fluid-disappear-start").start(), 4000);
-        if (state != null && state.containsKey("setupStep")) onboarding(state.getInt("setupStep"));
+        // The step's key is saved too, so a step added or removed since doesn't shift where setup reopens.
+        if (state != null && state.containsKey("setupStep"))
+            onboarding(OnboardingScreen.stepIndex(state.getString("setupKey"), state.getInt("setupStep")));
         else if (prefs.getBoolean("onboarded", false)) open(getIntent());
         else onboarding(0);
         getContentResolver().registerContentObserver(Telephony.Sms.CONTENT_URI, true, observer);
@@ -357,10 +359,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
-        if (page.equals("setup")) state.putInt("setupStep", setupStep);
+        if (page.equals("setup")) {
+            state.putInt("setupStep", setupStep);
+            state.putString("setupKey", OnboardingScreen.stepKey(setupStep));
+        }
     }
     @Override protected void onStart() {
         super.onStart();
+        started = true;
         if (prefs.getBoolean("lock", false) && !unlocked) authenticate();
         // The first companion sync waits a moment, so it doesn't compete with the inbox for the message store.
         handler.postDelayed(poll, 1500);
@@ -370,13 +376,29 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         new Thread(() -> DirectProtocols.foreground(this, true), "fluid-direct-start").start();
     }
     private boolean userLeaving;
+    /** Between onStart and onStop. */
+    private boolean started;
+    /** A fingerprint, face, or screen lock prompt for a chat, kind, or the private folder is up (deviceAuth). */
+    private boolean authPrompting;
+    /** FluidMessages itself opened the next screen (the photo picker, camera, a call, or Android settings). */
+    private boolean openingInside;
+    /** The chat you're in, whose unlocked locks stay open on its own pages (ChatLocks.stillOpen). */
+    private String lockOwner;
     @Override protected void onUserLeaveHint() {
         userLeaving = true;
         super.onUserLeaveHint();
     }
+    // Android calls onUserLeaveHint for screens the app opens itself too, so those are told apart here. Every
+    // startActivity and activity-result launch goes through this one.
+    @SuppressWarnings("deprecation")
+    @Override public void startActivityForResult(Intent intent, int request, Bundle options) {
+        openingInside = true;
+        super.startActivityForResult(intent, request, options);
+    }
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        openingInside = false;
         // Texting is on but another app is Android's default messages app: ask again, and show no messages. Once that's
         // settled outside the app (FluidMessages made the default in Android's settings), the ask gives way to the inbox.
         if (!TextingGate.staysOpen(page) && !textingGated() && page.equals("texting") && textingBack == null) inbox();
@@ -403,23 +425,35 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         handler.removeCallbacks(callPoll);
         SipAgent.setAppVisible(this, false);
         new Thread(() -> DirectProtocols.foreground(this, false), "fluid-direct-stop").start();
-        unlocked = false;
-        // Leaving the app or turning off the screen closes hidden chats and asks for chat codes again. Opening the
+        started = false;
+        // A fingerprint, face, or PIN prompt can stop this activity when Android shows its PIN screen as its own
+        // activity. That isn't leaving: cancelling the prompt here and asking again in onStart looped forever.
+        boolean prompting = authPrompting || lockPrompt != null;
+        if (!prompting) unlocked = false;
+        // Leaving the app or turning off the screen closes hidden chats and asks for chat locks again. Opening the
         // photo picker, camera, or a call from inside the app doesn't.
-        if (userLeaving || !getSystemService(android.os.PowerManager.class).isInteractive()) {
-            boolean wasOpen = Privacy.vaultOpen() || emptyHidden;
-            emptyHidden = false;
-            Privacy.forget();
-            invalidateRows();
-            if (wasOpen && !isChangingConfigurations()) inbox();
+        if (ChatLocks.leftApp(!getSystemService(android.os.PowerManager.class).isInteractive(), userLeaving, openingInside, prompting)) {
+            leftApp();
         }
         userLeaving = false;
+        openingInside = false;
         new Thread(() -> HiddenChats.sweep(getApplicationContext()), "fluid-hide-sweep").start();
+        super.onStop();
+    }
+
+    /** Locks everything again after you leave the app: hidden chats close, and a locked chat on screen goes back to the inbox. */
+    private void leftApp() {
+        unlocked = false;
+        boolean wasOpen = Privacy.vaultOpen() || emptyHidden || !Privacy.openedScopes().isEmpty();
+        emptyHidden = false;
+        Privacy.forget();
+        lockOwner = null;
+        invalidateRows();
         if (lockPrompt != null) {
             lockPrompt.cancel();
             lockPrompt = null;
         }
-        super.onStop();
+        if (wasOpen && !isChangingConfigurations() && prefs.getBoolean("onboarded", false)) inbox();
     }
     @Override protected void onDestroy() {
         handler.removeCallbacks(searchInbox);
@@ -441,7 +475,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "contact", "chatAppearance", "decoy" -> contactBack.run();
             case "contactEditor", "webContacts" -> { if (contactEditorBack != null) contactEditorBack.run(); else phone(); }
             case "sample" -> inbox();
-            case "theme", "backups", "messaging", "about", "protocols", "privacy", "reset", "calls", "gifs", "payments", "sounds" -> settings();
+            case "theme", "backups", "messaging", "about", "protocols", "privacy", "reset", "calls", "gifs", "payments", "sounds", "communities-intro" -> settings();
             case "recording", "meetingLinks" -> callsSettings();
             case "recordings" -> recordingSettings();
             case "locks", "hiddenChats", "decoyMode", "encryption", "requestsSettings" -> privacySettings();
@@ -580,6 +614,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void render(String screen) {
         // Leaving the Phone tab: calls missed while it was open were seen there.
         if ("phone".equals(page) && !"phone".equals(screen)) markPhoneSeen();
+        relockFor(screen, null);
         page = screen;
         inboxScreen = null;
         conversationScreen = null;
@@ -809,13 +844,27 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     /** Asks for the fingerprint, face, or screen lock, then runs ok; failed runs when it's cancelled or unavailable. */
-    private void deviceAuth(String title, Runnable ok, Runnable failed) {
-        var prompt = new android.hardware.biometrics.BiometricPrompt.Builder(this).setTitle(title)
+    private void deviceAuth(String title, Runnable ok, Runnable failed) { deviceAuth(title, null, ok, failed); }
+
+    private void deviceAuth(String title, String subtitle, Runnable ok, Runnable failed) {
+        // One prompt at a time: a second tap while one is up would stack them.
+        if (authPrompting) return;
+        var builder = new android.hardware.biometrics.BiometricPrompt.Builder(this).setTitle(title)
             .setAllowedAuthenticators(android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG
-                | android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL).build();
-        prompt.authenticate(new CancellationSignal(), getMainExecutor(), new android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
-            @Override public void onAuthenticationSucceeded(android.hardware.biometrics.BiometricPrompt.AuthenticationResult result) { ok.run(); }
-            @Override public void onAuthenticationError(int code, CharSequence message) { if (failed != null) failed.run(); }
+                | android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL);
+        if (subtitle != null) builder.setSubtitle(subtitle);
+        authPrompting = true;
+        builder.build().authenticate(new CancellationSignal(), getMainExecutor(), new android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+            @Override public void onAuthenticationSucceeded(android.hardware.biometrics.BiometricPrompt.AuthenticationResult result) {
+                authPrompting = false;
+                ok.run();
+            }
+            @Override public void onAuthenticationError(int code, CharSequence message) {
+                authPrompting = false;
+                // Cancelled because you left the app while it was up (onStop let it stay): that's leaving.
+                if (!started) { leftApp(); return; }
+                if (failed != null) failed.run();
+            }
         });
     }
 
@@ -2018,7 +2067,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 add.accept(hidden ? "Move out of private folder" : "Move to private folder", () -> setHidden(number, name, !hidden, this::inbox));
             }
             String scope = Privacy.chatScope(number);
-            add.accept(Privacy.hasCode(prefs, scope) ? "Change chat lock" : "Lock this chat", () -> chooseCode(scope, name, this::inbox));
+            if (Privacy.hasLock(prefs, scope)) add.accept("Turn off chat lock", () -> unlockLock(scope, "Turn off the lock", () -> {
+                Privacy.removeLock(prefs, scope);
+                invalidateRows();
+                inbox();
+            }));
+            else add.accept("Lock this chat", () -> turnOnLock(scope, name, this::inbox));
             add.accept("Disappearing messages · " + Disappearing.label(Disappearing.seconds(prefs, number)),
                 () -> SecurityDialogs.disappearing(this, prefs, "Disappearing messages", prefs.contains("disappear." + number)
                     ? Disappearing.seconds(prefs, number) : -1, Disappearing.label(Disappearing.globalSeconds(prefs)), seconds -> {
@@ -2321,7 +2375,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     String rowKey = prefs.getBoolean("combineProtocols", false) ? number + "\u001f" + format.family().name() : thread;
                     String meetingLine = MeetingKt.meetingPreview(message.getString("body"));
                     if (meetingLine == null) meetingLine = RichCardsKt.cardPreview(message.getString("body"));
-                    String preview = Privacy.locked(prefs, number, format) ? "Locked · enter the passcode to read"
+                    String lockedLine = Privacy.lockedPreview(prefs, number, format);
+                    String preview = lockedLine != null ? lockedLine
                         : drafts.containsKey(number) ? Drafts.preview(drafts.get(number))
                         : meetingLine != null ? meetingLine : message.getString("body");
                     boolean empty = message.optBoolean(EMPTY_CHANNEL);
@@ -2828,11 +2883,19 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         chat(number, routes.isEmpty() ? MessageProtocol.SMS : MessageProtocol.preferred(prefs, number, routes));
     }
 
+    /** Locks a chat again once you leave it: for another page, or for a different chat ([chat]). */
+    private void relockFor(String screen, String chat) {
+        if (Privacy.keepOpen(ChatLocks.stillOpen(Privacy.openedScopes(), lockOwner, screen, chat))) invalidateRows();
+        if (!ChatLocks.CHAT_PAGES.contains(screen)) lockOwner = null;
+        else if (chat != null) lockOwner = chat;
+    }
+
     private void chat(String number, MessageProtocol format) {
         if (textingGated()) return;
+        relockFor("chat", number);
         var scopes = Privacy.lockedScopes(prefs, number, format);
         if (!scopes.isEmpty()) {
-            askCode(scopes.get(0), () -> chat(number, format));
+            unlockScopes(scopes, "Open " + threadTitle(number), () -> chat(number, format));
             return;
         }
         address = number;
@@ -2927,6 +2990,45 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             : "Enter this chat's passcode";
         SecurityDialogs.askCode(this, prefs, title, code -> !distress(code) && Privacy.checkCode(prefs, scope, code),
             () -> { invalidateRows(); opened.run(); });
+    }
+
+    /**
+     * Opens the first of [scopes] (a chat's own lock, then its kind's), then runs [opened]. A screen-lock one asks for
+     * the phone's PIN, fingerprint, or face once and opens every screen-lock one in the list; a passcode one asks
+     * for its passcode. Cancelling leaves you where you were.
+     */
+    private void unlockScopes(List<String> scopes, String title, Runnable opened) {
+        String first = scopes.get(0);
+        if (!Privacy.usesScreenLock(prefs, first)) { askCode(first, opened); return; }
+        withPhoneLock(title, () -> {
+            for (String scope : scopes) if (Privacy.usesScreenLock(prefs, scope)) Privacy.markOpened(scope);
+            invalidateRows();
+            opened.run();
+        });
+    }
+
+    /** Asks for a lock's own unlock (the phone's screen lock or its passcode), then runs [ok]. */
+    private void unlockLock(String scope, String title, Runnable ok) { unlockScopes(List.of(scope), title, ok); }
+
+    private boolean phoneLockReady() { return getSystemService(KeyguardManager.class).isDeviceSecure(); }
+
+    /**
+     * The phone's PIN, pattern, password, fingerprint, or face, then [ok]. Without a screen lock on the phone, a page
+     * says so and offers Android's settings, since nothing else may open a lock that uses it.
+     */
+    private void withPhoneLock(String title, Runnable ok) {
+        if (!phoneLockReady()) {
+            SecurityDialogs.page(this, prefs, "Set a screen lock first", "This lock asks for your phone's PIN, pattern, "
+                + "fingerprint, or face, but your phone has no screen lock right now. Set one in your phone's settings, "
+                + "then try again.", "Open settings", this::openSecuritySettings, "Cancel", null);
+            return;
+        }
+        deviceAuth(title, "Use your phone's PIN, pattern, fingerprint, or face", ok, null);
+    }
+
+    private void openSecuritySettings() {
+        try { startActivity(new Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS)); }
+        catch (ActivityNotFoundException error) { toast("Open your phone's settings to set a screen lock"); }
     }
 
     /** Every live send goes through the protocol's shared transport, including replies and reactions. */
@@ -3350,7 +3452,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         String connectionAccount = sample ? (SampleInbox.connection(original).isEmpty() ? "" : ConnectionNow.SAMPLE_CHAT + original)
             : PhoneChat.chatServer(this, key);
         List<SettingsAction> connection = new ArrayList<>();
-        if (!sample && (CloudBackup.paired(this) || DirectProtocols.anyOn(prefs))) {
+        var channel = GatewayClient.channel(prefs, key);
+        boolean irc = channel != null || sample && original.startsWith("#");
+        // One person, not a group or channel: Block, and Ways to reach them (another address of theirs, linked here).
+        boolean group = irc || !members.isEmpty() || key.startsWith("mms:") || (sample ? SAMPLE_GROUPS.containsKey(original) : groupRoute(key) != null);
+        List<SettingsAction> ways = new ArrayList<>();
+        boolean linking = !sample && (CloudBackup.paired(this) || DirectProtocols.anyOn(prefs));
+        if (linking) {
             // Linked addresses let one contact be reached on several protocols, in one chat when combined.
             for (var link : GatewayClient.links(prefs, key)) {
                 var format = MessageProtocol.parse(link.optString("protocol"));
@@ -3387,12 +3495,15 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                         () -> confirmLeave(key, format, noun, server, returnToDetails)));
                     continue;
                 }
-                actions.add(action(format.label + " · " + link.optString("target"), (via.isEmpty() ? "" : via + " · ") + "Linked · tap to unlink",
+                (group ? actions : ways).add(action(format.label + " · " + link.optString("target"), (via.isEmpty() ? "" : via + " · ") + "Linked · tap to unlink",
                     () -> confirmUnlink(key, format, returnToDetails)));
             }
-            actions.add(action("Link an address", "Reach " + name + " on Matrix, XMPP, Email, or IRC",
-                () -> linkAddress(key, name, returnToDetails)));
         }
+        // The button above their linked addresses. With no chat account yet, it opens Accounts to add one first.
+        Runnable addWay = group || key.startsWith(Privacy.DECOY) ? null
+            : sample ? () -> toast("Sample: nothing is linked. Try it in a real chat.")
+            : linking ? () -> linkAddress(key, name, returnToDetails)
+            : () -> accounts(returnToDetails);
         if (!sample && key.startsWith(Privacy.DECOY)) {
             actions.add(action("Edit this decoy chat", "Only on this phone · never sent",
                 () -> editDecoy(name, returnToDetails)));
@@ -3401,8 +3512,6 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             securityActions(key, name, security, returnToDetails);
         }
         refreshContact = returnToDetails;
-        var channel = GatewayClient.channel(prefs, key);
-        boolean irc = channel != null || sample && original.startsWith("#");
         String topic = channel == null ? (irc ? "Antenna tuning tonight at seven" : "") : channel.optString("topic");
         String subtitle = irc ? (topic.isEmpty() ? "IRC channel" : "Topic: " + topic) + " · " + (members.size() + (channel == null ? 1 : 0)) + " people"
             : members.isEmpty() ? (sample ? "Sample contact" : phone ? key : "Conversation")
@@ -3411,14 +3520,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         if (phone && contact != null) {
             for (var field : ContactFields.forNumber(this, key)) info.add(action(field.getLabel(), field.getValue(), () -> useContactField(field, name)));
         }
-        // Block is for one person: a group's members each have it on their own details, reached from Members.
-        boolean group = irc || !members.isEmpty() || key.startsWith("mms:") || (sample ? SAMPLE_GROUPS.containsKey(original) : groupRoute(key) != null);
         BlockChoice block = group || key.startsWith(Privacy.DECOY) ? null : sample
             ? new BlockChoice(name, sampleBlocked(original), on -> setSampleBlocked(original, on))
             : new BlockChoice(name, list("blocked").contains(key), on -> setBlocked(List.of(key), on));
         ConversationDetails.mount(root, prefs, name, initials(name), subtitle, sample ? samplePhoto(name) : 0,
             contact == null ? null : contact.photo(), key, reachOptions(key, original, name, sample),
-            phone ? () -> editContact(key) : null, actions, members, security, info, block, connectionAccount, connection);
+            phone ? () -> editContact(key) : null, actions, members, security, info, block, connectionAccount, connection,
+            ways, addWay, ReachWays.detail(linking || sample));
     }
 
     /** The Connections page, from the inbox's filter menu: every server, with its status, a switch, and Reconnect. */
@@ -3775,25 +3883,69 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                         runOnUiThread(() -> { toast(name + " is hidden"); refresh.run(); });
                     }, "fluid-hide").start(), "Cancel", null)));
         }
-        String scope = Privacy.chatScope(key);
-        boolean coded = Privacy.hasCode(prefs, scope);
-        security.add(action(coded ? "Chat lock" : "Turn on chat lock", coded ? "On · change or remove it"
-            : "Hide previews and ask for a passcode to open", () -> chooseCode(scope, name, refresh)));
+        lockRows(Privacy.chatScope(key), name, "this chat", "Chat lock", security, refresh);
     }
 
-    /** Sets, changes, or removes a chat or protocol code. Changing one first asks for the current code. */
-    private void chooseCode(String scope, String name, Runnable done) {
-        boolean has = Privacy.hasCode(prefs, scope);
-        Runnable edit = () -> SecurityDialogs.code(this, prefs, (has ? "New passcode for " : "Passcode for ") + name,
-            has ? "Leave it empty to turn off the lock." : "You'll be asked for it each time you open the app.", true, 4, has,
-            value -> new Thread(() -> {
+    /**
+     * A lock's switches, the same in a chat's details and in Settings → Chat locks: the lock itself, and once it's on,
+     * "Use your phone's screen lock" under it. [what] is "this chat" or "these chats".
+     */
+    private void lockRows(String scope, String name, String what, String label, List<SettingsAction> rows, Runnable done) {
+        boolean locked = Privacy.hasLock(prefs, scope);
+        boolean screen = Privacy.usesScreenLock(prefs, scope);
+        boolean one = what.equals("this chat");
+        rows.add(toggleRow(label, !locked ? (one ? "Off · turn on to hide its preview and ask to unlock before it opens"
+                : "Off · turn on to hide their previews and ask to unlock before they open")
+                : screen ? "On · asks for your phone's PIN, fingerprint, or face to open " + what
+                : "On · asks for a passcode to open " + what, locked, () -> {
+            if (locked) unlockLock(scope, "Turn off the lock", () -> {
+                Privacy.removeLock(prefs, scope);
+                invalidateRows();
+                done.run();
+            });
+            else turnOnLock(scope, name, done);
+        }));
+        if (!locked) return;
+        boolean ready = phoneLockReady();
+        rows.add(toggleRow("Use your phone's screen lock", screen ? "Ask for your phone's PIN, fingerprint, or face to open " + what
+            : ready ? "Off · asks for a FluidMessages passcode instead"
+            : "Off · your phone has no screen lock. Set one in your phone's settings to use it here.", screen, () -> {
+            if (screen) unlockLock(scope, "Use a passcode instead", () -> newPasscode(scope, name, false, done));
+            else if (!ready) openSecuritySettings();
+            else unlockLock(scope, "Use your phone's screen lock", () -> withPhoneLock("Use your phone's screen lock", () -> {
+                Privacy.setScreenLock(prefs, scope);
+                invalidateRows();
+                done.run();
+            }));
+        }));
+    }
+
+    /**
+     * Turns a chat or kind lock on. It uses the phone's screen lock, asking for it once to confirm; a phone without a
+     * screen lock gets a passcode instead, and the passcode page says why.
+     */
+    private void turnOnLock(String scope, String name, Runnable done) {
+        if (!phoneLockReady()) { newPasscode(scope, name, true, done); return; }
+        withPhoneLock("Lock " + name, () -> {
+            Privacy.setScreenLock(prefs, scope);
+            invalidateRows();
+            done.run();
+        });
+    }
+
+    /** A new passcode for a lock, which replaces the screen lock if it used that. */
+    private void newPasscode(String scope, String name, boolean noScreenLock, Runnable done) {
+        SecurityDialogs.code(this, prefs, "Passcode for " + name, (noScreenLock
+                ? "Your phone has no screen lock, so this lock uses a passcode. To use your PIN, fingerprint, or face, set a "
+                    + "screen lock in your phone's settings first. " : "")
+                + "You'll be asked for it each time you open " + (scope.startsWith("protocol:") ? "these chats." : "this chat."),
+            true, 4, false, value -> new Thread(() -> {
                 try {
                     Privacy.setCode(prefs, scope, value);
                     invalidateRows();
-                    runOnUiThread(() -> { toast(value.isEmpty() ? "Lock turned off" : "Passcode saved"); done.run(); });
+                    runOnUiThread(() -> { toast("Passcode saved"); done.run(); });
                 } catch (Exception error) { runOnUiThread(() -> toast("Could not save the passcode")); }
             }, "fluid-set-code").start());
-        if (has) askCode(scope, edit); else edit.run();
     }
 
     /** Opens the made-up conversation editor, for a new chat (name null) or an existing one. */
@@ -3878,7 +4030,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
 
     private String lockSummary() {
         long services = SmsCrypto.PROTOCOLS.stream().filter(format -> format != MessageProtocol.MMS
-            && Privacy.hasCode(prefs, Privacy.protocolScope(format))).count();
+            && Privacy.hasLock(prefs, Privacy.protocolScope(format))).count();
         return services == 0 ? "Lock a chat from its details, or every chat of one kind here"
             : services + (services == 1 ? " kind of chat is locked" : " kinds of chats are locked");
     }
@@ -3895,13 +4047,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 MessageProtocol.IRC)) {
             String scope = Privacy.protocolScope(format);
             String label = format == MessageProtocol.SMS ? "All texts" : "All " + format.label + " chats";
-            codes.add(action(label, Privacy.hasCode(prefs, scope) ? "Locked · change or remove the passcode" : "Not locked",
-                () -> chooseCode(scope, label, this::locksSettings)));
+            lockRows(scope, label.toLowerCase(Locale.ROOT), "these chats", label, codes, this::locksSettings);
         }
         subpage("locks", "Chat locks", List.of(
-            new SettingsSection("How it works", List.of(new SettingsAction("Locked chats ask for a passcode",
-                "Their previews are hidden in the inbox, and they ask again each time you come back to the app. To lock one chat, "
-                    + "open its details and choose Lock this chat.", () -> {}, true, null))),
+            new SettingsSection("How it works", List.of(new SettingsAction("Locked chats ask you to unlock them",
+                "With your phone's PIN, fingerprint, or face, or with a passcode you choose. Their previews are hidden in the inbox, "
+                    + "and they lock again as soon as you leave the chat or the app. To lock one chat, open its details and turn on "
+                    + "Chat lock.", () -> {}, true, null))),
             new SettingsSection("Lock every chat of one kind", codes)));
     }
 
@@ -4469,8 +4621,16 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             new SettingsSection("Help", List.of(
                 action("Sample inbox", "Practice with made-up chats and calls. Nothing is sent.", this::sampleInbox),
                 action("Setup guide", "A quick tour of what FluidMessages can do", () -> onboarding(0)),
+                action("Communities", "Servers with their channels and rooms, beside your chats", this::communitiesIntro),
                 action("About and updates", "Version and updates", this::about),
                 action("Reset or erase", "Start over with default settings, or remove everything", this::resetPage)))));
+    }
+
+    /** Settings → Help → Communities: the page that shows once after the first IRC, Matrix, or XMPP account. */
+    private void communitiesIntro() {
+        render("communities-intro");
+        heading("Communities", "Back", this::settings);
+        CommunitiesIntro.mount(root, prefs, this::settings);
     }
 
     private void resetPage() {
@@ -5229,6 +5389,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             @Override public void onAuthenticationError(int code, CharSequence message) {
                 if (prompt != lockPrompt) return;
                 lockPrompt = null;
+                // Cancelled because you left the app while it was up: lock everything, and ask again when you're back.
+                if (!started) { leftApp(); return; }
                 finish();
             }
         });
@@ -5545,6 +5707,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             else dialContact(number);
             return;
         }
+        // Choosing a SIM (chooseSim): opens the choice once allowed; without it, texts keep using the default SIM.
+        if (request == 13) {
+            if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) { if (page.equals("chat")) chooseSim(); }
+            else toast("Without phone access, FluidMessages can’t list your SIMs, so texts use your default SIM");
+            return;
+        }
         if (request == CALL_LOG_PERMISSION) { if (page.equals("phone")) phone(); return; }
         if (request == NOTIFICATION_PERMISSION) { if (page.equals("sounds")) soundsSettings(); return; }
         if (request == PICKER_CONTACT_PERMISSION) {
@@ -5586,12 +5754,23 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 action("Enter address and link code", "If you already have a link code", () -> companion(back, true))))));
             return;
         }
-        item(root, text("In FluidMessages Web, open Settings → Phone and other devices → Connect your phone, then enter the web address (it starts with https://) and the link code here. "
+        item(root, text("In FluidMessages Web, open Settings → Phone and other devices → Connect your phone, then enter the address it shows and the link code here. "
             + "Linking turns on cloud backups. Browser messaging also syncs the newest 2,000 texts and sends texts you write on the web.", 16, uiColors().muted()));
         EditText url = field("https://messages.example.net");
         url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         url.setText(prefs.getString("server", ""));
         item(root, url);
+        // An http:// address still saves; this says what that means, right under the address, while you type.
+        TextView plainWarning = text(CompanionAddress.PLAIN_WARNING, 15, uiColors().ink());
+        plainWarning.setVisibility(CompanionAddress.plain(url.getText().toString()) ? View.VISIBLE : View.GONE);
+        item(root, plainWarning);
+        url.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) {}
+            @Override public void afterTextChanged(android.text.Editable value) {
+                plainWarning.setVisibility(CompanionAddress.plain(value.toString()) ? View.VISIBLE : View.GONE);
+            }
+        });
         EditText token = field("Link code");
         token.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
         token.setText(Privacy.token(prefs));
@@ -5629,20 +5808,17 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
      */
     private String saveCompanion(String address, String pairingToken, boolean messaging) {
         if (messaging && !hasRole()) return "To text from a browser, make FluidMessages your texting app first. Or turn browser messaging off to link for backups only.";
-        try {
-            var endpoint = new java.net.URI(address.trim());
-            String token = pairingToken.trim();
-            if (!"https".equalsIgnoreCase(endpoint.getScheme()) || endpoint.getHost() == null
-                || endpoint.getUserInfo() != null || endpoint.getQuery() != null || endpoint.getFragment() != null
-                || endpoint.getPath() != null && !endpoint.getPath().matches("/?") || token.length() < 32) {
-                throw new IllegalArgumentException();
-            }
-            prefs.edit().putString("server", "https://" + endpoint.getRawAuthority())
-                .putString("token", Privacy.seal(prefs, token))
-                .putBoolean("syncSms", messaging).apply();
-            SyncJob.reschedule(this);
-            return null;
-        } catch (Exception error) { return "Enter the web address (it starts with https://) and the link code from FluidMessages Web’s Settings"; }
+        var checked = CompanionAddress.check(address);
+        String token = pairingToken.trim();
+        if (checked == null || token.length() < 32) {
+            return "Enter the address FluidMessages Web shows (like https://messages.example.net or http://192.168.1.20:8080) and the link code from its Settings";
+        }
+        // Keeps the scheme you typed: https://, or http:// for testing at home (the form shows a warning for it).
+        prefs.edit().putString("server", checked.getOrigin())
+            .putString("token", Privacy.seal(prefs, token))
+            .putBoolean("syncSms", messaging).apply();
+        SyncJob.reschedule(this);
+        return null;
     }
 
     /** Asks the saved FluidMessages Web for its backup list, which needs the token, then sends the first sync. */
@@ -5650,7 +5826,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         new Thread(() -> {
             String problem = null;
             try { CloudBackup.targets(this); }
-            catch (Exception error) { problem = "Couldn't reach FluidMessages Web. Check the web address and the link code, and that the address starts with https://"; }
+            catch (Exception error) { problem = "Couldn't reach FluidMessages Web. Check the address and the link code, and that this phone can reach that computer (for an address like http://192.168.1.20:8080, the same Wi-Fi)."; }
             // Combines this phone's settings with the web's now, so the guide can go straight to any differences.
             if (problem == null) try { SyncMergeRun.run(getApplicationContext(), true); } catch (Exception ignored) {}
             String result = problem;
@@ -5731,7 +5907,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 SyncJob.sync(getApplicationContext());
                 if (report) runOnUiThread(() -> toast("FluidMessages Web synced"));
             } catch (Exception error) {
-                if (report) runOnUiThread(() -> toast("Could not sync. Check the web address and the link code, and that the address starts with https://"));
+                if (report) runOnUiThread(() -> toast("Could not sync. Check the address and the link code, and that this phone can reach FluidMessages Web."));
             } finally {
                 runOnUiThread(() -> syncing = false);
             }

@@ -5,7 +5,7 @@ import java.io.File;
 import java.io.IOException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import javax.net.ssl.HttpsURLConnection;
+import java.net.HttpURLConnection;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -23,9 +23,8 @@ final class CloudBackup {
         return paired(prefs.getString("server", ""), Privacy.token(prefs));
     }
 
-    static boolean paired(String origin, String token) { return hasTlsScheme(origin) && token.trim().length() >= 32; }
-
-    private static boolean hasTlsScheme(String origin) { return origin.regionMatches(true, 0, "https://", 0, 8); }
+    /** An https:// address (or http:// for testing at home, see CompanionAddress) and a link code. */
+    static boolean paired(String origin, String token) { return CompanionAddress.usable(origin) && token.trim().length() >= 32; }
 
     static JSONArray targets(Context context) throws Exception {
         var connection = connect(context, "", "GET");
@@ -75,17 +74,17 @@ final class CloudBackup {
         } finally { connection.disconnect(); }
     }
 
-    private static HttpsURLConnection connect(Context context, String suffix, String method) throws Exception {
+    private static HttpURLConnection connect(Context context, String suffix, String method) throws Exception {
         return connect(context, suffix, method, null);
     }
 
-    private static HttpsURLConnection connect(Context context, String suffix, String method, String expectedOrigin) throws Exception {
+    private static HttpURLConnection connect(Context context, String suffix, String method, String expectedOrigin) throws Exception {
         var prefs = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
         var settings = prefs.getAll();
         String origin = settings.get("server") instanceof String value ? value : "";
-        if (!hasTlsScheme(origin)) throw new IOException("Pair an FluidMessages Web first");
+        if (!CompanionAddress.usable(origin)) throw new IOException("Pair an FluidMessages Web first");
         if (expectedOrigin != null && !expectedOrigin.equals(origin)) throw new IOException("The FluidMessages Web has changed");
-        var connection = (HttpsURLConnection) new URL(origin + "/api/backups" + suffix).openConnection();
+        var connection = (HttpURLConnection) new URL(origin + "/api/backups" + suffix).openConnection();
         connection.setInstanceFollowRedirects(false);
         connection.setConnectTimeout(10000);
         connection.setReadTimeout(195000);
@@ -95,7 +94,7 @@ final class CloudBackup {
         return connection;
     }
 
-    private static void require(HttpsURLConnection connection, int expected) throws IOException {
+    private static void require(HttpURLConnection connection, int expected) throws IOException {
         int actual = connection.getResponseCode();
         if (actual != expected) {
             throw new IOException(actual == 404 ? "Destination is missing or has no backups"

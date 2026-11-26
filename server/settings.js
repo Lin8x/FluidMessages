@@ -79,6 +79,9 @@ const SETTINGS_GROUPS = [
   ['Help', [
     {id: 'sample', icon: 'sample', title: 'Sample inbox', summary: 'Practice with made-up chats. Nothing is sent.', run: () => startSample()},
     {id: 'guide', icon: 'guide', title: 'Setup guide', summary: 'A quick tour of what FluidMessages can do', run: leaveSettingsThen(() => showWelcome())},
+    // The page that shows once after the first IRC, Matrix, or XMPP account (welcome.js), any time.
+    {id: 'communities', icon: 'messaging', title: 'Communities', summary: 'Servers with their channels and rooms, beside your chats',
+      run: () => showCommunitiesIntro()},
     {id: 'about', icon: 'about', title: 'About and updates', summary: 'FluidMessages Web on your server', page: aboutPage},
     {id: 'reset', icon: 'reset', title: 'Reset or erase', summary: 'Start over with default settings, or remove everything', page: resetPage}]],
 ];
@@ -312,7 +315,24 @@ function ircCallsCard() {
   return card;
 }
 
-const PROTOCOL_BLURBS = {matrix: 'Chat, groups, and calls', xmpp: 'Jabber and XMPP chat', email: 'Any IMAP and SMTP mailbox', irc: 'Channels and private messages'};
+// How chat services and battery go together, the same words as the phone's (ServiceBattery.kt): turning a service on
+// costs nothing; only a signed-in account connects, and this server can hold those connections for the phone.
+const SERVICE_BATTERY = {
+  title: 'What about battery?',
+  lines: (paired) => ['Turning a service on uses no battery by itself. Only an account you sign in to connects.',
+    'To get new messages, a chat service needs a connection that stays open. On your phone, that keeps it awake.',
+    paired ? 'FluidMessages Web is set up, so the computer it runs on holds those connections for you. Your phone only checks in now and then.'
+      : 'FluidMessages Web can run on a computer that stays on and hold those connections for you. Then your phone only checks in now and then.'],
+};
+
+function serviceBatteryCard(paired) {
+  const card = settingsCard(SERVICE_BATTERY.title);
+  card.classList.add('service-battery');
+  for (const line of SERVICE_BATTERY.lines(paired)) card.append(element('p', line, 'muted'));
+  return card;
+}
+
+const PROTOCOL_BLURBS ={matrix: 'Chat, groups, and calls', xmpp: 'Jabber and XMPP chat', email: 'Any IMAP and SMTP mailbox', irc: 'Channels and private messages'};
 
 function waysPage(settings) {
   const paired = settings.phone.paired;
@@ -349,7 +369,7 @@ function waysPage(settings) {
       + 'red for not encrypted. Every chat’s Security section says the same.'), locked));
   if (locked) conversations.append(followingPhoneNote());
   const order = element('p', 'New chats use the account you pick in New chat. A protocol that’s turned off stays readable.', 'muted');
-  return [texts, internetCard, conversations, order];
+  return [texts, internetCard, serviceBatteryCard(paired), conversations, order];
 }
 
 // The phone's Ways to call (Calling.Method): Matrix and meeting links work from this browser, so they're switches here,
@@ -431,11 +451,13 @@ function addPaymentPage(context) {
 
 function chatLocksPage() {
   const how = settingsCard('How it works');
-  how.append(element('strong', 'Locked chats ask for a passcode', 'privacy-lead'), element('p', 'Their previews are hidden in the inbox and '
-    + 'search, and they ask again each time you come back to them. To lock one chat, open its details and add a chat code.', 'muted'));
+  how.append(element('strong', 'Locked chats ask you to unlock them', 'privacy-lead'), element('p', 'With this computer’s screen lock '
+    + 'or a code. Their previews are hidden in the inbox and search, and they lock again when you leave them. To lock one chat, '
+    + 'open its details and turn on Chat lock.', 'muted'));
   const kinds = settingsCard('Lock every chat of one kind');
   for (const [kind, label] of LOCK_KINDS) {
-    kinds.append(settingsLink('lock-' + kind, webChats.locks?.[serviceLock(kind)] ? 'Locked · change or remove the passcode' : 'Not locked'));
+    kinds.append(settingsLink('lock-' + kind, !webChats.locks?.[serviceLock(kind)] ? 'Not locked'
+      : deviceLock(webChats.locks[serviceLock(kind)]) ? 'Locked · with this computer’s screen lock' : 'Locked · with a passcode'));
   }
   const relock = element('button', 'Lock them again now');
   relock.type = 'button';
@@ -448,9 +470,10 @@ function kindLockPage(kind, label) {
   const card = settingsCard('');
   const lower = label.charAt(0).toLowerCase() + label.slice(1);
   lockCodeForm(card, serviceLock(kind), {
-    title: 'Passcode',
-    on: 'Locked. ' + label + ' ask for this passcode before they open, and their previews are hidden. A chat with its own code asks for that one.',
-    off: 'Add a passcode to lock ' + lower + '. They ask for it before they open, and their previews are hidden in the inbox and search.',
+    title: label,
+    label: 'Lock ' + lower,
+    on: 'On. ' + label + ' ask you to unlock them before they open, and their previews are hidden. A chat with its own lock asks for that one.',
+    off: 'Off. Turn it on to hide their previews and ask before they open.',
     wrong: 'That isn’t the passcode.',
     saved: (added) => { unlockedAddress = ''; showMessages(true); say(added ? label + ' are locked.' : label + ' are unlocked.'); },
   });

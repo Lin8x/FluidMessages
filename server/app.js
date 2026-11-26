@@ -1392,7 +1392,12 @@ async function signOut() {
 get('folder').addEventListener('change', showThreads);
 get('search').addEventListener('input', showThreads);
 get('new').addEventListener('click', () => openNewChat());
-get('back').addEventListener('click', () => { delete get('workspace').dataset.thread; get('threads').querySelector('[aria-current="true"]')?.focus(); });
+get('back').addEventListener('click', () => {
+  delete get('workspace').dataset.thread;
+  // Back to the chat list locks a locked chat again, so opening it asks again (chats.js).
+  if (typeof leaveChatLock === 'function') leaveChatLock();
+  get('threads').querySelector('[aria-current="true"]')?.focus();
+});
 get('open-queue').addEventListener('click', () => {
   get('queue-status').textContent = '';
   get('queue').showModal();

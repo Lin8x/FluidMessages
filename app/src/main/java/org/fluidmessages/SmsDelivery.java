@@ -90,8 +90,8 @@ public final class SmsDelivery extends BroadcastReceiver {
     /** What may be shown about a text from [address] right now (NotificationContent). Anything unsure shows nothing. */
     static NotificationContent.Guard guard(SharedPreferences preferences, String address) {
         try {
-            boolean code = Privacy.hasCode(preferences, Privacy.chatScope(address))
-                || Privacy.hasCode(preferences, Privacy.protocolScope(MessageProtocol.SMS));
+            boolean code = Privacy.hasLock(preferences, Privacy.chatScope(address))
+                || Privacy.hasLock(preferences, Privacy.protocolScope(MessageProtocol.SMS));
             boolean decoy = Privacy.decoyMode(preferences) && !Privacy.decoyAllowed(preferences).contains(address);
             return new NotificationContent.Guard(preferences.getBoolean(NotificationContent.PREF, true),
                 preferences.getBoolean("lock", false), HiddenChats.addressHidden(preferences, address)

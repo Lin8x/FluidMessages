@@ -122,7 +122,7 @@ object SyncGuideScreen {
                                         Tip(TipIcon.LAPTOP, "The desktop app", "Open FluidMessages on your computer"),
                                         Tip(TipIcon.FOLDER, "Docker", "docker compose up -d, on a server or NAS"),
                                         Tip(TipIcon.TAG, "From the source", "Run scripts/web-app"),
-                                        Tip(TipIcon.LOCK, "Your phone needs HTTPS", "An https:// address, for example through Caddy"),
+                                        Tip(TipIcon.LOCK, "https:// is safest", "http:// works for testing at home, on the same Wi-Fi"),
                                         Tip(TipIcon.PRACTICE, "How it works", "The setup guide, in your browser") { learnWeb.run() }), appearance.speed)
                                 }
                             }
@@ -132,7 +132,7 @@ object SyncGuideScreen {
                                     Tips(listOf(
                                         Tip(TipIcon.PHONE, "Connect your phone", "Under Your phone. It asks for a password first if there isn’t one."),
                                         Tip(TipIcon.LOCK, "Copy the link code", "Shown only once. Keep it private."),
-                                        Tip(TipIcon.LAPTOP, "Note the address", "The guide there shows it too, with a Copy button")), appearance.speed)
+                                        Tip(TipIcon.LAPTOP, "Note the address", "Like http://192.168.1.20:8080. The guide there shows it, with a Copy button")), appearance.speed)
                                 }
                             }
                             "enter" -> {
@@ -140,6 +140,11 @@ object SyncGuideScreen {
                                     OutlinedTextField(address, { address = it.trim(); problem = null }, Modifier.fillMaxWidth(), singleLine = true,
                                         label = { Text("Address") }, placeholder = { Text("https://messages.example.net") },
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+                                }
+                                // An http:// address still saves; this says what that means while you type.
+                                if (CompanionAddress.plain(address)) item {
+                                    Text(CompanionAddress.PLAIN_WARNING, color = scheme.onSurface, style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.fillMaxWidth().background(scheme.surfaceContainerHigh, RoundedCornerShape(14.dp)).padding(14.dp))
                                 }
                                 item {
                                     OutlinedTextField(token, { token = it.trim(); problem = null }, Modifier.fillMaxWidth(), singleLine = true,
@@ -169,7 +174,7 @@ object SyncGuideScreen {
                                 if (!result.isNullOrEmpty()) item {
                                     Tips(listOf(
                                         Tip(TipIcon.LAPTOP, "Is FluidMessages Web running?", "And can this phone reach its address?"),
-                                        Tip(TipIcon.LOCK, "Does the address start with https://?", "Your phone only connects to secure addresses"),
+                                        Tip(TipIcon.LOCK, "Same Wi-Fi?", "For an address like http://192.168.1.20:8080, the phone and computer need the same Wi-Fi"),
                                         Tip(TipIcon.FOLDER, "Change the address or link code", "Go back a step") { back.run() }), appearance.speed)
                                 }
                             }
@@ -179,6 +184,8 @@ object SyncGuideScreen {
                                     Tips(listOf(
                                         Tip(TipIcon.CHAT, "Texts on the web", if (messaging) "They show up within a few minutes" else "Turn on browser messaging to see them there"),
                                         Tip(TipIcon.FOLDER, "Cloud backups", "Settings → Backups"),
+                                        *(if (CompanionAddress.plain(address)) arrayOf(Tip(TipIcon.LOCK, "Not private on shared Wi-Fi",
+                                            "An http:// address is fine for testing at home. Use https:// for everyday use.")) else emptyArray()),
                                         *(if (SyncPending.count(prefs) > 0) arrayOf(Tip(TipIcon.PRACTICE, "Choose what to keep",
                                             "Some settings differ from FluidMessages Web") { review.run() }) else emptyArray()),
                                         Tip(TipIcon.OPTIONAL, "Change it later", "Settings → FluidMessages Web")), appearance.speed)

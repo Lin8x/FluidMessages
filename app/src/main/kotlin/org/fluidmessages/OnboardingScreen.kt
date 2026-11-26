@@ -75,7 +75,11 @@ object OnboardingScreen {
                             }
                         }
                         when (key) {
-                            "welcome" -> item { SampleConversation(appearance) }
+                            // An ordinary chat, not the color preview: nothing here a new user has to know yet.
+                            "welcome" -> {
+                                item { WelcomeConversation(appearance) }
+                                item { Tips(WelcomeWords.tips, appearance.speed) }
+                            }
                             "texting" -> item { TextingStepCard(allowTexting) }
                             "permissions" -> item { PermissionsCard("Allow now", basicPermissions, allowNotifications) }
                             "later" -> item { PermissionsCard("Now or later", laterPermissions, allowNotifications) }
@@ -98,16 +102,8 @@ object OnboardingScreen {
                                         Tip(TipIcon.TAG, "Tags show how", "A small tag on each chat: text, email, and more"),
                                         Tip(TipIcon.PEOPLE, "More ways? We ask", "Pick how to reach someone each time")), appearance.speed)
                                 }
-                            }
-                            "communities" -> {
-                                item { CommunitiesShowcase(appearance) }
-                                item {
-                                    Tips(listOf(
-                                        Tip(TipIcon.CHAT, "Chats | Communities", "The switch under the Messages title"),
-                                        Tip(TipIcon.FOLDER, "One section per group", "Each chat service you join gets its own section. Tap its name to open or close it"),
-                                        Tip(TipIcon.PEOPLE, "Browse and join", "A server’s ⋯ menu, or + Add server at the bottom"),
-                                        Tip(TipIcon.OPTIONAL, "In Chats too, if you like", "Settings → Messaging → Show community chats in Chats")), appearance.speed)
-                                }
+                                // The first page that names a chat service, so it says what one is.
+                                item { Text(WelcomeWords.SERVICES, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium) }
                             }
                             "organized" -> {
                                 item { StayOrganizedShowcase(appearance) }
@@ -256,11 +252,10 @@ object OnboardingScreen {
                                 item {
                                     val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(),
                                         Privacy.token(prefs))
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(15.dp)) {
                                         OutlinedButton(onClick = accounts::run, modifier = Modifier.fillMaxWidth()) { Text("Set up accounts") }
-                                        Text(if (paired) "FluidMessages Web keeps these connections open, so your phone doesn’t have to."
-                                            else "For the best battery life, pair FluidMessages Web to keep these connections open. You can also connect an account from this phone.",
-                                            color = scheme.onSurfaceVariant)
+                                        // Turning a service on costs nothing; only a signed-in account connects (ServiceBattery).
+                                        ServiceBatteryCard(paired)
                                     }
                                 }
                             }
@@ -288,6 +283,36 @@ object OnboardingScreen {
     }
 
     private val steps get() = onboardingSteps
+
+    /** The key of the step at [index], saved with the index so a returning user lands on the same page. */
+    @JvmStatic
+    fun stepKey(index: Int): String = steps.getOrNull(index)?.first.orEmpty()
+
+    /** Where to reopen setup: the step saved as [key], else [index]. See [onboardingStepIndex]. */
+    @JvmStatic
+    fun stepIndex(key: String?, index: Int): Int = onboardingStepIndex(key, index)
+}
+
+/** The first page's tips, and what a chat service is, said where one is first named. Matches server/welcome.js. */
+internal object WelcomeWords {
+    const val SERVICES = "Chat services are other ways to message people over the internet, like Matrix or Email. You don’t need any to start."
+    val tips = listOf(
+        Tip(TipIcon.CHAT, "Text like you always do", "Your texts and calls, in one simple app"),
+        Tip(TipIcon.PEOPLE, "Reach friends on other chat apps too", "We’ll show you how in a minute"),
+        Tip(TipIcon.PRACTICE, "Practice with pretend chats first", "Nothing in them is sent"))
+}
+
+/** Steps taken out of setup, and the step that came after each, so a saved one reopens where it would have gone next. */
+internal val removedOnboardingSteps = mapOf("communities" to "organized")
+
+/**
+ * The step to reopen: the one saved as [key] (or, for a step since removed, the one after it), so the saved setup
+ * step still lines up when steps were added or removed. Without a known key, [index] within the steps.
+ */
+internal fun onboardingStepIndex(key: String?, index: Int): Int {
+    val keys = onboardingSteps.map { it.first }
+    val found = keys.indexOf(removedOnboardingSteps[key] ?: key)
+    return if (found >= 0) found else index.coerceIn(0, keys.lastIndex)
 }
 
 /**
@@ -301,7 +326,6 @@ internal val onboardingSteps: List<Triple<String, String, String>> = listOf(
     Triple("later", "Ask now or later", "Each of these is for one feature. Allow them now, or FluidMessages asks the first time you use that feature."),
     Triple("tabs", "Two tabs", "Phone on the left. Messages on the right."),
     Triple("ways", "One inbox", "Texts and other chat apps, side by side."),
-    Triple("communities", "Communities", "Chat networks with many rooms, each server with its channels, a tap away from your chats."),
     Triple("organized", "Stay organized", "Filters, unread, and mutes keep a busy inbox calm."),
     Triple("locks", "Who can read it?", "Every chat shows a small lock."),
     Triple("protect", "Keep chats private", "Lock the app, a chat, or tuck chats away."),

@@ -189,10 +189,12 @@ def web_features_test(request):
             check(error.code == 400, f"Expected HTTP 400 for a bad delete, got {error.code}")
     # Pinned, archived, blocked, and muted chats and chat codes are kept for every browser; only hashes of codes.
     chats = {"pinned": ["web-fixture"], "archived": ["+12025550188"], "blocked": [], "muted": ["web-fixture"],
-             "locks": {"web-fixture": {"salt": "ab" * 16, "hash": "cd" * 32}}}
+             "locks": {"web-fixture": {"salt": "ab" * 16, "hash": "cd" * 32},
+                       "+12025550188": {"credential": "ZmljdGlvbmFsLWNyZWRlbnRpYWw"}}}
     check(request("/api/settings", {"web_chats": chats})["web_chats"] == chats, "Chat folders and codes weren't saved")
     check(request("/api/inbox")["web_chats"] == chats, "The inbox doesn't carry chat folders and codes")
-    for bad in ({"pinned": "web-fixture"}, {"locks": {"web-fixture": {"salt": "x", "hash": "plain code"}}}, {"muted": [1]}):
+    for bad in ({"pinned": "web-fixture"}, {"locks": {"web-fixture": {"salt": "x", "hash": "plain code"}}}, {"muted": [1]},
+                {"locks": {"web-fixture": {"credential": "not a credential!"}}}):
         try:
             request("/api/settings", {"web_chats": bad})
             raise RuntimeError("Invalid chat settings were accepted: " + json.dumps(bad))
@@ -3961,9 +3963,83 @@ def web_contacts_test():
 
 
 # The first-run guide's steps, in order: the same titles as the phone's where the content matches.
-WELCOME_STEPS = ("Welcome", "Two tabs", "One inbox", "Communities", "Stay organized", "Who can read it?", "Keep chats private",
+WELCOME_STEPS = ("Welcome", "Two tabs", "One inbox", "Stay organized", "Who can read it?", "Keep chats private",
                  "Disappearing messages", "More than text", "Quick moves", "Pick your colors", "Sounds and notifications",
                  "Connect your phone", "Chat services", "Calls", "You’re ready")
+
+
+def onboarding_followups_test():
+    """A new user's notes: Communities shows once after the first IRC, Matrix, or XMPP account instead of in setup,
+    battery is explained where services are turned on, Ways to reach is near the top of a person's details, and the
+    first setup page is an ordinary chat. Phone and web, with fictional words only."""
+    with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
+        check(request("/api/settings")["prefs"]["communitiesIntroSeen"] is False, "The Communities page starts as already seen")
+        check(request("/api/settings", {"prefs": {"communitiesIntroSeen": True}})["prefs"]["communitiesIntroSeen"] is True,
+              "Seeing the Communities page wasn't saved")
+        welcome_js, settings_js, companion_js = (request(path, authorized=False).decode()
+                                                 for path in ("/welcome.js", "/settings.js", "/companion.js"))
+    steps = welcome_js.split("const steps = [", 1)[1].split("\n  ];", 1)[0]
+    check("communitiesShowcase" not in steps, "Communities is still a first-run step")
+    intro = welcome_js.split("function showCommunitiesIntro", 1)[1].split("\n}\n", 1)[0]
+    check("communitiesShowcase(flow)" in intro and "['Continue', close]" in intro and "communitiesIntroSeen: true" in intro,
+          "The Communities page lost its showcase, Continue, or its seen flag")
+    check("communitiesIntroDue(protocol, add && !account)" in companion_js and "showCommunitiesIntro({then: () => done(added || null), markSeen: true})" in companion_js,
+          "Saving a new account doesn't lead to the Communities page")
+    check("title: 'Communities'" in settings_js.split("['Help', [", 1)[1].split("]]", 1)[0] and "showCommunitiesIntro()" in settings_js,
+          "Settings → Help has no Communities page")
+    # Battery: the same words on the phone and the web, where services are turned on.
+    kotlin_battery = (ROOT / "app/src/main/kotlin/org/fluidmessages/ServiceBattery.kt").read_text()
+    for line in ("Turning a service on uses no battery by itself. Only an account you sign in to connects.",
+                 "To get new messages, a chat service needs a connection that stays open. On your phone, that keeps it awake.",
+                 "Then your phone only checks in now and then."):
+        check(line in settings_js and line in kotlin_battery, f"The battery words differ between phone and web: {line}")
+    check("serviceBatteryCard(paired)" in settings_js.split("function waysPage", 1)[1] and "serviceBatteryCard(phonePaired())" in steps,
+          "Chat services doesn't explain battery on the web")
+    check("ServiceBatteryCard(" in (ROOT / "app/src/main/kotlin/org/fluidmessages/ProtocolUi.kt").read_text()
+          and "ServiceBatteryCard(paired)" in (ROOT / "app/src/main/kotlin/org/fluidmessages/OnboardingScreen.kt").read_text(),
+          "Chat services doesn't explain battery on the phone")
+    check("For the best battery life, pair" not in (ROOT / "app/src/main/kotlin/org/fluidmessages/OnboardingScreen.kt").read_text(),
+          "Setup still suggests turning services on costs battery")
+    # Ways to reach: right after Message and Call, one person only, with the same words on both.
+    details = companion_js.split("async function openDetails", 1)[1].split("\n}\n", 1)[0]
+    check(details.index("reachTiles(key)") < details.index("linkedSection(") < details.index("'Contact info'"),
+          "Ways to reach isn't near the top of a chat's details")
+    check("if (!group) nodes.push(linkedSection(" in details, "Ways to reach shows in groups or channels")
+    profile_kt = (ROOT / "app/src/main/kotlin/org/fluidmessages/ProfileEditor.kt").read_text()
+    for words in ("+ Add another way to reach ", "Your past chats are searched to help you find them.", "Ways to reach them"):
+        check(words in companion_js and words in profile_kt, f"Ways to reach words differ between phone and web: {words}")
+    check("Link an address', 'Reach '" not in companion_js, "The old Link an address row is still there")
+    # The first page: an ordinary chat and plain tips, no service names.
+    first = steps.split("{title: 'Two tabs'", 1)[0]
+    check("welcomeConversation()" in first and "sampleConversation()" not in first, "The first page still shows the color preview")
+    messages = welcome_js.split("const WELCOME_MESSAGES = ", 1)[1].split(";\n", 1)[0]
+    tips = welcome_js.split("const WELCOME_TIPS = ", 1)[1].split("];\n", 1)[0]
+    for name in ("RCS", "Matrix", "XMPP", "IRC", "Email", "preview", "Automated"):
+        check(name.lower() not in (messages + tips).lower(), f"The first page names {name}")
+    for title in ("Chat right from your browser", "Reach friends on other chat apps too", "Practice with pretend chats first"):
+        check(title in tips, f"The first page is missing the tip {title}")
+    check("sampleConversation()" in steps.split("{title: 'Pick your colors'", 1)[1], "Pick your colors lost the color preview")
+    check("CHAT_SERVICES_ARE" in steps.split("{title: 'Two tabs'", 1)[1].split("{title: 'One inbox'", 1)[0],
+          "The first page naming a chat service doesn't say what one is")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("SKIP  Communities page rules in Node: node is missing")
+        return
+    rules = welcome_js.split("const COMMUNITY_SERVICES", 1)[1].split("/**\n * The Communities page", 1)[0]
+    script = "var prefs = {};\nconst COMMUNITY_SERVICES" + rules + r"""
+const wrong = [];
+const same = (a, b, why) => { if (JSON.stringify(a) !== JSON.stringify(b)) wrong.push(why + ': ' + JSON.stringify(a)); };
+same(['irc', 'matrix', 'xmpp', 'email'].map((p) => communitiesIntroDue(p, true)), [true, true, true, false], 'new accounts');
+same(communitiesIntroDue('irc', false), false, 'editing an account');
+prefs = {communitiesIntroSeen: true};
+same(communitiesIntroDue('matrix', true), false, 'already seen');
+same(communitiesIntroDue('matrix', true, false), true, 'seen passed in');
+if (wrong.length) { console.log(wrong.join('\n')); process.exit(1); }
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0, "Communities page rules failed in Node: " + (result.stdout + result.stderr).strip()[:600])
+    print("PASS  onboarding follow-ups: Communities once after the first community account and in Help, battery explained, "
+          "Ways to reach near the top for one person, and a plain first page, on the phone and the web")
 
 
 def sample_onboarding_test():
@@ -4067,7 +4143,7 @@ process.stdout.write(JSON.stringify(wrong));
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
     check(result.returncode == 0 and result.stdout == "[]", "The sample inbox reached real data: " + (result.stdout or result.stderr)[:900])
     print("PASS  sample inbox and first-run guide: sample servers, joins, mutes, and favorites stay on the page; fictional fixtures; "
-          "the guide's 16 steps are served, ask for notifications only from a click, and claim nothing phone-only")
+          "the guide's " + str(len(WELCOME_STEPS)) + " steps are served, ask for notifications only from a click, and claim nothing phone-only")
 
 
 def web_gaps_test():
@@ -4753,6 +4829,12 @@ say(chatLockKey('web-rowan\u001femail') === 'service:email' && chatLockKey('+120
 state = {locks: {'service:email': {}, 'web-rowan': {}}};
 say(chatLockKey('web-rowan\u001femail') === 'web-rowan', 'own code first');
 say(JSON.stringify(lockCounts(state)) === '{"chats":1,"kinds":1}', 'counts');
+// A lock that opens with the computer's screen lock counts as locked, and leaving a chat locks it again.
+state = {locks: {'web-rowan': {credential: 'ZmljdGlvbmFsLWNyZWRlbnRpYWw'}}};
+say(chatLockKey('web-rowan\u001femail') === 'web-rowan' && deviceLock(state.locks['web-rowan']) && !deviceLock({salt: 'ab', hash: 'cd'})
+  && JSON.stringify(lockCounts(state)) === '{"chats":1,"kinds":0}', 'screen lock');
+say(stillUnlocked('web-rowan', 'web-rowan') === 'web-rowan' && stillUnlocked('web-rowan', 'web-kit') === ''
+  && stillUnlocked('web-rowan', '') === '' && stillUnlocked('', 'web-rowan') === '', 'relock');
 // Palette contrast: Fluid's increased-contrast colors, stronger muted text; the tints are your own.
 const plain = themeAppearance({theme: 'fluid', mode: 'light'}), strong = themeAppearance({theme: 'fluid', mode: 'light', contrast: true});
 say(plain.colors.sms === '#0088ff' && strong.colors.sms === '#1e6ef4' && strong.contrast === true, 'fluid contrast');
@@ -4840,6 +4922,98 @@ def demo(no_browser):
         check(result == 0, f"Companion exited with status {result}")
 
 
+def phone_reach_and_access_test():
+    """The address a phone types (main.phone_reach) and, over plain http, every /api endpoint still asking for a
+    session, the pairing token in a header, or this computer; wrong tokens wait per address."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import main as server
+    reach = server.phone_reach("127.0.0.1:8080", False, bind="0.0.0.0", port=8080, local_only=False, container=False,
+                               addresses=["192.168.1.20", "100.64.1.2"])
+    check([item["url"] for item in reach["addresses"]] == ["http://192.168.1.20:8080", "http://100.64.1.2:8080"]
+          and [item["kind"] for item in reach["addresses"]] == ["wifi", "private"] and reach["listening"], "LAN addresses: " + repr(reach))
+    reach = server.phone_reach("192.168.1.20:8080", False, bind="0.0.0.0", port=8080, local_only=False, container=False,
+                               addresses=["192.168.1.20"])
+    check([item["url"] for item in reach["addresses"]] == ["http://192.168.1.20:8080"], "The page's own address was listed twice")
+    reach = server.phone_reach("messages.example.net", True, bind="127.0.0.1", port=8080, local_only=False, container=False)
+    check(reach["addresses"] == [{"url": "https://messages.example.net", "kind": "page"}] and not reach["listening"],
+          "A proxy's https address should be the one shown: " + repr(reach))
+    for bind, local_only, container in (("127.0.0.1", False, False), ("0.0.0.0", True, False), ("0.0.0.0", False, True)):
+        reach = server.phone_reach("localhost:8080", False, bind=bind, port=8080, local_only=local_only, container=container,
+                                   addresses=["192.168.1.20"])
+        check(reach["addresses"] == [], f"An address the phone can't reach was shown ({bind}, {local_only}, {container})")
+    for host in ("<b>x</b>", "evil.example/path", "a b", "localhost:8080", "127.0.0.1", "[::1]:8080", "app.localhost"):
+        check(server.phone_reach(host, False, bind="127.0.0.1")["addresses"] == [], "Host shown as an address: " + host)
+    check(all(any(ip.startswith(prefix) for prefix in ("10.", "172.", "192.168.", "100.")) for ip in server.lan_ipv4()),
+          "lan_ipv4 listed an address outside home and private networks")
+
+    token = secrets.token_hex(32)
+    with companion(free_port(), token) as (origin, request, _):
+        opener = build_opener(ProxyHandler({}))
+
+        def status(path, method="GET", headers=None, body=None):
+            data = json.dumps(body).encode() if body is not None else (b"{}" if method in ("POST", "PUT") else None)
+            try:
+                with opener.open(Request(origin + path, data=data, method=method,
+                                         headers={"Content-Type": "application/json", **(headers or {})}), timeout=10) as response:
+                    return response.status
+            except HTTPError as error:
+                return error.code
+
+        guarded = [("GET", path) for path in ("/api/inbox", "/api/settings", "/api/jobs", "/api/auth/security", "/api/backups",
+                                              "/api/contacts", "/api/merge", "/api/privacy", "/api/protocols/accounts",
+                                              "/api/stickers", "/api/calls/ice", "/api/protocols/file?id=abc", "/api/backups/s3/latest",
+                                              "/api/preview?url=https%3A%2F%2Fexample.com", "/api/gifs?q=cat")]
+        guarded += [("POST", path) for path in ("/api/sync", "/api/schedule", "/api/claim", "/api/settings", "/api/auth/pairing",
+                                                "/api/auth/password", "/api/erase", "/api/privacy/private/lock", "/api/merge",
+                                                "/api/protocols/upload", "/api/auth/local-access")]
+        guarded += [("PUT", "/api/backups/s3")]
+        for method, path in guarded:
+            got = status(path, method, headers={"X-Fluid-Request": "1"})
+            check(got in (401, 403), f"{method} {path} answered {got} without signing in over http")
+        # The phone's token only counts in the Authorization header, never in the address.
+        for path in ("/api/inbox?token=" + token, "/api/inbox?access_token=" + token, "/api/settings?authorization=Bearer%20" + token):
+            check(status(path) in (401, 403, 404), "A token in the address was accepted: " + path.split("?")[0])
+        check(status("/api/inbox", headers={"Cookie": "fluid-session=" + token}) == 401, "The token worked as a cookie")
+        check(status("/api/inbox", headers={"Authorization": "Bearer " + token}) == 200, "The pairing token stopped working over http")
+        # The address this page was opened at is the one to show; on 127.0.0.1 only, no network address is.
+        reach = request("/api/auth/security")["reach"]
+        check(reach["addresses"] == [] and not reach["listening"] and reach["https"] is False, "127.0.0.1 reach: " + repr(reach))
+        reach = request("/api/auth/security", extra_headers={"Host": "192.168.1.20:8080"})["reach"]
+        check(reach["addresses"] == [{"url": "http://192.168.1.20:8080", "kind": "page"}], "Page address: " + repr(reach))
+        # Wrong tokens: that address waits after five (429), other addresses and the real phone keep going.
+        stranger = {"X-Forwarded-For": "198.51.100.23"}
+        for _ in range(5):
+            check(status("/api/inbox", headers={**stranger, "Authorization": "Bearer " + "0" * 64}) == 401, "A wrong token wasn't refused")
+        check(status("/api/inbox", headers={**stranger, "Authorization": "Bearer " + "0" * 64}) == 429, "Wrong tokens aren't rate-limited")
+        check(status("/api/inbox", headers={**stranger, "Authorization": "Bearer " + token}) == 429, "A waiting address got in")
+        check(status("/api/inbox", headers={"Authorization": "Bearer " + token}) == 200, "Someone else's wrong tokens locked out the phone")
+        # Sign-in over plain http still checks the page's own header and origin, and its cookie stays HttpOnly and Strict.
+        check(status("/api/auth/token", "POST", body={"token": token}) == 403, "Sign-in worked without the page's own header")
+        check(status("/api/auth/token", "POST", headers={"X-Fluid-Request": "1", "Sec-Fetch-Site": "cross-site"}, body={"token": token}) == 403,
+              "Another site could sign in over http")
+        with opener.open(Request(origin + "/api/auth/token", data=json.dumps({"token": token}).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "X-Fluid-Request": "1"}), timeout=10) as response:
+            flags = set((response.headers.get("Set-Cookie") or "").split("; "))
+        check({"HttpOnly", "SameSite=Strict"} <= flags and "Secure" not in flags, "Cookie flags over http: " + repr(flags))
+
+    companion_js = (ROOT / "server/companion.js").read_text()
+    welcome_js = (ROOT / "server/welcome.js").read_text()
+    guide = (ROOT / "docs/self-hosting.md").read_text()
+    check("function phoneAddressCard" in companion_js and "phoneAddressCard(security.reach)" in welcome_js
+          and "phoneAddressCard(current.reach)" in companion_js, "The pairing steps don't show the address to type")
+    check("innerHTML" not in companion_js[companion_js.index("function phoneAddressCard"):companion_js.index("function phoneConnect")],
+          "The address card builds HTML from the server's answer")
+    check("same Wi-Fi" in companion_js and "FLUID_BIND=0.0.0.0" in companion_js and "#reach-it-from-outside-your-home" in companion_js,
+          "The address card is missing its plain-words help")
+    for old in ("Your phone needs an https:// address", "Your phone needs HTTPS", "over HTTPS (a reverse proxy"):
+        check(old not in companion_js + welcome_js, "Still says https is required: " + old)
+    check("## HTTPS and connecting your phone" in guide and "### Reach it from outside your home" in guide
+          and "Tailscale" in guide and "reverse_proxy 127.0.0.1:8080" in guide and "Port forwarding" in guide,
+          "docs/self-hosting.md is missing the connecting guide")
+    print("PASS  phone address: LAN, private network, and page addresses with the port; none when only this computer can reach it")
+    print("PASS  access over http: every sampled /api endpoint asks to sign in, no token in the address, wrong tokens wait, CSRF and cookie flags hold")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--demo", action="store_true", help="open a temporary browser demo after smoke checks")
@@ -4876,10 +5050,12 @@ def main():
         web_contacts_test()
         web_gaps_test()
         sample_onboarding_test()
+        onboarding_followups_test()
         web_parity_test()
         meeting_links_test()
         irc_calls_and_nickserv_test()
         irc_join_requirements_test()
+        phone_reach_and_access_test()
         android(args)
         if args.demo:
             demo(args.no_browser)

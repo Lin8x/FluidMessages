@@ -523,6 +523,28 @@ internal fun SampleConversation(appearance: Appearance) {
     }
 }
 
+/** The setup guide's first page: an ordinary chat between two made-up friends. No service names or tags. */
+internal val welcomeMessages = listOf(
+    "Hi! Are we still on for lunch?" to false,
+    "Yes! Noon at the park?" to true,
+    "Perfect. See you there!" to false,
+)
+
+@Composable
+internal fun WelcomeConversation(appearance: Appearance) {
+    val radius = appearance.radius.dp
+    val canvas = Color(appearance.canvas)
+    WallpaperSurface(appearance.wallpaper, canvas, Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Maya Chen", color = readableOn(canvas), fontWeight = FontWeight.Medium)
+            for ((text, outgoing) in welcomeMessages) {
+                SampleBubble(text, Color(if (outgoing) appearance.accent else appearance.incoming), radius, appearance,
+                    Modifier.align(if (outgoing) Alignment.End else Alignment.Start), outgoing = outgoing)
+            }
+        }
+    }
+}
+
 @Composable
 private fun SampleBubble(text: String, fill: Color, radius: androidx.compose.ui.unit.Dp, appearance: Appearance, modifier: Modifier, outgoing: Boolean = false) {
     val shown = accessibleBubbleFill(fill)

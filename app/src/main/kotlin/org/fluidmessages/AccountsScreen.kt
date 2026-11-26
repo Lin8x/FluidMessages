@@ -110,6 +110,12 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
     fun accountsOf(protocol: MessageProtocol): List<JSONObject> = accounts?.let { list ->
         (0 until list.length()).map { list.getJSONObject(it) }.filter { it.optString("protocol") == protocol.name.lowercase() }
     }.orEmpty()
+    // The Communities page, full page, after the first IRC, Matrix, or XMPP account is saved; Continue carries on.
+    var communities by remember { mutableStateOf<(() -> Unit)?>(null) }
+    communities?.let { carryOn ->
+        CommunitiesIntroPage(prefs) { communities = null; carryOn() }
+        return
+    }
     val current = editing
     if (current != null) {
         // Opened from Add server, closing goes back there; from this list, back to the list.
@@ -123,9 +129,16 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
             AccountGuide(current.protocol, pickedServer(current), ::form, { form(emptyMap()) }, close)
             return
         }
+        // A new account: none was there to edit, here or on this phone, when the form opened.
+        val adding = remember(current) {
+            current.existing == null && (current.add || DirectProtocols.account(context, current.protocol) == null)
+        }
         AccountForm(prefs, current, close) { updated ->
             accounts = updated
-            close()
+            if (CommunitiesIntro.due(prefs, current.protocol, adding)) {
+                CommunitiesIntro.markSeen(prefs)
+                communities = close
+            } else close()
         }
         return
     }

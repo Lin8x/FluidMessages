@@ -12,7 +12,6 @@ import java.io.IOException;
 import java.net.URL;
 import java.util.List;
 import java.nio.charset.StandardCharsets;
-import javax.net.ssl.HttpsURLConnection;
 
 public final class SyncJob extends JobService {
     private static final int PERIODIC = 200;
@@ -209,7 +208,7 @@ public final class SyncJob extends JobService {
     }
 
     private static JSONObject post(String root, String token, String endpoint, JSONObject data) throws Exception {
-        var connection = (HttpsURLConnection) new URL(root + "/api/" + endpoint).openConnection();
+        var connection = (java.net.HttpURLConnection) new URL(root + "/api/" + endpoint).openConnection();
         try {
             connection.setConnectTimeout(8000);
             connection.setReadTimeout(8000);

@@ -187,6 +187,7 @@ object ProtocolSettingsScreen {
                             }
                         }
                     }
+                    item { ServiceBatteryCard(CloudBackup.paired(prefs.getString("server", "").orEmpty(), Privacy.token(prefs))) }
                     item {
                         PreferencesCard("Conversations") {
                             ProtocolSwitch(prefs, "combineProtocols", "Combine linked conversations",

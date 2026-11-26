@@ -19,7 +19,9 @@ class OnboardingStepsTest {
     }
 
     @Test fun coversTheNewerFeatures() {
-        for (key in listOf("communities", "organized", "disappear", "sounds", "computer", "tabs")) assertTrue(key, key in keys)
+        for (key in listOf("organized", "disappear", "sounds", "computer", "tabs")) assertTrue(key, key in keys)
+        // Communities shows after the first IRC, Matrix, or XMPP account instead (CommunitiesIntro).
+        assertTrue("communities" !in keys)
     }
 
     @Test fun sharedPagesUseTheWebTitles() {

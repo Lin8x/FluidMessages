@@ -10,6 +10,7 @@ FluidMessages Web is FluidMessages as an app for your computer. Use it in a brow
 - [Signing in](#signing-in)
 - [Desktop apps](#desktop-apps)
 - [HTTPS and connecting your phone](#https-and-connecting-your-phone)
+- [Reach it from outside your home](#reach-it-from-outside-your-home)
 - [Using it](#using-it)
 - [Install it as an app (PWA)](#install-it-as-an-app-pwa)
 
@@ -88,15 +89,65 @@ These open `http://localhost:8080` in an app window, with no password on this co
 
 ## HTTPS and connecting your phone
 
-The container is published on host loopback (`127.0.0.1:8080`). For a phone connection, put an HTTPS reverse proxy (Caddy, nginx, Traefik) in front of it, with a hostname whose certificate the phone trusts, and point your LAN DNS at the proxy. Both Android and your browser should use that HTTPS origin.
+Your phone connects to FluidMessages Web over your network. In FluidMessages Web, **Settings → Phone and other devices → Connect your phone** shows the address to type on the phone, like `http://192.168.1.20:8080`, with a Copy button.
 
-- **The proxy must send `X-Forwarded-For`** (Caddy and Traefik do; in nginx add `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` and `proxy_set_header X-Forwarded-Proto $scheme;`). That's how FluidMessages knows a request came through the proxy rather than from this computer, and it also marks cookies `Secure` and keeps guessing limits per visitor.
-- **Docker:** if anything other than this computer's own browser reaches the container (a proxy container on the same Docker network, or a port published beyond `127.0.0.1`), delete `FLUID_LOCAL_ONLY` from `compose.yaml`.
-- If an older browser behind a proxy that rewrites the `Host` header can't save changes, set `FLUID_ORIGINS` to your public address, like `https://messages.example.org`.
+### What the address means
 
-1. In FluidMessages Web, open **Settings → Phone and other devices** and choose **Connect your phone**. Without a password yet, step 1 sets one (your phone's browser and other devices sign in with it). Then copy the pairing token; it's shown once, and only a hash is kept. A server with `FLUID_TOKEN` can use that instead.
-2. On Android, select **Settings → Web companion**. Tap **Set up companion** if the status is **Not set up**, then enter the HTTPS origin and the pairing token, check **Enable browser messaging**, and tap **Save connection**. Leave browser messaging off to pair for cloud backups alone.
+- **The IP address** (like `192.168.1.20`) is this computer’s number on your home network. Your router hands one to every device on your Wi-Fi.
+- **The port** (the number after the colon, like `8080`) is which “door” on that computer FluidMessages answers on. It’s `8080` unless you set `FLUID_PORT`.
+- **http:// or https://** says whether the connection is encrypted. `https://` is. `http://` is not: anyone on the same Wi-Fi could read your messages and the link code. That’s fine for testing at home. For everyday use, use an `https://` address (below).
+
+### Finding them
+
+FluidMessages Web finds them for you and shows them when you connect your phone. To look them up yourself:
+
+- **Windows:** open Command Prompt and run `ipconfig`. Look for **IPv4 Address** under your Wi-Fi or Ethernet adapter.
+- **Mac:** System Settings → Wi-Fi → **Details** next to your network. Or run `ipconfig getifaddr en0` in Terminal.
+- **Linux:** run `hostname -I` or `ip -4 addr`.
+
+Home network addresses usually start with `192.168.`, `10.`, or `172.16.` to `172.31.`.
+
+### On the same Wi-Fi
+
+1. Let other devices reach FluidMessages. By default it only answers this computer.
+   - **From the source:** start it with `FLUID_BIND=0.0.0.0`, like `FLUID_BIND=0.0.0.0 ./scripts/web-app` (on Windows, `$env:FLUID_BIND='0.0.0.0'` before `scripts\web-app.ps1`).
+   - **The desktop app** only answers this computer. To connect a phone, run it from the source or with Docker instead.
+   - **Docker Compose:** delete the `FLUID_LOCAL_ONLY` line and change the port to `"8080:8080"` in `compose.yaml`, then run `docker compose up -d` again.
+   - If your computer has a firewall, allow the port (for example `sudo ufw allow 8080/tcp`, or allow Python when Windows asks).
+2. Set a password in **Settings → Phone and other devices**, since other devices can now reach it.
+3. Put your phone on the same Wi-Fi, and type the address (like `http://192.168.1.20:8080`) with the link code in the app. It warns you that `http://` isn’t encrypted; it still saves.
+
+Your router may give the computer a new IP address later. If the phone stops connecting, check the address again, or ask your router to always give this computer the same one (often called a “DHCP reservation”).
+
+### Reach it from outside your home
+
+Pick one. The first is the simplest.
+
+**A private network, like Tailscale (simplest).** Install [Tailscale](https://tailscale.com) (or a similar private network such as ZeroTier or WireGuard) on the computer and on your phone, and sign in to the same account on both. Your phone can then reach the computer from anywhere, as if it were on your Wi-Fi, and nothing is opened to the internet. Use the computer’s Tailscale address (it starts with `100.`; FluidMessages Web lists it too, with the port, like `http://100.x.y.z:8080`) or its Tailscale name. Tailscale encrypts the traffic between your devices; for an `https://` address on top, see `tailscale serve`.
+
+**A domain name with HTTPS.** Point a name you own (like `messages.example.net`) at your server, and put a reverse proxy in front of FluidMessages that gets a certificate for it. With [Caddy](https://caddyserver.com), this whole `Caddyfile` does it:
+
+```
+messages.example.net {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Caddy gets and renews the certificate by itself. On a home connection, your router must forward ports 80 and 443 to the computer running Caddy (see the risks below). Then use `https://messages.example.net` on your phone and in your browser.
+
+- **The proxy must send `X-Forwarded-For`** (Caddy and Traefik do; in nginx add `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` and `proxy_set_header X-Forwarded-Proto $scheme;`). That’s how FluidMessages knows a request came through the proxy rather than from this computer, and it also marks cookies `Secure` and keeps guessing limits per visitor.
+- **Docker:** if anything other than this computer’s own browser reaches the container (a proxy container on the same Docker network, or a port published beyond `127.0.0.1`), delete `FLUID_LOCAL_ONLY` from `compose.yaml`.
+- If an older browser behind a proxy that rewrites the `Host` header can’t save changes, set `FLUID_ORIGINS` to your public address, like `https://messages.example.org`.
+
+**Port forwarding (be careful).** Your router can send a port from the internet straight to FluidMessages. This works, but anyone on the internet can then find it and try to sign in. Without HTTPS, your password, link code, and messages also cross the internet unencrypted, where others can read them. If you do it, only forward to an HTTPS proxy (as above), use a strong password, and keep FluidMessages up to date. Never forward the plain `http://` port.
+
+### Connecting, step by step
+
+1. In FluidMessages Web, open **Settings → Phone and other devices** and choose **Connect your phone**. Without a password yet, step 1 sets one (your phone’s browser and other devices sign in with it). Then copy the address and the pairing token; the token is shown once, and only a hash is kept. A server with `FLUID_TOKEN` can use that instead.
+2. On Android, select **Settings → FluidMessages Web**. Tap **Set up step by step** if the status is **Not set up**, then enter the address and the pairing token, check **Enable browser messaging**, and tap **Save connection**. An address typed without `http://` or `https://` uses `https://`. Leave browser messaging off to pair for cloud backups alone.
 3. **Make a new pairing token** replaces the old one, and **Disconnect phone** removes the token a phone uses.
+
+Over `http://` or `https://`, every request still needs a signed-in browser, the phone’s pairing token (sent in a header, never in the address), or this computer’s own browser. Wrong passwords and wrong tokens make that address wait before trying again.
 
 ## Using it
 

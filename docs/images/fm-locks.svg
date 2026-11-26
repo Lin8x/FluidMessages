@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="774" viewBox="0 0 720 774" role="img" aria-label="A lock on every chat, so you always know who could read it. A green closed lock means only you and the other person can read it. A yellow closed lock means it is protected on the way, but the service could read it. A red open lock means a regular text that is not private.">
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="774" viewBox="0 0 720 774" role="img" aria-label="A lock on every chat, so you always know who could read it. A green closed lock means only you and the other person can read it. A yellow closed lock means it is protected on the way, but the service could read it. A red open lock means a text (SMS), which your phone carrier could read.">
   <defs>
     <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".14"/></filter>
     <style>
@@ -30,7 +30,7 @@
   <rect x="24" y="552" width="672" height="186" rx="26" fill="#fff" filter="url(#shadow)"/>
   <g class="lk k3"><rect x="48" y="580" width="130" height="130" rx="30" fill="#fde0de"/><g transform="translate(113 645)"><path d="M-22 0v-26a22 22 0 0 1 44 0v10" fill="none" stroke="#b3261e" stroke-width="11" stroke-linecap="round"/><rect x="-36" y="-2" width="72" height="54" rx="12" fill="#b3261e"/><circle cx="0" cy="20" r="8" fill="#fff"/><rect x="-3.5" y="22" width="7" height="16" rx="3.5" fill="#fff"/></g></g>
   <text x="206" y="614" fill="#b3261e" font-size="30" font-weight="800">Red open lock</text>
-  <text x="206" y="656" fill="#141820" font-size="24">A regular text.</text>
-  <text x="206" y="690" fill="#141820" font-size="24">Not private.</text>
+  <text x="206" y="656" fill="#141820" font-size="24">A text (SMS). Your phone</text>
+  <text x="206" y="690" fill="#141820" font-size="24">carrier could read it.</text>
 
 </svg>

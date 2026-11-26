@@ -1,9 +1,11 @@
 """Single-phone LAN FluidMessages Web. Run behind a TLS reverse proxy."""
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -74,6 +76,8 @@ PREFS += WEB_SWITCHES
 # Settings → Accounts → IRC: call and meeting-link buttons in IRC chats. Off unless turned on, since many channels ban
 # call and meeting links.
 OFF_PREFS = ("ircCalls",)
+# Whether the Communities page has shown, once, after the first IRC, Matrix, or XMPP account (welcome.js). Off until then.
+OFF_PREFS += ("communitiesIntroSeen",)
 # Messages → Communities' sort order, and Settings → Messaging → Inbox filters: which filters the inbox filter menu
 # shows, in order. A hidden filter is kept with a "-" in front, so its place survives turning it back on.
 COMMUNITY_SORTS = ("recent", "name", "joined")
@@ -352,9 +356,17 @@ def clean_web_chats(value):
         raise ValueError("Invalid chat codes")
     clean["locks"] = {}
     for key, lock in locks.items():
+        if not isinstance(key, str) or len(key) > 300 or not isinstance(lock, dict):
+            raise ValueError("Invalid chat codes")
+        # A lock that opens with a computer's screen lock (Windows Hello, Touch ID, or the device PIN) keeps only
+        # the browser's credential id for it: no key and no code.
+        if "credential" in lock and "salt" not in lock:
+            if not isinstance(lock["credential"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,1400}", lock["credential"]):
+                raise ValueError("Invalid chat codes")
+            clean["locks"][key] = {"credential": lock["credential"]}
+            continue
         # Only a salted PBKDF2 hash of each chat code is kept, never the code.
-        if not isinstance(key, str) or len(key) > 300 or not isinstance(lock, dict) \
-                or not all(isinstance(lock.get(part), str) and re.fullmatch(r"[0-9a-f]{32,128}", lock[part]) for part in ("salt", "hash")):
+        if not all(isinstance(lock.get(part), str) and re.fullmatch(r"[0-9a-f]{32,128}", lock[part]) for part in ("salt", "hash")):
             raise ValueError("Invalid chat codes")
         clean["locks"][key] = {"salt": lock["salt"], "hash": lock["hash"]}
     senders = value.get("senders", {})
@@ -776,6 +788,75 @@ AUTH_OPEN = ("/api/auth/setup", "/api/auth/login", "/api/auth/token", "/api/auth
 STATIC_CACHE = "no-cache"
 ICON_CACHE = "public, max-age=86400"
 
+# A Host header worth showing back as an address: a name or IPv4 address, or [IPv6], with an optional port.
+SHOWN_HOST = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*|\[[0-9a-f:.]{2,45}\])(?::\d{1,5})?")
+# Home and office networks, and private networks such as Tailscale (100.64.0.0/10).
+LAN_NETWORKS = tuple(ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"))
+
+
+def lan_ipv4():
+    """This computer's IPv4 addresses on its home network, found without contacting anything: the address the system
+    would send from to reach each private range (connecting a UDP socket only picks a route; nothing is sent), and the
+    ones its own name resolves to."""
+    found = []
+    for probe in ("192.168.0.1", "10.0.0.1", "172.16.0.1", "100.100.100.100"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect((probe, 9))
+                found.append(sock.getsockname()[0])
+        except OSError:
+            pass
+    try:
+        found += [info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    except OSError:
+        pass
+    keep = []
+    for value in found:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            continue
+        if any(address in network for network in LAN_NETWORKS) and value not in keep:
+            keep.append(value)
+    # Home Wi-Fi addresses (192.168.x.x) first: the likeliest one for a phone on the same Wi-Fi.
+    return sorted(keep, key=lambda value: (not value.startswith("192.168."), ipaddress.ip_address(value) in LAN_NETWORKS[3]))
+
+
+def phone_reach(page_host, https, bind=None, port=None, local_only=None, container=None, addresses=None):
+    """The addresses a phone can type to reach this server (Settings → Phone and other devices, the phone guide):
+    this page's own address when it isn't localhost, and this computer's network addresses with the port. The server
+    itself speaks plain http; https comes from a reverse proxy in front of it."""
+    bind = (os.environ.get("FLUID_BIND", "127.0.0.1") if bind is None else bind).strip()
+    port = int(os.environ.get("FLUID_PORT", 8080)) if port is None else port
+    local_only = LOCAL_ONLY if local_only is None else local_only
+    container = Path("/.dockerenv").exists() if container is None else container
+    try:
+        loopback = ipaddress.ip_address(bind).is_loopback
+    except ValueError:
+        loopback = bind.lower() == "localhost"
+    # Only this computer can reach it: bound to 127.0.0.1, or Docker's 127.0.0.1-only port (FLUID_LOCAL_ONLY).
+    listening = not (loopback or local_only)
+    shown = []
+    host = (page_host or "").strip().lower()
+    if host and SHOWN_HOST.fullmatch(host) and not auth.loopback_name(host):
+        shown.append({"url": ("https://" if https else "http://") + host, "kind": "page"})
+    # Inside a container its own addresses are Docker's, which a phone can't reach: the page's address is shown instead.
+    if listening and not container:
+        if bind in ("", "0.0.0.0"):
+            ips = lan_ipv4() if addresses is None else addresses
+        else:
+            ips = [bind]
+        for ip in ips:
+            url = "http://%s:%d" % (ip, port)
+            if all(item["url"] != url for item in shown):
+                try:
+                    kind = "private" if ipaddress.ip_address(ip) in LAN_NETWORKS[3] else "wifi"
+                except ValueError:
+                    kind = "wifi"
+                shown.append({"url": url, "kind": kind})
+    return {"addresses": shown, "port": port, "listening": listening, "container": container,
+            "https": bool(https), "bind": bind}
+
 
 class Handler(BaseHTTPRequestHandler):
     # A connection that sends nothing for a minute is dropped, so slow clients can't tie up the server.
@@ -885,7 +966,12 @@ class Handler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization", "")
         with closing(connect()) as db, db:
             if header.startswith("Bearer "):
-                if authority.check_token(db, header[7:]):
+                try:
+                    good = authority.bearer(db, self.client(), header[7:])
+                except auth.Refused as error:
+                    self.reply(error.status, {"error": str(error)})
+                    return None
+                if good:
                     self.kind = "token"
                     return "token"
                 self.reply(401, {"error": "That access token isn't right", "signed_out": True})
@@ -916,7 +1002,7 @@ class Handler(BaseHTTPRequestHandler):
         with closing(connect()) as db:
             if self.command == "GET":
                 status, payload = DECOYS.get(db, self.session_key, parts.path, parts.query, defaults, {
-                    "https": self.https(), "here": self.here(), "local_only": LOCAL_ONLY,
+                    "https": self.https(), "here": self.here(), "local_only": LOCAL_ONLY, "reach": self.reach(),
                     "xmpp": protocol_gateway.xmpp_client.available()})
             elif self.command == "POST" and parts.path in ("/api/schedule", "/api/call", "/api/cancel", "/api/settings",
                                                             "/api/protocols/read", "/api/protocols", "/api/protocols/send"):
@@ -1013,7 +1099,12 @@ class Handler(BaseHTTPRequestHandler):
     def security_view(self, db):
         return {"owner": authority.has_owner(db), "sessions": authority.session_count(db),
                 "pairing": authority.pairing_status(db), "https": self.https(),
-                "local": authority.local_enabled(db), "here": self.here(), "local_only": LOCAL_ONLY}
+                "local": authority.local_enabled(db), "here": self.here(), "local_only": LOCAL_ONLY, "reach": self.reach()}
+
+    def reach(self):
+        """Where a phone can reach this server (phone_reach), from the address this page was opened at."""
+        forwarded = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip()
+        return phone_reach(forwarded or self.headers.get("Host", ""), self.https())
 
     # Privacy and security: the private folder, decoy mode, and the emergency erase passcode (privacy.py)
 

@@ -340,7 +340,8 @@ class DecoyWorld:
             return 200, self.settings_view(key, defaults)
         if path == "/api/auth/security":
             return 200, {"owner": True, "sessions": 1, "pairing": {"compose": False, "web": False, "created": None},
-                         "https": context["https"], "local": False, "here": context["here"], "local_only": context["local_only"]}
+                         "https": context["https"], "local": False, "here": context["here"], "local_only": context["local_only"],
+                         "reach": context.get("reach")}
         if path == "/api/privacy":
             return 200, self.status()
         if path == "/api/protocols/accounts":

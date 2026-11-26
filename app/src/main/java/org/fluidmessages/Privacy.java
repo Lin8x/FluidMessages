@@ -342,14 +342,46 @@ final class Privacy {
 
     static boolean hasCode(SharedPreferences prefs, String scope) { return !prefs.getString("code." + scope, "").isEmpty(); }
 
+    /** Kept beside the codes (and with them through a settings reset): a lock that opens with the phone's screen lock. */
+    private static final String SCREEN_LOCK = "code.device.";
+
+    /** Whether a chat or kind lock asks for the phone's PIN, pattern, password, fingerprint, or face instead of a code. */
+    static boolean usesScreenLock(SharedPreferences prefs, String scope) { return prefs.getBoolean(SCREEN_LOCK + scope, false); }
+
+    /** Whether a chat or kind is locked at all, with a passcode or with the phone's screen lock. */
+    static boolean hasLock(SharedPreferences prefs, String scope) { return hasCode(prefs, scope) || usesScreenLock(prefs, scope); }
+
+    /** Locks a chat or kind with the phone's screen lock, replacing any passcode. Call after the phone unlock succeeded. */
+    static void setScreenLock(SharedPreferences prefs, String scope) {
+        prefs.edit().remove("code." + scope).putBoolean(SCREEN_LOCK + scope, true).apply();
+        opened.add(scope);
+    }
+
+    /** Turns a chat or kind lock off, whichever kind it was. */
+    static void removeLock(SharedPreferences prefs, String scope) {
+        prefs.edit().remove("code." + scope).remove(SCREEN_LOCK + scope).apply();
+        opened.remove(scope);
+    }
+
+    /** Opens a lock after the phone's screen lock was confirmed. */
+    static void markOpened(String scope) { opened.add(scope); }
+
+    static Set<String> openedScopes() {
+        synchronized (opened) { return new HashSet<>(opened); }
+    }
+
+    /** Closes every opened lock not in [keep] (ChatLocks.stillOpen). True when something closed. */
+    static boolean keepOpen(Set<String> keep) { return opened.retainAll(keep); }
+
     static void setCode(SharedPreferences prefs, String scope, String code) throws Exception {
         if (code == null || code.isEmpty()) {
-            prefs.edit().remove("code." + scope).apply();
+            prefs.edit().remove("code." + scope).remove(SCREEN_LOCK + scope).apply();
             opened.remove(scope);
             return;
         }
         byte[] salt = randomBytes(16);
-        prefs.edit().putString("code." + scope, b64(salt) + "." + b64(stretch(code, salt).getEncoded())).apply();
+        prefs.edit().putString("code." + scope, b64(salt) + "." + b64(stretch(code, salt).getEncoded()))
+            .remove(SCREEN_LOCK + scope).apply();
         opened.add(scope);
     }
 
@@ -367,9 +399,16 @@ final class Privacy {
     static List<String> lockedScopes(SharedPreferences prefs, String address, MessageProtocol protocol) {
         var result = new ArrayList<String>();
         for (String scope : List.of(chatScope(address), protocolScope(protocol))) {
-            if (hasCode(prefs, scope) && !opened.contains(scope)) result.add(scope);
+            if (hasLock(prefs, scope) && !opened.contains(scope)) result.add(scope);
         }
         return result;
+    }
+
+    /** The inbox line for a locked chat, or null when it isn't locked right now. */
+    static String lockedPreview(SharedPreferences prefs, String address, MessageProtocol protocol) {
+        var scopes = lockedScopes(prefs, address, protocol);
+        if (scopes.isEmpty()) return null;
+        return usesScreenLock(prefs, scopes.get(0)) ? "Locked · unlock to read" : "Locked · enter the passcode to read";
     }
 
     static boolean locked(SharedPreferences prefs, String address, MessageProtocol protocol) {
