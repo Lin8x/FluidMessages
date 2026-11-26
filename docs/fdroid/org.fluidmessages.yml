@@ -1,6 +1,6 @@
 # Draft recipe for fdroiddata (https://gitlab.com/fdroid/fdroiddata), saved there as metadata/org.fluidmessages.yml.
-# See docs/fdroid/README.md before submitting. The Builds entry points at v0.45.0, the first release with the fdroid
-# Gradle flag. Ready to submit as is: F-Droid signs its own copy (Option A).
+# See docs/fdroid/README.md before submitting. The Builds entry points at v0.46.0 (the fdroid Gradle flag arrived
+# in v0.45.0). Ready to submit as is: F-Droid signs its own copy (Option A).
 Categories:
   - Phone & SMS
   - Messaging
