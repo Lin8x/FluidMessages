@@ -8,25 +8,29 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.widget.LinearLayout
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
- * Settings → Privacy and security → Connect through Tor (TorRoute). Off by default. Turning it on opens the warning
- * in place, and "Turn on" stays off until "I understand" is on, like the battery notice in AccountsScreen. Tor runs
- * inside FluidMessages (BuiltInTor) unless "Use the Orbot app instead" is on.
+ * Settings → Privacy and security → Connect through Tor (TorRoute). Off by default. The first time it's turned on,
+ * "What is Tor?" (TorIntro) fills the page first; then the warning opens in place, and "Turn on" stays off until
+ * "I understand" is on, like the battery notice in AccountsScreen. Tor runs inside FluidMessages (BuiltInTor) unless
+ * "Use the Orbot app instead" is on.
  */
 internal object TorSettingsPage {
     @JvmStatic
@@ -48,6 +52,8 @@ internal object TorSettingsPage {
         val scheme = MaterialTheme.colorScheme
         var on by remember { mutableStateOf(TorRoute.on(prefs)) }
         var asking by remember { mutableStateOf(false) }
+        // "What is Tor?" in place of the page: on the way to turning Tor on (the first time), or to read.
+        var intro by remember { mutableStateOf<Intro?>(null) }
         var calls by remember { mutableStateOf(TorRoute.callsDirect(prefs)) }
         var orbotApp by remember { mutableStateOf(TorRoute.usesOrbot(prefs)) }
         var now by remember { mutableStateOf<TorRoute.Now?>(null) }
@@ -76,12 +82,19 @@ internal object TorSettingsPage {
         }
         fun open(link: String) = runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
 
+        when (intro) {
+            Intro.TURNING_ON -> return TorIntroPage("Continue", { TorIntro.markSeen(prefs); intro = null; asking = true }) { intro = null }
+            Intro.READING -> return TorIntroPage("Done", { intro = null })
+            null -> {}
+        }
+
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             item {
                 PreferencesCard("Tor") {
                     SettingsSwitch("Connect through Tor", if (on) now?.words ?: TorRoute.words(status) else
                         "Off · Each chat's details can still send its own connection through Tor", on || asking) { want ->
-                        if (want) asking = true
+                        if (want && TorIntro.due(prefs, true)) intro = Intro.TURNING_ON
+                        else if (want) asking = true
                         else {
                             asking = false
                             on = false
@@ -99,6 +112,14 @@ internal object TorSettingsPage {
                     }
                     if (!asking) Text(TorRoute.WARNING, Modifier.padding(start = 15.dp, end = 15.dp, bottom = 14.dp),
                         color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                    HorizontalDivider(Modifier.padding(start = 15.dp), color = scheme.outlineVariant)
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
+                        .clickable(role = Role.Button) { TorIntro.markSeen(prefs); intro = Intro.READING }
+                        .padding(horizontal = 15.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        PreferenceText(TorIntro.TITLE, "How Tor works, who it’s for, and its downsides",
+                            Modifier.weight(1f).padding(end = 12.dp))
+                        Text("›", color = scheme.onSurfaceVariant, style = MaterialTheme.typography.titleLarge)
+                    }
                 }
             }
             if (on && !orbotApp && status == TorRoute.Status.CANT_START) item {
@@ -173,6 +194,8 @@ internal object TorSettingsPage {
             }
         }
     }
+
+    private enum class Intro { TURNING_ON, READING }
 
     /** The warning, in place. "Turn on" stays off until "I understand" is on. */
     @Composable

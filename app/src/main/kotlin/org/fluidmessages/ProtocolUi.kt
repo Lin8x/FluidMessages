@@ -214,25 +214,7 @@ object ProtocolSettingsScreen {
         }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
     }
-
-    @JvmStatic
-    fun mountBattery(root: LinearLayout, prefs: SharedPreferences) {
-        val view = ComposeView(root.context)
-        view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-        view.setContent {
-            AppTheme(Appearance.read(prefs)) {
-                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(15.dp)) {
-                    item { BatteryAndSync(prefs, root.context) }
-                    item {
-                        Text("Carrier SMS and MMS arrive by push and aren’t affected. Sending always works right away.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 12.dp))
-                    }
-                }
-            }
-        }
-        root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
-    }
+    // Settings → Battery and sync is its own page now (BatteryPage).
 }
 
 /** An RCS, SMS, or MMS switch. It turns on only while FluidMessages is the default messages app; otherwise it opens the ask. */
@@ -256,45 +238,6 @@ internal fun ProtocolSwitch(prefs: SharedPreferences, key: String, title: String
     SettingsSwitch(title, detail, enabled) {
         enabled = it
         prefs.edit().putBoolean(key, it).apply()
-    }
-}
-
-
-/** Battery and data controls. Every choice here lowers or raises how often FluidMessages wakes the radio. */
-@Composable
-internal fun BatteryAndSync(prefs: SharedPreferences, context: android.content.Context) {
-    val motion = Appearance.read(prefs).speed
-    var foreground by remember { mutableStateOf(SyncPolicy.foregroundSeconds(prefs)) }
-    var background by remember { mutableStateOf(SyncPolicy.backgroundMinutes(prefs)) }
-    var downloads by remember { mutableStateOf(SyncPolicy.downloads(prefs)) }
-    PreferencesCard("Battery and sync") {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            ThemeDropdown("Check while the app is open", foreground.toString(),
-                SyncPolicy.FOREGROUND_CHOICES.map { Choice(it.toString(), SyncPolicy.foregroundLabel(it)) }, motion) {
-                foreground = it.toInt()
-                prefs.edit().putInt(SyncPolicy.FOREGROUND, foreground).apply()
-            }
-            ThemeDropdown("Check in the background", background.toString(),
-                SyncPolicy.BACKGROUND_CHOICES.map { Choice(it.toString(), SyncPolicy.backgroundLabel(it)) }, motion) {
-                background = it.toInt()
-                prefs.edit().putInt(SyncPolicy.BACKGROUND, background).apply()
-                SyncJob.reschedule(context)
-            }
-            ThemeDropdown("Download received attachments", downloads, listOf(
-                Choice("wifi", "Automatically on Wi-Fi"), Choice("always", "Automatically on any network"),
-                Choice("never", "Only when I tap them")), motion) {
-                downloads = it
-                prefs.edit().putString(SyncPolicy.DOWNLOADS, it).apply()
-            }
-        }
-        var wifi by remember { mutableStateOf(SyncPolicy.wifiOnly(prefs)) }
-        SettingsSwitch("Sync only on Wi-Fi", "Skip automatic checks on mobile data. Sending still works anywhere.", wifi) {
-            wifi = it
-            prefs.edit().putBoolean(SyncPolicy.WIFI_ONLY, it).apply()
-            SyncJob.reschedule(context)
-        }
-        ProtocolSwitch(prefs, SyncPolicy.BATTERY_SAVER, "Pause during Battery Saver",
-            "Skip automatic checks while Android Battery Saver is on.", true)
     }
 }
 

@@ -476,6 +476,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "contactEditor", "webContacts" -> { if (contactEditorBack != null) contactEditorBack.run(); else phone(); }
             case "sample" -> inbox();
             case "theme", "backups", "messaging", "about", "protocols", "privacy", "reset", "calls", "gifs", "payments", "sounds", "communities-intro" -> settings();
+            case "tor-intro", "battery" -> settings();
             case "recording", "meetingLinks" -> callsSettings();
             case "recordings" -> recordingSettings();
             case "locks", "hiddenChats", "decoyMode", "encryption", "requestsSettings", "tor" -> privacySettings();
@@ -4694,8 +4695,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 action("FluidMessages Web", prefs.getBoolean(CompanionTls.CHANGED, false) ? "Its certificate changed · pair again"
                     : CloudBackup.paired(this) ? "On · your messages in a browser" : "Off · your messages in a browser",
                     this::companion),
-                action("Battery and sync", SyncPolicy.backgroundLabel(SyncPolicy.backgroundMinutes(prefs)) + " in the background",
-                    this::batterySettings))),
+                action("Battery and sync", BatteryPage.summary(prefs), this::batterySettings))),
             new SettingsSection("Help", List.of(
                 action("Sample inbox", "Practice with made-up chats and calls. Nothing is sent.", this::sampleInbox),
                 action("Setup guide", "A quick tour of what FluidMessages can do", () -> onboarding(0)),
@@ -4704,6 +4704,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     () -> nearby("guide:settings")),
                 action(NearbyIntro.TITLE, "Message friends close by with no internet or cell signal",
                     () -> nearby("intro:settings")),
+                action(TorIntro.TITLE, "How Tor hides where you connect from, and its downsides", this::torIntro),
                 action("About and updates", "Version and updates", this::about),
                 action("Reset or erase", "Start over with default settings, or remove everything", this::resetPage)))));
     }
@@ -4725,6 +4726,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 case ABOUT -> about();
             }
         });
+    }
+
+    /** Settings → Help → What is Tor? (TorIntro): the page that shows the first time Connect through Tor is turned on. */
+    private void torIntro() {
+        render("tor-intro");
+        heading(TorIntro.TITLE, "Back", this::settings);
+        TorIntro.markSeen(prefs);
+        TorIntro.mount(root, prefs, this::settings);
     }
 
     /** Settings → Help → Communities: the page that shows once after the first IRC, Matrix, or XMPP account. */
@@ -4949,7 +4958,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void batterySettings() {
         render("battery");
         heading("Battery and sync", "Back", this::settings);
-        ProtocolSettingsScreen.mountBattery(root, prefs);
+        BatteryPage.mount(root, prefs, this::runningNow);
     }
 
     private boolean canPromptUpdate() {

@@ -31,7 +31,7 @@ import kotlinx.coroutines.delay
 
 /** Pictures and short tips for the setup guide, so each idea is shown rather than explained in paragraphs. */
 
-internal enum class TipIcon { PHONE, CHAT, PRACTICE, TAG, PEOPLE, LOCK, FINGER, FOLDER, MASK, TIMER, LAPTOP, OPTIONAL }
+internal enum class TipIcon { PHONE, CHAT, PRACTICE, TAG, PEOPLE, LOCK, FINGER, FOLDER, MASK, TIMER, LAPTOP, OPTIONAL, ONION }
 
 /** One tip. With an action, it's a button that takes you there. */
 internal data class Tip(val icon: TipIcon, val title: String, val line: String, val action: (() -> Unit)? = null)
@@ -75,6 +75,8 @@ private fun TipGlyph(icon: TipIcon, color: Color) {
     when (icon) {
         TipIcon.PHONE -> HandsetGlyph(color, modifier)
         TipIcon.LOCK -> LockGlyph(color, open = false, modifier = modifier)
+        // The same onion chats show while they go through Tor (TorMark).
+        TipIcon.ONION -> DrawGlyph(Glyph.Onion, color, modifier)
         else -> Canvas(modifier) {
             val stroke = 1.9.dp.toPx()
             val w = size.width

@@ -130,9 +130,9 @@ object OnboardingScreen {
                                 item {
                                     Tips(listOf(
                                         Tip(TipIcon.FINGER, "App lock", "Settings → Privacy and security"),
-                                        Tip(TipIcon.LOCK, "Lock one chat", "A chat’s ⋯ menu → Lock this chat"),
-                                        Tip(TipIcon.FOLDER, "Private folder", "Inbox filter menu → Private folder"),
-                                        Tip(TipIcon.MASK, "Decoy mode", "Shows pretend chats if someone else has your phone")), appearance.speed)
+                                        Tip(TipIcon.LOCK, "Lock or hide a chat", "A chat’s ⋯ menu → Lock this chat, or Move to private folder"),
+                                        Tip(TipIcon.MASK, "Decoy mode", "Shows pretend chats if someone else has your phone"),
+                                        Tip(TipIcon.ONION, "Hide where you connect from", "Connect through Tor: Settings → Privacy and security")), appearance.speed)
                                 }
                             }
                             "disappear" -> {

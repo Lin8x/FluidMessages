@@ -36,6 +36,9 @@ const TIP_ICONS = {
   key: '<circle cx="7.5" cy="12" r="4.3"/><path d="M11.8 12H22M18.5 12v3.4M21.5 12v2.6"/>',
   gear: '<circle cx="12" cy="12" r="3.3"/><path d="M12 2.6v2.6M12 18.8v2.6M2.6 12h2.6M18.8 12h2.6M5.4 5.4l1.8 1.8M16.8 16.8l1.8 1.8M5.4 18.6l1.8-1.8M16.8 7.2l1.8-1.8"/>',
   wifi: '<path d="M2.5 9a14 14 0 0 1 19 0M5.8 12.6a9 9 0 0 1 12.4 0M9.1 16.1a4.2 4.2 0 0 1 5.8 0"/><circle cx="12" cy="19.6" r="1.2" fill="currentColor"/>',
+  // The onion chats show while they go through Tor (tor.js torMark), at this size.
+  onion: '<path d="M12 5.1C12.9 7.8 19.5 10.2 19.5 15.3C19.5 19 16.2 21.3 12 21.3C7.8 21.3 4.5 19 4.5 15.3C4.5 10.2 11.1 7.8 12 5.1Z'
+    + 'M12 10.5V18.3M12 5.1V2.4M12 3.9L14.7 2.3"/>',
 };
 
 function tipIcon(name) {
@@ -1492,11 +1495,11 @@ function showWelcome({at = 0} = {}) {
         {icon: 'chat', title: 'Where to look', line: 'Next to the name at the top of a chat. Details explains it.'}])]},
     {title: 'Keep chats private', subtitle: 'Decide who can open FluidMessages, and from where.',
       body: (flow) => [privacyIllustration(flow), guideTips([
-        {icon: 'key', title: 'A password', line: 'Other devices sign in with it. Settings → Phone and other devices'},
+        {icon: 'key', title: 'A password', line: 'Other devices sign in with it, and you can sign them all out. Settings → Phone and other devices'},
         {icon: 'phone', title: 'Two-step sign-in', line: 'After the password, a code from an app on your phone. Set up with your password'},
         {icon: 'laptop', title: 'The computer it runs on', line: 'Opens there without a password, or turn that off'},
         {icon: 'lock', title: 'Chat codes', line: 'Hide a chat until its code is entered. A chat’s Details'},
-        {icon: 'people', title: 'Sign out other browsers', line: 'All at once, from Settings'}])]},
+        {icon: 'onion', title: 'Hide where you connect from', line: 'Connect through Tor: Settings → Privacy and security'}])]},
     {title: 'Disappearing messages', subtitle: 'Messages can remove themselves after a while, and the chat notes each change.',
       body: (flow) => [disappearingShowcase(flow), guideTips([
         {icon: 'timer', title: 'For one chat', line: 'A chat’s Details → Disappearing messages'},

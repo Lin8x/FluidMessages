@@ -84,6 +84,8 @@ PREFS += WEB_SWITCHES
 OFF_PREFS = ("ircCalls",)
 # Whether the Communities page has shown, once, after the first IRC, Matrix, or XMPP account (welcome.js). Off until then.
 OFF_PREFS += ("communitiesIntroSeen",)
+# Whether "What is Tor?" has shown, once, the first time Connect through Tor is turned on (tor.js). Off until then.
+OFF_PREFS += ("torIntroSeen",)
 # Messages → Communities' sort order, and Settings → Messaging → Inbox filters: which filters the inbox filter menu
 # shows, in order. A hidden filter is kept with a "-" in front, so its place survives turning it back on.
 COMMUNITY_SORTS = ("recent", "name", "joined")

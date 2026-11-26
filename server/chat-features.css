@@ -66,6 +66,11 @@
 .connection-mark.tor-mark { color: #6a3fb5; }
 :root[data-mode="dark"] .connection-mark.tor-mark { color: #c3a6ff; }
 .head-connection .tor-mark { margin-inline-start: .2rem; }
+/* "What is Tor?" (tor.js torIntroPage): the path through three violet computers, lists, and the onion in its step. */
+.tor-intro-art .tor-node { fill: #6a3fb5; }
+:root[data-mode="dark"] .tor-intro-art .tor-node { fill: #8b63d6; }
+.tor-intro-list { display: grid; gap: .4rem; margin: 0; padding-inline-start: 1.2rem; line-height: 1.5; }
+.service-guide-steps li .tor-mark { align-self: center; margin-inline-start: .2rem; }
 /* A switch that can't apply here, with its reason under its label. */
 .switch-row.disabled { opacity: .55; }
 .switch-row > input[role="switch"]:disabled { cursor: not-allowed; }

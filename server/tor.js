@@ -1,6 +1,7 @@
 'use strict';
 // Settings → Privacy and security → Connect through Tor (tor_route.py), like the phone's (TorSettingsPage). Off by
-// default. Turning it on shows the warning in place, and Turn on waits for "I understand".
+// default. The first time it's turned on, "What is Tor?" (below) comes first; then the warning shows in place, and
+// Turn on waits for "I understand".
 
 async function torSettingsLink() {
   const card = settingsCard('Network');
@@ -19,6 +20,7 @@ function torStateWords(status) {
 }
 
 async function torSettingsPage() {
+  torIntroNext = null;
   let status = await api('tor');
   const card = settingsCard('Connect through Tor', 'For the connections this server makes: IRC, Matrix, and email, and link '
     + 'previews. Your phone has its own setting.');
@@ -47,6 +49,13 @@ async function torSettingsPage() {
   cancel.type = 'button';
   consent.append(element('strong', 'Connect through Tor?'), element('p', status.warning), understood, turnOn, cancel);
   const toggle = checkbox('Connect through Tor', status.on, async (value) => {
+    // The first time, "What is Tor?" comes before the warning; Continue there brings you back to it.
+    if (value && torIntroDue(true)) {
+      toggleInput.checked = false;
+      torIntroNext = 'consent';
+      openSettings('tor-intro').catch(showError);
+      return;
+    }
     if (value) { consent.hidden = false; return; }
     consent.hidden = true;
     await save({on: false});
@@ -74,7 +83,16 @@ async function torSettingsPage() {
       + (status.on ? ' Until it answers, chat services wait instead of connecting without Tor.' : '');
   }
   draw();
-  card.append(toggle, consent, state, field('Tor proxy address', proxy, 'Tor’s SOCKS port. Usually 127.0.0.1:9050.'), saveProxy, install, problem);
+  // Back from "What is Tor?" with Continue: the warning, open, as if the switch had just been turned on.
+  if (torAskOnOpen) {
+    torAskOnOpen = false;
+    if (!status.on) {
+      consent.hidden = false;
+      toggleInput.checked = true;
+    }
+  }
+  card.append(toggle, consent, state, field('Tor proxy address', proxy, 'Tor’s SOCKS port. Usually 127.0.0.1:9050.'), saveProxy, install, problem,
+    settingsLink('tor-intro', 'How Tor works, who it’s for, and its downsides'));
 
   const what = settingsCard('What goes through Tor');
   what.append(element('p', 'Through Tor: IRC, Matrix, and email connected from this server, and link previews and pictures from links.', 'muted'),
@@ -85,6 +103,119 @@ async function torSettingsPage() {
 }
 
 SETTINGS_SUBPAGES.push({id: 'tor', icon: 'privacy', title: 'Connect through Tor', parent: 'privacy', page: () => torSettingsPage()});
+
+// "What is Tor?", like the phone's (TorIntro.kt), in the style of the service guides (account-setup.js): a picture,
+// what it is, who it's for, what it doesn't do, the downsides, and numbered steps. It shows the first time Connect
+// through Tor is turned on, before the warning, and any time from the Tor page and Settings → Help.
+
+// tor-intro:start (scripts/test-local runs this block on its own)
+const TOR_INTRO = {
+  title: 'What is Tor?',
+  about: 'Tor hides your internet address from the servers you talk to and from anyone watching your network. It does '
+    + 'this by bouncing your connection through three computers run by volunteers. Each one only knows the step before it '
+    + 'and the step after it.',
+  whoTitle: 'Who it’s for',
+  who: 'People who don’t want a chat server, a school, a workplace, or an internet provider to see who they talk to or '
+    + 'where they connect from.',
+  notTitle: 'What it doesn’t do',
+  not: ['It doesn’t lock your messages. That’s the job of the lock next to a chat’s name.',
+    'Texts and phone calls never use Tor. They go over your phone plan.'],
+  downsidesTitle: 'The downsides',
+  downsides: ['It’s slower. Messages and pictures take longer.', 'The connection sometimes drops and has to start again.',
+    'Some servers block Tor, so a chat there may not connect.'],
+  stepsTitle: 'How it works here',
+  steps: ['Turn on Connect through Tor for every chat service in Settings → Privacy and security.',
+    'Or turn it on for only some chats: each chat’s details have their own Connect through Tor switch.',
+    'Chats that go through Tor show a small onion next to their name.'],
+  again: 'See this again any time in Settings → Help → What is Tor?',
+};
+
+/** Whether turning Tor on shows "What is Tor?" first: only on the way to turning it on, and only the first time. */
+function torIntroDue(turningOn, seen = typeof prefs === 'object' && prefs?.torIntroSeen === true) {
+  return !!turningOn && !seen;
+}
+// tor-intro:end
+
+/** 'consent' while "What is Tor?" is on the way to turning Tor on; the Tor page then opens its warning. */
+let torIntroNext = null;
+let torAskOnOpen = false;
+
+function torIntroMarkSeen() {
+  if (prefs?.torIntroSeen === true) return;
+  prefs = {...prefs, torIntroSeen: true};
+  api('settings', {prefs: {torIntroSeen: true}}).then((result) => { companionSettings = result; }).catch(() => {});
+}
+
+/** An original picture (not the Tor Project's logo): your device, a dashed path hopping through three computers, a server. */
+function torIntroPicture() {
+  const template = document.createElement('template');
+  const hops = [[48, 64], [112, 32], [168, 96], [224, 34], [272, 64]];
+  let path = '';
+  for (let i = 0; i < hops.length - 1; i++) path += 'M' + hops[i].join(' ') + 'L' + hops[i + 1].join(' ');
+  template.innerHTML = '<svg class="service-guide-art tor-intro-art" viewBox="0 0 320 128" role="img" aria-hidden="true">'
+    + '<rect class="sg-bubble" x="12" y="30" width="36" height="68" rx="9"/><rect class="sg-on" x="20" y="54" width="20" height="14" rx="6"/>'
+    + '<path class="sg-link tor-hop" d="' + path + '"/>'
+    + hops.slice(1, 4).map(([x, y]) => '<circle class="tor-node" cx="' + x + '" cy="' + y + '" r="15"/>'
+      + '<rect class="sg-on" x="' + (x - 7) + '" y="' + (y - 5) + '" width="14" height="9" rx="2"/>').join('')
+    + [34, 56, 78].map((y) => '<rect class="sg-box" x="272" y="' + y + '" width="38" height="18" rx="5"/>'
+      + '<circle class="sg-dot" cx="282" cy="' + (y + 9) + '" r="3"/>').join('')
+    + '</svg>';
+  return template.content.firstElementChild;
+}
+
+/** The page. [back] is the page to return to with Done, Continue, or Not now. */
+function torIntroPage(back) {
+  torIntroMarkSeen();
+  const turningOn = torIntroNext === 'consent';
+  const leave = (ask) => {
+    torIntroNext = null;
+    torAskOnOpen = ask;
+    openSettings(ask ? 'tor' : back).catch(showError);
+  };
+  const hero = element('section', '', 'settings-section service-guide');
+  hero.append(torIntroPicture(), element('h3', TOR_INTRO.title), element('p', TOR_INTRO.about, 'service-guide-line'),
+    element('p', 'Here, it hides the address of the computer FluidMessages Web runs on. Your phone has its own setting.', 'muted'));
+  const section = (title, lines) => {
+    const box = element('section', '', 'settings-section');
+    box.append(element('h3', title));
+    if (lines.length === 1) box.append(element('p', lines[0]));
+    else {
+      const list = element('ul', '', 'tor-intro-list');
+      for (const line of lines) list.append(element('li', line));
+      box.append(list);
+    }
+    return box;
+  };
+  const steps = element('section', '', 'settings-section');
+  const list = element('ol', '', 'service-guide-steps');
+  for (const text of TOR_INTRO.steps) list.append(element('li', text));
+  list.lastElementChild.append(torMark());
+  steps.append(element('h3', TOR_INTRO.stepsTitle), list);
+  if (!turningOn) steps.append(element('p', TOR_INTRO.again, 'muted'));
+  const go = element('div', '', 'service-guide-go');
+  const done = element('button', turningOn ? 'Continue' : 'Done', 'primary service-guide-begin');
+  done.type = 'button';
+  done.addEventListener('click', () => leave(turningOn));
+  go.append(done);
+  if (turningOn) {
+    const later = element('button', 'Not now', 'quiet');
+    later.type = 'button';
+    later.addEventListener('click', () => leave(false));
+    go.append(later);
+  }
+  return [hero, section(TOR_INTRO.whoTitle, [TOR_INTRO.who]), section(TOR_INTRO.notTitle, TOR_INTRO.not),
+    section(TOR_INTRO.downsidesTitle, TOR_INTRO.downsides), steps, go];
+}
+
+SETTINGS_SUBPAGES.push({id: 'tor-intro', icon: 'privacy', title: TOR_INTRO.title, parent: 'tor', page: () => torIntroPage('tor')});
+// Settings → Help → What is Tor?, just before About and updates.
+{
+  const help = SETTINGS_GROUPS.find(([name]) => name === 'Help')?.[1];
+  const item = {id: 'what-is-tor', icon: 'privacy', title: TOR_INTRO.title, summary: 'How Tor hides where you connect from, and its downsides',
+    page: () => torIntroPage('')};
+  const at = help ? help.findIndex((entry) => entry.id === 'about') : -1;
+  if (at >= 0) help.splice(at, 0, item); else help?.push(item);
+}
 
 // Tor per chat, as on the phone (TorChat.kt): an onion beside a chat's other marks (the plug, the muted bell) while
 // its connection goes through Tor right now, the same in the chat's header, and in its details' Connection section

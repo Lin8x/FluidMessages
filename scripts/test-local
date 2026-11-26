@@ -5332,6 +5332,60 @@ def tor_test():
         check("slower and less reliable" in status["warning"], "The Tor warning is missing")
     print("PASS  Tor: SOCKS5 with remote DNS, nothing direct while Tor isn't running, IRC refusals, and the setting")
     tor_chat_test()
+    tor_intro_test()
+
+
+def tor_intro_test():
+    """"What is Tor?": the same words on the phone (TorIntro.kt) and the web (tor.js), shown once before the warning,
+    reachable from the Tor page and Settings → Help, kept as a server pref; and the setup guide's Tor tip."""
+    kotlin = (ROOT / "app/src/main/kotlin/org/fluidmessages/TorIntro.kt").read_text()
+    tor_js = (ROOT / "server/tor.js").read_text()
+    block = re.search(r"// tor-intro:start[^\n]*\n(.*?)// tor-intro:end", tor_js, re.S)
+    check(block is not None, "tor.js has no tor-intro block")
+    flat = lambda text: re.sub(r"\"\s*\+\s*\"|'\s*\+\s*'", "", text)
+    for words in ("bouncing your connection through three computers run by volunteers", "a school, a workplace, or an internet provider",
+                  "It doesn’t lock your messages.", "Texts and phone calls never use Tor.", "It’s slower.", "sometimes drops",
+                  "Some servers block Tor", "each chat’s details have their own Connect through Tor switch",
+                  "show a small onion next to their name"):
+        check(words in flat(kotlin) and words in flat(block.group(1)), "The phone and web differ on What is Tor?: " + words)
+    page = (ROOT / "app/src/main/kotlin/org/fluidmessages/TorSettingsPage.kt").read_text()
+    check("TorIntro.due(prefs, true)" in page and "Intro.READING" in page, "The phone's Tor page doesn't show What is Tor? first, or link to it")
+    activity = (ROOT / "app/src/main/java/org/fluidmessages/MainActivity.java").read_text()
+    check("action(TorIntro.TITLE" in activity.split("new SettingsSection(\"Help\"", 1)[1], "Settings → Help has no What is Tor? on the phone")
+    check("if (value && torIntroDue(true))" in tor_js and "settingsLink('tor-intro'" in tor_js and "id: 'what-is-tor'" in tor_js,
+          "The web's Tor page doesn't show What is Tor? first, link to it, or list it in Help")
+    check("\"torIntroSeen\"" in (ROOT / "server/main.py").read_text(), "The web doesn't keep whether What is Tor? has shown")
+    onboarding = (ROOT / "app/src/main/kotlin/org/fluidmessages/OnboardingScreen.kt").read_text()
+    welcome = (ROOT / "server/welcome.js").read_text()
+    for text in (onboarding, welcome):
+        check("Hide where you connect from" in text and "Connect through Tor: Settings → Privacy and security" in text,
+              "The setup guide's Keep chats private step has no Tor tip")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if node:
+        script = block.group(1) + """
+const wrong = [];
+const expect = (got, want, what) => { if (got !== want) wrong.push([what, got, want]); };
+expect(torIntroDue(true, false), true, 'first time on');
+expect(torIntroDue(true, true), false, 'already seen');
+expect(torIntroDue(false, false), false, 'turning off');
+expect(TOR_INTRO.downsides.length, 3, 'downsides');
+process.stdout.write(JSON.stringify(wrong));
+"""
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+        check(result.returncode == 0 and result.stdout == "[]", "tor.js's What is Tor? rule is wrong: " + (result.stdout or result.stderr)[:600])
+    else:
+        print("Skipped running tor.js's What is Tor? rule: node isn't installed (set NODE to its path)")
+    # Settings → Battery and sync: plain words, a link to Running now, and the same pref keys as before.
+    battery = (ROOT / "app/src/main/kotlin/org/fluidmessages/BatteryPage.kt").read_text()
+    for words in ("How often to check for new messages", "While FluidMessages is open", "While FluidMessages is closed",
+                  "Only check on Wi-Fi", "Pause checks during Battery Saver", "Download pictures and files you get",
+                  "See what’s running now", "Stay discoverable", "Connect through Tor"):
+        check(words in battery, "Battery and sync is missing: " + words)
+    policy = (ROOT / "app/src/main/java/org/fluidmessages/SyncPolicy.java").read_text()
+    for key in ("syncForegroundSeconds", "syncBackgroundMinutes", "syncWifiOnly", "syncPauseOnBatterySaver", "attachmentDownloads"):
+        check('"' + key + '"' in policy, "Battery and sync lost its pref key " + key)
+    check("BatteryPage.mount(root, prefs, this::runningNow)" in activity, "Battery and sync doesn't link to Running now")
+    print("PASS  What is Tor? on the phone and web, the setup guide's Tor tip, and Battery and sync's words and keys")
 
 
 def tor_chat_test():

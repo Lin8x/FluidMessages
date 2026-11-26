@@ -7,8 +7,10 @@ import android.net.NetworkCapabilities;
 import android.os.PowerManager;
 
 /**
- * Battery and data choices shared by the foreground poll, the background job, and attachment downloads.
- * Defaults match the earlier fixed behavior: every 20 seconds while open, every 15 minutes in the background.
+ * Settings → Battery and sync (BatteryPage): the choices shared by the check while FluidMessages is open (it syncs
+ * with FluidMessages Web), the background check (SyncJob: FluidMessages Web, and Matrix and Email on this phone),
+ * and attachment downloads. Connections that stay open (Stay connected, Nearby's Stay discoverable) don't follow
+ * them. Defaults: every 20 seconds while open, every 15 minutes in the background. The keys are kept for backups.
  */
 final class SyncPolicy {
     static final String FOREGROUND = "syncForegroundSeconds", BACKGROUND = "syncBackgroundMinutes",
@@ -54,13 +56,5 @@ final class SyncPolicy {
             default -> false;
         };
     }
-
-    static String foregroundLabel(int seconds) {
-        return seconds == 0 ? "Only when I refresh or send" : seconds < 60 ? "Every " + seconds + " seconds" : "Every minute";
-    }
-
-    static String backgroundLabel(int minutes) {
-        if (minutes == 0) return "Off";
-        return minutes < 60 ? "Every " + minutes + " minutes" : minutes == 60 ? "Every hour" : "Every " + minutes / 60 + " hours";
-    }
+    // The choices' words are on Settings → Battery and sync (BatteryPage).
 }
