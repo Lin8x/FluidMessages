@@ -471,7 +471,8 @@ Also available: the [server download](https://github.com/Lin8x/FluidMessages/rel
 |---|---|
 | 📖 [Features](docs/features.md) | Everything the app can do. |
 | 🏠 [Self-hosting](docs/self-hosting.md) | Docker, Portainer, HTTPS, and desktop apps. |
-| 🛠️ [Development](docs/development.md) | Building, testing, and releasing. |
+| 🧱 [Build from source](docs/building.md) | Command-line build steps for the app and FluidMessages Web. |
+| 🛠️ [Development](docs/development.md) | Testing and releasing. |
 | 🤝 [Contributing](CONTRIBUTING.md) | How to help. |
 | 🛡️ [Privacy policy](docs/privacy.md) | What the app sends, and where. |
 | 🔐 [Security](SECURITY.md) | Report a problem privately. |

@@ -16,7 +16,7 @@ The script uses the pinned Gradle wrapper, installs missing SDK packages after A
 
 ## Building
 
-Build with JDK 17, Android SDK 35, and the included Gradle wrapper:
+Step-by-step command-line instructions, starting from a fresh computer, are in [building.md](building.md). In short, build with JDK 17, Android SDK 35, and the included Gradle wrapper:
 
 ```sh
 ./gradlew assembleDebug
@@ -54,7 +54,7 @@ GitHub Actions builds a debug APK for every push.
 - `--no-wait` skips waiting for the desktop apps. Normally the script waits until GitHub Actions has attached the Windows, macOS, and Linux apps, retries a failed build once, and stops with an error if any of the five files is still missing.
 - `--no-main` leaves `main` where it is. Otherwise, releasing from another branch fast-forwards `main` to it, so the GitHub page, README, and website show the latest release. It never force-pushes: if `main` has commits your branch doesn't, it's left alone with a warning, and the release still goes out.
 
-It needs the GitHub CLI signed in (`gh auth login`). APKs are signed with this computer's debug key, so keep releasing from the same machine, or phones can't install the update over the old version.
+It needs the GitHub CLI signed in (`gh auth login`). APKs are signed with the FluidMessages release key (`scripts/sign-apk`, made once by `scripts/make-release-key`), so only a computer with those key files can release.
 
 ## Remaining release work
 
