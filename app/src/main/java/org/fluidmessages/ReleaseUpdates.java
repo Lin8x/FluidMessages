@@ -26,7 +26,8 @@ final class ReleaseUpdates {
     private static final Set<String> ASSET_HOSTS = Set.of("github.com", "release-assets.githubusercontent.com",
         "objects.githubusercontent.com");
     private static final Set<String> MANAGED_INSTALLERS = Set.of("com.android.vending", "org.fdroid.fdroid",
-        "org.fdroid.basic", "com.looker.droidify", "com.aurora.store");
+        "org.fdroid.basic", "com.looker.droidify", "com.machiav3lli.fdroid", "com.aurora.store", "dev.imranr.obtainium",
+        "dev.imranr.obtainium.fdroid", "com.sec.android.app.samsungapps", "com.huawei.appmarket");
 
     record Release(String version, URL download, long size, String digest) {}
     record Result(Release update, String status) {}
@@ -34,8 +35,16 @@ final class ReleaseUpdates {
     /** True for F-Droid's build (-Pfdroid=true): F-Droid delivers updates, so the app never checks or downloads them itself. */
     static boolean fdroidBuild() { return BuildConfig.FDROID; }
 
+    /**
+     * True for builds made for an app store: F-Droid's, and the app bundle (.aab) for stores like Google Play
+     * (-Pstore=true). The store delivers updates, so the app never checks or downloads them itself.
+     */
+    static boolean storeBuild() { return BuildConfig.STORE; }
+
+    static String storeUpdates() { return fdroidBuild() ? "Updates come from F-Droid." : "Updates come from the app store you installed FluidMessages from."; }
+
     static boolean managedByStore(Context context) {
-        if (fdroidBuild()) return true;
+        if (storeBuild()) return true;
         try {
             String installer = context.getPackageManager().getInstallSourceInfo(context.getPackageName()).getInstallingPackageName();
             return installer != null && MANAGED_INSTALLERS.contains(installer);
@@ -47,7 +56,7 @@ final class ReleaseUpdates {
     }
 
     static Result check(String installedVersion) throws Exception {
-        if (fdroidBuild()) return new Result(null, "Updates come from F-Droid.");
+        if (storeBuild()) return new Result(null, storeUpdates());
         var connection = connect(new URL(API));
         connection.setRequestProperty("Accept", "application/vnd.github+json");
         try {
@@ -96,7 +105,7 @@ final class ReleaseUpdates {
     }
 
     static File download(Context context, Release release) throws Exception {
-        if (fdroidBuild()) throw new IOException("Updates come from F-Droid.");
+        if (storeBuild()) throw new IOException(storeUpdates());
         File directory = new File(context.getCacheDir(), "app-updates");
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Could not prepare an update download");
         File[] oldFiles = directory.listFiles();

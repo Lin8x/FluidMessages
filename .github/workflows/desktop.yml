@@ -1,6 +1,7 @@
 name: FluidMessages Web desktop apps
-# For every published release, builds FluidMessages Web for Windows (.exe), macOS (.dmg), and Linux (.AppImage) on
-# each system and attaches them to the release. Run it by hand to rebuild a release's apps.
+# For every published release, builds FluidMessages Web for Windows (.exe, and .msix for the Microsoft Store), macOS
+# (.dmg), and Linux (.AppImage) on each system and attaches them to the release. Run it by hand to rebuild a release's
+# apps, or to test the builds from a branch without uploading anything.
 on:
   release:
     types: [published]
@@ -9,6 +10,14 @@ on:
       tag:
         description: Release tag to build, like v0.33.0
         required: true
+      ref:
+        description: Build this branch or commit instead of the tag (for testing)
+        required: false
+        default: ''
+      upload:
+        description: Attach the apps to the release
+        type: boolean
+        default: true
 permissions:
   contents: write
 jobs:
@@ -21,10 +30,15 @@ jobs:
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       GH_TOKEN: ${{ github.token }}
+      UPLOAD: ${{ github.event_name == 'release' || inputs.upload }}
+      # The Microsoft Store identity from Partner Center → Product identity (repository variables).
+      MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+      MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+      MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ inputs.ref || env.TAG }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -37,7 +51,14 @@ jobs:
       - run: python desktop/build.py --version "${TAG#v}"
         shell: bash
       # Also upload each app without the version in its name, so releases/latest/download/<name> links always work.
-      - run: |
+      - if: env.UPLOAD == 'true'
+        run: |
           for file in dist/FluidMessages-Web-"${TAG#v}"-*; do cp "$file" "dist/FluidMessages-Web-${file##*-"${TAG#v}"-}"; done
           gh release upload "$TAG" dist/FluidMessages-Web-* --clobber
         shell: bash
+      # Test runs keep the apps as a downloadable artifact of the run instead.
+      - if: env.UPLOAD != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ runner.os }}
+          path: dist/FluidMessages-Web-*

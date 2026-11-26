@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata for FluidMessages Web on Linux (Flathub, software centers). Install it to
+     /app/share/metainfo/, next to io.github.Lin8x.FluidMessages.desktop in /app/share/applications/ and
+     server/icons/icon-512.png as /app/share/icons/hicolor/512x512/apps/io.github.Lin8x.FluidMessages.png.
+     scripts/release adds each release. Check it with: appstreamcli validate desktop/linux/*.metainfo.xml -->
+<component type="desktop-application">
+  <id>io.github.Lin8x.FluidMessages</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+
+  <name>FluidMessages Web</name>
+  <summary>Your phone’s texts, calls, and chats on your computer</summary>
+  <developer id="io.github.lin8x">
+    <name>Lin8x</name>
+  </developer>
+
+  <description>
+    <p>
+      FluidMessages Web is the computer side of FluidMessages, a free, open-source messaging app for Android with no
+      ads and no tracking. It runs on your own computer and talks to your phone over your home network, so you can read
+      and send your texts from a big screen. No FluidMessages account is needed, and no cloud service of ours stores
+      your messages.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Your phone’s texts, with photos, reactions, and replies</li>
+      <li>Matrix, XMPP, email, and IRC chats in the same inbox, with end-to-end encryption where the service supports it</li>
+      <li>One conversation per person, however you reach them</li>
+      <li>Communities: IRC networks and Matrix spaces next to your texts</li>
+      <li>Themes and your own colors for each kind of message</li>
+      <li>Pair your phone by scanning a QR code; two-step sign-in is on by default</li>
+      <li>Optional Tor for chat connections</li>
+      <li>Use it from any browser on your home network, including an iPhone or iPad</li>
+    </ul>
+    <p>Texting needs the FluidMessages app on an Android phone. Chat services like Matrix and XMPP work without a phone.</p>
+  </description>
+
+  <launchable type="desktop-id">io.github.Lin8x.FluidMessages.desktop</launchable>
+
+  <url type="homepage">https://github.com/Lin8x/FluidMessages</url>
+  <url type="bugtracker">https://github.com/Lin8x/FluidMessages/issues</url>
+  <url type="vcs-browser">https://github.com/Lin8x/FluidMessages</url>
+  <url type="help">https://github.com/Lin8x/FluidMessages/blob/main/docs/self-hosting.md</url>
+  <url type="contribute">https://github.com/Lin8x/FluidMessages/blob/main/CONTRIBUTING.md</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>All your chats in one inbox</caption>
+      <image type="source" width="1280" height="800">https://raw.githubusercontent.com/Lin8x/FluidMessages/main/docs/images/flathub/1-inbox.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Group chats with polls and plans</caption>
+      <image type="source" width="1280" height="800">https://raw.githubusercontent.com/Lin8x/FluidMessages/main/docs/images/flathub/2-conversation.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Communities next to your texts</caption>
+      <image type="source" width="1280" height="800">https://raw.githubusercontent.com/Lin8x/FluidMessages/main/docs/images/flathub/3-communities.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Themes and appearance</caption>
+      <image type="source" width="1280" height="800">https://raw.githubusercontent.com/Lin8x/FluidMessages/main/docs/images/flathub/4-appearance.png</image>
+    </screenshot>
+  </screenshots>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#8ff0a4</color>
+    <color type="primary" scheme_preference="dark">#1a5c2c</color>
+  </branding>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+    <content_attribute id="social-contacts">intense</content_attribute>
+  </content_rating>
+
+  <categories>
+    <category>Network</category>
+    <category>Chat</category>
+    <category>InstantMessaging</category>
+  </categories>
+  <keywords>
+    <keyword>SMS</keyword>
+    <keyword>texting</keyword>
+    <keyword>Matrix</keyword>
+    <keyword>XMPP</keyword>
+    <keyword>IRC</keyword>
+  </keywords>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <provides>
+    <binary>fluidmessages-web</binary>
+  </provides>
+
+  <releases>
+    <release version="0.47.1" date="2026-11-26">
+      <url type="details">https://github.com/Lin8x/FluidMessages/releases/tag/v0.47.1</url>
+    </release>
+    <release version="0.47.0" date="2026-11-26">
+      <url type="details">https://github.com/Lin8x/FluidMessages/releases/tag/v0.47.0</url>
+    </release>
+    <release version="0.46.0" date="2026-11-26">
+      <url type="details">https://github.com/Lin8x/FluidMessages/releases/tag/v0.46.0</url>
+    </release>
+    <release version="0.45.0" date="2026-11-25">
+      <url type="details">https://github.com/Lin8x/FluidMessages/releases/tag/v0.45.0</url>
+    </release>
+  </releases>
+</component>

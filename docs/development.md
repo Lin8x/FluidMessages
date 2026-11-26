@@ -40,13 +40,17 @@ GitHub Actions builds a debug APK for every push.
 `./scripts/release` builds a fresh APK and runs the local checks. It then commits any changes, tags `v<version>`, pushes the branch and tag, moves `main` up to the release, and creates a GitHub release with these files:
 
 - `FluidMessages-<version>.apk`: the Android app. **Check for updates** in the app picks it up.
+- `FluidMessages-<version>.aab`: the app bundle for app stores like Google Play and the Galaxy Store. It's a store build (`-Pstore=true`): no update checks or update permission, since the store updates it. Signed with the release key by `scripts/sign-aab`; on Google Play that's the upload key.
 - `FluidMessages-Server-<version>.zip`: the FluidMessages Web server, with Docker Compose and the `web-app` scripts, for hosting it yourself.
 - FluidMessages Web desktop apps, which GitHub Actions builds on each system and adds to the same release a few minutes later:
   - `…-Windows.exe`
+  - `…-Windows.msix`: for the Microsoft Store, unsigned (the Store signs it). Its identity must match Partner Center → Product identity: set the repository variables `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER` and `MSIX_PUBLISHER_DISPLAY_NAME` (GitHub → Settings → Secrets and variables → Actions → Variables).
   - `…-macOS.dmg`
   - `…-Linux-x86_64.AppImage`
 
   Each one runs FluidMessages Web on the computer, signs in automatically, and opens it in its own window. To build one by hand, run `pip install pyinstaller pillow`, then `python desktop/build.py --version <version>`.
+
+After the desktop apps are attached, the script points the Homebrew tap ([Lin8x/homebrew-tap](https://github.com/Lin8x/homebrew-tap)) at the new Mac app with `scripts/update-homebrew-tap`, and each release is added to the Linux AppStream metadata (`desktop/linux/`, used for Flathub). To test the desktop builds from a branch without touching a release, run the desktop workflow by hand with **ref** set to the branch and **upload** turned off; the apps are kept as the run's artifacts.
 
 - `--bump` raises the patch version first.
 - `--notes "..."` sets the release notes.

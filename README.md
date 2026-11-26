@@ -403,13 +403,20 @@ Free. No account. No ads.
   <a href="#iphone-and-ipad"><img src="docs/images/get-iphone.svg" height="60" alt="Use it on iPhone or iPad"></a>
 </p>
 
+<p align="center">
+  <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22org.fluidmessages%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FLin8x%2FFluidMessages%22%2C%22author%22%3A%22Lin8x%22%2C%22name%22%3A%22FluidMessages%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22%5EFluidMessages-%5B0-9.%5D%2B%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D"><img src="docs/images/badge-obtainium.png" height="60" alt="Get it on Obtainium (for Android)"></a>
+</p>
+
 <details>
 <summary><b>Need help installing?</b></summary>
 
 **Android** (Android 13 or newer): open the file and tap **Install**. If your phone asks, allow installs from your browser. Then the app helps you make it your texting app. You can switch back any time.
 
 - On Android 15, if the last step is blocked: **Settings → Apps → FluidMessages → ⋮ → Allow restricted settings**.
+- **Obtainium** installs FluidMessages from GitHub and keeps it up to date for you. With Obtainium on your phone, tap **Get it on Obtainium** above. That button opens a page on Obtainium's own website, which has ads and analytics. To skip it, open Obtainium, tap **Add app**, paste `https://github.com/Lin8x/FluidMessages`, and set **Filter APKs by regular expression** to `^FluidMessages-[0-9.]+\.apk$`.
 - Coming from an iPhone? Turn off iMessage on it first (**Settings → Apps → Messages**), or texts from iPhone friends can get lost.
+
+**Mac with Homebrew** (Apple silicon): `brew install --cask lin8x/tap/fluidmessages-web`
 
 **Windows or Mac**: your computer may warn you the first time. [Here's what to do.](docs/self-hosting.md#desktop-apps) To see your texts there, link your Android phone in **Settings → Phone and other devices**.
 

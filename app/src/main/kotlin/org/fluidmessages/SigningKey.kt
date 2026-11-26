@@ -34,16 +34,19 @@ object SigningKey {
     @JvmStatic
     fun matchesOfficial(value: String): Boolean = normalize(value).let { it.length == 64 && it == OFFICIAL }
 
-    enum class Status { OFFICIAL, FDROID, SOMEONE_ELSE }
+    enum class Status { OFFICIAL, FDROID, STORE, SOMEONE_ELSE }
 
     /**
      * What About and updates says. F-Droid may build from source and sign with its own key, so its build says so
-     * instead of warning; any other key is someone else's.
+     * instead of warning. A store build (the .aab) may be signed by the store, like Google Play's own key. Any other
+     * key is someone else's.
      */
     @JvmStatic
-    fun status(value: String, fdroidBuild: Boolean): Status = when {
+    @JvmOverloads
+    fun status(value: String, fdroidBuild: Boolean, storeBuild: Boolean = false): Status = when {
         matchesOfficial(value) -> Status.OFFICIAL
         fdroidBuild && normalize(value).length == 64 -> Status.FDROID
+        storeBuild && normalize(value).length == 64 -> Status.STORE
         else -> Status.SOMEONE_ELSE
     }
 

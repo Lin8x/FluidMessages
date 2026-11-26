@@ -51,6 +51,8 @@ class SigningKeyTest {
         assertEquals(SigningKey.Status.SOMEONE_ELSE, SigningKey.status(other, false))
         // F-Droid's own build may carry F-Droid's key; that isn't a warning.
         assertEquals(SigningKey.Status.FDROID, SigningKey.status(other, true))
+        assertEquals(SigningKey.Status.STORE, SigningKey.status(other, false, true))
+        assertEquals(SigningKey.Status.SOMEONE_ELSE, SigningKey.status(other, false, false))
         assertEquals(SigningKey.Status.SOMEONE_ELSE, SigningKey.status("", true))
     }
 }

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Points the Homebrew tap (github.com/Lin8x/homebrew-tap) at a released Mac app. scripts/release runs it.
+#
+#   ./scripts/update-homebrew-tap 0.48.0 <sha256 of FluidMessages-Web-0.48.0-macOS.dmg>
+#
+# Needs the GitHub CLI signed in with push access to the tap.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+VERSION="${1:?usage: update-homebrew-tap VERSION SHA256}"
+SUM="${2:?usage: update-homebrew-tap VERSION SHA256}"
+TAP="${FLUID_HOMEBREW_TAP:-Lin8x/homebrew-tap}"
+FILE="Casks/fluidmessages-web.rb"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$SUM" =~ ^[0-9a-f]{64}$ ]] || { echo "update-homebrew-tap: bad version or SHA-256" >&2; exit 2; }
+
+CASK=$(sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$SUM/" deploy/homebrew/fluidmessages-web.rb)
+OLD=$(gh api "repos/$TAP/contents/$FILE" -q .sha 2>/dev/null || true)
+ARGS=(-X PUT "repos/$TAP/contents/$FILE" -f message="FluidMessages Web $VERSION" -f content="$(printf '%s\n' "$CASK" | base64 -w0)")
+[[ -n "$OLD" ]] && ARGS+=(-f sha="$OLD")
+gh api "${ARGS[@]}" >/dev/null
+echo "Homebrew tap $TAP now installs FluidMessages Web $VERSION."

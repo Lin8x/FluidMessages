@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=FluidMessages Web
+GenericName=Messaging
+Comment=Your phone's texts, calls, and chats on your computer
+Exec=fluidmessages-web
+Icon=io.github.Lin8x.FluidMessages
+Categories=Network;Chat;InstantMessaging;
+Keywords=SMS;text;messages;chat;Matrix;XMPP;IRC;RCS;
+StartupNotify=true
+Terminal=false

@@ -360,11 +360,13 @@ private fun SigningKeyCard(fingerprint: String, fdroid: Boolean, openVerify: Run
                     copied = true
                 }) { Text(if (copied) "Copied" else "Copy") }
             }
-            when (SigningKey.status(fingerprint, fdroid)) {
+            when (SigningKey.status(fingerprint, fdroid, ReleaseUpdates.storeBuild())) {
                 SigningKey.Status.OFFICIAL -> Text("✓ Matches the official FluidMessages key", color = scheme.onSurface,
                     style = MaterialTheme.typography.bodyLarge, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                 SigningKey.Status.FDROID -> Text("Signed by F-Droid. F-Droid built this copy from FluidMessages' source code " +
                     "and signed it with its own key.", color = scheme.onSurface, style = MaterialTheme.typography.bodyLarge)
+                SigningKey.Status.STORE -> Text("Signed by the app store you installed it from. App stores like Google Play " +
+                    "sign apps with their own key.", color = scheme.onSurface, style = MaterialTheme.typography.bodyLarge)
                 SigningKey.Status.SOMEONE_ELSE -> Text("This copy was signed by someone else, not by FluidMessages. It may have been " +
                     "changed. To be safe, get FluidMessages from its official page.", color = scheme.error,
                     style = MaterialTheme.typography.bodyLarge)

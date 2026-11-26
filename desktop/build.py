@@ -2,7 +2,8 @@
 
     python desktop/build.py --version 0.33.0
 
-Windows makes FluidMessages-Web-<version>-Windows.exe, macOS makes FluidMessages-Web-<version>-macOS.dmg, and Linux
+Windows makes FluidMessages-Web-<version>-Windows.exe and, for the Microsoft Store, FluidMessages-Web-<version>-Windows.msix
+(unsigned: the Store signs it), macOS makes FluidMessages-Web-<version>-macOS.dmg, and Linux
 makes FluidMessages-Web-<version>-Linux-x86_64.AppImage (or a .tar.gz when appimagetool isn't available). Needs
 PyInstaller and Pillow: pip install pyinstaller pillow. GitHub Actions runs this on each system for every release.
 """
@@ -78,6 +79,83 @@ def linux(work, version):
     return target
 
 
+# The Microsoft Store package's identity. After reserving the app name in Partner Center (Product identity), set these
+# as GitHub repository variables so they match, or the Store rejects the upload.
+MSIX_NAME = os.environ.get("MSIX_IDENTITY_NAME") or "Lin8x.FluidMessagesWeb"
+MSIX_PUBLISHER = os.environ.get("MSIX_PUBLISHER") or "CN=Lin8x"
+MSIX_PUBLISHER_NAME = os.environ.get("MSIX_PUBLISHER_DISPLAY_NAME") or "Lin8x"
+MSIX_EXE = "FluidMessagesWeb.exe"
+
+
+def msix_manifest(version):
+    from xml.sax.saxutils import quoteattr
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+  <Identity Name={quoteattr(MSIX_NAME)} Publisher={quoteattr(MSIX_PUBLISHER)} Version="{version}.0" ProcessorArchitecture="x64"/>
+  <Properties>
+    <DisplayName>{NAME}</DisplayName>
+    <PublisherDisplayName>{MSIX_PUBLISHER_NAME}</PublisherDisplayName>
+    <Logo>Assets\\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0"/>
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us"/>
+  </Resources>
+  <Applications>
+    <Application Id="FluidMessagesWeb" Executable="{MSIX_EXE}" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="{NAME}" Description="Your phone's texts, calls, and chats on your computer"
+        BackgroundColor="transparent" Square150x150Logo="Assets\\Square150x150Logo.png" Square44x44Logo="Assets\\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\\Wide310x150Logo.png"/>
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust"/>
+  </Capabilities>
+</Package>
+"""
+
+
+def msix_layout(work, exe, version):
+    """The folder makeappx packs: the app, its manifest, and the tile and Store logos."""
+    from PIL import Image
+    layout = work / "msix"
+    shutil.rmtree(layout, ignore_errors=True)
+    (layout / "Assets").mkdir(parents=True)
+    shutil.copy2(exe, layout / MSIX_EXE)
+    icon = Image.open(ROOT / "server/icons/icon-512.png").convert("RGBA")
+    for name, size in (("StoreLogo", 50), ("Square44x44Logo", 44), ("Square150x150Logo", 150)):
+        icon.resize((size, size), Image.LANCZOS).save(layout / "Assets" / f"{name}.png")
+    wide = Image.new("RGBA", (310, 150), (0, 0, 0, 0))
+    wide.paste(icon.resize((120, 120), Image.LANCZOS), (95, 15))
+    wide.save(layout / "Assets" / "Wide310x150Logo.png")
+    (layout / "AppxManifest.xml").write_text(msix_manifest(version), encoding="utf-8")
+    return layout
+
+
+def makeappx():
+    found = shutil.which("makeappx")
+    if found:
+        return found
+    kits = Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Windows Kits" / "10" / "bin"
+    tools = sorted(kits.glob("10.*/x64/makeappx.exe"))
+    if not tools:
+        raise SystemExit("makeappx.exe wasn't found. Install the Windows SDK.")
+    return str(tools[-1])
+
+
+def windows_msix(work, exe, version):
+    layout = msix_layout(work, exe, version)
+    target = ROOT / "dist" / f"FluidMessages-Web-{version}-Windows.msix"
+    subprocess.run([makeappx(), "pack", "/d", str(layout), "/p", str(target), "/o"], check=True)
+    return target
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--version", required=True)
@@ -93,6 +171,7 @@ def main():
         target = ROOT / "dist" / f"FluidMessages-Web-{version}-Windows.exe"
         shutil.copy2(work / "dist" / f"{NAME}.exe", target)
         check = [str(target), "--check"]
+        print("Built", windows_msix(work, target, version))
     elif system == "Darwin":
         target = ROOT / "dist" / f"FluidMessages-Web-{version}-macOS.dmg"
         bundle = work / "dist" / f"{NAME}.app"

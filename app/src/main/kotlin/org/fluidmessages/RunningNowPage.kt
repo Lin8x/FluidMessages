@@ -145,7 +145,7 @@ internal object RunningNowPage {
             outboxWaiting = Outbox.JOB in pending,
             syncSoonWaiting = syncSoon,
             updateChecks = prefs.getBoolean("automaticUpdateChecks", true) && !ReleaseUpdates.managedByStore(app)
-                && !ReleaseUpdates.fdroidBuild(),
+                && !ReleaseUpdates.storeBuild(),
             otherJobs = pending.filter { it !in known && !(it == BackupJob.JOB && localOn) }.sorted())
     }
 

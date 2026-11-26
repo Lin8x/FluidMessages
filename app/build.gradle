@@ -14,12 +14,18 @@ android {
         versionName '0.47.1'
         // F-Droid builds (./gradlew assembleRelease -Pfdroid=true) leave updates to F-Droid: no update checks or downloads.
         buildConfigField 'boolean', 'FDROID', String.valueOf(project.findProperty('fdroid') == 'true')
+        // App store builds (./gradlew bundleRelease -Pstore=true, and F-Droid's) leave updates to the store too.
+        buildConfigField 'boolean', 'STORE', String.valueOf(project.findProperty('fdroid') == 'true' || project.findProperty('store') == 'true')
     }
     buildFeatures { compose true; buildConfig true }
     // The dependency list AGP adds to the signing block is encrypted for Google Play only; F-Droid rejects it.
     dependenciesInfo { includeInApk = false; includeInBundle = false }
     // The call screen runs the same WebRTC code as the browser companion.
-    sourceSets { main { assets.srcDirs += ['../server/shared'] } }
+    sourceSets {
+        main { assets.srcDirs += ['../server/shared'] }
+        // Store builds can't install updates themselves (Google Play forbids it), so they drop that permission.
+        if (project.findProperty('store') == 'true' || project.findProperty('fdroid') == 'true') release { manifest.srcFile 'src/store/AndroidManifest.xml' }
+    }
     packaging {
         resources { excludes += ['META-INF/LICENSE*', 'META-INF/NOTICE*', 'META-INF/DEPENDENCIES', 'META-INF/*.md', 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'] }
         // Tor is about 8.5 MB per processor type. Compressed in the APK, they cost about 4 MB each to download instead
