@@ -470,11 +470,14 @@ For Macs with Apple silicon (M1 or newer). Pick one:
 For 64-bit PCs (x86_64). Pick one:
 
 <p align="center">
-  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage"><img src="docs/images/get-github.svg" height="60" alt="Download the AppImage from GitHub"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><img src="docs/images/get-github.svg" height="60" alt="Download from GitHub"></a>
   <a href="#linux-command"><img src="docs/images/get-command.svg" height="60" alt="Install with one command"></a>
 </p>
 
-- **From GitHub:** download `FluidMessages-Web-Linux-x86_64.AppImage`, allow it to run (right-click → **Properties → Allow executing**, or `chmod +x` it), and open it.
+- **From GitHub:** download the file for your system:
+  - **Debian or Ubuntu** (22.04 and newer): [`FluidMessages-Web-Linux-amd64.deb`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-amd64.deb), then `sudo apt install ./FluidMessages-Web-Linux-amd64.deb`
+  - **Fedora or openSUSE:** [`FluidMessages-Web-Linux-x86_64.rpm`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.rpm), then `sudo dnf install ./FluidMessages-Web-Linux-x86_64.rpm` (or `sudo zypper install` on openSUSE)
+  - **Any other Linux:** [`FluidMessages-Web-Linux-x86_64.AppImage`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage). Allow it to run (right-click → **Properties → Allow executing**, or `chmod +x` it), and open it.
 - <a id="linux-command"></a>**With one command:** paste this in a terminal. It checks the download first, adds FluidMessages Web to your app menu, and needs no sudo. Run it again to update.
 
   ```bash
