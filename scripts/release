@@ -165,8 +165,10 @@ if ((! WAIT)); then echo "GitHub Actions is adding the Windows, macOS, and Linux
 EXPECTED=("FluidMessages-$VERSION.apk" "FluidMessages-$VERSION.aab" "FluidMessages-Server-$VERSION.zip"
   "FluidMessages-Web-$VERSION-Windows.exe" "FluidMessages-Web-$VERSION-Windows.msix"
   "FluidMessages-Web-$VERSION-macOS.dmg" "FluidMessages-Web-$VERSION-Linux-x86_64.AppImage"
+  "FluidMessages-Web-$VERSION-Linux-amd64.deb" "FluidMessages-Web-$VERSION-Linux-x86_64.rpm"
   FluidMessages.apk FluidMessages-Server.zip FluidMessages-Web-Windows.exe FluidMessages-Web-Windows.msix
-  FluidMessages-Web-macOS.dmg FluidMessages-Web-Linux-x86_64.AppImage)
+  FluidMessages-Web-macOS.dmg FluidMessages-Web-Linux-x86_64.AppImage FluidMessages-Web-Linux-amd64.deb
+  FluidMessages-Web-Linux-x86_64.rpm)
 missing() {
   local have; have=$(gh release view "$TAG" --json assets -q '.assets[].name')
   for name in "${EXPECTED[@]}"; do grep -qxF "$name" <<<"$have" || echo "$name"; done

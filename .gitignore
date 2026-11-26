@@ -19,3 +19,7 @@ dist/SHA256SUMS.txt
 .claude/
 dist/*.idsig
 dist/*.aab
+dist/*.deb
+dist/*.rpm
+dist/*.snap
+dist/*.msix

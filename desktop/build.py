@@ -4,7 +4,8 @@
 
 Windows makes FluidMessages-Web-<version>-Windows.exe and, for the Microsoft Store, FluidMessages-Web-<version>-Windows.msix
 (unsigned: the Store signs it), macOS makes FluidMessages-Web-<version>-macOS.dmg, and Linux
-makes FluidMessages-Web-<version>-Linux-x86_64.AppImage (or a .tar.gz when appimagetool isn't available). Needs
+makes FluidMessages-Web-<version>-Linux-x86_64.AppImage (or a .tar.gz when appimagetool isn't available), plus a .deb
+and an .rpm when dpkg-deb and rpmbuild are installed. Needs
 PyInstaller and Pillow: pip install pyinstaller pillow. GitHub Actions runs this on each system for every release.
 """
 import argparse
@@ -77,6 +78,98 @@ def linux(work, version):
         archive.add(app / "fluidmessages-web.desktop", f"FluidMessages-Web-{version}/fluidmessages-web.desktop")
         archive.add(work / "icon.png", f"FluidMessages-Web-{version}/fluidmessages-web.png")
     return target
+
+
+LINUX_ID = "io.github.Lin8x.FluidMessages"
+SUMMARY = "Your phone's texts, calls, and chats on your computer"
+
+
+def linux_root(work):
+    """The files the .deb, .rpm and Snap install, laid out from / (also what snap/snapcraft.yaml packs)."""
+    root = work / "pkg-root"
+    shutil.rmtree(root, ignore_errors=True)
+    files = {
+        "usr/bin/fluidmessages-web": work / "dist" / NAME,
+        f"usr/share/applications/{LINUX_ID}.desktop": ROOT / f"desktop/linux/{LINUX_ID}.desktop",
+        f"usr/share/metainfo/{LINUX_ID}.metainfo.xml": ROOT / f"desktop/linux/{LINUX_ID}.metainfo.xml",
+        f"usr/share/icons/hicolor/512x512/apps/{LINUX_ID}.png": ROOT / "server/icons/icon-512.png",
+    }
+    for path, source in files.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, root / path)
+        (root / path).chmod(0o755 if path.startswith("usr/bin/") else 0o644)
+    for folder in [root, *(p for p in root.rglob("*") if p.is_dir())]:
+        folder.chmod(0o755)
+    return root
+
+
+def linux_deb(work, root, version):
+    """A .deb for Debian and Ubuntu (22.04 and newer, or Debian 12 and newer: the app needs glibc 2.35)."""
+    package = work / "deb"
+    shutil.rmtree(package, ignore_errors=True)
+    shutil.copytree(root, package, symlinks=True)
+    size = sum(f.stat().st_size for f in package.rglob("*") if f.is_file()) // 1024
+    (package / "DEBIAN").mkdir()
+    (package / "DEBIAN/control").write_text(
+        f"Package: fluidmessages-web\nVersion: {version}\nArchitecture: amd64\nMaintainer: Lin8x <Lin8x@users.noreply.github.com>\n"
+        f"Installed-Size: {size}\nDepends: libc6 (>= 2.35)\nRecommends: openssl, xdg-utils\nSection: net\nPriority: optional\n"
+        f"Homepage: https://github.com/Lin8x/FluidMessages\nDescription: {SUMMARY}\n"
+        " FluidMessages Web runs on your computer and shows your Android phone's texts, calls, and chats in an app\n"
+        " window. Your phone pairs with it over your own network; nothing goes through a cloud service.\n")
+    target = ROOT / "dist" / f"FluidMessages-Web-{version}-Linux-amd64.deb"
+    subprocess.run(["dpkg-deb", "--root-owner-group", "-Zxz", "--build", str(package), str(target)], check=True)
+    return target
+
+
+def linux_rpm(work, root, version):
+    """An .rpm for Fedora, openSUSE and others (the app needs glibc 2.35, so Fedora 36 and newer)."""
+    top = work / "rpm"
+    shutil.rmtree(top, ignore_errors=True)
+    (top / "SPECS").mkdir(parents=True)
+    listed = sorted("/" + str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+    # The app is a PyInstaller program that unpacks itself: stripping or rewriting it would break it, so rpm's
+    # post-install processing is off, and so is automatic dependency scanning (it has its own libraries inside).
+    (top / "SPECS/fluidmessages-web.spec").write_text(f"""%global __os_install_post %{{nil}}
+%global debug_package %{{nil}}
+%global _build_id_links none
+Name: fluidmessages-web
+Version: {version.replace('-', '_')}
+Release: 1
+Summary: {SUMMARY}
+License: Apache-2.0
+URL: https://github.com/Lin8x/FluidMessages
+ExclusiveArch: x86_64
+AutoReqProv: no
+Requires: glibc >= 2.35
+Recommends: openssl
+Recommends: xdg-utils
+
+%description
+FluidMessages Web runs on your computer and shows your Android phone's texts, calls, and chats in an app window.
+Your phone pairs with it over your own network; nothing goes through a cloud service.
+
+%install
+cp -a {root}/. %{{buildroot}}/
+
+%files
+""" + "\n".join(listed) + "\n")
+    subprocess.run(["rpmbuild", "-bb", "--target", "x86_64", "--define", f"_topdir {top}",
+                    str(top / "SPECS/fluidmessages-web.spec")], check=True)
+    built = next((top / "RPMS/x86_64").glob("fluidmessages-web-*.rpm"))
+    target = ROOT / "dist" / f"FluidMessages-Web-{version}-Linux-x86_64.rpm"
+    shutil.copy2(built, target)
+    return target
+
+
+def linux_packages(work, version):
+    root = linux_root(work)
+    built = []
+    for tool, make in (("dpkg-deb", linux_deb), ("rpmbuild", linux_rpm)):
+        if shutil.which(tool):
+            built.append(make(work, root, version))
+        else:
+            print(f"Skipped the {make.__name__.removeprefix('linux_')} package: {tool} isn't installed.")
+    return built
 
 
 # The Microsoft Store package's identity. After reserving the app name in Partner Center (Product identity), set these
@@ -179,6 +272,8 @@ def main():
         check = [str(bundle / "Contents/MacOS" / NAME), "--check"]
     else:
         target = linux(work, version)
+        for package in linux_packages(work, version):
+            print("Built", package)
         check = [str(work / "dist" / NAME), "--check"]
     # Every build proves it can start its server and serve the web app before it's released.
     subprocess.run(check, check=True, timeout=120)

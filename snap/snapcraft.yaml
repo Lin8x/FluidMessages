@@ -1,0 +1,40 @@
+# The Snap Store package of FluidMessages Web, the computer app. GitHub Actions builds it on every release from the
+# same program as the AppImage, .deb and .rpm: desktop/build.py lays out build/desktop/pkg-root first, and the
+# workflow sets the version below from the release tag. To build it yourself on Ubuntu 22.04:
+#
+#   python desktop/build.py --version 0.0.0 && snapcraft --destructive-mode
+name: fluidmessages-web
+title: FluidMessages Web
+version: '0.0.0'
+summary: Your phone's texts, calls, and chats on your computer
+description: |
+  FluidMessages Web runs on your computer and shows your Android phone's texts, calls, and chats in an app window.
+  Your phone pairs with it over your own network, and nothing goes through a cloud service.
+
+  It works with the FluidMessages app for Android, and can also connect to Matrix, XMPP and IRC.
+license: Apache-2.0
+website: https://github.com/Lin8x/FluidMessages
+source-code: https://github.com/Lin8x/FluidMessages
+issues: https://github.com/Lin8x/FluidMessages/issues
+icon: server/icons/icon-512.png
+base: core22
+grade: stable
+confinement: strict
+architectures:
+  - build-on: amd64
+
+apps:
+  fluidmessages-web:
+    command: usr/bin/fluidmessages-web
+    desktop: usr/share/applications/io.github.Lin8x.FluidMessages.desktop
+    common-id: io.github.Lin8x.FluidMessages
+    # network-bind: it serves the app to its own window and to your phone. desktop: opens your browser.
+    # x11 and wayland: the small "running" window.
+    plugs: [network, network-bind, desktop, x11, wayland]
+
+parts:
+  fluidmessages-web:
+    plugin: dump
+    source: build/desktop/pkg-root
+    # openssl makes the certificate your phone pairs with over https.
+    stage-packages: [openssl]
