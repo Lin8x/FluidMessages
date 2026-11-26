@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="760" viewBox="0 0 720 760" role="img" aria-label="Closed app versus open services. A closed app is an island: its users can only reach other users of that same app. Open services work like email: anyone can run a server or pick a provider, people on different apps reach each other, nobody can lock you in, and your friends don’t need FluidMessages.">
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".12"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .pop { transform-box: fill-box; transform-origin: center; }
+      .a0 { animation: ka0 10s ease-out infinite; }
+@keyframes ka0 { 0%, 10% { opacity: 0; transform: scale(.4); } 14%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .f1 { animation: kf1 10s ease-in-out infinite; }
+@keyframes kf1 { 0%, 8% { opacity: 0; transform: translate(164px, 150px); } 10% { opacity: 1; transform: translate(164px, 150px); } 20%, 26% { opacity: 1; transform: none; } 30%, 100% { opacity: 0; transform: none; } }
+      .f2 { animation: kf2 10s ease-in-out infinite; }
+@keyframes kf2 { 0%, 24% { opacity: 0; transform: translate(-164px, 0px); } 26% { opacity: 1; transform: translate(-164px, 0px); } 36%, 42% { opacity: 1; transform: none; } 46%, 100% { opacity: 0; transform: none; } }
+      .f3 { animation: kf3 10s ease-in-out infinite; }
+@keyframes kf3 { 0%, 40% { opacity: 0; transform: translate(164px, -150px); } 42% { opacity: 1; transform: translate(164px, -150px); } 52%, 58% { opacity: 1; transform: none; } 62%, 100% { opacity: 0; transform: none; } }
+      .f4 { animation: kf4 10s ease-in-out infinite; }
+@keyframes kf4 { 0%, 56% { opacity: 0; transform: translate(-164px, 0px); } 58% { opacity: 1; transform: translate(-164px, 0px); } 68%, 74% { opacity: 1; transform: none; } 78%, 100% { opacity: 0; transform: none; } }
+      .a5 { animation: ka5 10s ease-out infinite; }
+@keyframes ka5 { 0%, 60% { opacity: 0; transform: translateX(-10px); } 64%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a6 { animation: ka6 10s ease-out infinite; }
+@keyframes ka6 { 0%, 66% { opacity: 0; transform: translateX(-10px); } 70%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a7 { animation: ka7 10s ease-out infinite; }
+@keyframes ka7 { 0%, 72% { opacity: 0; transform: translateX(-10px); } 76%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      @media (prefers-reduced-motion: reduce) { .a0, .a5, .a6, .a7 { animation: none !important; opacity: 1 !important; transform: none !important; } .f1, .f2, .f3, .f4 { animation: none !important; display: none; } }
+    </style>
+  </defs>
+  <rect width="720" height="760" rx="32" fill="#f2f4f8"/>
+  <text x="360" y="62" fill="#141820" font-size="36" font-weight="800" text-anchor="middle">Closed app vs. open services</text>
+  <rect x="24" y="100" width="328" height="440" rx="26" fill="#fff" filter="url(#shadow)"/>
+  <text x="48" y="140" fill="#8a8f9c" font-size="19" font-weight="800" letter-spacing="1.2">A CLOSED APP</text>
+  <ellipse cx="188" cy="300" rx="130" ry="104" fill="#eef0f5" stroke="#c9ccd6" stroke-width="3" stroke-dasharray="2 8" stroke-linecap="round"/>
+  <path d="M140 262 L236 262" stroke="#a9adb8" stroke-width="3"/>
+  <path d="M236 262 L188 344" stroke="#a9adb8" stroke-width="3"/>
+  <path d="M188 344 L140 262" stroke="#a9adb8" stroke-width="3"/>
+  <circle cx="140" cy="262" r="22" fill="#7b8094"/><text x="140" y="269.92" fill="#fff" font-size="19.8" font-weight="700" text-anchor="middle">JO</text>
+  <circle cx="236" cy="262" r="22" fill="#7b8094"/><text x="236" y="269.92" fill="#fff" font-size="19.8" font-weight="700" text-anchor="middle">KI</text>
+  <circle cx="188" cy="344" r="22" fill="#7b8094"/><text x="188" y="351.92" fill="#fff" font-size="19.8" font-weight="700" text-anchor="middle">RE</text>
+  <circle cx="300" cy="450" r="22" fill="#1e8e3e"/><text x="300" y="455.28" fill="#fff" font-size="13.64" font-weight="700" text-anchor="middle">YOU</text>
+  <path d="M286 430 L254 384" stroke="#d3d7e0" stroke-width="3" stroke-dasharray="4 8" stroke-linecap="round"/>
+  <g class="pop a0"><circle cx="262" cy="404" r="14" fill="#fbe9e7"/><path d="M256.12 398.12 l11.76 11.76 M267.88 398.12 l-11.76 11.76" stroke="#b3261e" stroke-width="3.5" stroke-linecap="round"/></g>
+  <text x="188" y="494" fill="#141820" font-size="18" font-weight="700" text-anchor="middle">Its users can only reach</text><text x="188" y="518" fill="#141820" font-size="18" font-weight="700" text-anchor="middle">its own users.</text>
+  <rect x="368" y="100" width="328" height="440" rx="26" fill="#fff" filter="url(#shadow)"/><rect x="369.5" y="101.5" width="325" height="437" rx="24.5" fill="none" stroke="#1fa84a" stroke-width="3"/>
+  <text x="392" y="140" fill="#1b8f40" font-size="19" font-weight="800" letter-spacing="1.2">OPEN SERVICES</text>
+  <path d="M450 230 L614 230" stroke="#bfe5cb" stroke-width="3"/>
+  <path d="M450 230 L450 380" stroke="#bfe5cb" stroke-width="3"/>
+  <path d="M450 230 L614 380" stroke="#bfe5cb" stroke-width="3"/>
+  <path d="M614 230 L450 380" stroke="#bfe5cb" stroke-width="3"/>
+  <path d="M614 230 L614 380" stroke="#bfe5cb" stroke-width="3"/>
+  <path d="M450 380 L614 380" stroke="#bfe5cb" stroke-width="3"/>
+  <circle cx="450" cy="230" r="24" fill="#1f7fd6"/><text x="450" y="238.64" fill="#fff" font-size="21.6" font-weight="700" text-anchor="middle">NI</text><text x="450" y="276" fill="#5b6070" font-size="15" font-weight="700" text-anchor="middle">App A</text>
+  <circle cx="614" cy="230" r="24" fill="#e8710a"/><text x="614" y="238.64" fill="#fff" font-size="21.6" font-weight="700" text-anchor="middle">LE</text><text x="614" y="276" fill="#5b6070" font-size="15" font-weight="700" text-anchor="middle">App B</text>
+  <circle cx="450" cy="380" r="24" fill="#0f8b8d"/><text x="450" y="388.64" fill="#fff" font-size="21.6" font-weight="700" text-anchor="middle">AM</text><text x="450" y="426" fill="#5b6070" font-size="15" font-weight="700" text-anchor="middle">Email app</text>
+  <circle cx="614" cy="380" r="24" fill="#1fa84a"/><text x="614" y="385.76" fill="#fff" font-size="14.879999999999999" font-weight="700" text-anchor="middle">YOU</text><text x="614" y="426" fill="#5b6070" font-size="15" font-weight="700" text-anchor="middle">FluidMessages</text>
+  <g class="f1"><circle cx="450" cy="200" r="9" fill="#1fa84a" stroke="#fff" stroke-width="2"/></g>
+  <g class="f2"><circle cx="614" cy="200" r="9" fill="#1fa84a" stroke="#fff" stroke-width="2"/></g>
+  <g class="f3"><circle cx="450" cy="350" r="9" fill="#1fa84a" stroke="#fff" stroke-width="2"/></g>
+  <g class="f4"><circle cx="614" cy="350" r="9" fill="#1fa84a" stroke="#fff" stroke-width="2"/></g>
+  <text x="532" y="494" fill="#141820" font-size="18" font-weight="700" text-anchor="middle">Anyone, on any app,</text><text x="532" y="518" fill="#141820" font-size="18" font-weight="700" text-anchor="middle">can reach anyone.</text>
+  <rect x="24" y="564" width="672" height="172" rx="26" fill="#fff" filter="url(#shadow)"/>
+  <g class="a5"><circle cx="64" cy="610" r="15" fill="#1fa84a"/><path d="M56.5 610 l5.3999999999999995 5.3999999999999995 l10.5 -11.700000000000001" fill="none" stroke="#fff" stroke-width="3.75" stroke-linecap="round" stroke-linejoin="round"/><text x="92" y="618" fill="#141820" font-size="21" font-weight="600">Anyone can run a server or pick a provider.</text></g>
+  <g class="a6"><circle cx="64" cy="656" r="15" fill="#1fa84a"/><path d="M56.5 656 l5.3999999999999995 5.3999999999999995 l10.5 -11.700000000000001" fill="none" stroke="#fff" stroke-width="3.75" stroke-linecap="round" stroke-linejoin="round"/><text x="92" y="664" fill="#141820" font-size="21" font-weight="600">Nobody can lock you in.</text></g>
+  <g class="a7"><circle cx="64" cy="702" r="15" fill="#1fa84a"/><path d="M56.5 702 l5.3999999999999995 5.3999999999999995 l10.5 -11.700000000000001" fill="none" stroke="#fff" stroke-width="3.75" stroke-linecap="round" stroke-linejoin="round"/><text x="92" y="710" fill="#141820" font-size="21" font-weight="600">Your friends don’t need FluidMessages.</text></g>
+</svg>

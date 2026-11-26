@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="520" viewBox="0 0 720 520" role="img" aria-label="What works on each device. Android phone: chat services yes, texts yes. Computer (Windows, Mac, Linux): chat services yes, texts if you link your Android phone. iPhone or iPad, in the browser: chat services yes, texts if you link your Android phone.">
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".12"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .pop { transform-box: fill-box; transform-origin: center; }
+      .a0 { animation: ka0 10s ease-out infinite; }
+@keyframes ka0 { 0%, 8% { opacity: 0; transform: scale(.3); } 12%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a1 { animation: ka1 10s ease-out infinite; }
+@keyframes ka1 { 0%, 14% { opacity: 0; transform: scale(.3); } 18%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a2 { animation: ka2 10s ease-out infinite; }
+@keyframes ka2 { 0%, 22% { opacity: 0; transform: scale(.3); } 26%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a3 { animation: ka3 10s ease-out infinite; }
+@keyframes ka3 { 0%, 28% { opacity: 0; transform: scale(.3); } 32%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a4 { animation: ka4 10s ease-out infinite; }
+@keyframes ka4 { 0%, 36% { opacity: 0; transform: scale(.3); } 40%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a5 { animation: ka5 10s ease-out infinite; }
+@keyframes ka5 { 0%, 42% { opacity: 0; transform: scale(.3); } 46%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      @media (prefers-reduced-motion: reduce) { .a0, .a1, .a2, .a3, .a4, .a5 { animation: none !important; opacity: 1 !important; transform: none !important; }  }
+    </style>
+  </defs>
+  <rect width="720" height="520" rx="32" fill="#f2f4f8"/>
+  <text x="360" y="60" fill="#141820" font-size="36" font-weight="800" text-anchor="middle">What works where</text>
+  <text x="470" y="112" fill="#8a8f9c" font-size="17" font-weight="800" text-anchor="middle">Chat services</text><text x="616" y="112" fill="#8a8f9c" font-size="17" font-weight="800" text-anchor="middle">Texts (SMS)</text>
+  <rect x="24" y="132" width="672" height="106" rx="26" fill="#fff" filter="url(#shadow)"/>
+  <rect x="56" y="152" width="40" height="66" rx="9" fill="#16161a"/><rect x="60" y="158" width="32" height="54" rx="5" fill="#dff3e6"/>
+  <text x="128" y="180" fill="#141820" font-size="22" font-weight="800">Android phone</text><text x="128" y="208" fill="#5b6070" font-size="17">Install the app</text>
+  <g class="pop a0"><circle cx="470" cy="185" r="17" fill="#1fa84a"/><path d="M461.5 185 l6.12 6.12 l11.899999999999999 -13.26" fill="none" stroke="#fff" stroke-width="4.25" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <g class="pop a1"><circle cx="616" cy="185" r="17" fill="#1fa84a"/><path d="M607.5 185 l6.12 6.12 l11.899999999999999 -13.26" fill="none" stroke="#fff" stroke-width="4.25" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <rect x="24" y="256" width="672" height="106" rx="26" fill="#fff" filter="url(#shadow)"/>
+  <rect x="46" y="284" width="60" height="40" rx="5" fill="#16161a"/><rect x="50" y="288" width="52" height="32" rx="2" fill="#e3ecfb"/><path d="M40 326 h72 l-6 8 h-60 z" fill="#a9adb8"/>
+  <text x="128" y="304" fill="#141820" font-size="22" font-weight="800">Windows, Mac, Linux</text><text x="128" y="332" fill="#5b6070" font-size="17">Install the computer app</text>
+  <g class="pop a2"><circle cx="470" cy="309" r="17" fill="#1fa84a"/><path d="M461.5 309 l6.12 6.12 l11.899999999999999 -13.26" fill="none" stroke="#fff" stroke-width="4.25" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <g class="pop a3"><rect x="548" y="286" width="136" height="46" rx="14" fill="#fff6dc" stroke="#f2b705" stroke-width="2"/><text x="616" y="306" fill="#7a5200" font-size="14" font-weight="700" text-anchor="middle">If you link your</text><text x="616" y="324" fill="#7a5200" font-size="14" font-weight="700" text-anchor="middle">Android phone</text></g>
+  <rect x="24" y="380" width="672" height="106" rx="26" fill="#fff" filter="url(#shadow)"/>
+  <rect x="50" y="402" width="52" height="64" rx="9" fill="#16161a"/><rect x="55" y="408" width="42" height="52" rx="5" fill="#ece6ff"/>
+  <text x="128" y="428" fill="#141820" font-size="22" font-weight="800">iPhone, iPad</text><text x="128" y="456" fill="#5b6070" font-size="17">In the browser</text>
+  <g class="pop a4"><circle cx="470" cy="433" r="17" fill="#1fa84a"/><path d="M461.5 433 l6.12 6.12 l11.899999999999999 -13.26" fill="none" stroke="#fff" stroke-width="4.25" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <g class="pop a5"><rect x="548" y="410" width="136" height="46" rx="14" fill="#fff6dc" stroke="#f2b705" stroke-width="2"/><text x="616" y="430" fill="#7a5200" font-size="14" font-weight="700" text-anchor="middle">If you link your</text><text x="616" y="448" fill="#7a5200" font-size="14" font-weight="700" text-anchor="middle">Android phone</text></g>
+</svg>

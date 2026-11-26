@@ -12,7 +12,7 @@ A free messaging app with no ads, no tracking, and no big company in the middle.
 
 <br>
 
-<a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="#-get-it"><img src="docs/images/button-desktop.svg" height="56" alt="Use it on any computer"></a>
+<a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="#get-it"><img src="docs/images/button-desktop.svg" height="56" alt="Use it on any computer"></a>
 
 **🌐 [fluidmessages.danieljalali.com](https://fluidmessages.danieljalali.com)**
 
@@ -21,14 +21,14 @@ A free messaging app with no ads, no tracking, and no big company in the middle.
 <br>
 
 <p align="center">
-  <img src="docs/images/fm-devices.svg" width="600" alt="FluidMessages works on every device: an Android phone that sends and gets your texts, plus Windows, Mac, Linux, iPhone and iPad in the browser, and any web browser. Link an Android phone and your texts show up on all of them. Without one, all the chat services still work.">
+  <img src="docs/images/fm-devices.svg" width="600" alt="One FluidMessages inbox gathers texts (SMS) and open chat services: Matrix, XMPP, Email, and IRC. The same inbox shows on an Android phone and on a computer, with a lock on every chat. The Android phone sends your texts. A computer, iPhone, or iPad gets the chat services on its own, and texts too if you link your Android phone.">
 </p>
 
-**Jump to:** [What it is](#-what-is-fluidmessages) · [The problem](#-who-can-read-your-texts) · [For Android](#-on-android-the-texting-app-you-should-have-had) · [For iPhone and computers](#-on-iphone-or-a-computer-another-way-to-message) · [Questions](#-questions) · [Get it](#-get-it)
+**Jump to:** [What it is](#what-is-fluidmessages) · [The problem](#who-can-read-your-texts) · [For Android](#on-android-the-texting-app-you-should-have-had) · [No Android phone?](#no-android-phone-message-people-another-way) · [Get it](#get-it)
 
 <br>
 
-# 💡 What is FluidMessages?
+# What is FluidMessages?
 
 Think of it as **texting, upgraded, for more than just texts.**
 
@@ -37,11 +37,29 @@ Think of it as **texting, upgraded, for more than just texts.**
 - **It adds the features that are missing.** Replies, reactions, forwarding, and polls work in texts and on every service it supports. Even email gets chat-style replies and reactions.
 - **It always shows how each message is sent, and if it is locked** (private).
 
+<p align="center">
+  <img src="docs/images/fm-features.svg" width="600" alt="The missing features, on every service. Four chats: a text with Maya, a Matrix group, an email with Leah, and an IRC channel. On each one, a reaction pops onto the message and Reply and Forward show up. Each chat also gets a lock: the text is red, not locked; the Matrix group is green, locked; the email and IRC chats are yellow, locked on the way.">
+</p>
+
 **What it works with, and what it can't.** FluidMessages works with **open** services, which anyone's app is allowed to use: texting (SMS) from an Android phone, Matrix, XMPP, Email, and IRC. It **can't** connect to **closed** apps like WhatsApp or iMessage. The companies that own those apps don't let other apps in.
+
+## Why not just use WhatsApp?
+
+<p align="center">
+  <img src="docs/images/fm-open.svg" width="600" alt="A closed app versus open services. A closed app is an island: its users can only reach other users of that same app. Open services work like email: people on different apps reach each other. Anyone can run a server or pick a provider, nobody can lock you in, and your friends don't need FluidMessages.">
+</p>
+
+A closed app like WhatsApp is an island. **WhatsApp users can only message other WhatsApp users**, and one company makes all the rules.
+
+Open services work like email. You can send an email from Gmail to someone on Outlook, and it just works. Matrix, XMPP, and IRC are the same:
+
+- **Anyone can run a server or pick a provider.** There is no single company in charge.
+- **Nobody can lock you in.** Switch apps or providers and keep talking to the same people.
+- **Your friends don't need FluidMessages.** They can answer from any app or device that speaks the same service. From an Android phone, you can text them too.
 
 <br>
 
-# 👀 Who can read your texts?
+# Who can read your texts?
 
 <p align="center">
   <img src="docs/images/fm-postcard.svg" width="600" alt="A regular text travels like a postcard: the phone company and hackers along the way can read it. An encrypted message travels sealed and scrambled, and only your friend can open it.">
@@ -70,9 +88,16 @@ Most texting apps never tell you which way a message went, or if it was locked. 
   <img src="docs/images/fm-send.svg" width="600" alt="Two messages going out. A text to Jo goes through the phone carrier and gets a red open lock: not locked, your carrier could read it. A Matrix message to Nia gets a green lock: locked, only you and Nia can read it.">
 </p>
 
+In the real app, every chat in the inbox has a tag for how it is sent (SMS, Matrix, IRC, and so on), and the open chat shows its lock under the name:
+
+<p align="center">
+  <img src="docs/images/web-inbox-locks.png" width="760" alt="FluidMessages Web with the sample inbox. Each chat has a tag: MMS, IRC, RCS, Matrix. The open Matrix chat, Radio Club, shows a yellow lock under its name and a heart on a message (real capture with made-up names)">
+  <br><sub>FluidMessages on a computer. Real capture with made-up names.</sub>
+</p>
+
 <br>
 
-# 🧱 Your phone came with walls
+# Your phone came with walls
 
 <p align="center">
   <img src="docs/images/fm-walls.svg" width="600" alt="Two walled gardens. In Apple’s garden, blue bubbles only work on Apple devices. In Google’s or Samsung’s garden, your texts live in their app. A message that tries to cross the wall turns green and plain. Their app, their rules, their cloud.">
@@ -93,9 +118,13 @@ The walls are also why iPhones and Android phones don't match. Each company keep
 
 ## Switching phones can lose your texts
 
+<p align="center">
+  <img src="docs/images/fm-switch.svg" width="600" alt="Switching phones. Without a backup, the texts on your old phone get left behind, and the new phone starts with no old texts. With FluidMessages, your texts go into a backup locked with your password, and on your new phone they all come back.">
+</p>
+
 Your texts live inside that company's app. When you get a new phone, they may not come along. This happens going from iPhone to Android, and even from one Android phone to another.
 
-FluidMessages keeps a **locked backup** of your texts. On your new Android phone, install FluidMessages, restore the backup, and your texts are back. [How backups work ↓](#-never-lose-a-text-again)
+FluidMessages keeps a **locked backup** of your texts. On your new Android phone, install FluidMessages, restore the backup, and your texts are back. [How backups work ↓](#never-lose-a-text-again)
 
 > [!TIP]
 > **Coming from an iPhone?** FluidMessages can't pull old texts out of Apple's app. Turn off iMessage before you switch, so new texts reach your new phone.
@@ -117,13 +146,30 @@ When a chat falls back to green, reactions turn into odd sentences and group cha
 
 That is the wall doing its job. **Android phones can do better. The texting apps just never tried.**
 
+## What your iPhone friends see
+
+<p align="center">
+  <img src="docs/images/fm-reaction.svg" width="600" alt="Your heart reaction, sent to an iPhone. In FluidMessages you put a heart on Movie at 8. Over plain texting it travels as the words Loved “Movie at 8?”, the same way every texting app sends a reaction. On the iPhone, Apple's Messages app decides how to show it: as a heart, or as those words.">
+</p>
+
+Say you put a ❤️ on a friend's text. Over plain texting, FluidMessages sends it the way every texting app does: as words, like *Loved "Movie at 8?"*
+
+Whether your iPhone friend sees a heart or those words is **up to Apple's Messages app**, not FluidMessages. FluidMessages can only make things work on its own side. Apple's rules also keep it from being a texting app on iPhones. If I could make one, I would.
+
+On your side, it works both ways. When an iPhone friend's *Liked "…"* text arrives, FluidMessages turns it back into a reaction on the right message:
+
+<p align="center">
+  <img src="docs/images/web-sms-reaction.png" width="600" alt="A sample text chat with Maya Chen. A red open lock sits under her name, since texts are not locked. Her Liked text shows up as a thumbs-up on your message See you there! (real capture with made-up names)">
+  <br><sub>A sample text chat. Real capture with made-up names.</sub>
+</p>
+
 <br>
 
 ---
 
 <br>
 
-# 🔓 FluidMessages opens the gate
+# FluidMessages opens the gate
 
 <p align="center">
   <img src="docs/images/fm-free.svg" width="600" alt="A wall with an open gate. A checklist: no ads, no tracking, no account to make, no company holding your messages, free with public code anyone can check, works on every device.">
@@ -143,7 +189,7 @@ FluidMessages is a messaging app that **belongs to the people who use it**, not 
 
 <br>
 
-# 🤖 On Android: the texting app you should have had
+# On Android: the texting app you should have had
 
 <p align="center">
   <img src="docs/images/fm-compare.svg" width="600" alt="The same chat with Ava, side by side. Plain texting: a like shows up as the sentence Liked “Movie at 8?”, Ava's answer “The space one” has no link to your question, and there is no lock. FluidMessages: a real heart on Ava's bubble, a reply card that quotes “Which one?”, and a green lock that says only you and Ava can read it.">
@@ -202,14 +248,14 @@ Pick from 8 themes, each in light and dark. Then change the bubble colors, the w
 
 <br>
 
-# 🍎 On iPhone or a computer: another way to message
+# No Android phone? Message people another way
 
 **Texting (SMS) in FluidMessages needs an Android phone.** Apple does not let any other app send texts on an iPhone, so there is no FluidMessages iPhone app. On a computer, texting only works while it can reach your linked Android phone.
 
 When texting can't work, you can still message people through **open chat services**. These work in FluidMessages on **Windows, Mac, Linux, iPhone, and iPad**, with or without an Android phone.
 
 <p align="center">
-  <img src="docs/images/fm-services.svg" width="600" alt="Five ways to chat in one inbox: Texts with your phone number, Matrix for modern group chat no single company owns, XMPP for private chat that works like email, Email shown as chats, and IRC for big public chat rooms. All optional.">
+  <img src="docs/images/fm-nophone.svg" width="600" alt="You, on an iPhone or a computer. A text (SMS) can't go out, because texting needs your Android phone. But messages on Matrix, XMPP, Email, and IRC still reach your friends, whatever app they use.">
 </p>
 
 No single company owns these services, so no single company can lock you in. Your friends can use FluidMessages or any other app that speaks the same service.
@@ -223,6 +269,11 @@ You also get voice and video calls, meeting links for Zoom, Google Meet, Teams, 
 
 **How it works on each device**
 
+<table><tr>
+<td width="62%"><img src="docs/images/fm-device-table.svg" alt="What works where. Android phone: chat services yes, texts yes. Windows, Mac, Linux: chat services yes, texts if you link your Android phone. iPhone or iPad, in the browser: chat services yes, texts if you link your Android phone."></td>
+<td width="38%" align="center"><img src="docs/images/web-phone-inbox.png" width="240" alt="FluidMessages Web on a phone-sized screen: the sample inbox with chats tagged MMS, IRC, RCS, and Matrix (real capture with made-up names)"><br><sub>On a phone-sized screen. Real capture with made-up names.</sub></td>
+</tr></table>
+
 | Your device | How you use FluidMessages | Chat services | Texting with your phone number |
 |---|---|:---:|:---:|
 | 🤖 Android phone | Install the app | ✅ | ✅ |
@@ -235,7 +286,7 @@ You also get voice and video calls, meeting links for Zoom, Google Meet, Teams, 
 
 <br>
 
-# 🔒 Privacy you can see
+# Privacy you can see
 
 <p align="center">
   <img src="docs/images/fm-locks.svg" width="600" alt="Three locks. Green: only you and the other person can read it. Yellow: protected on the way, but the service could read it. Red open lock: a text (SMS), which your phone carrier could read.">
@@ -249,6 +300,13 @@ Every chat shows a small lock in one of three colors:
 
 The one exception for texts: if you and a friend both use FluidMessages, you can lock your texts to each other, and they turn green.
 
+Tap a chat's details to see its lock explained in words:
+
+<p align="center">
+  <img src="docs/images/web-security-rows.png" width="560" alt="Two Security rows from conversation details. A text chat: Not encrypted, SMS, your carrier and anyone along the way can read these messages, with a red open lock. A Matrix chat: Encrypted in transit, protected on the way to the server, but the server can read it, with a yellow lock (real capture with made-up names)">
+  <br><sub>Real capture with made-up names.</sub>
+</p>
+
 <p align="center">
   <img src="docs/images/fm-privacy-tools.svg" width="600" alt="Five privacy tools: app lock, hidden folder, decoy code, emergency erase, and disappearing messages.">
 </p>
@@ -261,7 +319,7 @@ The one exception for texts: if you and a friend both use FluidMessages, you can
 
 <br>
 
-# 📦 Never lose a text again
+# Never lose a text again
 
 <p align="center">
   <img src="docs/images/fm-backup.svg" width="600" alt="Your messages are packed into a backup locked with your password, saved on your phone, your own computer, or a cloud you pick. On a new phone, everything comes back.">
@@ -273,7 +331,7 @@ FluidMessages saves your texts, photos, and settings in a **backup locked with y
 
 <br>
 
-# 💻 Text from your computer
+# Text from your computer
 
 <p align="center">
   <img src="docs/images/fm-sync.svg" width="600" alt="A phone and a laptop linked together. A message typed on the laptop shows up on the phone, and a reply on the phone shows up on the laptop.">
@@ -286,7 +344,7 @@ Typing on a phone is slow. Link your Android phone to FluidMessages on your comp
 
 <br>
 
-# 🎉 And a lot more
+# And a lot more
 
 - ✏️ **Fix a typo** after you send.
 - 🤫 **Hidden messages** that stay blurry until your friend taps.
@@ -312,21 +370,11 @@ Typing on a phone is slow. Link your Android phone to FluidMessages on your comp
 
 <br>
 
-# ❓ Questions
-
-**If I use FluidMessages and my friend uses Apple's Messages app, will they see my heart reaction as a heart?**<br>
-No. Apple decides how its app shows messages from outside its wall. FluidMessages can only make things work on its own side. Apple's rules also keep it from being a texting app on iPhones. If I could make one, I would.
-
-**Why not just have everyone use WhatsApp?**<br>
-WhatsApp users can only message other WhatsApp users. FluidMessages uses open services, so you can reach people by text (from Android), Matrix, XMPP, Email, or IRC, and they can answer from any app or device that speaks the same service.
-
-<br>
-
 ---
 
 <br>
 
-# 🚀 Get it
+# Get it
 
 Free. No account. No ads.
 
@@ -358,7 +406,7 @@ Free. No account. No ads.
 
 <br>
 
-# 💬 A note from the person who made this
+# A note from the person who made this
 
 I'm one person, not a company.
 
@@ -374,7 +422,7 @@ There are no ads here and nothing to buy. I just think your messages should belo
 
 <br>
 
-## 🛠️ For tech-savvy folks
+## For tech-savvy folks
 
 <details>
 <summary><b>🏠 Run it yourself (self-hosting)</b></summary>
@@ -439,7 +487,7 @@ Please use made-up names and messages in screenshots and tests. Read [CONTRIBUTI
 
 <br>
 
-## 📄 License
+## License
 
 FluidMessages is free and open source under the [Apache License 2.0](LICENSE).
 

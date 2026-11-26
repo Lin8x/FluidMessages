@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="820" viewBox="0 0 720 820" role="img" aria-label="Switching phones. Without a backup, the texts on your old phone get left behind, and your new phone starts empty. With FluidMessages, your texts go into a backup locked with your password, and on your new phone they all come back.">
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".12"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .pop { transform-box: fill-box; transform-origin: center; }
+      .l0 { animation: kl0 10s ease-in infinite; opacity: 0; }
+@keyframes kl0 { 0%, 6% { opacity: 0; transform: none; } 9% { opacity: 1; transform: none; } 34% { opacity: 1; transform: none; } 40%, 100% { opacity: 0; transform: translate(180px, 90px) rotate(20deg); } }
+      .l1 { animation: kl1 10s ease-in infinite; opacity: 0; }
+@keyframes kl1 { 0%, 12% { opacity: 0; transform: none; } 15% { opacity: 1; transform: none; } 40% { opacity: 1; transform: none; } 46%, 100% { opacity: 0; transform: translate(210px, 90px) rotate(5deg); } }
+      .l2 { animation: kl2 10s ease-in infinite; opacity: 0; }
+@keyframes kl2 { 0%, 18% { opacity: 0; transform: none; } 21% { opacity: 1; transform: none; } 46% { opacity: 1; transform: none; } 52%, 100% { opacity: 0; transform: translate(240px, 90px) rotate(-10deg); } }
+      .a3 { animation: ka3 10s ease-out infinite; }
+@keyframes ka3 { 0%, 40% { opacity: 0; transform: scale(.4); } 44%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .l4 { animation: kl4 10s ease-in infinite; opacity: 0; }
+@keyframes kl4 { 0%, 6% { opacity: 0; transform: none; } 9% { opacity: 1; transform: none; } 30% { opacity: 1; transform: none; } 36%, 100% { opacity: 0; transform: translate(110px, 0); } }
+      .l5 { animation: kl5 10s ease-in infinite; opacity: 0; }
+@keyframes kl5 { 0%, 12% { opacity: 0; transform: none; } 15% { opacity: 1; transform: none; } 36% { opacity: 1; transform: none; } 42%, 100% { opacity: 0; transform: translate(110px, 0); } }
+      .l6 { animation: kl6 10s ease-in infinite; opacity: 0; }
+@keyframes kl6 { 0%, 18% { opacity: 0; transform: none; } 21% { opacity: 1; transform: none; } 42% { opacity: 1; transform: none; } 48%, 100% { opacity: 0; transform: translate(110px, 0); } }
+      .a7 { animation: ka7 10s ease-out infinite; }
+@keyframes ka7 { 0%, 56% { opacity: 0; transform: translateX(-60px); } 60%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      @media (prefers-reduced-motion: reduce) { .a3, .a7 { animation: none !important; opacity: 1 !important; transform: none !important; } .l0, .l1, .l2, .l4, .l5, .l6 { animation: none !important; display: none; } }
+    </style>
+  </defs>
+  <rect width="720" height="820" rx="32" fill="#f2f4f8"/>
+  <text x="360" y="62" fill="#141820" font-size="36" font-weight="800" text-anchor="middle">Switching phones</text>
+  <text x="360" y="100" fill="#5b6070" font-size="22" text-anchor="middle">Where do your old texts go?</text>
+  <rect x="24" y="128" width="672" height="316" rx="26" fill="#fff" filter="url(#shadow)"/>
+  <text x="48" y="168" fill="#b3261e" font-size="19" font-weight="800" letter-spacing="1.2">WITHOUT A BACKUP</text>
+  <rect x="64" y="196" width="124" height="210" rx="22" fill="#16161a"/><rect x="71" y="205" width="110" height="192" rx="16" fill="#fff"/><text x="126" y="434" fill="#5b6070" font-size="17" font-weight="700" text-anchor="middle">Old phone</text>
+  <g><rect x="79" y="226" width="92" height="26" rx="13" fill="#e1e4ea"/><rect x="81" y="262" width="92" height="26" rx="13" fill="#1fa84a"/><rect x="79" y="298" width="92" height="26" rx="13" fill="#e1e4ea"/></g>
+  <rect x="532" y="196" width="124" height="210" rx="22" fill="#16161a"/><rect x="539" y="205" width="110" height="192" rx="16" fill="#fff"/><text x="594" y="434" fill="#5b6070" font-size="17" font-weight="700" text-anchor="middle">New phone</text>
+  <text x="594" y="296" fill="#8a8f9c" font-size="17" font-weight="700" text-anchor="middle">No old</text><text x="594" y="318" fill="#8a8f9c" font-size="17" font-weight="700" text-anchor="middle">texts</text>
+  <path d="M206 300 H510" stroke="#d3d7e0" stroke-width="3" stroke-dasharray="4 10" stroke-linecap="round"/>
+  <g class="l0"><rect x="214" y="286" width="80" height="24" rx="12" fill="#c9cbd3"/></g>
+  <g class="l1"><rect x="228" y="280" width="80" height="24" rx="12" fill="#1fa84a"/></g>
+  <g class="l2"><rect x="242" y="274" width="80" height="24" rx="12" fill="#c9cbd3"/></g>
+  <g class="pop a3"><circle cx="358" cy="300" r="20" fill="#fbe9e7"/><path d="M349.6 291.6 l16.8 16.8 M366.4 291.6 l-16.8 16.8" stroke="#b3261e" stroke-width="5.0" stroke-linecap="round"/></g>
+  <text x="358" y="360" fill="#b3261e" font-size="19" font-weight="800" text-anchor="middle">Left behind</text>
+  <rect x="24" y="472" width="672" height="316" rx="26" fill="#fff" filter="url(#shadow)"/><rect x="25.5" y="473.5" width="669" height="313" rx="24.5" fill="none" stroke="#1fa84a" stroke-width="3"/>
+  <text x="48" y="512" fill="#1b8f40" font-size="19" font-weight="800" letter-spacing="1.2">WITH A FLUIDMESSAGES BACKUP</text>
+  <rect x="64" y="540" width="124" height="210" rx="22" fill="#16161a"/><rect x="71" y="549" width="110" height="192" rx="16" fill="#fff"/><text x="126" y="778" fill="#5b6070" font-size="17" font-weight="700" text-anchor="middle">Old phone</text>
+  <g><rect x="79" y="570" width="92" height="26" rx="13" fill="#e1e4ea"/><rect x="81" y="606" width="92" height="26" rx="13" fill="#1fa84a"/><rect x="79" y="642" width="92" height="26" rx="13" fill="#e1e4ea"/></g>
+  <rect x="532" y="540" width="124" height="210" rx="22" fill="#16161a"/><rect x="539" y="549" width="110" height="192" rx="16" fill="#fff"/><text x="594" y="778" fill="#5b6070" font-size="17" font-weight="700" text-anchor="middle">New phone</text>
+  <path d="M206 644 H296 M420 644 H510" stroke="#bfe5cb" stroke-width="3" stroke-dasharray="4 10" stroke-linecap="round"/>
+  <rect x="300" y="590" width="116" height="104" rx="20" fill="#e6f6ec" stroke="#1fa84a" stroke-width="3"/><g transform="translate(346 612) scale(1.4)"><path d="M3 11V7a5 5 0 0 1 10 0v4" fill="none" stroke="#1e8e3e" stroke-width="3" stroke-linecap="round"/><rect x="0" y="11" width="16" height="13" rx="3" fill="#1e8e3e"/></g><text x="358" y="718" fill="#1b8f40" font-size="17" font-weight="800" text-anchor="middle">Locked backup</text><text x="358" y="738" fill="#5b6070" font-size="14" text-anchor="middle">your password opens it</text>
+  <g class="l4"><rect x="200" y="634" width="70" height="22" rx="11" fill="#c9cbd3"/></g>
+  <g class="l5"><rect x="204" y="634" width="70" height="22" rx="11" fill="#1fa84a"/></g>
+  <g class="l6"><rect x="208" y="634" width="70" height="22" rx="11" fill="#c9cbd3"/></g>
+  <g class="a7"><rect x="547" y="570" width="92" height="26" rx="13" fill="#e1e4ea"/><rect x="549" y="606" width="92" height="26" rx="13" fill="#1fa84a"/><rect x="547" y="642" width="92" height="26" rx="13" fill="#e1e4ea"/></g>
+</svg>

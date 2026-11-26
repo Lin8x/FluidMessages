@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="790" viewBox="0 0 720 790" role="img" aria-label="Your heart reaction, sent to an iPhone. In FluidMessages you put a heart on Movie at 8. Over plain texting it travels as words, Loved “Movie at 8?”, the same way every texting app sends it. On the iPhone, Apple’s Messages app decides how to show it: as a heart, or as those words.">
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".12"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .pop { transform-box: fill-box; transform-origin: center; }
+      .a0 { animation: ka0 10s ease-out infinite; }
+@keyframes ka0 { 0%, 6% { opacity: 0; transform: scale(.2); } 10%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .f1 { animation: kf1 10s ease-in-out infinite; }
+@keyframes kf1 { 0%, 14% { opacity: 0; transform: translate(-220px, 0px); } 16% { opacity: 1; transform: translate(-220px, 0px); } 32%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a2 { animation: ka2 10s ease-out infinite; }
+@keyframes ka2 { 0%, 40% { opacity: 0; transform: translateY(12px); } 44%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a3 { animation: ka3 10s ease-out infinite; }
+@keyframes ka3 { 0%, 48% { opacity: 0; transform: translateY(12px); } 52%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a4 { animation: ka4 10s ease-out infinite; }
+@keyframes ka4 { 0%, 54% { opacity: 0; transform: translateY(12px); } 58%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      .a5 { animation: ka5 10s ease-out infinite; }
+@keyframes ka5 { 0%, 62% { opacity: 0; transform: translateY(12px); } 66%, 92% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+      @media (prefers-reduced-motion: reduce) { .a0, .f1, .a2, .a3, .a4, .a5 { animation: none !important; opacity: 1 !important; transform: none !important; }  }
+    </style>
+  </defs>
+  <rect width="720" height="790" rx="32" fill="#f2f4f8"/>
+  <text x="360" y="62" fill="#141820" font-size="36" font-weight="800" text-anchor="middle">Your ❤️, sent to an iPhone</text>
+  <text x="360" y="100" fill="#5b6070" font-size="22" text-anchor="middle">Over plain texting, a reaction travels as words.</text>
+  <rect x="24" y="128" width="672" height="170" rx="26" fill="#fff" filter="url(#shadow)"/><rect x="25.5" y="129.5" width="669" height="167" rx="24.5" fill="none" stroke="#1fa84a" stroke-width="3"/>
+  <text x="48" y="168" fill="#1b8f40" font-size="19" font-weight="800" letter-spacing="1.2">1 · YOU, IN FLUIDMESSAGES</text>
+  <rect x="48" y="196" width="167" height="52" rx="26.0" fill="#e1e4ea"/><text x="131.34" y="229.92" fill="#141820" font-size="22" text-anchor="middle">Movie at 8?</text>
+  <g class="pop a0"><circle cx="209" cy="252" r="20" fill="#fff" stroke="#e0567a" stroke-width="2.5"/><text x="208.68" y="260" font-size="20" text-anchor="middle">❤️</text></g>
+  <text x="300" y="230" fill="#5b6070" font-size="20">You tap ❤️ on</text><text x="300" y="258" fill="#5b6070" font-size="20">your friend’s message.</text>
+  <path d="M360 306 v22" stroke="#c9ccd6" stroke-width="4" stroke-linecap="round"/><path d="M350 318 l10 12 l10 -12" fill="none" stroke="#c9ccd6" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="24" y="340" width="672" height="170" rx="26" fill="#fff" filter="url(#shadow)"/>
+  <text x="48" y="380" fill="#8a8f9c" font-size="19" font-weight="800" letter-spacing="1.2">2 · IT TRAVELS AS A TEXT (SMS)</text>
+  <g class="f1"><rect x="48" y="404" width="262" height="52" rx="26.0" fill="#1fa84a"/><text x="178.86" y="437.92" fill="#fff" font-size="22" font-weight="600" text-anchor="middle">Loved “Movie at 8?”</text></g>
+  <text x="360" y="490" fill="#5b6070" font-size="18" text-anchor="middle">The same words every texting app uses for a reaction.</text>
+  <path d="M360 518 v22" stroke="#c9ccd6" stroke-width="4" stroke-linecap="round"/><path d="M350 530 l10 12 l10 -12" fill="none" stroke="#c9ccd6" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="24" y="552" width="672" height="214" rx="26" fill="#fff" filter="url(#shadow)"/>
+  <text x="48" y="592" fill="#8a8f9c" font-size="19" font-weight="800" letter-spacing="1.2">3 · APPLE’S MESSAGES APP DECIDES</text>
+  <g class="a2"><rect x="48" y="616" width="155" height="46" rx="23.0" fill="#1f7fd6"/><text x="125.4" y="646.2" fill="#fff" font-size="20" text-anchor="middle">Movie at 8?</text><circle cx="197" cy="664" r="17" fill="#fff" stroke="#c9ccd6" stroke-width="2"/><text x="196.8" y="671" font-size="17" text-anchor="middle">❤️</text></g>
+  <g class="a3"><text x="250" y="646" fill="#8a8f9c" font-size="20" font-weight="700" text-anchor="middle">or</text></g>
+  <g class="a4"><rect x="290" y="616" width="241" height="46" rx="23.0" fill="#e1e4ea"/><text x="410.6" y="646.2" fill="#141820" font-size="20" text-anchor="middle">Loved “Movie at 8?”</text></g>
+  <g class="a5"><text x="48" y="720" fill="#141820" font-size="18" font-weight="700">Apple chooses how its app shows texts from outside.</text><text x="48" y="746" fill="#5b6070" font-size="18">FluidMessages can only make things work on its own side.</text></g>
+</svg>
