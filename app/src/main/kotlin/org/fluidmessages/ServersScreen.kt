@@ -152,7 +152,25 @@ private fun Directory(service: String, pick: BiConsumer<String, Map<String, Stri
     var query by remember { mutableStateOf("") }
     val found = remember(query) { ServerDirectory.search(service, query) }
     val scheme = MaterialTheme.colorScheme
+    val protocol = MessageProtocol.parse(service)
+    val guide = remember(protocol) { ServiceGuides.of(protocol) }
+    // "What is IRC?" and the rest: the same guide page as in Accounts, opened from the card at the top.
+    var learning by remember { mutableStateOf(false) }
+    if (learning) {
+        AccountGuide(protocol, "", { preset -> learning = false; pick.accept("", preset) }, { learning = false; pick.accept("", emptyMap()) },
+            { learning = false })
+        return
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        item {
+            Surface(color = scheme.surfaceContainer, shape = MaterialTheme.shapes.large) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(guide.title, style = MaterialTheme.typography.titleMedium)
+                    Text(guide.about, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = { learning = true }, contentPadding = PaddingValues(0.dp)) { Text("Read the guide") }
+                }
+            }
+        }
         item { Text("Public " + plural(service), style = MaterialTheme.typography.headlineSmall) }
         item {
             Text("Well-known public ${plural(service)}. Picking one fills in the sign-in form. Nothing connects until you save.",

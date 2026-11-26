@@ -919,6 +919,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     /** A sample server's ⋯ menu: Browse, Join, Mute, and details explain the sample; only the mute changes anything. */
     private void sampleServerAction(String action, String id) {
         var server = SampleInbox.server(id);
+        if (action.equals("guide")) { communitiesIntro(this::sampleInbox); return; }
         if (server == null || action.equals("add")) {
             SecurityDialogs.page(this, prefs, "Add server",
                 "In your own inbox, Add server connects an IRC network, a Matrix homeserver, or an XMPP server, and its "
@@ -2677,7 +2678,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 chat(address, MessageProtocol.parse(protocol));
                 if (!body.isEmpty() && conversationScreen != null) conversationScreen.setDraft(body);
             },
-            (action, id) -> { if (action.equals("add")) addServer(); else serverAction(action, id); },
+            (action, id) -> { if (action.equals("add")) addServer(); else if (!action.equals("guide")) serverAction(action, id); },
             fromChoices(), pickedFrom::put);
         pickedFrom.clear();
         loadRecipients();
@@ -4685,10 +4686,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
 
     /** Settings → Help → Communities: the page that shows once after the first IRC, Matrix, or XMPP account. */
-    private void communitiesIntro() {
+    private void communitiesIntro() { communitiesIntro(this::settings); }
+
+    /** The Communities guide, from Settings → Help or from "How communities work" under Add server. */
+    private void communitiesIntro(Runnable back) {
         render("communities-intro");
-        heading("Communities", "Back", this::settings);
-        CommunitiesIntro.mount(root, prefs, this::settings);
+        heading("Communities", "Back", back);
+        CommunitiesIntro.mount(root, prefs, back);
     }
 
     private void resetPage() {
@@ -4754,6 +4758,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     /** Messages → Communities: join a channel or room, browse the server's directory, see its details, or add a server. */
     private void serverAction(String action, String id) {
         if (action.equals("add")) { addServer(); return; }
+        if (action.equals("guide")) { communitiesIntro(this::inbox); return; }
         if (action.equals("mute")) {
             String name = AccountKeys.INSTANCE.serverName(id);
             openMute(List.of(Mutes.serverKey(id)), name, "Every channel, room, and direct message on " + name + ".", this::inbox);

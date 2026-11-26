@@ -186,6 +186,11 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
                     modifier = Modifier.padding(horizontal = 6.dp)) {
                     Text(if (shown > 0) "Add another" else "Add")
                 }
+                // "What is Matrix?" and the rest: the service's guide page, the same one a first account starts with.
+                TextButton(onClick = { val next = Editing(protocol, null, shown > 0); guided = next; editing = next },
+                    modifier = Modifier.padding(horizontal = 6.dp)) {
+                    Text(ServiceGuides.of(protocol).title, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 if (protocol == MessageProtocol.IRC) {
                     // Call and meeting-link buttons in IRC chats: off by default, with the reason right under it (IrcCalls).
                     HorizontalDivider(Modifier.padding(start = 15.dp))

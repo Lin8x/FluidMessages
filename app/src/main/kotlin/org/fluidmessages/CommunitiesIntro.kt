@@ -57,14 +57,15 @@ internal object CommunitiesIntro {
     fun mount(root: LinearLayout, prefs: SharedPreferences, done: Runnable) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-        view.setContent { AppTheme(Appearance.read(prefs)) { CommunitiesIntroPage(prefs) { done.run() } } }
+        // The page heading already says "Communities", so the page itself starts with the subtitle.
+        view.setContent { AppTheme(Appearance.read(prefs)) { CommunitiesIntroPage(prefs, showTitle = false) { done.run() } } }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
     }
 }
 
 /** The Communities page, full page, with one Continue button at the bottom. */
 @Composable
-internal fun CommunitiesIntroPage(prefs: SharedPreferences, done: () -> Unit) {
+internal fun CommunitiesIntroPage(prefs: SharedPreferences, showTitle: Boolean = true, done: () -> Unit) {
     val appearance = remember { Appearance.read(prefs) }
     val scheme = MaterialTheme.colorScheme
     Column(Modifier.fillMaxSize()) {
@@ -72,7 +73,7 @@ internal fun CommunitiesIntroPage(prefs: SharedPreferences, done: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(15.dp)) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    Text(CommunitiesIntro.TITLE, fontSize = 32.sp, lineHeight = 36.sp, color = scheme.onSurface, fontWeight = FontWeight.Bold)
+                    if (showTitle) Text(CommunitiesIntro.TITLE, fontSize = 32.sp, lineHeight = 36.sp, color = scheme.onSurface, fontWeight = FontWeight.Bold)
                     Text(CommunitiesIntro.SUBTITLE, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
                 }
             }

@@ -287,7 +287,7 @@ function drawCommunities(list, rows, row) {
     const add = element('button', 'Add server', 'primary');
     add.type = 'button';
     add.addEventListener('click', () => openAddServer());
-    empty.append(add);
+    empty.append(add, communitiesGuideButton());
     list.append(empty);
     return;
   }
@@ -403,7 +403,15 @@ function drawCommunities(list, rows, row) {
   const add = element('button', '+ Add server', 'community-add');
   add.type = 'button';
   add.addEventListener('click', () => openAddServer());
-  list.append(add);
+  list.append(add, communitiesGuideButton());
+}
+
+/** "How communities work" under Add server: the Communities guide (welcome.js showCommunitiesIntro). */
+function communitiesGuideButton() {
+  const guide = element('button', 'How communities work', 'link community-guide');
+  guide.type = 'button';
+  guide.addEventListener('click', () => { if (typeof showCommunitiesIntro === 'function') showCommunitiesIntro(); });
+  return guide;
 }
 
 /** A server's details on a full page: its account, Browse and Join, and Remove for one added here or on the phone. */

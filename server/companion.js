@@ -402,6 +402,13 @@ async function accountRows(list, again) {
       }
       group.append(row);
     }
+    // "What is Matrix?" and the rest: the same page about the service that adding starts with (account-setup.js).
+    if (typeof serviceGuide === 'function') {
+      const learn = element('button', protocol === 'email' ? 'Email as chats: how it works' : 'What is ' + labels[protocol] + '?', 'link account-learn');
+      learn.type = 'button';
+      learn.addEventListener('click', () => guide(protocol));
+      group.append(learn);
+    }
     list.append(group);
   }
   return result;

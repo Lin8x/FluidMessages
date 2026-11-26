@@ -368,6 +368,7 @@ button.member-row:hover { background: color-mix(in srgb, var(--action, var(--acc
 .community-body .thread:last-child { border-bottom: 0; }
 .community-body .placeholder { padding: .3rem 1rem .9rem 2.6rem; font-size: .88rem; }
 .community-add { display: block; margin: .75rem auto 1rem; min-height: 40px; padding: .35rem 1rem; color: var(--action, var(--accent)); font-weight: 600; }
+.community-guide { display: block; margin: -.6rem auto 1rem; min-height: 36px; padding: .25rem 1rem; color: var(--muted); font-size: .9rem; background: none; border: 0; }
 .community-empty button { display: block; margin: .6rem auto 0; }
 /* Settings → Messaging → Inbox filters (inbox-filters.js). */
 .filter-order { display: grid; gap: 0; margin: .3rem 0 .5rem; padding: 0; list-style: none; }
@@ -384,6 +385,7 @@ button.member-row:hover { background: color-mix(in srgb, var(--action, var(--acc
 .browse-row .account-words { flex: 1; min-width: 0; }
 .account-group { display: grid; }
 .account-group + .account-group { margin-top: .5rem; }
+.account-learn { justify-self: start; min-height: 36px; padding: .2rem .75rem; margin-left: 3.25rem; background: none; border: 0; color: var(--muted); font-size: .9rem; text-decoration: underline; }
 .account-item { padding-inline-start: 2.9rem; }
 .account-item .account-words strong { font-weight: 550; }
 

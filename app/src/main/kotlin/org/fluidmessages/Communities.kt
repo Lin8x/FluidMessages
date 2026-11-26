@@ -184,6 +184,7 @@ internal fun CommunitiesList(prefs: SharedPreferences, palette: Palette, servers
             Text("Communities are public chat networks with many rooms: IRC networks, Matrix homeservers and their Spaces, and XMPP "
                 + "servers. Add one to join its channels and rooms. They show here, and in Chats if you like.", color = palette.muted, fontSize = 15.sp)
             AppButton(onClick = { actions.server("add", "") }) { Text("Add server") }
+            TextButton(onClick = { actions.server("guide", "") }) { Text("How communities work", color = palette.inboxAction) }
         }
         return
     }
@@ -245,7 +246,10 @@ internal fun CommunitiesList(prefs: SharedPreferences, palette: Palette, servers
         }
         item(key = "add") {
             Box(Modifier.fillMaxWidth().padding(top = 12.dp), contentAlignment = Alignment.Center) {
-                TextButton(onClick = { actions.server("add", "") }) { Text("+ Add server", color = palette.inboxAction, fontWeight = FontWeight.SemiBold) }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    TextButton(onClick = { actions.server("add", "") }) { Text("+ Add server", color = palette.inboxAction, fontWeight = FontWeight.SemiBold) }
+                    TextButton(onClick = { actions.server("guide", "") }) { Text("How communities work", color = palette.muted, fontSize = 14.sp) }
+                }
             }
         }
     }
