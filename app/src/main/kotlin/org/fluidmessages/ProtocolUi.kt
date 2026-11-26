@@ -43,6 +43,8 @@ internal data class ChatRouting @JvmOverloads constructor(
     val from: String = "",
     /** Opens New message, to write from another account. */
     val newFromAnother: Runnable? = null,
+    /** A line above the composer about who can read this chat, such as an open Nearby channel's. */
+    val notice: String = "",
 )
 
 data class GroupMember @JvmOverloads constructor(

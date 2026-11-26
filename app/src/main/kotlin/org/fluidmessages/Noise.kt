@@ -16,7 +16,7 @@ import javax.crypto.spec.SecretKeySpec
 /**
  * The Noise Protocol Framework (revision 34, noiseprotocol.org/noise.html), written from the specification for
  * Nearby. Only Curve25519, ChaChaPoly and SHA-256 are supported: Noise_XX_25519_ChaChaPoly_SHA256 is what Nearby
- * uses, and the other interactive patterns are here so the official test vectors check every token.
+ * uses for connections and Noise_X for messages sealed to one person that other phones carry; the other patterns are here so the official test vectors check every token.
  *
  * Every primitive comes from the platform (the JDK in unit tests, Conscrypt on Android 13+): X25519 is the "XDH"
  * key agreement, ChaCha20-Poly1305 is a Cipher, and SHA-256 and HMAC-SHA256 are MessageDigest and Mac. Nothing
@@ -43,21 +43,49 @@ internal object NoiseCrypto {
 
     fun publicKey(private: ByteArray): ByteArray = dh(private, BASE_POINT)
 
-    private fun xdh(): String = "XDH"
+    /**
+     * Where X25519 comes from. The platform's "XDH" (JDK 11+, Conscrypt on Android 13+) is the only one shipped. If a
+     * phone's system lacks it, [selfCheck] says so and Nearby stays off. A fallback would plug in here, such as
+     * BouncyCastle's lightweight X25519 (MIT): implement [X25519] and set [x25519]; NoiseTest's vectors then check it.
+     */
+    fun interface X25519 { fun agree(private: ByteArray, public: ByteArray): ByteArray }
+
+    val platformX25519 = X25519 { private, public ->
+        val factory = KeyFactory.getInstance("XDH")
+        val priv = factory.generatePrivate(PKCS8EncodedKeySpec(PRIVATE_PREFIX + private))
+        val pub = factory.generatePublic(X509EncodedKeySpec(PUBLIC_PREFIX + public))
+        val agreement = KeyAgreement.getInstance("XDH")
+        agreement.init(priv)
+        agreement.doPhase(pub, true)
+        agreement.generateSecret()
+    }
+
+    @Volatile var x25519: X25519 = platformX25519
 
     /** X25519(private, public). Throws for a low-order public key (an all-zero result). */
     fun dh(private: ByteArray, public: ByteArray): ByteArray {
         require(private.size == 32 && public.size == 32) { "X25519 keys are 32 bytes" }
-        val factory = KeyFactory.getInstance(xdh())
-        val priv = factory.generatePrivate(PKCS8EncodedKeySpec(PRIVATE_PREFIX + private))
-        val pub = factory.generatePublic(X509EncodedKeySpec(PUBLIC_PREFIX + public))
-        val agreement = KeyAgreement.getInstance(xdh())
-        agreement.init(priv)
-        agreement.doPhase(pub, true)
-        val shared = agreement.generateSecret()
-        if (shared.all { it == 0.toByte() }) throw GeneralSecurityException("Bad public key")
+        val shared = x25519.agree(private, public)
+        if (shared.size != 32 || shared.all { it == 0.toByte() }) throw GeneralSecurityException("Bad public key")
         return shared
     }
+
+    const val MISSING = "This phone’s system doesn’t have the encryption Nearby needs (X25519 and ChaCha20-Poly1305), so Nearby stays off."
+
+    /**
+     * Checks that X25519 and ChaCha20-Poly1305 work, against RFC 7748 and RFC 8439 values, before Nearby starts.
+     * Returns "" when they do, or [MISSING]. Never throws.
+     */
+    fun selfCheck(dh: X25519 = x25519): String = try {
+        val alice = hex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
+        val bob = hex("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f")
+        val shared = dh.agree(alice, bob)
+        val key = ByteArray(32) { it.toByte() }
+        val sealed = cipher(true, key, 7, byteArrayOf(1), byteArrayOf(2, 3))
+        val ok = hex(shared) == "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742" &&
+            cipher(false, key, 7, byteArrayOf(1), sealed).contentEquals(byteArrayOf(2, 3))
+        if (ok) "" else MISSING
+    } catch (error: Throwable) { MISSING }
 
     private fun chachaPoly(): Cipher = try {
         Cipher.getInstance("ChaCha20-Poly1305")  // The JDK's name.
@@ -71,6 +99,12 @@ internal object NoiseCrypto {
     fun cipher(encrypt: Boolean, key: ByteArray, n: Long, ad: ByteArray, data: ByteArray): ByteArray {
         val nonce = ByteArray(12)
         for (i in 0 until 8) nonce[4 + i] = (n ushr (8 * i)).toByte()
+        return cipherWithNonce(encrypt, key, nonce, ad, data)
+    }
+
+    /** ChaCha20-Poly1305 with a 12-byte nonce given as is (Nearby rooms use a random one per message). */
+    fun cipherWithNonce(encrypt: Boolean, key: ByteArray, nonce: ByteArray, ad: ByteArray, data: ByteArray): ByteArray {
+        require(nonce.size == 12)
         // A fresh Cipher each time: the JDK refuses to reuse one instance with the same key and nonce.
         val cipher = chachaPoly()
         cipher.init(if (encrypt) Cipher.ENCRYPT_MODE else Cipher.DECRYPT_MODE, SecretKeySpec(key, "ChaCha20"), IvParameterSpec(nonce))
@@ -165,6 +199,10 @@ internal class NoiseSymmetric(protocolName: String) {
 
 /** The interactive handshake patterns (section 7.4 and 7.5): pre-messages for each side, then the message tokens. */
 internal enum class NoisePattern(val initiatorPre: List<String>, val responderPre: List<String>, val messages: List<List<String>>) {
+    // One-way patterns (section 7.4): the initiator only sends. X seals a message to someone's static key and proves who sent it.
+    N(listOf(), listOf("s"), listOf(listOf("e", "es"))),
+    K(listOf("s"), listOf("s"), listOf(listOf("e", "es", "ss"))),
+    X(listOf(), listOf("s"), listOf(listOf("e", "es", "s", "ss"))),
     NN(listOf(), listOf(), listOf(listOf("e"), listOf("e", "ee"))),
     NK(listOf(), listOf("s"), listOf(listOf("e", "es"), listOf("e", "ee"))),
     NX(listOf(), listOf(), listOf(listOf("e"), listOf("e", "ee", "s", "es"))),
@@ -179,6 +217,7 @@ internal enum class NoisePattern(val initiatorPre: List<String>, val responderPr
     IX(listOf(), listOf(), listOf(listOf("e", "s"), listOf("e", "ee", "se", "s", "es")));
 
     fun protocolName() = "Noise_${name}_25519_ChaChaPoly_SHA256"
+    val oneWay: Boolean get() = messages.size == 1
 }
 
 /** The two CipherStates after a handshake: [send] for messages this side writes, [receive] for the other side's. */
@@ -218,7 +257,7 @@ internal class NoiseHandshake(
 
     val finished: Boolean get() = result != null
     /** Whether this side writes the next handshake message. */
-    val writes: Boolean get() = !finished && (index % 2 == 0) == initiator
+    val writes: Boolean get() = !finished && (if (pattern.oneWay) initiator else (index % 2 == 0) == initiator)
     val handshakeHash: ByteArray get() = symmetric.h
 
     fun transport(): NoiseTransport = result ?: throw IllegalStateException("Handshake not finished")

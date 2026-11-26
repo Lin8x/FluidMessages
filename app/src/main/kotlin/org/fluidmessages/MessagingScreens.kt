@@ -1031,6 +1031,9 @@ internal class ConversationScreen @JvmOverloads constructor(
                             }
                         }
                     }
+                    routing?.notice?.takeIf { it.isNotEmpty() && !sample }?.let { line ->
+                        Text(line, Modifier.padding(start = 16.dp, top = 4.dp, end = 16.dp), color = palette.muted, fontSize = 12.sp)
+                    }
                     val from = routing?.from.orEmpty()
                     if (from.isNotEmpty() && !sample) {
                         // Which account replies go out from, like a mail app's From field. Replies always use the

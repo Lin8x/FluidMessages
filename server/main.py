@@ -58,6 +58,7 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/chat-commands.js": ("chat-commands.js", "text/javascript"), "/invites.js": ("invites.js", "text/javascript"),
          "/connections.js": ("connections.js", "text/javascript"), "/meetings.js": ("meetings.js", "text/javascript"),
          "/chat-features.css": ("chat-features.css", "text/css"), "/tor.js": ("tor.js", "text/javascript"),
+         "/omemo.js": ("omemo.js", "text/javascript"),
          # The sample inbox's fictional portraits, the phone's own (res/drawable-nodpi/sample_*.webp).
          "/samples/maya.webp": ("samples/maya.webp", "image/webp"), "/samples/jordan.webp": ("samples/jordan.webp", "image/webp"),
          # And the photo in the sample Photo Walk group (sample_lakeside.webp).
@@ -679,7 +680,8 @@ def erase_files(ids):
             for item in entry.iterdir():
                 if item.is_symlink() or item.is_file():
                     item.unlink(missing_ok=True)
-        elif (entry.name in ("matrix-store", "stickers") or re.fullmatch(r"matrix-store-[0-9a-f]{8}", entry.name)) \
+        elif (entry.name in ("matrix-store", "omemo-store", "stickers")
+              or re.fullmatch(r"(matrix|omemo)-store-[0-9a-f]{8}", entry.name)) \
                 and entry.is_dir() and not entry.is_symlink():
             shutil.rmtree(entry, ignore_errors=True)
         elif (entry.is_symlink() or entry.is_file()) and (entry.name in known or dedicated and MESSAGE_FILE.fullmatch(entry.name)):
@@ -1749,6 +1751,11 @@ class Handler(BaseHTTPRequestHandler):
                 return gateway.send_call(data)
             if self.path == "/api/protocols/members":
                 return gateway.change_member(db, data)
+            if self.path == "/api/protocols/omemo":
+                # An XMPP chat's Security section: OMEMO devices and fingerprints.
+                return gateway.omemo_devices(data)
+            if self.path == "/api/protocols/omemo/trust":
+                return gateway.omemo_trust(data)
             if self.path == "/api/settings":
                 # A browser that hasn't opened the private folder never saw its chats, so it can't drop their settings.
                 hide = self.private_check(db)

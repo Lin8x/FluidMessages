@@ -578,7 +578,8 @@ final class DirectProtocols {
             message.put(field, updates.get(field));
         }
         message.remove("queued");
-        message.put("status", MessageProtocol.parse(message.optString("protocol")) == MessageProtocol.NEARBY ? NearbyWire.SENT : "Sent");
+        // A Nearby channel says how many phones it reached ("Shared with 3 phones nearby") instead of Sent.
+        if (!updates.has("status")) message.put("status", MessageProtocol.parse(message.optString("protocol")) == MessageProtocol.NEARBY ? NearbyWire.SENT : "Sent");
         ProtocolStore.get(context).put(message);
     }
 
@@ -587,7 +588,7 @@ final class DirectProtocols {
     private static void queue(Context context, JSONObject message) throws Exception {
         // Nearby waits for the person to be in range, and sends as soon as their phone is seen (DirectNearby).
         boolean nearby = MessageProtocol.parse(message.optString("protocol")) == MessageProtocol.NEARBY;
-        message.put("queued", true).put("status", nearby ? NearbyWire.INSTANCE.waiting(message.optString("title")) : QUEUED);
+        message.put("queued", true).put("status", nearby ? NearbyText.waitingStatus(prefs(context), message) : QUEUED);
         ProtocolStore.get(context).put(message);
         if (!nearby) Outbox.schedule(context);
     }
@@ -621,7 +622,7 @@ final class DirectProtocols {
                     deliver(app, client, route, message, file);
                 } catch (java.io.IOException offline) {
                     // Not in range: it keeps waiting for that person, with no limit, and the rest still go.
-                    if (nearby) { store.put(message.put("status", NearbyWire.INSTANCE.waiting(message.optString("title")))); continue; }
+                    if (nearby) { store.put(message.put("status", NearbyText.waitingStatus(prefs(context), message))); continue; }
                     done = false;
                     int tries = message.optInt("tries") + 1;
                     if (tries >= 30) {
@@ -708,14 +709,14 @@ final class DirectProtocols {
         return generator.generateKey();
     }
 
-    private static String seal(String value) throws Exception {
+    static String seal(String value) throws Exception {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, keystoreKey());
         return Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP) + "."
             + Base64.encodeToString(cipher.doFinal(value.getBytes(StandardCharsets.UTF_8)), Base64.NO_WRAP);
     }
 
-    private static String open(String sealed) throws Exception {
+    static String open(String sealed) throws Exception {
         String[] parts = sealed.split("\\.", 2);
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.DECRYPT_MODE, keystoreKey(), new GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)));

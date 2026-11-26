@@ -237,6 +237,13 @@ def safe_name(name):
     return (name or "attachment")[-120:]
 
 
+def mime_for_name(name):
+    """An encrypted download is served as octets, so its type comes from the file name."""
+    import mimetypes
+    mime = (mimetypes.guess_type(name)[0] or "application/octet-stream").lower()
+    return mime if MIME.fullmatch(mime) else "application/octet-stream"
+
+
 def kind_for(mime):
     if mime.startswith("image/"):
         return "photo"
@@ -295,6 +302,8 @@ class Gateway(ChatFeatures):
         self.http = build_opener(tor_route.HTTPSHandler(context=self.tls), NoRedirect())
         self.wake = threading.Event()
         self.clients = {}
+        # Each XMPP chat's OMEMO lock, as its connection last reported it: (account, chat) → {"color", "words"}.
+        self.omemo_locks = {}
         self.calls = collections.deque(maxlen=400)
         self.call_number = 0
         self.call_lock = threading.Lock()
@@ -551,6 +560,12 @@ class Gateway(ChatFeatures):
             secure = self.secure(route.get("account")) if route.get("via") == "matrix" else None
             if secure is not None:
                 item["encrypted"] = secure.encrypted(route["target"])
+            if route.get("via") == "xmpp":
+                lock = self.omemo_locks.get((route.get("account"), route["target"]))
+                if lock:
+                    # Green only when messages are locked with OMEMO for all trusted devices (omemo_trust.lock).
+                    item["omemo"] = {"color": lock["color"], "words": lock["words"]}
+                    item["encrypted"] = lock["color"] == "green"
             return item
         routes = [shown(route) for route in self.routes if not self.hidden(settings, route)]
         # Each service's account used most recently (else its newest), which New message preselects as From.
@@ -1591,9 +1606,14 @@ class Gateway(ChatFeatures):
                                         # Channels the network says to join first, remembered for every reconnect.
                                         first=lambda channel: self.join_first(ident, channel),
                                         on_first=lambda channel, before: self.remember_join_first(ident, channel, before))
+        scope = self.scope(ident)
+        # The OMEMO store (this install's XMPP device keys), encrypted in the data volume and never backed up.
+        store = self.files / ("omemo-store" + ("-" + scope if scope else ""))
+        chats = lambda: [r["target"] for r in self.routes if r.get("via") == "xmpp" and r["account"] == ident
+                         and r["protocol"] == "xmpp" and not r.get("group")]
         return xmpp_client.XmppClient(account, lambda *args: self.accept_xmpp(*args, account=ident), rooms,
                                       on_event=lambda *args: self.accept_xmpp_event(*args, account=ident),
-                                      auto=lambda: self.reconnects(ident))
+                                      auto=lambda: self.reconnects(ident), omemo_store=store, chats=chats)
 
     def erase(self):
         """Erase everything: stops every chat connection and forgets recent calls, before the data behind them goes."""
@@ -1990,16 +2010,33 @@ class Gateway(ChatFeatures):
                 record["reply_target"] = target["id"]
             if extra.get("file_url"):
                 self.fetch_shared_file(record, extra["file_url"])
+        omemo = extra.get("omemo")
+        if isinstance(omemo, dict):
+            # Locked with OMEMO (or a notice in place of a locked message that couldn't be opened).
+            record["omemo"] = True
+            if omemo.get("error"):
+                record["omemo_error"] = str(omemo["error"])[:40]
+            elif omemo.get("trust") in ("unconfirmed", "distrusted"):
+                record["omemo_untrusted"] = True
         record["xmpp_id"] = message_id
         self.add_incoming(record)
 
     def fetch_shared_file(self, record, url):
-        """Downloads an HTTP File Upload link (HTTPS only, up to 25 MB) so the phone gets the file itself."""
+        """Downloads an HTTP File Upload link (HTTPS only, up to 25 MB) so the phone gets the file itself. An
+        aesgcm:// link (XEP-0454, from an OMEMO chat) is downloaded over HTTPS and decrypted here."""
         parts = urlsplit(url)
-        if parts.scheme != "https" or not parts.hostname:
+        key = None
+        if parts.scheme == "aesgcm" and parts.hostname:
+            key = xmpp_client.aesgcm_key(parts.fragment)
+            if key is None:
+                return
+            fetch = "https" + url[len("aesgcm"):].split("#", 1)[0]
+        elif parts.scheme != "https" or not parts.hostname:
             return
+        else:
+            fetch = url
         try:
-            with self.http.open(Request(url), timeout=60) as response:
+            with self.http.open(Request(fetch), timeout=60) as response:
                 data = response.read(MAX_FILE + 1)
                 mime = (response.headers.get_content_type() or "application/octet-stream").lower()
         except Exception:
@@ -2007,6 +2044,11 @@ class Gateway(ChatFeatures):
         if len(data) > MAX_FILE:
             return
         name = safe_name(Path(parts.path).name)
+        if key is not None:
+            data = xmpp_client.aesgcm_open(data, *key)
+            if data is None:
+                return
+            mime = mime_for_name(name)
         record["attachment"] = {"kind": kind_for(mime), "name": name, "mime": mime if MIME.fullmatch(mime) else
                                 "application/octet-stream", "size": len(data), "duration": 0}
         record["body"] = record["body"].replace(url, "").strip() or name
@@ -2040,7 +2082,35 @@ class Gateway(ChatFeatures):
             if attachment and not message.get("text"):
                 text = ""
             sent = client.send(route["target"], text, route.get("group"), reply=reply, reply_author=author, file=file)
-        return {"xmpp_id": sent}
+        was_locked = getattr(client, "was_locked", None)
+        return {"xmpp_id": sent, **({"omemo": True} if was_locked and was_locked(sent) else {})}
+
+    def omemo_route(self, data):
+        route = self.route(data.get("address"), data.get("protocol")) if isinstance(data.get("address"), str) else None
+        if route is None or route.get("via") != "xmpp":
+            raise ValueError("OMEMO is for XMPP chats")
+        entry = self.clients.get(route["account"])
+        if entry is None or not hasattr(entry[1], "omemo_devices"):
+            raise ConnectionError("XMPP isn’t connected. Check the account on FluidMessages Web.")
+        return route, entry[1]
+
+    def omemo_devices(self, data):
+        """A chat's Security section: everyone's OMEMO devices with fingerprints, and the lock."""
+        route, client = self.omemo_route(data)
+        return client.omemo_devices(route["target"], bool(route.get("group")))
+
+    def omemo_trust(self, data):
+        """Marks one device verified, trusted, or turned off."""
+        route, client = self.omemo_route(data)
+        if isinstance(data.get("uri"), str):
+            # A link they shared (xmpp:name@host?omemo-sid-…): verifies the devices whose fingerprints match.
+            checked = client.omemo_verify_link(route["target"], bool(route.get("group")), data["uri"][:4000])
+            return {**self.omemo_devices(data), "checked": checked}
+        jid, device, trust = data.get("jid"), data.get("device"), data.get("trust")
+        if not isinstance(jid, str) or not JID.fullmatch(jid) or type(device) is not int or trust not in ("verified", "blind", "distrusted"):
+            raise ValueError("Choose a device")
+        client.omemo_trust(route["target"], jid.lower(), device, trust)
+        return self.omemo_devices(data)
 
     # Matrix direct rooms
 

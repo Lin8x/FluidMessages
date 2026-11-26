@@ -122,9 +122,9 @@ object PairScanScreen {
     }
 }
 
-/** The camera, reading QR codes as it goes. [found] gets each code's text on the main thread. */
+/** The camera, reading QR codes as it goes. [found] gets each code's text on the main thread. Also Nearby's Scan their code. */
 @Composable
-private fun CameraScanner(owner: LifecycleOwner, found: (String) -> Unit) {
+internal fun CameraScanner(owner: LifecycleOwner, found: (String) -> Unit) {
     val latest by rememberUpdatedState(found)
     var provider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
     val analyzer = remember { Executors.newSingleThreadExecutor() }

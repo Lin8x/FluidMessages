@@ -5509,6 +5509,276 @@ process.stdout.write(JSON.stringify({text: pairPayload(reach, token, 'http://192
     guide = (ROOT / "docs/self-hosting.md").read_text()
     check("FLUID_TLS_PORT" in guide and "fingerprint" in guide and "QR code" in guide, "docs/self-hosting.md is missing the QR pairing")
     print("PASS  phone HTTPS: own certificate made once with a private key, served on the second port, QR payload has the served fingerprint")
+def omemo_test():
+    """OMEMO for XMPP: trust rules, fingerprints, xmpp: links, and the lock color always; with the optional OMEMO
+    modules installed, two in-process devices, saved messages from an independent implementation, limits, the
+    encrypted store, and the XMPP glue. Fictional addresses and keys only."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import omemo_trust as rules
+    key = "05" + "ab12cd34" * 8
+    check(rules.fingerprint_groups(key) == ["ab12cd34"] * 8 and rules.fingerprint_text("AB12 CD34" * 8).count(" ") == 7,
+          "OMEMO fingerprints are not 8 groups of 8 hex characters")
+    uri = rules.xmpp_uri("maya@example.test", [(1234, "ab12cd34" * 8)])
+    check(uri == "xmpp:maya@example.test?omemo-sid-1234=" + "ab12cd34" * 8, "The xmpp: link is not in Conversations' format")
+    check(rules.parse_xmpp_uri("xmpp:Maya@Example.test?message;omemo-sid-1234=" + "AB12CD34" * 8 + ";omemo-sid-x=1")
+          == ("maya@example.test", {1234: "ab12cd34" * 8}), "An xmpp: link with fingerprints was not read")
+    check(rules.parse_xmpp_uri("https://example.test") is None and rules.parse_xmpp_uri("xmpp:no-at-sign") is None,
+          "Something that isn't an xmpp: address was read as one")
+    check(rules.verify_from_uri(uri, "maya@example.test", {1234: key, 99: key}) == ([1234], [])
+          and rules.verify_from_uri(uri, "maya@example.test", {1234: "05" + "00" * 32}) == ([], [1234]),
+          "Scanning an xmpp: link doesn't match devices by fingerprint")
+    check(rules.first_use([]) == rules.BLIND and rules.first_use([rules.BLIND]) == rules.BLIND
+          and rules.first_use([rules.VERIFIED, rules.BLIND]) == rules.UNCONFIRMED,
+          "New devices aren't blindly trusted before a verification, and held for your OK after one")
+    check(rules.trusted(rules.BLIND) and rules.trusted(rules.VERIFIED) and not rules.trusted(rules.UNCONFIRMED)
+          and not rules.trusted(rules.DISTRUSTED), "Only trusted and verified devices get locked messages")
+    green = {"available": True, "devices": 2, "trusted": 2}
+    check(rules.lock(green)[0] == "green" and "only you and the people you're talking to" in rules.lock(green)[1],
+          "A chat locked for all trusted devices isn't green")
+    for state in ({}, {**green, "available": False}, {**green, "devices": 0}, {**green, "plain": True},
+                  {**green, "trusted": 0}, {**green, "failed": 1}, {**green, "group": True, "group_ok": False}):
+        check(rules.lock(state)[0] == "yellow", "A chat that isn't fully locked doesn't show the yellow lock: %r" % state)
+    check(rules.lock({**green, "group": True, "group_ok": True})[0] == "green", "A members-only group locked for everyone isn't green")
+    import xmpp_omemo
+    if not xmpp_omemo.available():
+        print("PASS  OMEMO trust rules, fingerprints, xmpp: links, and lock colors")
+        print("SKIP  OMEMO encryption checks (omemo, doubleratchet, x3dh, and xeddsa are not installed)")
+        return
+    import asyncio
+    import xml.etree.ElementTree as ET
+    import omemo_legacy as legacy
+
+    class Network:
+        def __init__(self, nodes, outbox, jid):
+            self.nodes, self.outbox, self.jid = nodes, outbox, jid
+        async def publish(self, node, element):
+            self.nodes[(self.jid, node)] = ET.tostring(element)
+        async def fetch(self, bare_jid, node):
+            raw = self.nodes.get((bare_jid, node))
+            return None if raw is None else ET.fromstring(raw)
+        async def delete(self, node):
+            self.nodes.pop((self.jid, node), None)
+        async def send(self, bare_jid, element):
+            self.outbox.append((self.jid, bare_jid, ET.tostring(element)))
+
+    async def devices():
+        nodes, outbox = {}, []
+        maya = await xmpp_omemo.Omemo("maya@example.test", Network(nodes, outbox, "maya@example.test"),
+                                      storage=xmpp_omemo.MemoryStorage(), max_skipped=20).start()
+        leo = await xmpp_omemo.Omemo("leo@example.test", Network(nodes, outbox, "leo@example.test"),
+                                     storage=xmpp_omemo.MemoryStorage(), max_skipped=20).start()
+        await maya.history_done()
+        await leo.history_done()
+        element, report = await maya.encrypt({"leo@example.test"}, "Coffee at ten?")
+        raw = ET.tostring(element).decode()
+        check('prekey="true"' in raw and "Coffee" not in raw and report["devices"] == 1,
+              "The first OMEMO message isn't a key exchange, or it carries readable text")
+        opened = await leo.decrypt("maya@example.test", element)
+        check(opened["text"] == "Coffee at ten?" and opened["trust"] == rules.BLIND, "Leo's device didn't open Maya's key exchange")
+        check(any(sender == "leo@example.test" for sender, _, _ in outbox), "Leo's device didn't answer the key exchange")
+        for sender, _, raw in outbox:
+            heartbeat = await maya.decrypt(sender, ET.fromstring(raw))
+            check(heartbeat["error"] == "" and heartbeat["text"] is None, "The key exchange answer didn't open")
+        outbox.clear()
+        element, _ = await leo.encrypt({"maya@example.test"}, "See you there")
+        check(ET.tostring(element).decode().count('prekey="true"') == 0, "An answer on an open session is a key exchange")
+        check((await maya.decrypt("leo@example.test", element))["text"] == "See you there", "Maya didn't open Leo's answer")
+        replay = await maya.decrypt("leo@example.test", element)
+        check(replay["text"] is None and replay["error"] == "failed", "A replayed OMEMO message opened twice")
+        # Skipped-message limit: a message that skips more keys than allowed fails plainly, and the session still works.
+        for count in range(25):
+            far, _ = await leo.encrypt({"maya@example.test"}, "skip %d" % count)
+        check((await maya.decrypt("leo@example.test", far))["error"] == "failed",
+              "A message skipping more keys than the limit was opened")
+        listed = await maya.devices("leo@example.test")
+        check(len(listed) == 1 and len(listed[0]["fingerprint"]) == 8, "Leo's device isn't listed with its fingerprint")
+        check(await maya.set_trust("leo@example.test", listed[0]["id"], rules.VERIFIED)
+              and (await maya.devices("leo@example.test"))[0]["trust"] == rules.VERIFIED, "Marking a device verified didn't stick")
+        # No OMEMO devices: refused, so the caller sends plain text with a notice.
+        try:
+            await maya.encrypt({"sam@example.test"}, "Hello")
+            check(False, "A message to someone without OMEMO was 'locked'")
+        except xmpp_omemo.OmemoUnavailable:
+            pass
+        # A tampered key element fails plainly instead of crashing.
+        element, _ = await maya.encrypt({"leo@example.test"}, "One more")
+        for key_element in element.iter("{%s}key" % legacy.NAMESPACE):
+            data = bytearray(__import__("base64").b64decode(key_element.text))
+            data[-3] ^= 1
+            key_element.text = __import__("base64").b64encode(bytes(data)).decode()
+        broken = await leo.decrypt("maya@example.test", element)
+        check(broken["text"] is None and broken["error"] == "failed", "A tampered OMEMO key didn't fail plainly")
+
+    async def vectors():
+        """Messages made by an independent legacy OMEMO implementation (saved once; see the file's "about")."""
+        saved = json.loads((ROOT / "app/src/test/resources/omemo/legacy-vectors.json").read_text(encoding="utf-8"))
+        case, sender = saved["cases"]["key_exchange"], saved["oracle_bundle"]
+        nodes, outbox = {}, []
+        nodes[(sender["jid"], legacy.bundle_node(sender["device_id"]))] = sender["bundle"].encode()
+        nodes[(sender["jid"], legacy.DEVICE_LIST_NODE)] = ET.tostring(legacy.serialize_device_list({sender["device_id"]: None}))
+        storage = xmpp_omemo.MemoryStorage()
+        storage.data = json.loads(json.dumps(case["storage"]))
+        own = await xmpp_omemo.Omemo(case["own_jid"], Network(nodes, outbox, case["own_jid"]), storage=storage).start()
+        await own.history_done()
+        used = next(iter(legacy.parse_message(ET.fromstring(case["message"]), case["sender"], case["own_jid"],
+                                              own.device_id).keys))[1].pre_key_id
+        first = await own.decrypt(case["sender"], ET.fromstring(case["message"]))
+        check(first["text"] == case["plaintext"], "A saved key exchange from another OMEMO implementation didn't open")
+        for followup in case["followups"]:
+            check((await own.decrypt(case["sender"], ET.fromstring(followup["message"])))["text"] == followup["plaintext"],
+                  "A saved message from another OMEMO implementation didn't open")
+        bundle = legacy.parse_bundle(ET.fromstring(nodes[(case["own_jid"], legacy.bundle_node(own.device_id))]),
+                                     case["own_jid"], own.device_id)
+        check(all(pre_key_id != used for pre_key_id in bundle.pre_key_ids.values())
+              and len(bundle.pre_key_ids) == 100, "The used prekey wasn't removed and replaced in the republished bundle")
+        normal = saved["cases"]["normal"]
+        storage = xmpp_omemo.MemoryStorage()
+        storage.data = json.loads(json.dumps(normal["storage"]))
+        later = await xmpp_omemo.Omemo(normal["own_jid"], Network(nodes, outbox, normal["own_jid"]), storage=storage).start()
+        await later.history_done()
+        check((await later.decrypt(normal["sender"], ET.fromstring(normal["message"])))["text"] == normal["plaintext"],
+              "A saved normal message (after the key exchange) from another OMEMO implementation didn't open")
+
+    asyncio.run(devices())
+    asyncio.run(vectors())
+    # The store on disk is encrypted, private, and reloads.
+    with tempfile.TemporaryDirectory() as folder:
+        store = xmpp_omemo.EncryptedFileStorage(Path(folder) / "omemo-store")
+        asyncio.run(store.store("/fixture", "fictional secret value"))
+        blob = (Path(folder) / "omemo-store" / "omemo.json.enc").read_bytes()
+        check(b"fictional secret value" not in blob and b"/fixture" not in blob, "The OMEMO store isn't encrypted on disk")
+        check(os.stat(Path(folder) / "omemo-store" / "omemo.key").st_mode & 0o077 == 0, "The OMEMO store key isn't private")
+        again = xmpp_omemo.EncryptedFileStorage(Path(folder) / "omemo-store")
+        check(again.data.get("/fixture") == "fictional secret value", "The OMEMO store didn't reload")
+    print("PASS  OMEMO: two devices exchange locked messages, saved messages from another implementation open,"
+          " replays and tampering fail plainly, skipped keys are limited, and the store is encrypted")
+    try:
+        import slixmpp  # noqa: F401
+    except ImportError:
+        print("SKIP  OMEMO XMPP glue (slixmpp is not installed)")
+        return
+    omemo_glue_test()
+
+
+def omemo_glue_test():
+    """FluidMessages Web's XMPP connection with OMEMO, with the network replaced by an in-process stand-in: locked
+    one-to-one messages both ways, the green lock, plain fallback with a notice and the yellow lock, the Security
+    list, a new device held for your OK after verifying, and a broken message shown as a plain notice."""
+    import asyncio
+    import xml.etree.ElementTree as ET
+    import slixmpp
+    from slixmpp.plugins.xep_0060 import stanza as pubsub_stanza
+    import xmpp_client
+    import omemo_legacy as legacy
+
+    class FakeIq:
+        def __init__(self, condition):
+            self.condition = condition
+        def __getitem__(self, key):
+            return {"condition": self.condition, "text": "", "type": "cancel"} if key == "error" else None
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        nodes, clients = {}, {}
+
+        def make(jid, omemo_dir):
+            got, events = [], []
+            xc = xmpp_client.XmppClient({"jid": jid, "password": "x"}, lambda *a: got.append(a), [],
+                                        on_event=lambda *a: events.append(a), omemo_store=omemo_dir)
+            client = slixmpp.ClientXMPP(jid, "x")
+            for plugin in ("xep_0030", "xep_0004", "xep_0060", "xep_0163", "xep_0334", "xep_0461", "xep_0444", "xep_0066", "xep_0184", "xep_0203", "xep_0359", "xep_0045"):
+                client.register_plugin(plugin)
+            bare = slixmpp.JID(jid).bare
+            def deliver(stanza, *args, **kwargs):
+                to = stanza["to"].bare
+                stanza["from"] = jid + "/web"
+                copy = slixmpp.Message(xml=ET.fromstring(ET.tostring(stanza.xml)))
+                target = clients.get(to)
+                if target is not None:
+                    loop.call_soon(target.received, copy)
+            client.send = deliver
+            ps = client.plugin["xep_0060"]
+            async def publish(j, node, id=None, payload=None, options=None, **kw):
+                nodes[(bare, node)] = ET.tostring(payload)
+            async def get_items(j, node, max_items=None, **kw):
+                raw = nodes.get((j, node))
+                if raw is None:
+                    raise xmpp_client.IqError(FakeIq("item-not-found"))
+                iq = client.Iq()
+                item = pubsub_stanza.Item()
+                item["id"] = "current"
+                item["payload"] = ET.fromstring(raw)
+                iq["pubsub"]["items"]["node"] = node
+                iq["pubsub"]["items"].append(item)
+                return iq
+            async def delete_node(j, node, **kw):
+                nodes.pop((bare, node), None)
+            ps.publish, ps.get_items, ps.delete_node = publish, get_items, delete_node
+            xc.client, xc.loop = client, loop
+            xc.ready.set()
+            clients[bare] = xc
+            return xc, got, events
+
+        with tempfile.TemporaryDirectory() as tmp:
+            maya, maya_got, maya_events = make("maya@example.test", tmp + "/m")
+            leo, leo_got, leo_events = make("leo@example.test", tmp + "/l")
+            plain, plain_got, _ = make("sam@example.test", None)  # No OMEMO on this side.
+            await maya.after_start(0)
+            await leo.after_start(0)
+            sent = await loop.run_in_executor(None, maya.send, "leo@example.test", "Coffee at ten?")
+            await asyncio.sleep(0.5)
+            check(maya.was_locked(sent), "Maya's message to Leo went with OMEMO")
+            check(leo_got and leo_got[-1][2] == "Coffee at ten?" and leo_got[-1][6]["omemo"]["trust"] == "blind",
+                  "Leo's FluidMessages Web opened it (trusted on first use)")
+            await loop.run_in_executor(None, leo.send, "maya@example.test", "See you there")
+            await asyncio.sleep(0.5)
+            check(maya_got[-1][2] == "See you there", "Maya opened Leo's answer")
+            color = [e for e in maya_events if e[0] == "omemo_state" and e[1] == "leo@example.test"][-1][2]["color"]
+            check(color == "green", "Maya's chat with Leo shows the green lock")
+            # Plain fallback with a notice and a yellow lock.
+            sent = await loop.run_in_executor(None, maya.send, "sam@example.test", "Hello Sam")
+            await asyncio.sleep(0.3)
+            check(not maya.was_locked(sent) and plain_got[-1][2] == "Hello Sam", "A contact without OMEMO gets plain text")
+            notices = [e for e in maya_events if e[0] == "omemo_notice" and e[1] == "sam@example.test"]
+            state = [e for e in maya_events if e[0] == "omemo_state" and e[1] == "sam@example.test"][-1][2]
+            check(len(notices) == 1 and state["color"] == "yellow", "…with a notice in the chat and the yellow lock")
+            # Security list: fingerprints in groups of 8, verify one device.
+            info = await loop.run_in_executor(None, maya.omemo_devices, "leo@example.test")
+            device = info["people"][0]["devices"][0]
+            check(len(device["fingerprint"]) == 8 and all(len(g) == 8 for g in device["fingerprint"]), "Fingerprints in 8 groups of 8")
+            check(info["own"]["devices"][0]["this"] and info["uri"].startswith("xmpp:maya@example.test?omemo-sid-"), "Own device and xmpp: link listed")
+            await loop.run_in_executor(None, maya.omemo_trust, "leo@example.test", "leo@example.test", device["id"], "verified")
+            # Leo gets a new device (new install): Maya must OK it now that she verified one.
+            leo2_dir = tmp + "/l2"
+            clients.pop("leo@example.test")
+            leo2, leo2_got, _ = make("leo@example.test", leo2_dir)
+            await leo2.after_start(0)
+            maya.omemo.checked.clear()
+            await loop.run_in_executor(None, maya.send, "leo@example.test", "Still on?")
+            await asyncio.sleep(0.5)
+            check(not leo2_got or "couldn" in leo2_got[-1][2] or "other devices" in leo2_got[-1][2],
+                  "A new unconfirmed device of Leo's doesn't get the message (shows a plain notice instead)")
+            check(any(e[0] == "omemo_notice" and "new device" in e[2]["text"] for e in maya_events), "Maya is told Leo has a new device")
+            # Garbage never crashes and shows a plain notice.
+            bad = slixmpp.Message()
+            bad["from"], bad["to"], bad["type"] = "leo@example.test/x", "maya@example.test", "chat"
+            enc = ET.SubElement(bad.xml, "{%s}encrypted" % legacy.NAMESPACE)
+            header = ET.SubElement(enc, "{%s}header" % legacy.NAMESPACE, {"sid": "1"})
+            ET.SubElement(header, "{%s}key" % legacy.NAMESPACE, {"rid": str(maya.omemo.device_id)}).text = "AAAA"
+            ET.SubElement(header, "{%s}iv" % legacy.NAMESPACE).text = "AAAAAAAAAAAAAAAA"
+            before = len(maya_got)
+            maya.received(bad)
+            await asyncio.sleep(0.3)
+            check(len(maya_got) == before + 1 and maya_got[-1][2].startswith("🔒") and maya_got[-1][6]["omemo"]["error"],
+                  "A broken locked message shows a plain notice")
+    
+
+
+    import logging
+    logging.getLogger("slixmpp").setLevel(logging.ERROR)
+    asyncio.run(main())
+    print("PASS  OMEMO in the XMPP connection: locked chats both ways, green and yellow locks, plain-text notices,"
+          " fingerprints, new devices held after verifying, and broken messages")
 
 
 def main():
@@ -5556,6 +5826,7 @@ def main():
         phone_reach_and_access_test()
         companion_tls_test()
         tor_test()
+        omemo_test()
         android(args)
         if args.demo:
             demo(args.no_browser)

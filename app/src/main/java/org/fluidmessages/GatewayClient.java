@@ -602,6 +602,20 @@ final class GatewayClient {
         nextCheck = 0;
     }
 
+    /** An XMPP chat's OMEMO devices on FluidMessages Web, for its Encryption (OMEMO) page. */
+    static JSONObject omemo(SharedPreferences prefs, String address) throws Exception {
+        return request(prefs, "protocols/omemo", new JSONObject().put("address", address).put("protocol", "xmpp"));
+    }
+
+    static JSONObject omemoTrust(SharedPreferences prefs, String address, String jid, int device, String trust) throws Exception {
+        return request(prefs, "protocols/omemo/trust", new JSONObject().put("address", address).put("protocol", "xmpp")
+            .put("jid", jid).put("device", device).put("trust", trust));
+    }
+
+    static JSONObject omemoLink(SharedPreferences prefs, String address, String uri) throws Exception {
+        return request(prefs, "protocols/omemo/trust", new JSONObject().put("address", address).put("protocol", "xmpp").put("uri", uri));
+    }
+
     /** Whether the companion reports this conversation's room as end-to-end encrypted. */
     static boolean encrypted(SharedPreferences prefs, String address, MessageProtocol format) {
         for (var link : links(prefs, address)) {

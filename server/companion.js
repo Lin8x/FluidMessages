@@ -1166,9 +1166,11 @@ function securityRow(key) {
     red: protocol === 'rcs' ? 'RCS isn’t available in FluidMessages yet. Texts in this chat are SMS, which your carrier can read.'
       : 'Your carrier and anyone along the way can read these messages.',
   }[tone];
+  const omemo = routeFor(key)?.omemo;
   const row = element('div', '', 'detail-row');
   const words = element('span', '', 'detail-words');
-  words.append(element('strong', label), element('small', protocolName(protocol) + ' · ' + detail));
+  words.append(element('strong', label), element('small', protocolName(protocol) + ' · '
+    + (omemo && !fluidEncrypted(key) ? omemo.words : detail)));
   row.append(words, lockBadge(tone, label, 'large'));
   return row;
 }
@@ -1437,7 +1439,9 @@ function conversationSettings(key, settings, {block = true} = {}) {
   } else if (sampleOn) {
     security.append(element('p', 'Disappearing messages are set per chat in your real chats’ details. Nothing in the sample inbox is saved.', 'muted'));
   }
-  nodes.push(security, extras.code);
+  nodes.push(security);
+  if (typeof omemoChat === 'function' && omemoChat(key)) nodes.push(omemoSection(key));
+  nodes.push(extras.code);
   return nodes;
 }
 
@@ -1487,6 +1491,8 @@ function protection(key) {
   const protocol = threadProtocol(key);
   const route = routeFor(key);
   if (fluidEncrypted(key)) return ['green', 'Encrypted with FluidMessages'];
+  // XMPP: the lock FluidMessages Web reports for the chat (OMEMO, in omemo.js and xmpp_omemo.py).
+  if (route?.omemo) return route.omemo.color === 'green' ? ['green', 'Locked with OMEMO'] : ['yellow', 'Encrypted in transit'];
   if (route?.encrypted) return ['green', 'End-to-end encrypted'];
   if (internet(protocol)) return ['yellow', 'Encrypted in transit'];
   return ['red', 'Not encrypted'];

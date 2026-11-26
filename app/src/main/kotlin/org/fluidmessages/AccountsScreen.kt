@@ -68,7 +68,7 @@ private val forms = mapOf(
 private val notes = mapOf(
     MessageProtocol.EMAIL to "Only conversations you link to a contact appear in FluidMessages. Other email stays in your mail app. Each message you send ends with “Sent with FluidMessages”.",
     MessageProtocol.MATRIX to "Rooms appear when you link them to a contact or group. Through FluidMessages Web, encrypted rooms work: it becomes one of your Matrix devices and decrypts them. From this phone, only unencrypted rooms can be read and sent to.",
-    MessageProtocol.XMPP to "One-to-one chats and group chats you link appear here. OMEMO encryption isn’t supported, so XMPP shows as encrypted in transit only.",
+    MessageProtocol.XMPP to "One-to-one chats and group chats you link appear here. Chats are locked with OMEMO when the other person’s app uses it: only you and the people you’re talking to can read them. Otherwise they’re encrypted on the way to the server only, and the chat says so. From this phone, group chats aren’t locked yet; FluidMessages Web locks members-only groups.",
     MessageProtocol.IRC to "FluidMessages connects with TLS only. Channels listed here appear in your inbox, and anyone who messages you, including bots like NickServ, gets a chat of their own. If FluidMessages Web already connects to this network, use its connection: it stays online like a bouncer, and the phone won’t open a second one with the same nick.",
 )
 

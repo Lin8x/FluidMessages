@@ -18,6 +18,7 @@ import org.jivesoftware.smack.packet.StandardExtensionElement;
 import org.jivesoftware.smack.packet.StanzaBuilder;
 import org.jivesoftware.smack.tcp.XMPPTCPConnection;
 import org.jivesoftware.smack.tcp.XMPPTCPConnectionConfiguration;
+import org.jivesoftware.smack.util.PacketParserUtils;
 import org.jivesoftware.smackx.carbons.CarbonManager;
 import org.jivesoftware.smackx.carbons.packet.CarbonExtension;
 import org.jivesoftware.smackx.delay.packet.DelayInformation;
@@ -36,6 +37,10 @@ import org.jxmpp.jid.parts.Resourcepart;
  * delivery receipts, replies (XEP-0461), reactions (XEP-0444), and files with HTTP File Upload and an
  * out-of-band link, the same behavior as the companion. It needs an open connection, so it runs while
  * FluidMessages is open, or always with "Stay connected".
+ *
+ * OMEMO (PhoneOmemo): the phone is one OMEMO device of the account. One-to-one chats are locked when the other
+ * person has OMEMO devices, with a notice in the chat when a message goes without it. Group chats from the phone
+ * aren't locked yet; FluidMessages Web locks members-only groups.
  */
 final class DirectXmpp implements DirectProtocols.DirectClient {
     private static final String REPLY = "urn:xmpp:reply:0", REACTIONS = "urn:xmpp:reactions:0", OOB = "jabber:x:oob";
@@ -47,6 +52,10 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
     private Context context;
     private JSONObject account;
     private XMPPTCPConnection connection;
+    private volatile PhoneOmemo omemo;
+    /** Locked messages are opened one at a time, in order, off Smack's threads. */
+    private final java.util.concurrent.ExecutorService lockedQueue = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final java.util.Set<String> toldPlain = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     DirectXmpp(String signature) { this.signature = signature; }
 
@@ -159,6 +168,7 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
                 next.connect().login();
                 connection = next;
                 status("connected", "");
+                startOmemo(next, jid.toString());
                 try { CarbonManager.getInstanceFor(next).enableCarbons(); } catch (Exception ignored) {}
                 var mucs = MultiUserChatManager.getInstanceFor(next);
                 for (String room : DirectProtocols.targets(context, MessageProtocol.XMPP, true)) {
@@ -201,6 +211,37 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
     }
 
     private void accept(String conversation, String author, Message message, String messageId, boolean outgoing) {
+        accept(conversation, author, message, messageId, outgoing, null, null);
+    }
+
+    /** [unlocked] is the text of an OMEMO message (or a plain notice when it couldn't be opened). */
+    private void accept(String conversation, String author, Message message, String messageId, boolean outgoing,
+                        String unlocked, PhoneOmemo.Opened opened) {
+        var encrypted = element(message, "encrypted", OmemoCore.NAMESPACE);
+        if (unlocked == null && encrypted != null) {
+            boolean group = message.getType() == Message.Type.groupchat;
+            if (group) {
+                accept(conversation, author, message, messageId, outgoing,
+                    "🔒 Locked group messages open on FluidMessages Web; this phone doesn't lock group chats yet.", new PhoneOmemo.Opened());
+                return;
+            }
+            String self = account.optString("jid").toLowerCase(Locale.ROOT);
+            String sender = outgoing ? self : conversation;
+            lockedQueue.execute(() -> {
+                var current = omemo;
+                PhoneOmemo.Opened result;
+                if (current == null) { result = new PhoneOmemo.Opened(); result.error = "unavailable"; }
+                else result = current.decrypt(sender, encrypted);
+                if (result.error.isEmpty() && result.text == null) return;  // A key transport or heartbeat.
+                if (!result.error.isEmpty() && outgoing) return;  // Your own copy from another device that left this phone out.
+                if (result.error.isEmpty() && !PhoneOmemo.prefs(context).contains("lock." + conversation.toLowerCase(Locale.ROOT))) {
+                    PhoneOmemo.rememberLock(context, conversation, "locked");  // They use OMEMO, so your next message is locked.
+                }
+                String text = result.error.isEmpty() ? result.text : lockedNotice(result.error);
+                accept(conversation, author, message, messageId, outgoing, text, result);
+            });
+            return;
+        }
         try {
             var route = DirectProtocols.routeForTarget(context, MessageProtocol.XMPP, conversation.toLowerCase(Locale.ROOT));
             if (route == null || messageId == null) return; // Only linked chats appear.
@@ -237,7 +278,7 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
                         outgoing, date, author).put("reaction_target", target.getString("id")).put("reaction", last);
                 }
             } else {
-                String body = message.getBody();
+                String body = unlocked != null ? unlocked : message.getBody();
                 if (body == null) return;
                 var reply = element(message, "reply", REPLY);
                 var target = reply == null ? null : DirectProtocols.findBy(context, address, "xmpp_id", reply.getAttributeValue("id"));
@@ -249,8 +290,13 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
                     String rest = String.join("\n", java.util.Arrays.copyOfRange(lines, start, lines.length)).strip();
                     body = "Reply to “" + MessageInteractionsKt.messageExcerpt(target.optString("body"), 240) + "”\n\n" + (rest.isEmpty() ? body : rest);
                 }
-                String url = oob(message);
+                String url = unlocked != null ? (body.strip().startsWith("aesgcm://") && !body.strip().contains(" ") ? body.strip() : null) : oob(message);
                 record = DirectProtocols.record(route, id, body, outgoing, date, author);
+                if (opened != null) {
+                    record.put("omemo", true);
+                    if (!opened.error.isEmpty()) record.put("omemo_error", opened.error);
+                    else if (!OmemoRules.trusted(opened.trust)) record.put("omemo_untrusted", true);
+                }
                 if (target != null) record.put("reply_target", target.getString("id"));
                 var disappear = element(message, "disappear", DISAPPEAR);
                 if (disappear != null) {
@@ -275,8 +321,13 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
         return match.find() ? match.group(1) : null;
     }
 
-    /** Downloads a shared file (HTTPS only, up to 25 MB) so it opens like other attachments. */
+    /** Downloads a shared file (HTTPS only, up to 25 MB) so it opens like other attachments. An aesgcm:// link
+     *  (XEP-0454, from an OMEMO chat) is fetched over HTTPS and decrypted with the key in its fragment. */
     private void fetch(JSONObject record, String link) {
+        if (link.startsWith("aesgcm://")) {
+            fetchLocked(record, link);
+            return;
+        }
         try {
             NetworkGate.requireInternet();
             var url = new URL(link);
@@ -292,6 +343,134 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
             String body = record.getString("body").replace(link, "").strip();
             record.put("body", body.isEmpty() ? name : body);
         } catch (Exception ignored) {}
+    }
+
+    private void fetchLocked(JSONObject record, String link) {
+        try {
+            int hash = link.indexOf('#');
+            byte[] secret = hexBytes(link.substring(hash + 1));
+            if (hash < 0 || (secret.length != 44 && secret.length != 48)) return;
+            var url = new URL("https" + link.substring("aesgcm".length(), hash));
+            var connection = (HttpsURLConnection) url.openConnection();
+            connection.setConnectTimeout(15_000);
+            connection.setReadTimeout(60_000);
+            byte[] data;
+            try (var input = connection.getInputStream()) { data = input.readNBytes((int) MediaSanitizer.MAX_FILE + 16); }
+            if (data.length > (int) MediaSanitizer.MAX_FILE + 16) return;
+            byte[] iv = java.util.Arrays.copyOf(secret, secret.length - 32);
+            byte[] key = java.util.Arrays.copyOfRange(secret, secret.length - 32, secret.length);
+            byte[] plain = OmemoCore.aesGcm(javax.crypto.Cipher.DECRYPT_MODE, key, iv, data);
+            String id = record.getString("id");
+            ProtocolStore.get(context).putFile(id, new java.io.ByteArrayInputStream(plain), MediaSanitizer.MAX_FILE);
+            String name = MediaSanitizer.safeName(url.getPath().substring(url.getPath().lastIndexOf('/') + 1));
+            String mime = java.net.URLConnection.guessContentTypeFromName(name);
+            if (mime == null) mime = "application/octet-stream";
+            record.put("attachment", new Attachment(Attachment.kindFor(mime), null, name, mime,
+                ProtocolStore.get(context).attachmentFile(id).length()).toJson());
+            record.put("body", name);
+        } catch (Exception ignored) {}
+    }
+
+    private static byte[] hexBytes(String hex) {
+        if (hex.length() % 2 != 0) return new byte[0];
+        byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            int high = Character.digit(hex.charAt(2 * i), 16), low = Character.digit(hex.charAt(2 * i + 1), 16);
+            if (high < 0 || low < 0) return new byte[0];
+            out[i] = (byte) (high * 16 + low);
+        }
+        return out;
+    }
+
+    private static String lockedNotice(String error) {
+        return switch (error) {
+            case "not_for_us" -> "🔒 This message was locked for your other devices only, so this phone can't open it.";
+            case "unavailable" -> "🔒 This message is locked with OMEMO, which isn't ready on this phone yet.";
+            default -> "🔒 This locked message couldn't be opened. Ask them to send it again.";
+        };
+    }
+
+    // OMEMO
+
+    private void startOmemo(XMPPTCPConnection open, String ownJid) {
+        if (omemo != null) return;
+        new Thread(() -> {
+            try {
+                var created = new PhoneOmemo(context, ownJid, new Pep(open), (jid, text) -> notice(jid, text));
+                created.start();
+                omemo = created;
+            } catch (Exception ignored) {
+                // XMPP keeps working without OMEMO; chats show the yellow lock and say so.
+            }
+        }, "fluid-xmpp-omemo").start();
+    }
+
+    /** A line in the chat about its encryption (a key change, a new device, or a message without OMEMO). */
+    private void notice(String jid, String text) {
+        try {
+            var route = DirectProtocols.routeForTarget(context, MessageProtocol.XMPP, jid.toLowerCase(Locale.ROOT));
+            if (route == null) return;
+            long now = System.currentTimeMillis();
+            DirectProtocols.incoming(context, DirectProtocols.record(route, "xmpp-" + hash("omemo:" + jid + ":" + text + ":" + now / 60_000),
+                text, false, now, "").put("event", true).put("read", 1));
+        } catch (Exception ignored) {}
+    }
+
+    /** This phone's OMEMO device, for the chat's Security page; null while it isn't ready. */
+    PhoneOmemo omemo() { return omemo; }
+
+    /** The XMPP work OMEMO needs: your PEP nodes, other people's, and key transport messages. */
+    private static final class Pep implements PhoneOmemo.Network {
+        private final XMPPTCPConnection connection;
+        Pep(XMPPTCPConnection connection) { this.connection = connection; }
+
+        @Override public void publish(String node, String payloadXml) throws Exception {
+            // Readable by anyone (OMEMO needs that); a server without publish options takes a plain publish.
+            String xml = "<iq type='set' id='" + org.jivesoftware.smack.util.StringUtils.randomString(12) + "'>"
+                + "<pubsub xmlns='http://jabber.org/protocol/pubsub'><publish node='" + node + "'><item id='current'>" + payloadXml
+                + "</item></publish><publish-options><x xmlns='jabber:x:data' type='submit'>"
+                + "<field var='FORM_TYPE' type='hidden'><value>http://jabber.org/protocol/pubsub#publish-options</value></field>"
+                + "<field var='pubsub#access_model'><value>open</value></field></x></publish-options></pubsub></iq>";
+            try {
+                connection.sendIqRequestAndWaitForResponse((org.jivesoftware.smack.packet.IQ) PacketParserUtils.parseStanza(xml));
+            } catch (Exception error) {
+                org.jivesoftware.smackx.pep.PepManager.getInstanceFor(connection).publish(node,
+                    new org.jivesoftware.smackx.pubsub.PayloadItem<>("current", new org.jivesoftware.smackx.pubsub.SimplePayload(payloadXml)));
+            }
+        }
+
+        @Override public StandardExtensionElement fetch(String bareJid, String node) throws Exception {
+            var request = new org.jivesoftware.smackx.pubsub.packet.PubSub(JidCreate.bareFrom(bareJid),
+                org.jivesoftware.smack.packet.IQ.Type.get, org.jivesoftware.smackx.pubsub.packet.PubSubNamespace.basic);
+            request.addExtension(new org.jivesoftware.smackx.pubsub.ItemsExtension(
+                org.jivesoftware.smackx.pubsub.ItemsExtension.ItemsElementType.items, node, java.util.Collections.emptyList()));
+            org.jivesoftware.smack.packet.IQ response;
+            try {
+                response = connection.sendIqRequestAndWaitForResponse(request);
+            } catch (org.jivesoftware.smack.XMPPException.XMPPErrorException error) {
+                var condition = error.getStanzaError().getCondition();
+                if (condition == org.jivesoftware.smack.packet.StanzaError.Condition.item_not_found) return null;
+                throw error;
+            }
+            String xml = response.toXML().toString();
+            int start = xml.indexOf("<pubsub"), end = xml.lastIndexOf("</pubsub>");
+            if (start < 0 || end < 0) return null;
+            var parser = PacketParserUtils.getParserFor(xml.substring(start, end + "</pubsub>".length()));
+            var pubsub = org.jivesoftware.smack.parsing.StandardExtensionElementProvider.INSTANCE.parse(parser);
+            var items = pubsub.getFirstElement("items");
+            if (items == null) return null;
+            for (var item : items.getElements("item")) {
+                if (!item.getElements().isEmpty()) return item.getElements().get(0);
+            }
+            return null;
+        }
+
+        @Override public void send(String bareJid, StandardExtensionElement encrypted) throws Exception {
+            var builder = StanzaBuilder.buildMessage().to(JidCreate.bareFrom(bareJid)).ofType(Message.Type.chat);
+            builder.addExtension(encrypted);
+            builder.addExtension(StandardExtensionElement.builder("store", "urn:xmpp:hints").build());
+            connection.sendStanza(builder.build());
+        }
     }
 
     /** The emoji this sender last reacted with on a message, so a removal can say which one. */
@@ -415,6 +594,20 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
             builder.addExtension(StandardExtensionElement.builder("store", "urn:xmpp:hints").build());
         } else {
             String body = !reply.isEmpty() && "reply".equals(relation.optString("kind")) ? message.optString("text") : message.getString("body");
+            String target = route.getString("target").toLowerCase(Locale.ROOT);
+            var current_omemo = omemo;
+            boolean locked = false;
+            if (!group && current_omemo != null) {
+                try { locked = current_omemo.canLock(java.util.Set.of(target)); } catch (Exception ignored) {}
+            }
+            if (locked) return sendLocked(current, route, message, relation, reply, body, file, current_omemo);
+            if (!group && !toldPlain.contains(target)) {
+                toldPlain.add(target);
+                notice(target, current_omemo == null
+                    ? "Not locked with OMEMO: it isn't ready on this phone yet. Your XMPP server can read this message."
+                    : "Not locked with OMEMO: their app doesn't use it, so your XMPP server can read this message.");
+            }
+            if (!group) PhoneOmemo.rememberLock(context, target, "plain");
             if (file != null) {
                 URL uploaded = HttpFileUploadManager.getInstanceFor(current).uploadFile(file.file());
                 String caption = message.optString("text");
@@ -433,6 +626,51 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
         Message stanza = builder.build();
         current.sendStanza(stanza);
         return new JSONObject().put("xmpp_id", stanza.getStanzaId());
+    }
+
+    /** One-to-one, locked with OMEMO: text and files (XEP-0454: the file is encrypted before upload). */
+    private JSONObject sendLocked(XMPPTCPConnection current, JSONObject route, JSONObject message, JSONObject relation,
+                                  String reply, String body, MediaSanitizer.Prepared file, PhoneOmemo locked) throws Exception {
+        String target = route.getString("target").toLowerCase(Locale.ROOT);
+        String sent = null;
+        String caption = file != null ? message.optString("text") : body;
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        if (caption != null && !caption.isEmpty()) parts.add(caption);
+        if (file != null) {
+            byte[] data = java.nio.file.Files.readAllBytes(file.file().toPath());
+            byte[] key = OmemoCore.random(32), iv = OmemoCore.random(12);
+            byte[] sealed = OmemoCore.aesGcm(javax.crypto.Cipher.ENCRYPT_MODE, key, iv, data);
+            URL uploaded = HttpFileUploadManager.getInstanceFor(current).uploadFile(new java.io.ByteArrayInputStream(sealed),
+                file.file().getName(), sealed.length);
+            String link = uploaded.toString();
+            if (!link.startsWith("https://")) throw new IllegalStateException("The upload service gave a link FluidMessages can't lock");
+            parts.add("aesgcm" + link.substring("https".length()) + "#" + OmemoCore.hex(OmemoCore.concat(iv, key)));
+        }
+        int failed = 0;
+        for (int index = 0; index < parts.size(); index++) {
+            PhoneOmemo.Sealed result;
+            try {
+                result = locked.encrypt(java.util.Set.of(target), parts.get(index).getBytes(StandardCharsets.UTF_8));
+            } catch (PhoneOmemo.NotTrusted error) {
+                throw new IllegalStateException(error.getMessage());
+            }
+            failed += result.failed;
+            MessageBuilder builder = StanzaBuilder.buildMessage().to(route.getString("target")).ofType(Message.Type.chat)
+                .setBody(PhoneOmemo.FALLBACK);
+            builder.addExtension(result.element);
+            builder.addExtension(StandardExtensionElement.builder("encryption", "urn:xmpp:eme:0")
+                .addAttribute("namespace", OmemoCore.NAMESPACE).addAttribute("name", "OMEMO").build());
+            builder.addExtension(StandardExtensionElement.builder("store", "urn:xmpp:hints").build());
+            if (index == 0 && !reply.isEmpty() && relation != null && "reply".equals(relation.optString("kind"))) {
+                builder.addExtension(StandardExtensionElement.builder("reply", REPLY).addAttribute("to", route.getString("target"))
+                    .addAttribute("id", reply).build());
+            }
+            Message stanza = builder.build();
+            current.sendStanza(stanza);
+            sent = stanza.getStanzaId();
+        }
+        PhoneOmemo.rememberLock(context, target, failed > 0 ? "failed" : "locked");
+        return new JSONObject().put("xmpp_id", sent).put("omemo", true);
     }
 
     private static String hash(String value) {

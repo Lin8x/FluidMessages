@@ -24,6 +24,7 @@ internal object NearbyWire {
     val PROLOGUE: ByteArray = "FluidMessages Nearby 1".toByteArray(Charsets.US_ASCII)
     const val MAX_TEXT_BYTES = 60_000
     const val MAX_NAME = 40
+    const val MAX_HAVE = 1000
 
     // The code people scan
 
@@ -107,31 +108,55 @@ internal object NearbyWire {
     // Packets inside the encrypted connection
 
     sealed class Packet {
-        /** Who this side is, sent inside the handshake. */
-        data class Hello(val name: String, val id: String) : Packet()
+        /**
+         * Who this side is, sent inside the handshake: the name, the random id, the key it signs channel messages with
+         * (hex, "" if none), and whether its Add nearby person page is open.
+         */
+        data class Hello(val name: String, val id: String, val signKey: String = "", val pairing: Boolean = false) : Packet()
         /** A message. [id] is the sender's own message id, so a message sent twice is stored once. */
         data class Text(val id: String, val date: Long, val text: String) : Packet()
         /** The message with this id is stored on the other phone. */
         data class Ack(val id: String) : Packet()
         /** Keeps the connection known to be alive. */
         object Ping : Packet()
+        /** The Add nearby person page opened or closed on the other phone. */
+        data class Mode(val pairing: Boolean) : Packet()
+        /** The envelopes this phone already has (NearbyMesh), newest first, so the other sends only what's missing. */
+        data class Have(val ids: List<String>) : Packet()
+        /** An envelope to keep and maybe pass along (NearbyMesh.encode). */
+        class Carry(val envelope: ByteArray) : Packet() {
+            override fun equals(other: Any?) = other is Carry && other.envelope.contentEquals(envelope)
+            override fun hashCode() = envelope.contentHashCode()
+        }
     }
 
     private const val HELLO = 1
     private const val TEXT = 2
     private const val ACK = 3
     private const val PING = 4
+    private const val MODE = 5
+    private const val HAVE = 6
+    private const val CARRY = 7
 
     fun encode(packet: Packet): ByteArray {
         val bytes = ByteArrayOutputStream()
         DataOutputStream(bytes).use { out ->
             when (packet) {
-                is Packet.Hello -> { out.writeByte(HELLO); writeString(out, packet.name); writeString(out, packet.id) }
+                is Packet.Hello -> {
+                    out.writeByte(HELLO); writeString(out, packet.name); writeString(out, packet.id)
+                    writeString(out, packet.signKey); out.writeByte(if (packet.pairing) 1 else 0)
+                }
                 is Packet.Text -> {
                     out.writeByte(TEXT); writeString(out, packet.id); out.writeLong(packet.date); writeString(out, packet.text)
                 }
                 is Packet.Ack -> { out.writeByte(ACK); writeString(out, packet.id) }
                 Packet.Ping -> out.writeByte(PING)
+                is Packet.Mode -> { out.writeByte(MODE); out.writeByte(if (packet.pairing) 1 else 0) }
+                is Packet.Have -> {
+                    require(packet.ids.size <= MAX_HAVE) { "Too many" }
+                    out.writeByte(HAVE); out.writeShort(packet.ids.size); for (id in packet.ids) out.write(NoiseCrypto.hex(id))
+                }
+                is Packet.Carry -> { out.writeByte(CARRY); out.writeShort(packet.envelope.size); out.write(packet.envelope) }
             }
         }
         return bytes.toByteArray()
@@ -146,7 +171,12 @@ internal object NearbyWire {
                     val name = cleanName(readString(input)) ?: throw IOException("Bad name")
                     val id = readString(input)
                     if (!id.matches(Regex("[0-9a-f]{16}"))) throw IOException("Bad id")
-                    Packet.Hello(name, id)
+                    // Phones from before channels send only the name and id.
+                    if (input.available() == 0) Packet.Hello(name, id) else {
+                        val signKey = readString(input)
+                        if (!signKey.matches(Regex("([0-9a-f]{2}){0,200}"))) throw IOException("Bad key")
+                        Packet.Hello(name, id, signKey, input.readUnsignedByte() == 1)
+                    }
                 }
                 TEXT -> {
                     val id = readString(input)
@@ -155,6 +185,13 @@ internal object NearbyWire {
                 }
                 ACK -> Packet.Ack(readString(input).also { if (!validMessageId(it)) throw IOException("Bad message id") })
                 PING -> Packet.Ping
+                MODE -> Packet.Mode(input.readUnsignedByte() == 1)
+                HAVE -> {
+                    val count = input.readUnsignedShort()
+                    if (count > MAX_HAVE) throw IOException("Too many")
+                    Packet.Have(List(count) { ByteArray(16).also(input::readFully).let(NoiseCrypto::hex) })
+                }
+                CARRY -> Packet.Carry(ByteArray(input.readUnsignedShort()).also(input::readFully))
                 else -> throw IOException("Unknown packet")
             }
             if (input.available() > 0) throw IOException("Extra bytes")

@@ -23,7 +23,7 @@ $runner = $python
 $venv = Join-Path $data 'venv\Scripts\python.exe'
 if ($Full) {
   if (-not (Test-Path $venv)) { & $python -m venv (Join-Path $data 'venv') }
-  & $venv -m pip install --quiet 'slixmpp==1.17.0' 'aiohttp>=3.10' 'matrix-nio[e2e]==0.26.0'
+  & $venv -m pip install --quiet 'slixmpp==1.17.0' 'aiohttp>=3.10' 'matrix-nio[e2e]==0.26.0' 'omemo==2.1.0' 'doubleratchet==1.3.0' 'x3dh==1.3.0' 'xeddsa==1.2.0'
 }
 if (Test-Path $venv) { $runner = $venv }
 

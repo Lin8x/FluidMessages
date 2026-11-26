@@ -538,10 +538,18 @@ class ChatFeatures:
         if kind == "subscribe":
             self.add_invite(account, "xmpp", "contact", conversation, conversation, data.get("name", ""))
             return
+        if kind == "omemo_state":
+            # The chat's OMEMO lock, shown on its lock icon and in Security (omemo_trust.lock).
+            self.omemo_locks[(account, conversation)] = {"color": data.get("color"), "words": data.get("words")}
+            return
         route = self.xmpp_route(conversation, account)
         if route is None:
             return
         date = data.get("date") if type(data.get("date")) is int else self.time()
+        if kind == "omemo_notice":
+            # A key change, a new device waiting for your OK, or a message that went without OMEMO.
+            self.add_event(route, short(data.get("text"), 400), date, "security")
+            return
         nick = short(data.get("nick"), 80)
         if kind == "subject":
             subject = short(data.get("subject"), 1000)

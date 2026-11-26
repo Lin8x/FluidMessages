@@ -17,7 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "FluidMessages Web"
-SERVER_MODULES = ["main", "auth", "accounts", "cloud_backup", "companion_tls", "link_fetch", "protocol_gateway", "irc_client", "matrix_e2ee", "xmpp_client"]
+SERVER_MODULES = ["main", "auth", "accounts", "cloud_backup", "companion_tls", "link_fetch", "protocol_gateway", "irc_client", "matrix_e2ee", "xmpp_client",
+                  "xmpp_omemo", "omemo_legacy", "omemo_trust"]
 
 
 def icons(work):
@@ -35,7 +36,7 @@ def pyinstaller(work, system):
                "--add-data", data, "--paths", str(ROOT / "server")]
     for module in SERVER_MODULES:
         command += ["--hidden-import", module]
-    for optional in ("slixmpp", "aiohttp", "nio"):
+    for optional in ("slixmpp", "aiohttp", "nio", "omemo", "doubleratchet", "x3dh", "xeddsa"):
         try:
             __import__(optional)
             command += ["--collect-all", optional]

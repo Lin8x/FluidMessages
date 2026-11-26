@@ -20,6 +20,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -43,17 +44,40 @@ import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.io.File
 import java.util.function.Consumer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /** Plain words for Nearby, shared by Chat services and the Nearby page. */
 internal object NearbyText {
-    const val EXPLAINER = "Nearby lets you message FluidMessages friends close by with no internet or cell signal, on the same " +
-        "Wi-Fi. Add each other in person by scanning a code, typing a code, or comparing a short code on both phones. " +
+    const val EXPLAINER = "Nearby lets you message FluidMessages friends close by with no internet or cell signal, over Bluetooth " +
+        "or the same Wi-Fi. Add each other in person by scanning a code, typing a code, or comparing a short code on both phones. " +
         "Messages are locked so only you two can read them."
-    const val BLACKOUT = "In a blackout: Nearby needs no internet and no cell signal. It needs both phones running FluidMessages " +
-        "with Nearby on, on the same Wi-Fi network (a router on battery, or a phone’s hotspot, works even with no internet). " +
-        "A message to someone who isn’t around waits on your phone and goes as soon as their phone is seen. " +
-        "Bluetooth, and phones passing messages along for others, are coming later."
+    const val BLACKOUT = "In a blackout: Nearby needs no internet and no cell signal. It works between FluidMessages phones with " +
+        "Nearby on that are within Bluetooth range (about one room to a few houses) or on the same Wi-Fi (a router on battery, or a " +
+        "phone’s hotspot, works with no internet). Phones carry messages for each other as people move around, so a message can " +
+        "reach someone who isn’t near you, a little later. Nothing reaches phones without FluidMessages, and nothing goes beyond " +
+        "the people around."
+    const val OPEN_NOTICE = "Anyone nearby can read this channel. Messages are signed, so no one can change them or write as you."
+    const val ROOM_NOTICE = "Locked with a passphrase: only people who know it can read this room."
+    const val HELP = "Your phone keeps messages for other people nearby and hands them on, so news gets around with no internet. " +
+        "It can’t read one-to-one messages it carries. It keeps at most 8 MB, for up to 7 days, and passes each message on at most 8 times."
+    const val COMMUNITY = "While you’re in a channel or helping pass messages along, other FluidMessages phones nearby can see that " +
+        "yours is here, by the name you chose. They can’t message you one-to-one unless you add each other."
+    const val BLUETOOTH_DENIED = "Bluetooth is off for Nearby, so only phones on the same Wi-Fi are found. Allow Nearby devices to use Bluetooth."
+
+    /** A channel message's status: how many phones it reached right away. It keeps going with the next phones met. */
+    fun shared(phones: Int) = when (phones) {
+        0 -> "Kept here · shares with the next phone nearby"
+        1 -> "Shared with 1 phone nearby"
+        else -> "Shared with $phones phones nearby"
+    }
+
+    /** The status on a waiting Nearby message: for a person, or for a channel while Nearby isn't running. */
+    @JvmStatic fun waitingStatus(prefs: SharedPreferences, message: org.json.JSONObject): String {
+        val route = DirectProtocols.route(prefs, message.optString("address"), MessageProtocol.NEARBY)
+        return if (route?.optBoolean("group") == true) "Waiting to share · turn on Nearby" else NearbyWire.waiting(message.optString("title"))
+    }
     const val DISCOVERABLE = "Keeps Nearby running when FluidMessages is closed, with an ongoing notification. This uses more battery."
     const val NEARBY_ONLY = "FluidMessages makes no internet connections at all: no chat services, no FluidMessages Web, no " +
         "backups to the web, no link previews, pictures or GIFs from the web, and no update checks. Only Nearby works."
@@ -64,6 +88,7 @@ internal object NearbyText {
         "scan" -> "Scan their code"
         "type" -> "Type their code"
         "pair" -> "Add nearby person"
+        "join" -> "Join a channel"
         else -> "Nearby"
     }
 }
@@ -81,8 +106,12 @@ object NearbyScreen {
             AppTheme(Appearance.read(prefs)) {
                 val context = LocalContext.current
                 val me = remember { mutableStateOf(DirectNearby.identity(context)) }
+                val missing = remember { NoiseCrypto.selfCheck() }
                 when {
+                    // A phone without X25519 or ChaCha20-Poly1305: Nearby says so and stays off, rather than failing later.
+                    missing.isNotEmpty() -> Page { item { Note(missing, MaterialTheme.colorScheme.error) } }
                     me.value == null -> SetUp(prefs, null) { me.value = DirectNearby.identity(context) }
+                    step == "join" -> JoinPage(open)
                     step == "code" -> CodePage(me.value!!)
                     step == "scan" -> ScanPage(go, open)
                     step == "type" -> TypePage(go, open)
@@ -114,6 +143,11 @@ private fun SetUp(prefs: SharedPreferences, current: String?, done: () -> Unit) 
     var name by remember { mutableStateOf(current.orEmpty()) }
     var error by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    // Bluetooth is asked for only now, as Nearby turns on. Saying no still turns Nearby on, for Wi-Fi only.
+    val bluetooth = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        DirectNearby.current?.bluetoothChanged()
+        done()
+    }
     Page {
         if (current == null) item { Note(NearbyText.EXPLAINER, MaterialTheme.colorScheme.onSurface) }
         item {
@@ -130,10 +164,16 @@ private fun SetUp(prefs: SharedPreferences, current: String?, done: () -> Unit) 
                                 if (current == null) prefs.edit().putBoolean(MessageProtocol.NEARBY.key(), true).apply()
                                 DirectProtocols.restart(context)
                                 ""
-                            } catch (bad: IllegalArgumentException) { bad.message.orEmpty() } catch (other: Exception) { "Couldn’t save. Try again." }
+                            } catch (bad: IllegalArgumentException) { bad.message.orEmpty() }
+                            catch (missing: IllegalStateException) { missing.message ?: "Couldn’t save. Try again." }
+                            catch (other: Exception) { "Couldn’t save. Try again." }
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
                                 busy = false
-                                if (failure.isEmpty()) done() else error = failure
+                                when {
+                                    failure.isNotEmpty() -> error = failure
+                                    current == null && !DirectNearby.bluetoothAllowed(context) -> bluetooth.launch(DirectNearby.BLUETOOTH_PERMISSIONS)
+                                    else -> done()
+                                }
                             }
                         }, "fluid-nearby-setup").start()
                     }) { Text(if (current == null) "Turn on Nearby" else "Save") }
@@ -152,6 +192,20 @@ private fun HomePage(prefs: SharedPreferences, me: DirectNearby.Identity, go: Co
     var nearbyOnly by remember { mutableStateOf(NetworkGate.nearbyOnly(prefs)) }
     var texts by remember { mutableStateOf(prefs.getBoolean(NetworkGate.TEXTS, true)) }
     var people by remember { mutableStateOf(DirectNearby.contacts(context)) }
+    var channels by remember { mutableStateOf(DirectNearby.channels(context)) }
+    var helping by remember { mutableStateOf(DirectNearby.helping(prefs)) }
+    var bluetoothOn by remember { mutableStateOf(DirectNearby.bluetoothOn(prefs)) }
+    var bluetoothAllowed by remember { mutableStateOf(DirectNearby.bluetoothAllowed(context)) }
+    var leaving by remember { mutableStateOf("") }
+    var carried by remember { mutableLongStateOf(0L) }
+    val askBluetooth = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        bluetoothAllowed = DirectNearby.bluetoothAllowed(context)
+        DirectNearby.current?.bluetoothChanged()
+    }
+    val visible = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
+    LaunchedEffect(Unit) { while (true) { carried = withContext(Dispatchers.IO) { DirectNearby.carriedBytes(context) }; delay(10_000) } }
+    // Older identities get the key that signs channel messages.
+    LaunchedEffect(Unit) { if (me.sign == null) withContext(Dispatchers.IO) { runCatching { DirectNearby.ensureSigningKey(context) } } }
     var tick by remember { mutableIntStateOf(0) }
     var removing by remember { mutableStateOf("") }
     var renaming by remember { mutableStateOf(false) }
@@ -161,7 +215,7 @@ private fun HomePage(prefs: SharedPreferences, me: DirectNearby.Identity, go: Co
     Page {
         item {
             PreferencesCard("Nearby") {
-                SettingsSwitch("Nearby", "Message FluidMessages friends on the same Wi-Fi, with no internet.", on) {
+                SettingsSwitch("Nearby", "Message FluidMessages friends close by, over Bluetooth or the same Wi-Fi, with no internet.", on) {
                     on = it
                     prefs.edit().putBoolean(MessageProtocol.NEARBY.key(), it).apply()
                     restartQuietly(context)
@@ -169,7 +223,13 @@ private fun HomePage(prefs: SharedPreferences, me: DirectNearby.Identity, go: Co
                 val line = when {
                     !on -> "Off. Your people and messages stay."
                     node?.problem?.isNotEmpty() == true -> node.problem
-                    node?.searching() == true -> "Looking for your people on this Wi-Fi"
+                    node?.searching() == true -> node.connected().let { (all, known) ->
+                        when {
+                            all == 0 -> "Looking for phones nearby" + if (node.usingBluetooth()) ", over Wi-Fi and Bluetooth" else " on this Wi-Fi"
+                            known == all -> "Connected to $all of your people"
+                            else -> "Connected to $all phones nearby, $known of them your people"
+                        }
+                    }
                     else -> "Starting…"
                 }
                 PreferenceText("You are “${me.name}”", line)
@@ -222,6 +282,72 @@ private fun HomePage(prefs: SharedPreferences, me: DirectNearby.Identity, go: Co
                             TextButton(onClick = { removing = address }) { Text("Remove") }
                         }
                     }
+                }
+            }
+        }
+        item {
+            PreferencesCard("Channels") {
+                if (channels.isEmpty()) PreferenceText("No channels yet", "Channels are rooms for everyone nearby, like “Neighborhood”.")
+                for (channel in channels) {
+                    val address = channel.optString("address")
+                    val title = channel.optString("title")
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 8.dp)) {
+                        PreferenceText(title, if (channel.optBoolean("room")) NearbyText.ROOM_NOTICE else "Open · anyone nearby can read it", Modifier)
+                        if (leaving == address) {
+                            Text("Leave $title? Its messages stay in your chats.", Modifier.padding(top = 6.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { leaving = "" }) { Text("Cancel") }
+                                AppButton(onClick = {
+                                    DirectNearby.remove(context, address)
+                                    leaving = ""
+                                    channels = DirectNearby.channels(context)
+                                }) { Text("Leave") }
+                            }
+                        } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { open.accept(address) }) { Text("Open") }
+                            TextButton(onClick = { leaving = address }) { Text("Leave") }
+                        }
+                    }
+                }
+                TextButton(onClick = { go.accept("join") }, Modifier.padding(start = 6.dp)) { Text("Join or start a channel") }
+            }
+        }
+        item {
+            PreferencesCard("Passing messages along") {
+                SettingsSwitch("Help pass messages along", NearbyText.HELP, helping) {
+                    helping = it
+                    prefs.edit().putBoolean(DirectNearby.HELP, it).apply()
+                    DirectNearby.current?.communityChanged()
+                }
+                Text("Holding ${android.text.format.Formatter.formatShortFileSize(context, carried)} of messages now. " + NearbyText.COMMUNITY,
+                    Modifier.padding(horizontal = 15.dp).padding(bottom = 10.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            }
+        }
+        item {
+            PreferencesCard("Bluetooth") {
+                SettingsSwitch("Use Bluetooth too", "Finds phones in Bluetooth range, with no Wi-Fi. Uses a little more battery.", bluetoothOn) {
+                    bluetoothOn = it
+                    prefs.edit().putBoolean(DirectNearby.BLUETOOTH, it).apply()
+                    if (it && !DirectNearby.bluetoothAllowed(context)) askBluetooth.launch(DirectNearby.BLUETOOTH_PERMISSIONS)
+                    else DirectNearby.current?.bluetoothChanged()
+                }
+                if (bluetoothOn && !bluetoothAllowed) {
+                    Text(NearbyText.BLUETOOTH_DENIED, Modifier.padding(horizontal = 15.dp), color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                    TextButton(onClick = { askBluetooth.launch(DirectNearby.BLUETOOTH_PERMISSIONS) }, Modifier.padding(start = 6.dp)) {
+                        Text("Allow Bluetooth")
+                    }
+                }
+                if (bluetoothOn && bluetoothAllowed) {
+                    Text("Phones you’ve met over Bluetooth find each other on their own. To be found by a phone for the first time, " +
+                        "let it see yours for 5 minutes. Android asks first.", Modifier.padding(horizontal = 15.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                    TextButton(onClick = {
+                        runCatching {
+                            visible.launch(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
+                                .putExtra(android.bluetooth.BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300))
+                        }
+                    }, Modifier.padding(start = 6.dp)) { Text("Let phones find mine over Bluetooth") }
                 }
             }
         }
@@ -388,19 +514,43 @@ private fun ScanPage(go: Consumer<String>, open: Consumer<String>) {
     }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok -> if (ok) read(photoUri) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { read(it) }
+    // The live camera (CameraX, the same scanner as FluidMessages Web pairing), with a photo or a picture as the fallback.
+    val owner = context as? androidx.lifecycle.LifecycleOwner
+    var live by remember { mutableStateOf(false) }
+    var wantsPhoto by remember { mutableStateOf(false) }
+    val denied = "Camera access is off for FluidMessages. You can still choose a picture of their code, type their code, or use Add nearby person."
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) camera.launch(photoUri)
-        else note = "Camera access is off for FluidMessages. You can still choose a picture of their code, type their code, or use Add nearby person."
+        when {
+            !granted -> note = denied
+            wantsPhoto -> camera.launch(photoUri)
+            else -> live = true
+        }
     }
+    val cameraAllowed = { context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED }
     Page {
         card?.let { found -> item { AddCard(found, go, open) { card = null } } }
+        if (card == null && live && owner != null) item {
+            Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(androidx.compose.foundation.shape.RoundedCornerShape(24.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainer).semantics { contentDescription = "Camera view" }) {
+                CameraScanner(owner) { text ->
+                    val parsed = NearbyWire.parseCard(text)
+                    if (parsed != null) { card = parsed; live = false; note = "" }
+                    else note = "That isn’t a Nearby code. Ask them to open Your Nearby code."
+                }
+            }
+        }
         if (card == null) item {
             PreferencesCard("Their code") {
                 Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Ask them to open Settings → Chat services → Nearby → Show my code.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    AppButton(onClick = {
-                        if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) camera.launch(photoUri)
-                        else permission.launch(Manifest.permission.CAMERA)
+                    if (!live && owner != null) AppButton(onClick = {
+                        wantsPhoto = false
+                        if (cameraAllowed()) live = true else permission.launch(Manifest.permission.CAMERA)
+                    }, Modifier.fillMaxWidth()) { Text("Scan with the camera") }
+                    OutlinedButton(onClick = {
+                        wantsPhoto = true
+                        live = false
+                        if (cameraAllowed()) camera.launch(photoUri) else permission.launch(Manifest.permission.CAMERA)
                     }, Modifier.fillMaxWidth()) { Text("Take a photo of their code") }
                     OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         Modifier.fillMaxWidth()) { Text("Choose a picture of their code") }
@@ -510,6 +660,8 @@ internal fun NearbyServiceCard(prefs: SharedPreferences, openNearby: Runnable) {
         }
         Text(NearbyText.EXPLAINER, Modifier.padding(horizontal = 15.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall)
+        Text(NearbyText.BLACKOUT, Modifier.padding(horizontal = 15.dp).padding(top = 6.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall)
         if (NetworkGate.nearbyOnly(prefs)) Text("Nearby only is on: FluidMessages uses no internet.", Modifier.padding(horizontal = 15.dp, vertical = 4.dp),
             color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = { openNearby.run() }, Modifier.padding(start = 6.dp)) {
@@ -535,5 +687,62 @@ internal fun NearbyOnlyBanner(prefs: SharedPreferences, ink: Color, muted: Color
             on = false
             restartQuietly(context)
         }) { Text("Turn off", color = action) }
+    }
+}
+
+/**
+ * Join a channel: type a name for an open channel anyone nearby can read, or add a passphrase for a room only people
+ * who know it can read. Open channels other phones are carrying show below, to join with one tap.
+ */
+@Composable
+private fun JoinPage(open: Consumer<String>) {
+    val context = LocalContext.current
+    var name by remember { mutableStateOf("") }
+    var passphrase by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var seen by remember { mutableStateOf(emptyList<Pair<String, Int>>()) }
+    LaunchedEffect(Unit) { while (true) { seen = withContext(Dispatchers.IO) { DirectNearby.channelsSeen(context) }; delay(5000) } }
+    fun join(channel: String, secret: String) {
+        busy = true
+        Thread({
+            val result = try { Result.success(DirectNearby.join(context, channel, secret).optString("address")) } catch (bad: Exception) { Result.failure(bad) }
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                busy = false
+                result.onSuccess { open.accept(it) }.onFailure { error = (it as? IllegalArgumentException)?.message ?: it.message ?: "Couldn’t join. Try again." }
+            }
+        }, "fluid-nearby-join").start()
+    }
+    Page {
+        item {
+            PreferencesCard("Channel") {
+                Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(name, { name = it; error = "" }, Modifier.fillMaxWidth(), singleLine = true,
+                        label = { Text("Name, like Neighborhood") })
+                    OutlinedTextField(passphrase, { passphrase = it; error = "" }, Modifier.fillMaxWidth(), singleLine = true,
+                        label = { Text("Passphrase (leave empty for an open channel)") },
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation())
+                    Text(if (passphrase.isBlank()) NearbyText.OPEN_NOTICE
+                        else "Only people who type the same name and passphrase can read it. Share the passphrase in person.",
+                        color = if (passphrase.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                    if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+                    AppButton(enabled = !busy && name.isNotBlank(), onClick = { join(name, passphrase) }) {
+                        Text(if (busy) "Joining…" else "Join")
+                    }
+                }
+            }
+        }
+        item {
+            PreferencesCard("Open channels nearby") {
+                if (seen.isEmpty()) PreferenceText("None seen yet", "Channels show here once phones nearby share messages in them.")
+                for ((channel, count) in seen) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        PreferenceText("#$channel", if (count == 1) "1 message" else "$count messages", Modifier.weight(1f))
+                        TextButton(enabled = !busy, onClick = { join(channel, "") }) { Text("Join") }
+                    }
+                }
+            }
+        }
+        item { Note(NearbyText.COMMUNITY) }
     }
 }

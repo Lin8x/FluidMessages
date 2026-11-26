@@ -1,0 +1,7 @@
+- New release signing key; older installs update in place.
+- XMPP chats locked with OMEMO, compatible with Conversations.
+- Nearby: message people close by with no internet, over Wi-Fi or Bluetooth, plus community channels during a blackout.
+- Optional Tor through Orbot, off by default.
+- Scan a QR code to pair with FluidMessages Web.
+- Two-step sign-in for FluidMessages Web.
+- Private keyboard, on by default.

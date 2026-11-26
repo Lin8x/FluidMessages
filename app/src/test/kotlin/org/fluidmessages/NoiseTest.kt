@@ -8,7 +8,7 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
- * Noise against the official test vectors (cacophony's, public domain) for every interactive pattern with
+ * Noise against the official test vectors (cacophony's, public domain) for every one-way and interactive pattern with
  * 25519, ChaChaPoly and SHA-256, then a real XX handshake between two in-memory peers like Nearby runs.
  */
 class NoiseTest {
@@ -23,7 +23,7 @@ class NoiseTest {
     private fun pair(private: ByteArray?) = private?.let { NoiseCrypto.KeyPair(it, NoiseCrypto.publicKey(it)) }
 
     @Test fun everyPatternMatchesTheOfficialVectors() {
-        assertEquals(12, vectors.size)
+        assertEquals(15, vectors.size)
         for (vector in vectors) {
             val name = vector["protocol_name"] as String
             val pattern = NoisePattern.valueOf(name.removePrefix("Noise_").substringBefore('_'))
@@ -38,7 +38,7 @@ class NoiseTest {
             messages.forEachIndexed { index, message ->
                 val payload = message.bytes("payload")!!
                 val expected = message.bytes("ciphertext")!!
-                val fromInitiator = index % 2 == 0
+                val fromInitiator = pattern.oneWay || index % 2 == 0
                 val written: ByteArray
                 val read: ByteArray
                 if (!initiator.finished) {
@@ -61,6 +61,12 @@ class NoiseTest {
                 assertArrayEquals("$name message $index payload", payload, read)
             }
         }
+    }
+
+    @Test fun theSelfCheckPassesHereAndReportsAMissingPrimitive() {
+        assertEquals("", NoiseCrypto.selfCheck())
+        assertEquals(NoiseCrypto.MISSING, NoiseCrypto.selfCheck { _, _ -> throw java.security.NoSuchAlgorithmException("XDH") })
+        assertEquals(NoiseCrypto.MISSING, NoiseCrypto.selfCheck { _, _ -> ByteArray(32) { 1 } })
     }
 
     @Test fun x25519MatchesRfc7748() {

@@ -782,7 +782,7 @@ internal val chatServiceTexts: List<Pair<MessageProtocol, ServiceText>> = listOf
     MessageProtocol.IRC to ServiceText("#", "IRC",
         "Classic chat rooms, called channels, used by many open-source projects and communities. Connects over TLS."),
     MessageProtocol.NEARBY to ServiceText("Near", "Nearby",
-        "Message FluidMessages friends on the same Wi-Fi with no internet or cell signal, like in a blackout. Add each other in person first."),
+        "Message FluidMessages friends close by, over Bluetooth or the same Wi-Fi, with no internet or cell signal, like in a blackout. Add each other in person first."),
 )
 
 internal val callServiceTexts: List<Pair<Calling.Method, ServiceText>> = listOf(

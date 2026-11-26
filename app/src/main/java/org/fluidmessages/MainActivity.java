@@ -2927,7 +2927,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 chat(number, next.family() == format.family() ? format : next);
             }, format.transport().unavailable(this, prefs, number), format.transport().getCapabilities().getAttachments()
                 || (format == MessageProtocol.SMS && MessageProtocol.MMS.enabled(prefs)), savedRoute(number),
-            protection(number, format), GatewayClient.via(prefs, number, format), fromLine(number, format), this::compose);
+            protection(number, format), GatewayClient.via(prefs, number, format), fromLine(number, format), this::compose,
+            format == MessageProtocol.NEARBY ? DirectNearby.notice(prefs, number) : "");
         conversationScreen = new ConversationScreen(root, prefs, profile, name, initials(name), format.label, false,
             phone && !number.startsWith("mms:") ? SenderStyle.forAddress(prefs, number) : SenderStyle.SMS,
             phone ? simLabel() : null, this::inbox, () -> contactDetails(number, number, () -> chat(number, format)),
@@ -3455,7 +3456,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case COMPANION_E2EE -> "End-to-end encrypted. Your FluidMessages server holds the keys to show it in the web app.";
             case IN_TRANSIT -> "Protected on the way to the server, but the server can read it.";
             case PREVIEW -> "RCS isn't available in FluidMessages yet, so nothing is sent this way.";
-            default -> "Your carrier and anyone along the way can read these messages.";
+            default -> activeProtocol == MessageProtocol.NEARBY ? NearbyText.OPEN_NOTICE : "Your carrier and anyone along the way can read these messages.";
         }, () -> {}, true, protection));
         // IRC, Matrix, and XMPP chats: a Connection section with the status, Reconnect or Connect, Disconnect, and
         // Reconnect automatically (ConnectionsUi); a channel's Rejoin automatically goes there too.
@@ -3831,16 +3832,49 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         }, "fluid-announce").start();
     }
 
+    /** XMPP chats: Encryption (OMEMO), with each device's fingerprint and a choice per device. */
+    private void omemoAction(String key, List<SettingsAction> security, Runnable refresh) {
+        var direct = DirectProtocols.route(prefs, key, MessageProtocol.XMPP);
+        var phone = DirectProtocols.xmpp();
+        var device = phone == null ? null : phone.omemo();
+        if (direct != null) {
+            String target = direct.optString("target");
+            if (direct.optBoolean("group")) {
+                security.add(action("Encryption (OMEMO)", "Group chats from this phone aren't locked yet. FluidMessages Web locks members-only groups.", () -> {}));
+                return;
+            }
+            security.add(action("Encryption (OMEMO)", device == null ? "Not ready on this phone yet" : "Devices and fingerprints", () -> {
+                if (device == null) { toast("OMEMO isn't ready on this phone yet. Connect XMPP and try again."); return; }
+                OmemoPage.show(this, prefs, "this phone", () -> device.page(target),
+                    (jid, id, trust) -> { device.setTrust(jid, id, trust); return device.page(target); },
+                    uri -> device.verifyLink(target, uri));
+            }));
+        } else {
+            security.add(action("Encryption (OMEMO)", "Devices and fingerprints on FluidMessages Web", () ->
+                OmemoPage.show(this, prefs, "FluidMessages Web", () -> GatewayClient.omemo(prefs, key),
+                    (jid, id, trust) -> GatewayClient.omemoTrust(prefs, key, jid, id, trust),
+                    uri -> GatewayClient.omemoLink(prefs, key, uri))));
+        }
+    }
+
     /** How protected this chat is: FluidMessages encryption, an encrypted room on the companion, or the protocol's own. */
     private Encryption protection(String key, MessageProtocol format) {
         if (format != MessageProtocol.RCS && SmsCrypto.active(prefs, key, format)) return Encryption.FLUIDMESSAGES;
         if (GatewayClient.encrypted(prefs, key, format)) return Encryption.COMPANION_E2EE;
+        // Nearby: open channels aren't secret (red); rooms with a passphrase and one-to-one chats are end-to-end encrypted.
+        if (format == MessageProtocol.NEARBY) return DirectNearby.encryption(prefs, key);
+        if (format == MessageProtocol.XMPP) {
+            // XMPP connected from this phone: locked with OMEMO when its last message was locked for all trusted devices.
+            var direct = DirectProtocols.route(prefs, key, MessageProtocol.XMPP);
+            if (direct != null && !direct.optBoolean("group") && PhoneOmemo.locked(this, direct.optString("target"))) return Encryption.END_TO_END;
+        }
         return format.transport().getCapabilities().getEncryption();
     }
 
     /** The Security section of a conversation's details: encryption, disappearing messages, hiding, and its code. */
     private void securityActions(String key, String name, List<SettingsAction> security, Runnable refresh) {
         var format = activeProtocol;
+        if (format == MessageProtocol.XMPP && !key.startsWith("demo:")) omemoAction(key, security, refresh);
         String choice = SmsCrypto.chatChoice(prefs, key);
         boolean on = SmsCrypto.wanted(prefs, key, format);
         String state = on ? (SmsCrypto.active(prefs, key, format) ? "On" : "On · needs a key") : "Off";
