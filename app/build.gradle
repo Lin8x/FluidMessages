@@ -10,8 +10,8 @@ android {
         applicationId 'org.fluidmessages'
         minSdk 33
         targetSdk 35
-        versionCode 55
-        versionName '0.46.1'
+        versionCode 56
+        versionName '0.46.2'
         // F-Droid builds (./gradlew assembleRelease -Pfdroid=true) leave updates to F-Droid: no update checks or downloads.
         buildConfigField 'boolean', 'FDROID', String.valueOf(project.findProperty('fdroid') == 'true')
     }
@@ -36,7 +36,9 @@ android {
     }
 }
 
-kotlin { jvmToolchain(17) }
+// Java 17 bytecode, built with whichever JDK runs Gradle (17 or newer). No toolchain is required, so builders with
+// only a newer JDK, like F-Droid's build server, work too.
+kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 } }
 
 // Android ships its own XmlPullParser, which Smack uses; the desktop copies would clash.
 configurations.configureEach { exclude group: 'xpp3' }
