@@ -10,8 +10,8 @@ android {
         applicationId 'org.fluidmessages'
         minSdk 33
         targetSdk 35
-        versionCode 53
-        versionName '0.45.0'
+        versionCode 54
+        versionName '0.46.0'
         // F-Droid builds (./gradlew assembleRelease -Pfdroid=true) leave updates to F-Droid: no update checks or downloads.
         buildConfigField 'boolean', 'FDROID', String.valueOf(project.findProperty('fdroid') == 'true')
     }
@@ -22,6 +22,13 @@ android {
     sourceSets { main { assets.srcDirs += ['../server/shared'] } }
     packaging {
         resources { excludes += ['META-INF/LICENSE*', 'META-INF/NOTICE*', 'META-INF/DEPENDENCIES', 'META-INF/*.md', 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'] }
+        // Tor is about 8.5 MB per processor type. Compressed in the APK, they cost about 4 MB each to download instead
+        // of 8.5, and the phone unpacks only its own one when installing. 32-bit x86 is left out: no Android 13 phone
+        // uses it (emulators are x86_64), and there Connect through Tor says to use the Orbot app instead.
+        jniLibs {
+            useLegacyPackaging = true
+            excludes += ['lib/x86/libtor.so']
+        }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -59,5 +66,17 @@ dependencies {
     implementation 'androidx.camera:camera-lifecycle:1.4.2'
     implementation 'androidx.camera:camera-view:1.4.2'
     implementation 'com.google.zxing:core:3.5.3'
+    // Connect through Tor runs Tor inside the app (BuiltInTor): Guardian Project's tor-android, BSD-3-Clause, which
+    // brings jtorctl 0.4.5.7 (BSD-3-Clause) for Tor's control connection. Tor for arm64-v8a, armeabi-v7a, x86, and
+    // x86_64. 0.4.8.22 is the newest that builds with compileSdk 35: 0.4.9.x needs compileSdk 37 and a newer Android
+    // Gradle plugin. Its Kotlin standard library is left out: TorService is Java, and the app brings its own.
+    // F-Droid builds leave the prebuilt Tor program out (F-Droid builds everything from source): there,
+    // BuiltInTor.supported() is false and Connect through Tor uses the Orbot app instead.
+    if (project.findProperty('fdroid') == 'true') {
+        implementation 'info.guardianproject:jtorctl:0.4.5.7'
+        implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+    } else {
+        implementation('info.guardianproject:tor-android:0.4.8.22') { exclude group: 'org.jetbrains.kotlin' }
+    }
     testImplementation 'junit:junit:4.13.2'
 }
