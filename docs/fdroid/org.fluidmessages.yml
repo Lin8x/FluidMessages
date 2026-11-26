@@ -1,5 +1,5 @@
 # Draft recipe for fdroiddata (https://gitlab.com/fdroid/fdroiddata), saved there as metadata/org.fluidmessages.yml.
-# See docs/fdroid/README.md before submitting. The Builds entry points at v0.46.0 (the fdroid Gradle flag arrived
+# See docs/fdroid/README.md before submitting. The Builds entry points at v0.46.1 (the fdroid Gradle flag arrived
 # in v0.45.0). Ready to submit as is: F-Droid signs its own copy (Option A).
 Categories:
   - Phone & SMS
@@ -24,9 +24,9 @@ Repo: https://github.com/Lin8x/FluidMessages.git
 #Binaries: https://github.com/Lin8x/FluidMessages/releases/download/v%v/FluidMessages-%v-fdroid.apk
 
 Builds:
-  - versionName: 0.46.0
-    versionCode: 54
-    commit: v0.46.0
+  - versionName: 0.46.1
+    versionCode: 55
+    commit: v0.46.1
     subdir: app
     gradle:
       - yes
@@ -40,5 +40,5 @@ Builds:
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags ^v[0-9]+\.[0-9]+\.[0-9]+$
-CurrentVersion: 0.46.0
-CurrentVersionCode: 54
+CurrentVersion: 0.46.1
+CurrentVersionCode: 55

@@ -1,0 +1,2 @@
+- Screenshots for the F-Droid listing.
+- Connections: each server's switch now reads "Connect to this server", so it no longer says Connected while a connection is down.

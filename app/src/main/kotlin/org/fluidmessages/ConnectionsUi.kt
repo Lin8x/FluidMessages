@@ -157,8 +157,9 @@ private fun ServerConnectionRow(row: ConnectionRow, dark: Boolean, sample: Boole
                     style = MaterialTheme.typography.bodySmall)
             }
         }
-        // The switch: on is connected (or trying to), off is turned off by you. Reconnect tries again right now.
-        if (!row.now.serviceOff) SettingsSwitch(if (on) "Connected" else "Turned off",
+        // The switch: on is connected (or trying to), off is turned off by you. Reconnect tries again right now. Its
+        // label says what it does, not whether it's connected this moment: the line above says that.
+        if (!row.now.serviceOff) SettingsSwitch("Connect to this server",
             if (on) "Turn off to disconnect and stay disconnected" else "Turn on to connect", on) { connect(it) }
         else TextButton(onClick = { connect(true) }) { Text("Turn on in Settings → Chat services") }
         if (on && !row.now.serviceOff) TextButton(onClick = reconnect, enabled = !sample || row.now.state != "connected") {

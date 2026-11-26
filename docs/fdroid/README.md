@@ -59,4 +59,4 @@ The things below stand in the way of Option B today. Check them first.
 - **Bundled JavaScript:** `app/src/main/assets/jssip.min.js` is JsSIP 3.11.1 (MIT), already minified. Reviewers sometimes ask for the source of minified files. Point them to [jssip.net](https://jssip.net) and the version in the file header.
 - **No self-updates:** the `fdroid` flag turns off the GitHub update check and download.
 - **Anti-features:** the recipe flags `NonFreeNet`, because optional GIF search uses GIPHY and Tenor. Reviewers decide the final list.
-- **Screenshots:** none yet. See `fastlane/metadata/android/en-US/images/phoneScreenshots/README.md`.
+- **Screenshots:** real captures of the sample inbox (made-up names only) in `fastlane/metadata/android/en-US/images/phoneScreenshots/`. F-Droid shows the ones in the tagged release it builds.
