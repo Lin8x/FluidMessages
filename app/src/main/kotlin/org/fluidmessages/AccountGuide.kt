@@ -38,10 +38,12 @@ import androidx.compose.ui.unit.sp
  * don't have one (tap the example to have it filled in), what happens next, and Get started. Written for someone who
  * has never heard of the service. The words live in ServiceGuides, shared with FluidMessages Web.
  *
- * [picked] is a server already chosen in Add server; it replaces the example. [start] gets the fields to fill in.
+ * [start] gets the fields to fill in. In Add server, [pickServer] is set: the main button is Pick a server (the list of
+ * public servers), and tapping the example goes straight to the form with it filled in.
  */
 @Composable
-internal fun AccountGuide(protocol: MessageProtocol, picked: String, start: (Map<String, String>) -> Unit, skip: () -> Unit, back: () -> Unit) {
+internal fun AccountGuide(protocol: MessageProtocol, start: (Map<String, String>) -> Unit, skip: () -> Unit, back: () -> Unit,
+                          pickServer: (() -> Unit)? = null) {
     val guide = remember(protocol) { ServiceGuides.of(protocol) }
     val scheme = MaterialTheme.colorScheme
     val links = LocalUriHandler.current
@@ -61,20 +63,14 @@ internal fun AccountGuide(protocol: MessageProtocol, picked: String, start: (Map
         item { Text(guide.about, style = MaterialTheme.typography.bodyLarge) }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(if (picked.isNotEmpty()) "You picked" else "Don’t have an account yet?", style = MaterialTheme.typography.titleMedium)
-                if (picked.isNotEmpty()) {
-                    Surface(color = scheme.surfaceContainerLow, shape = MaterialTheme.shapes.large, border = BorderStroke(1.dp, scheme.outlineVariant)) {
-                        Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(picked, style = MaterialTheme.typography.titleMedium)
-                            Text("We’ll fill in its details for you.", color = scheme.onSurfaceVariant)
-                        }
-                    }
-                } else {
+                Text("Don’t have an account yet?", style = MaterialTheme.typography.titleMedium)
+                run {
                     val fills = guide.examplePreset.isNotEmpty()
                     Surface(color = scheme.surfaceContainerLow, shape = MaterialTheme.shapes.large,
                         border = BorderStroke(if (useExample) 2.dp else 1.dp, if (useExample) tint else scheme.outlineVariant)) {
                         Row(Modifier.fillMaxWidth().heightIn(min = 72.dp)
-                            .then(if (fills) Modifier.clickable(role = Role.Checkbox, onClickLabel = "Use ${guide.exampleTitle}") { useExample = !useExample } else Modifier)
+                            .then(if (fills && pickServer != null) Modifier.clickable(role = Role.Button, onClickLabel = "Use ${guide.exampleTitle}") { start(guide.examplePreset) }
+                                else if (fills) Modifier.clickable(role = Role.Checkbox, onClickLabel = "Use ${guide.exampleTitle}") { useExample = !useExample } else Modifier)
                             .padding(15.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(guide.exampleTitle, style = MaterialTheme.typography.titleMedium)
@@ -82,7 +78,9 @@ internal fun AccountGuide(protocol: MessageProtocol, picked: String, start: (Map
                                 if (fills) Text(if (useExample) "Picked. We’ll fill it in for you." else "Tap to use it. We’ll fill it in for you.",
                                     color = scheme.onSurface, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                             }
-                            if (fills) Box(Modifier.size(26.dp).background(if (useExample) tint else scheme.surfaceContainerHighest, CircleShape),
+                            // Add server: the example opens the form at once, so it shows an arrow instead of a check.
+                            if (fills && pickServer != null) Text("›", color = scheme.onSurfaceVariant, fontSize = 26.sp)
+                            else if (fills) Box(Modifier.size(26.dp).background(if (useExample) tint else scheme.surfaceContainerHighest, CircleShape),
                                 contentAlignment = Alignment.Center) {
                                 if (useExample) Canvas(Modifier.size(14.dp)) {
                                     val ink = bubbleTextColor(tint)
@@ -121,8 +119,9 @@ internal fun AccountGuide(protocol: MessageProtocol, picked: String, start: (Map
         }
         item {
             Column(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                AppButton(onClick = { start(if (useExample) guide.examplePreset else emptyMap()) }, modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp)) {
-                    Text("Get started", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                AppButton(onClick = { pickServer?.invoke() ?: start(if (useExample) guide.examplePreset else emptyMap()) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp)) {
+                    Text(if (pickServer != null) "Pick a server" else "Get started", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                 }
                 TextButton(onClick = skip) { Text("I already know what I’m doing") }
                 TextButton(onClick = back) { Text("Back") }

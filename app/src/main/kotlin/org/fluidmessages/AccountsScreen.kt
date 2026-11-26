@@ -80,26 +80,35 @@ internal object AccountsScreen {
     @JvmStatic
     fun mount(root: LinearLayout, prefs: SharedPreferences, openCompanion: Runnable) = mount(root, prefs, openCompanion, null, emptyMap(), null)
 
-    /** Opens straight on the form to add another [protocol] account ("Add server"), pre-filled with [preset]. */
     @JvmStatic
     fun mount(root: LinearLayout, prefs: SharedPreferences, openCompanion: Runnable, add: MessageProtocol?,
-              preset: Map<String, String>, done: Runnable?) {
+              preset: Map<String, String>, done: Runnable?) = mount(root, prefs, openCompanion, add, preset, done, done)
+
+    /**
+     * Opens straight on the form to add another [protocol] account ("Add server"), pre-filled with [preset], for
+     * checking. Saving calls [done]; the form's Back calls [back] (the list of servers).
+     */
+    @JvmStatic
+    fun mount(root: LinearLayout, prefs: SharedPreferences, openCompanion: Runnable, add: MessageProtocol?,
+              preset: Map<String, String>, done: Runnable?, back: Runnable?) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-        view.setContent { AppTheme(Appearance.read(prefs)) { Accounts(prefs, openCompanion, add?.let { Editing(it, null, true, preset) }, done) } }
+        view.setContent { AppTheme(Appearance.read(prefs)) { Accounts(prefs, openCompanion, add?.let { Editing(it, null, true, preset) }, done, back) } }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
     }
 }
 
 @Composable
-private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: Editing? = null, done: Runnable? = null) {
+private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: Editing? = null, done: Runnable? = null,
+                     back: Runnable? = done) {
     val scope = rememberCoroutineScope()
     val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(), Privacy.token(prefs))
     var accounts by remember { mutableStateOf<JSONArray?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf(start) }
-    // The account whose guide page shows before its form: a first account on a service, or one from Add server.
-    var guided by remember { mutableStateOf(start) }
+    // The account whose guide page shows before its form: a first account on a service from this list. Add server
+    // shows its guide before the list of servers (AddServerFlow), so its form opens straight away.
+    var guided by remember { mutableStateOf<Editing?>(null) }
     fun load() = scope.launch {
         error = null
         runCatching { withContext(Dispatchers.IO) { GatewayClient.accounts(prefs) } }
@@ -110,35 +119,24 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
     fun accountsOf(protocol: MessageProtocol): List<JSONObject> = accounts?.let { list ->
         (0 until list.length()).map { list.getJSONObject(it) }.filter { it.optString("protocol") == protocol.name.lowercase() }
     }.orEmpty()
-    // The Communities page, full page, after the first IRC, Matrix, or XMPP account is saved; Continue carries on.
-    var communities by remember { mutableStateOf<(() -> Unit)?>(null) }
-    communities?.let { carryOn ->
-        CommunitiesIntroPage(prefs) { communities = null; carryOn() }
-        return
-    }
     val current = editing
     if (current != null) {
         // Opened from Add server, closing goes back there; from this list, back to the list.
-        val close: () -> Unit = { if (done != null && start != null) done.run() else editing = null }
+        val close: () -> Unit = { if (back != null && start != null) back.run() else editing = null }
+        val finish: () -> Unit = { if (done != null && start != null) done.run() else editing = null }
         if (guided == current) {
             fun form(preset: Map<String, String>) {
                 val next = current.copy(preset = current.preset + preset)
                 guided = null
                 editing = next
             }
-            AccountGuide(current.protocol, pickedServer(current), ::form, { form(emptyMap()) }, close)
+            AccountGuide(current.protocol, ::form, { form(emptyMap()) }, close)
             return
         }
-        // A new account: none was there to edit, here or on this phone, when the form opened.
-        val adding = remember(current) {
-            current.existing == null && (current.add || DirectProtocols.account(context, current.protocol) == null)
-        }
+        // Saving no longer shows the Communities page: Add server shows it first, while no server is added yet.
         AccountForm(prefs, current, close) { updated ->
             accounts = updated
-            if (CommunitiesIntro.due(prefs, current.protocol, adding)) {
-                CommunitiesIntro.markSeen(prefs)
-                communities = close
-            } else close()
+            finish()
         }
         return
     }
@@ -211,7 +209,7 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
     }
 }
 
-/** The server picked in Add server, by name, for the guide page; "" when none was. */
+/** The server picked in Add server, by name, for the form's "You picked" line; "" when none was. */
 private fun pickedServer(editing: Editing): String =
     editing.preset["server"]?.let { ServerDirectory.ircName(it) ?: it }
         ?: editing.preset["homeserver"]?.let { address -> ServerDirectory.matrix.firstOrNull { it.address == address }?.name ?: address }
@@ -326,6 +324,9 @@ private fun AccountForm(prefs: SharedPreferences, editing: Editing, close: () ->
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text(if (adding) "Add a ${protocol.label} account" else existing?.optString("name")?.takeIf { it.isNotEmpty() } ?: protocol.label,
             style = MaterialTheme.typography.headlineSmall) }
+        // Add server: one line naming the server picked from the list, whose details fill the form below.
+        val picked = if (adding && existing == null) pickedServer(editing) else ""
+        if (picked.isNotEmpty()) item { Text("You picked $picked. Check the details, then save.", style = MaterialTheme.typography.titleMedium) }
         if (adding) item { Text(AccountKeys.help(protocol.name.lowercase()), color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (adding && protocol == MessageProtocol.IRC) item {
             // TLS is always on: FluidMessages never sends IRC passwords or messages in plain text.

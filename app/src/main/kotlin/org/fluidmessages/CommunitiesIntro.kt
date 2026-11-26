@@ -23,28 +23,16 @@ import androidx.compose.ui.unit.sp
 
 /**
  * The Communities page: what Messages → Chats | Communities is, with its showcase and tips. It used to be a setup
- * guide step; now it shows once, full page, right after the first IRC, Matrix, or XMPP account is saved (the services
- * with servers, channels, and rooms), and any time from Settings → Help → Communities. FluidMessages Web does the same
- * (server/servers.js communitiesIntro).
+ * guide step; now it shows full page when Add server starts and no IRC, Matrix, or XMPP server is added yet
+ * (AddServerFlow.introDue), and any time from Settings → Help → Communities. FluidMessages Web does the same
+ * (server/welcome.js showCommunitiesIntro).
  */
 internal object CommunitiesIntro {
-    /** Set once the page has shown after adding an account. This phone only. */
-    const val SEEN_PREF = "communitiesIntroSeen"
     const val TITLE = "Communities"
     const val SUBTITLE = "Chat networks with many rooms, each server with its channels, a tap away from your chats."
 
     /** The services whose accounts bring servers with channels and rooms (Communities.kt). */
     val services = setOf(MessageProtocol.IRC, MessageProtocol.MATRIX, MessageProtocol.XMPP)
-
-    /** Whether saving an account shows the page: a new account on a community service, and the page not shown yet. */
-    fun due(seen: Boolean, protocol: MessageProtocol, newAccount: Boolean) = newAccount && !seen && protocol in services
-
-    @JvmStatic
-    fun due(prefs: SharedPreferences, protocol: MessageProtocol, newAccount: Boolean) =
-        due(prefs.getBoolean(SEEN_PREF, false), protocol, newAccount)
-
-    @JvmStatic
-    fun markSeen(prefs: SharedPreferences) = prefs.edit().putBoolean(SEEN_PREF, true).apply()
 
     internal val tips = listOf(
         Tip(TipIcon.CHAT, "Chats | Communities", "The switch under the Messages title"),
@@ -52,7 +40,7 @@ internal object CommunitiesIntro {
         Tip(TipIcon.PEOPLE, "Browse and join", "A server’s ⋯ menu, or + Add server at the bottom"),
         Tip(TipIcon.OPTIONAL, "In Chats too, if you like", "Settings → Messaging → Show community chats in Chats"))
 
-    /** Settings → Help → Communities: the same page; Continue goes back. */
+    /** Settings → Help → Communities, or the start of Add server: the same page; Continue calls [done]. */
     @JvmStatic
     fun mount(root: LinearLayout, prefs: SharedPreferences, done: Runnable) {
         val view = ComposeView(root.context)

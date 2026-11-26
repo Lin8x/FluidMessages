@@ -469,10 +469,8 @@ function accountForm(protocol, account, done, {add = false, preset = {}, simple 
       const result = await api('protocols/accounts', {protocol, fields, ...(account?.id ? {id: account.id} : add ? {add: true} : {})});
       // The account just added, for callers that carry on with it (Add server goes on to Browse).
       const added = add && !account ? (result.accounts || []).filter((item) => item.protocol === protocol && item.id && !before.has(item.id)).pop() : null;
-      // The first IRC, Matrix, or XMPP account shows the Communities page once, full page, before carrying on (welcome.js).
-      if (typeof communitiesIntroDue === 'function' && communitiesIntroDue(protocol, add && !account)) {
-        showCommunitiesIntro({then: () => done(added || null), markSeen: true});
-      } else done(added || null);
+      // No Communities page after saving: Add server shows it first, while no server is added yet (servers.js).
+      done(added || null);
     } catch (error) {
       status.textContent = error.message;
       if (form.afterError) form.afterError();

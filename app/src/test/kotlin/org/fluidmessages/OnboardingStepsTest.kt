@@ -20,7 +20,7 @@ class OnboardingStepsTest {
 
     @Test fun coversTheNewerFeatures() {
         for (key in listOf("organized", "disappear", "sounds", "computer", "tabs")) assertTrue(key, key in keys)
-        // Communities shows after the first IRC, Matrix, or XMPP account instead (CommunitiesIntro).
+        // Communities shows at the start of Add server instead, while no server is added yet (AddServerFlow).
         assertTrue("communities" !in keys)
     }
 

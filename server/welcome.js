@@ -1388,26 +1388,14 @@ function phoneShowcase(flow) {
   ], 'Connect your phone');
 }
 
-// ---- Communities, after the first community account ----
-
-/** The services whose accounts bring servers with channels and rooms (servers.js), as on the phone (CommunitiesIntro.kt). */
-const COMMUNITY_SERVICES = ['irc', 'matrix', 'xmpp'];
-
-/** Whether saving an account shows the Communities page: a new account on a community service, not shown before. */
-function communitiesIntroDue(protocol, isNew, seen = typeof prefs === 'object' && prefs?.communitiesIntroSeen === true) {
-  return !!isNew && !seen && COMMUNITY_SERVICES.includes(protocol);
-}
+// ---- Communities, at the start of Add server ----
 
 /**
- * The Communities page, full page with one Continue button. It used to be a setup guide step; now it shows once,
- * right after the first IRC, Matrix, or XMPP account is saved, and any time from Settings → Help → Communities.
- * [then] runs after Continue.
+ * The Communities page, full page with one Continue button. It used to be a setup guide step; now it starts Add
+ * server while no IRC, Matrix, or XMPP server is added yet (servers.js addServerIntroDue), and shows any time from
+ * Settings → Help → Communities. [then] runs after Continue.
  */
-function showCommunitiesIntro({then, markSeen = false} = {}) {
-  if (markSeen) {
-    prefs = {...prefs, communitiesIntroSeen: true};
-    api('settings', {prefs: {communitiesIntroSeen: true}}).then((result) => { companionSettings = result; }).catch(() => {});
-  }
+function showCommunitiesIntro({then} = {}) {
   const sheet = element('dialog', '', 'guide-dialog');
   sheet.id = 'communities-intro';
   document.body.append(sheet);

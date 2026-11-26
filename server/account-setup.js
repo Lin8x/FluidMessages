@@ -303,10 +303,10 @@ function outsideLink(label, url) {
 
 /**
  * The full page shown before a service's form: what it is, where to get an account, what happens next, one big
- * Get started button, and a quieter way straight to the full form. [actions]: start(), example(), expert(), and
- * for servers more() (the list of public servers). Returns the nodes for the page.
+ * Get started button, and a quieter way straight to the full form. [actions]: start(), example(), expert(); in Add
+ * server, pickServer() instead of start(): the big button is Pick a server (the list of public servers). Returns the nodes.
  */
-function serviceGuide(protocol, {start, example, expert, more}) {
+function serviceGuide(protocol, {start, example, expert, pickServer}) {
   const guide = SERVICE_GUIDES[protocol];
   const hero = element('section', '', 'settings-section service-guide');
   const what = element('p', guide.line, 'service-guide-line');
@@ -327,12 +327,6 @@ function serviceGuide(protocol, {start, example, expert, more}) {
   account.append(pick);
   const extras = element('div', '', 'button-row wrap');
   if (guide.link) extras.append(outsideLink(guide.link[0], guide.link[1]));
-  if (more) {
-    const others = element('button', 'See other public servers', 'quiet');
-    others.type = 'button';
-    others.addEventListener('click', () => more());
-    extras.append(others);
-  }
   if (extras.childElementCount) account.append(extras);
 
   const next = element('section', '', 'settings-section');
@@ -346,9 +340,9 @@ function serviceGuide(protocol, {start, example, expert, more}) {
   }
 
   const go = element('div', '', 'service-guide-go');
-  const begin = element('button', 'Get started', 'primary service-guide-begin');
+  const begin = element('button', pickServer ? 'Pick a server' : 'Get started', 'primary service-guide-begin');
   begin.type = 'button';
-  begin.addEventListener('click', () => start());
+  begin.addEventListener('click', () => (pickServer || start)());
   const skip = element('button', 'I already know what I’m doing', 'quiet');
   skip.type = 'button';
   skip.addEventListener('click', () => expert());

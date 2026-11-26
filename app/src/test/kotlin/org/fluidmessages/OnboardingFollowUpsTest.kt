@@ -6,8 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The setup guide without its Communities step: a saved step still lines up, the Communities page shows once after the
- * first community account, the battery words, and Ways to reach in conversation details.
+ * The setup guide without its Communities step: a saved step still lines up, the Communities page's words, the battery words, and Ways to reach in conversation details.
  */
 class OnboardingFollowUpsTest {
     private val keys = onboardingSteps.map { it.first }
@@ -28,15 +27,9 @@ class OnboardingFollowUpsTest {
         assertEquals("", OnboardingScreen.stepKey(keys.size))
     }
 
-    @Test fun communitiesPageShowsOnceForCommunityServices() {
-        for (protocol in listOf(MessageProtocol.IRC, MessageProtocol.MATRIX, MessageProtocol.XMPP)) {
-            assertTrue(protocol.name, CommunitiesIntro.due(false, protocol, true))
-            assertFalse(protocol.name, CommunitiesIntro.due(true, protocol, true))
-            assertFalse(protocol.name, CommunitiesIntro.due(false, protocol, false))
-        }
-        for (protocol in listOf(MessageProtocol.EMAIL, MessageProtocol.SMS, MessageProtocol.MMS, MessageProtocol.RCS)) {
-            assertFalse(protocol.name, CommunitiesIntro.due(false, protocol, true))
-        }
+    @Test fun communitiesPageWords() {
+        // It shows at the start of Add server now, not after saving an account (AddServerFlowTest).
+        assertEquals(3, CommunitiesIntro.services.size)
         assertEquals(4, CommunitiesIntro.tips.size)
         assertTrue(CommunitiesIntro.SUBTITLE.endsWith("."))
     }

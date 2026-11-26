@@ -815,9 +815,36 @@ function leaveSection(route) {
   return section;
 }
 
-/** Add server, step 1: pick a service, on a full page. */
+// add-server-steps:start
+/**
+ * Which page comes next in Add server, as on the phone (AddServerFlow.kt): Add server → the Communities page (only
+ * while no IRC, Matrix, or XMPP server is added yet) → Choose a service → its help page (only while that service has
+ * no account yet) → the public servers → the form. [added] is the services with an account: 'irc', 'matrix', 'xmpp'.
+ */
+const ADD_SERVER_SERVICES = ['irc', 'matrix', 'xmpp'];
+function addServerIntroDue(added) { return !added.some((service) => ADD_SERVER_SERVICES.includes(String(service).toLowerCase())); }
+function addServerGuideDue(protocol, added) { return !added.some((service) => String(service).toLowerCase() === protocol); }
+/** Back from the list of servers: the help page when it showed, otherwise Choose a service. */
+function addServerListBack(guided) { return guided ? 'guide' : 'services'; }
+// add-server-steps:end
+
+/** The services that already have an account here or on the phone. */
+function addedServices() {
+  return (typeof chatAccounts !== 'undefined' && chatAccounts || []).filter((account) => account.id).map((account) => account.protocol);
+}
+
+/**
+ * Add server, from Communities, its empty state, or New chat: the Communities page first while no IRC, Matrix, or
+ * XMPP server is added yet (welcome.js showCommunitiesIntro), then Choose a service.
+ */
 function openAddServer() {
   if (inSample()) { sampleServerPage(null, 'add'); return; }
+  if (addServerIntroDue(addedServices()) && typeof showCommunitiesIntro === 'function') showCommunitiesIntro({then: () => openChooseService()});
+  else openChooseService();
+}
+
+/** Add server, Choose a service, on a full page. A service with no account yet opens its help page, any other its servers. */
+function openChooseService() {
   const section = element('section', '', 'settings-section');
   section.append(element('h3', 'Choose a service'),
     element('p', 'Connect another IRC network, Matrix homeserver, or XMPP server. Each one shows up in Messages → Communities with its channels and rooms.', 'muted'));
@@ -832,7 +859,7 @@ function openAddServer() {
     const chevron = element('span', '›', 'service-chevron');
     chevron.setAttribute('aria-hidden', 'true');
     button.append(badge, words, chevron);
-    button.addEventListener('click', () => openServerGuide(protocol));
+    button.addEventListener('click', () => addServerGuideDue(protocol, addedServices()) ? openServerGuide(protocol) : showServerList(protocol));
     list.append(button);
   }
   section.append(list);
@@ -840,21 +867,24 @@ function openAddServer() {
 }
 
 /**
- * Add server, step 2: a page about the service for someone new to it (account-setup.js), with Get started into its
- * form, the most popular place to begin as a tappable example, and the list of public servers one tap away.
+ * Add server, a service's help page, for a service with no account yet (account-setup.js): Pick a server opens the
+ * list of public servers, the example opens the form with it filled in, and "I already know what I'm doing" an empty form.
  */
 function openServerGuide(protocol) {
-  if (typeof serviceGuide !== 'function') { showServerList(protocol); return; }
+  if (typeof serviceGuide !== 'function') { showServerList(protocol, {guided: true}); return; }
   const back = () => openServerGuide(protocol);
   detailsPage('Add ' + labels[protocol], serviceGuide(protocol, {
-    start: () => showServerForm(protocol, null, {}, {simple: true, back}),
+    pickServer: () => showServerList(protocol, {guided: true}),
     example: () => showServerForm(protocol, guideExample(protocol).entry, {}, {simple: true, back}),
-    expert: () => showServerForm(protocol, null, {}, {back}),
-    more: () => showServerList(protocol)}), () => openAddServer());
+    expert: () => showServerForm(protocol, null, {}, {back})}), () => openChooseService());
 }
 
-/** Add server: well-known public servers for [protocol], searchable, and Other server… for any other. */
-function showServerList(protocol) {
+/**
+ * Add server: well-known public servers for [protocol], searchable, and Other server… for any other. Back goes to the
+ * help page when it showed first ([guided]), otherwise to Choose a service; Back from the form returns here.
+ */
+function showServerList(protocol, {guided = false} = {}) {
+  const again = () => showServerList(protocol, {guided});
   const section = element('section', '', 'settings-section');
   const noun = {irc: 'networks', matrix: 'homeservers', xmpp: 'servers'}[protocol];
   const search = Object.assign(element('input', ''), {type: 'search', placeholder: 'Search ' + noun, autocomplete: 'off', spellcheck: false});
@@ -872,7 +902,15 @@ function showServerList(protocol) {
   const plus = element('span', '+', 'account-badge directory-plus');
   plus.setAttribute('aria-hidden', 'true');
   other.append(plus, otherWords);
-  other.addEventListener('click', () => showServerForm(protocol, null));
+  other.addEventListener('click', () => showServerForm(protocol, null, {}, {back: again}));
+  // "What is IRC?" and the rest, for anyone who skipped it: the same help page.
+  const about = element('section', '', 'settings-section');
+  if (typeof SERVICE_GUIDES === 'object' && SERVICE_GUIDES[protocol] && typeof serviceGuide === 'function') {
+    const read = element('button', 'Read the guide', 'link');
+    read.type = 'button';
+    read.addEventListener('click', () => openServerGuide(protocol));
+    about.append(element('h3', 'What is ' + SERVICE_GUIDES[protocol].title + '?'), element('p', SERVICE_GUIDES[protocol].line, 'muted'), read);
+  }
   section.append(element('h3', 'Public ' + noun),
     element('p', 'Well-known public ' + noun + '. Picking one fills in the sign-in form. Nothing connects until you save.', 'muted'),
     search, status, list, other);
@@ -890,14 +928,15 @@ function showServerList(protocol) {
         element('small', directoryAddress(entry) + (entry.port ? ':' + entry.port : ''), 'directory-address'));
       row.append(words);
       row.disabled = !usable;
-      row.addEventListener('click', () => showServerForm(protocol, entry));
+      row.addEventListener('click', () => showServerForm(protocol, entry, {}, {back: again}));
       list.append(row);
     }
     status.textContent = found.length ? '' : 'No public ' + noun + ' match “' + search.value.trim() + '”. Choose Other server… below.';
   };
   search.addEventListener('input', draw);
   draw();
-  detailsPage(SERVICE_TITLES[protocol], [section], () => openServerGuide(protocol));
+  detailsPage(SERVICE_TITLES[protocol], about.childElementCount ? [about, section] : [section],
+    () => addServerListBack(guided) === 'guide' ? openServerGuide(protocol) : openChooseService());
   search.focus();
 }
 

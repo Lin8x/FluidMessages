@@ -4856,23 +4856,58 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             new SettingsSection("Channels and rooms", actions)));
     }
 
+    /**
+     * Add server, from Communities, its empty state, or the recipient picker: the Communities page first while no
+     * IRC, Matrix, or XMPP server is added yet (AddServerFlow), then Choose a service.
+     */
     private void addServer() {
-        render("server-add");
-        heading("Add server", "Back", this::inbox);
-        ServersScreen.add(root, prefs, this::serverDirectory);
+        if (!AddServerFlow.introDue(addedServices())) { chooseService(); return; }
+        render("server-intro");
+        heading("Communities", "Back", this::inbox);
+        CommunitiesIntro.mount(root, prefs, this::chooseService);
     }
 
-    /** Add server, step 2: the service's well-known public servers, then the sign-in form, all full pages. */
-    private void serverDirectory(MessageProtocol protocol) {
+    /** The services that already have an account, on FluidMessages Web or on this phone: "irc", "matrix", "xmpp". */
+    private Set<String> addedServices() {
+        var added = new HashSet<String>();
+        for (var account : GatewayClient.servers(prefs)) added.add(account.optString("protocol").toLowerCase(Locale.ROOT));
+        for (var format : List.of(MessageProtocol.IRC, MessageProtocol.MATRIX, MessageProtocol.XMPP)) {
+            if (DirectProtocols.account(this, format) != null) added.add(format.name().toLowerCase(Locale.ROOT));
+        }
+        return added;
+    }
+
+    /** Add server, Choose a service; a service with no account yet opens its help page, any other its servers. */
+    private void chooseService() {
+        render("server-add");
+        heading("Add server", "Back", this::inbox);
+        ServersScreen.add(root, prefs, protocol -> {
+            if (AddServerFlow.guideDue(protocol, addedServices())) serverGuide(protocol); else serverDirectory(protocol, false);
+        });
+    }
+
+    /** Add server, the service's help page: Pick a server, its example or "I already know what I'm doing" (the form), or Back. */
+    private void serverGuide(MessageProtocol protocol) {
+        render("server-guide");
+        heading("Add " + protocol.label, "Back", this::chooseService);
+        ServersScreen.guide(root, prefs, protocol, () -> serverDirectory(protocol, true),
+            (name, preset) -> serverForm(protocol, name, preset, () -> serverGuide(protocol)), this::chooseService);
+    }
+
+    /** Add server: the service's well-known public servers; Back goes to its help page when that showed. */
+    private void serverDirectory(MessageProtocol protocol, boolean guided) {
         render("server-directory");
         String title = ServersScreen.INSTANCE.serviceTitle(protocol.name().toLowerCase(Locale.ROOT));
-        heading(title, "Back", this::addServer);
-        ServersScreen.directory(root, prefs, protocol, (name, preset) -> {
-            render("server-add-form");
-            heading(name.isEmpty() ? "Other " + title : name, "Back", () -> serverDirectory(protocol));
-            // Nothing connects until Save.
-            AccountsScreen.mount(root, prefs, this::companion, protocol, preset, this::inbox);
-        });
+        heading(title, "Back", AddServerFlow.listBack(guided).equals("guide") ? () -> serverGuide(protocol) : this::chooseService);
+        ServersScreen.directory(root, prefs, protocol, (name, preset) -> serverForm(protocol, name, preset, () -> serverDirectory(protocol, guided)));
+    }
+
+    /** Add server, the sign-in form with the picked server filled in, for checking. Nothing connects until Save. */
+    private void serverForm(MessageProtocol protocol, String name, Map<String, String> preset, Runnable back) {
+        render("server-add-form");
+        String title = ServersScreen.INSTANCE.serviceTitle(protocol.name().toLowerCase(Locale.ROOT));
+        heading(name.isEmpty() ? (preset.isEmpty() ? "Other " + title : title) : name, "Back", back);
+        AccountsScreen.mount(root, prefs, this::companion, protocol, preset, this::inbox, back);
     }
 
     /** Opens a channel or room just joined on a server, once this phone has its link. */

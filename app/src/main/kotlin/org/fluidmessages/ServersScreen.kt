@@ -82,7 +82,7 @@ internal object ServersScreen {
         return "This phone can’t look up $label ${noun(AccountKeys.service(id))}s on its own connection yet, so finding and joining them needs FluidMessages Web."
     }
 
-    /** Add server, step 1: pick IRC, Matrix, or XMPP; [pick] opens that service's list of public servers. */
+    /** Add server, Choose a service: IRC, Matrix, or XMPP; [pick] opens its help page or its list of public servers (AddServerFlow). */
     @JvmStatic
     fun add(root: LinearLayout, prefs: SharedPreferences, pick: Consumer<MessageProtocol>) = mountView(root, prefs) { Services(pick) }
 
@@ -93,6 +93,18 @@ internal object ServersScreen {
     @JvmStatic
     fun directory(root: LinearLayout, prefs: SharedPreferences, protocol: MessageProtocol, pick: BiConsumer<String, Map<String, String>>) =
         mountView(root, prefs) { Directory(protocol.name.lowercase(), pick) }
+
+    /**
+     * Add server, a service's help page, for a service with no account yet: Pick a server opens [pickServer]; the example
+     * and "I already know what I'm doing" open the form, [fill] getting the server's name (empty for none) and fields.
+     */
+    @JvmStatic
+    fun guide(root: LinearLayout, prefs: SharedPreferences, protocol: MessageProtocol, pickServer: Runnable,
+              fill: BiConsumer<String, Map<String, String>>, back: Runnable) = mountView(root, prefs) {
+        val example = remember(protocol) { ServiceGuides.of(protocol).exampleTitle }
+        AccountGuide(protocol, { preset -> fill.accept(if (preset.isEmpty()) "" else example, preset) }, { fill.accept("", emptyMap()) },
+            back::run, pickServer::run)
+    }
 
     /** Leaving a channel or room, confirmed on its own page. */
     @JvmStatic
@@ -157,8 +169,9 @@ private fun Directory(service: String, pick: BiConsumer<String, Map<String, Stri
     // "What is IRC?" and the rest: the same guide page as in Accounts, opened from the card at the top.
     var learning by remember { mutableStateOf(false) }
     if (learning) {
-        AccountGuide(protocol, "", { preset -> learning = false; pick.accept("", preset) }, { learning = false; pick.accept("", emptyMap()) },
-            { learning = false })
+        // Pick a server and Back both return to this list.
+        AccountGuide(protocol, { preset -> learning = false; pick.accept(if (preset.isEmpty()) "" else guide.exampleTitle, preset) },
+            { learning = false; pick.accept("", emptyMap()) }, { learning = false }, { learning = false })
         return
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

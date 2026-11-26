@@ -4245,7 +4245,7 @@ WELCOME_STEPS = ("Welcome", "Two tabs", "One inbox", "Stay organized", "Who can 
 
 
 def onboarding_followups_test():
-    """A new user's notes: Communities shows once after the first IRC, Matrix, or XMPP account instead of in setup,
+    """A new user's notes: Communities starts Add server while no IRC, Matrix, or XMPP server is added, instead of in setup,
     battery is explained where services are turned on, Ways to reach is near the top of a person's details, and the
     first setup page is an ordinary chat. Phone and web, with fictional words only."""
     with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
@@ -4257,10 +4257,31 @@ def onboarding_followups_test():
     steps = welcome_js.split("const steps = [", 1)[1].split("\n  ];", 1)[0]
     check("communitiesShowcase" not in steps, "Communities is still a first-run step")
     intro = welcome_js.split("function showCommunitiesIntro", 1)[1].split("\n}\n", 1)[0]
-    check("communitiesShowcase(flow)" in intro and "['Continue', close]" in intro and "communitiesIntroSeen: true" in intro,
-          "The Communities page lost its showcase, Continue, or its seen flag")
-    check("communitiesIntroDue(protocol, add && !account)" in companion_js and "showCommunitiesIntro({then: () => done(added || null), markSeen: true})" in companion_js,
-          "Saving a new account doesn't lead to the Communities page")
+    check("communitiesShowcase(flow)" in intro and "['Continue', close]" in intro,
+          "The Communities page lost its showcase or Continue")
+    check("showCommunitiesIntro" not in companion_js and "communitiesIntroDue" not in companion_js,
+          "Saving a new account still leads to the Communities page")
+    servers_js = (ROOT / "server/servers.js").read_text()
+    setup_js = (ROOT / "server/account-setup.js").read_text()
+    add = servers_js.split("function openAddServer()", 1)[1].split("\n}\n", 1)[0]
+    check("addServerIntroDue(addedServices())" in add and "showCommunitiesIntro({then: () => openChooseService()})" in add,
+          "Add server doesn't start with the Communities page while no server is added")
+    check("addServerGuideDue(protocol, addedServices()) ? openServerGuide(protocol) : showServerList(protocol)" in servers_js,
+          "Choose a service doesn't skip the help page for a service that has an account")
+    guide = servers_js.split("function openServerGuide(protocol)", 1)[1].split("\n}\n", 1)[0]
+    check("pickServer: () => showServerList(protocol, {guided: true})" in guide and "guideExample(protocol).entry" in guide
+          and "expert: () => showServerForm(protocol, null, {}, {back})" in guide and "() => openChooseService()" in guide,
+          "The Add server help page lacks Pick a server, the example, the skip, or Back")
+    check("pickServer ? 'Pick a server' : 'Get started'" in setup_js and "See other public servers" not in setup_js,
+          "The help page's main button isn't Pick a server in Add server")
+    listing = servers_js.split("function showServerList(", 1)[1].split("\n}\n", 1)[0]
+    check("showServerForm(protocol, entry, {}, {back: again})" in listing and "showServerForm(protocol, null, {}, {back: again})" in listing
+          and "'Read the guide'" in listing and "addServerListBack(guided) === 'guide'" in listing,
+          "The server list's picks, Other server…, Read the guide, or Back are wrong")
+    phone_main = (ROOT / "app/src/main/java/org/fluidmessages/MainActivity.java").read_text()
+    check("AddServerFlow.introDue(addedServices())" in phone_main and "AddServerFlow.guideDue(protocol, addedServices())" in phone_main
+          and "CommunitiesIntro.due" not in (ROOT / "app/src/main/kotlin/org/fluidmessages/AccountsScreen.kt").read_text(),
+          "The phone's Add server doesn't follow the same order")
     check("title: 'Communities'" in settings_js.split("['Help', [", 1)[1].split("]]", 1)[0] and "showCommunitiesIntro()" in settings_js,
           "Settings → Help has no Communities page")
     # Battery: the same words on the phone and the web, where services are turned on.
@@ -4299,22 +4320,26 @@ def onboarding_followups_test():
           "The first page naming a chat service doesn't say what one is")
     node = os.environ.get("NODE") or shutil.which("node")
     if not node:
-        print("SKIP  Communities page rules in Node: node is missing")
+        print("SKIP  Add server step rules in Node: node is missing")
         return
-    rules = welcome_js.split("const COMMUNITY_SERVICES", 1)[1].split("/**\n * The Communities page", 1)[0]
-    script = "var prefs = {};\nconst COMMUNITY_SERVICES" + rules + r"""
+    rules = re.search(r"// add-server-steps:start[^\n]*\n(.*?)// add-server-steps:end", servers_js, re.S)
+    check(rules, "servers.js has no Add server step rules")
+    script = rules.group(1) + r"""
 const wrong = [];
 const same = (a, b, why) => { if (JSON.stringify(a) !== JSON.stringify(b)) wrong.push(why + ': ' + JSON.stringify(a)); };
-same(['irc', 'matrix', 'xmpp', 'email'].map((p) => communitiesIntroDue(p, true)), [true, true, true, false], 'new accounts');
-same(communitiesIntroDue('irc', false), false, 'editing an account');
-prefs = {communitiesIntroSeen: true};
-same(communitiesIntroDue('matrix', true), false, 'already seen');
-same(communitiesIntroDue('matrix', true, false), true, 'seen passed in');
+same(addServerIntroDue([]), true, 'no servers yet');
+same(addServerIntroDue(['email']), true, 'only email');
+same(['irc', 'matrix', 'xmpp'].map((p) => addServerIntroDue(['email', p])), [false, false, false], 'one community server');
+same(['irc', 'matrix', 'xmpp'].map((p) => addServerGuideDue(p, [])), [true, true, true], 'first account on a service');
+same(['irc', 'matrix', 'xmpp'].map((p) => addServerGuideDue(p, ['irc'])), [false, true, true], 'one IRC network already');
+same(addServerGuideDue('matrix', ['irc', 'matrix']), false, 'a second Matrix account');
+same([addServerListBack(true), addServerListBack(false)], ['guide', 'services'], 'Back from the list');
 if (wrong.length) { console.log(wrong.join('\n')); process.exit(1); }
 """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
-    check(result.returncode == 0, "Communities page rules failed in Node: " + (result.stdout + result.stderr).strip()[:600])
-    print("PASS  onboarding follow-ups: Communities once after the first community account and in Help, battery explained, "
+    check(result.returncode == 0, "Add server step rules failed in Node: " + (result.stdout + result.stderr).strip()[:600])
+    print("PASS  onboarding follow-ups: Communities at the start of Add server with no server yet and in Help, the help page only "
+          "for a service with no account, battery explained, "
           "Ways to reach near the top for one person, and a plain first page, on the phone and the web")
 
 
