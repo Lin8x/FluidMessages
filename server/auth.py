@@ -14,10 +14,17 @@
 - Wrong passwords and setup codes are rate-limited per address and overall.
 - Phones, desktop apps, and scripts keep using a bearer token: FLUID_TOKEN from the server's settings, or a pairing
   token made in the web app's settings (stored only as a hash).
+- Two-step sign-in (offered right away whenever a password is first set): after the password, a 6-digit code from
+  an authenticator app (TOTP, RFC 6238: SHA-1, 30-second steps, one step early or late allowed), or one of ten
+  single-use recovery codes. The authenticator secret is encrypted with a random key kept in a private file beside
+  the database (auth-secret.key, private like the setup code and the Matrix store's key), so a copy of the
+  database alone can't make codes. Recovery codes are kept only as hashes. A code can't be used twice, and wrong
+  codes are rate-limited like wrong passwords. Bearer tokens (the phone, scripts) never need a code.
 - Privacy and security (privacy.py): a private folder passcode, a decoy password, and an emergency erase passcode,
   each kept only as a salted scrypt hash like the password. Every password sign-in checks all three the same way,
   so a decoy or emergency sign-in takes as long and answers the same as a real one. None of them is ever logged.
 """
+import base64
 import hashlib
 import hmac
 import ipaddress
@@ -27,6 +34,7 @@ import secrets
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 REMEMBER_SECONDS = 30 * 86400
 SHORT_SECONDS = 12 * 3600
@@ -48,6 +56,119 @@ SESSION_FLAGS = {"decoy": "INTEGER NOT NULL DEFAULT 0", "private_open": "INTEGER
 MAX_CODE = 1024
 CODE_NAMES = {"owner": "your FluidMessages Web password", "decoy": "your decoy password",
               "distress": "your emergency erase passcode", "private_code": "your private folder passcode"}
+
+
+# Two-step sign-in
+TOTP_STEP, TOTP_DIGITS, TOTP_WINDOW = 30, 6, 1
+RECOVERY_COUNT = 10
+TICKET_SECONDS = 5 * 60
+TICKET_TRIES = 5
+TRUSTED_BROWSERS = 50
+ISSUER = "FluidMessages Web"
+
+
+def hotp(secret, counter, digits=TOTP_DIGITS, digest=hashlib.sha1):
+    """RFC 4226: the code for one counter value."""
+    mac = hmac.new(secret, counter.to_bytes(8, "big"), digest).digest()
+    offset = mac[-1] & 0x0F
+    value = int.from_bytes(mac[offset:offset + 4], "big") & 0x7FFFFFFF
+    return str(value % 10 ** digits).zfill(digits)
+
+
+def totp(secret, moment, step=TOTP_STEP, digits=TOTP_DIGITS, digest=hashlib.sha1):
+    """RFC 6238: the code at a moment (seconds since 1970)."""
+    return hotp(secret, int(moment // step), digits, digest)
+
+
+def totp_match(secret, code, moment, after=-1, window=TOTP_WINDOW):
+    """The time step a 6-digit code belongs to, allowing one step early or late, or None. Steps at or before [after]
+    (the last one used) never match, so a code can't be used twice."""
+    if not isinstance(code, str) or len(code) != TOTP_DIGITS or not code.isdigit():
+        return None
+    now = int(moment // TOTP_STEP)
+    found = None
+    # Every step in the window is checked, so the timing doesn't say which one matched.
+    for counter in range(now - window, now + window + 1):
+        if hmac.compare_digest(hotp(secret, counter), code) and counter > after and found is None:
+            found = counter
+    return found
+
+
+def secret_text(secret):
+    """The secret the way authenticator apps take it: base32 without padding."""
+    return base64.b32encode(secret).decode().rstrip("=")
+
+
+def grouped(text, size=4):
+    return " ".join(text[index:index + size] for index in range(0, len(text), size))
+
+
+def otpauth_uri(secret, label=ISSUER):
+    return "otpauth://totp/%s?secret=%s&issuer=%s&algorithm=SHA1&digits=%d&period=%d" % (
+        quote(label), secret_text(secret), quote(ISSUER), TOTP_DIGITS, TOTP_STEP)
+
+
+def _stream(key, nonce, length):
+    out = bytearray()
+    counter = 0
+    while len(out) < length:
+        out += hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest()
+        counter += 1
+    return bytes(out[:length])
+
+
+class Sealer:
+    """Encrypts small server secrets with a random key in a private file (0600) in the data folder: HMAC-SHA256 in
+    counter mode, then an HMAC-SHA256 tag over the nonce and the encrypted bytes (encrypt-then-MAC). Standard
+    library only. Without the key file a sealed value can't be read, and a changed one is refused."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.lock = threading.Lock()
+
+    def key(self, make=True):
+        with self.lock:
+            try:
+                value = bytes.fromhex(self.path.read_text().strip())
+                if len(value) == 32:
+                    return value
+            except (OSError, ValueError):
+                pass
+            if not make:
+                return None
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            value = os.urandom(32)
+            temporary = self.path.with_suffix(".tmp")
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w") as output:
+                output.write(value.hex() + "\n")
+            os.replace(temporary, self.path)
+            return value
+
+    @staticmethod
+    def _keys(key):
+        return (hmac.new(key, b"fluid-seal-encrypt", hashlib.sha256).digest(),
+                hmac.new(key, b"fluid-seal-mac", hashlib.sha256).digest())
+
+    def seal(self, data):
+        encrypt, mac = self._keys(self.key())
+        nonce = os.urandom(16)
+        sealed = bytes(a ^ b for a, b in zip(data, _stream(encrypt, nonce, len(data))))
+        return {"v": 1, "nonce": nonce.hex(), "data": sealed.hex(), "tag": hmac.new(mac, nonce + sealed, hashlib.sha256).hexdigest()}
+
+    def open(self, box):
+        """The original bytes, or None when the key file is missing or the value was changed."""
+        try:
+            key = self.key(make=False)
+            if key is None or box.get("v") != 1:
+                return None
+            nonce, sealed = bytes.fromhex(box["nonce"]), bytes.fromhex(box["data"])
+            encrypt, mac = self._keys(key)
+            if not hmac.compare_digest(hmac.new(mac, nonce + sealed, hashlib.sha256).hexdigest(), str(box["tag"])):
+                return None
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return None
+        return bytes(a ^ b for a, b in zip(sealed, _stream(encrypt, nonce, len(sealed))))
 
 
 class Refused(Exception):
@@ -152,6 +273,13 @@ class Auth:
         self.limiter = Limiter(clock)
         # Wrong Authorization: Bearer tokens, counted apart from passwords so a phone with an old token only slows itself.
         self.token_limiter = Limiter(clock, overall=False)
+        # Wrong two-step codes and recovery codes, counted apart from passwords.
+        self.code_limiter = Limiter(clock)
+        self.sealer = Sealer(self.folder / "auth-secret.key")
+        # Sign-ins waiting for their two-step code: a SHA-256 of the ticket → what the password step decided.
+        # Kept in memory only; a restart just asks for the password again.
+        self.tickets = {}
+        self.tickets_lock = threading.Lock()
 
     # State
 
@@ -269,9 +397,11 @@ class Auth:
 
     def reset_owner(self, db):
         """For a forgotten password: removes the password and every browser session, and makes a new setup code.
-        The decoy password goes too, since it only works next to a password."""
+        The decoy password goes too, since it only works next to a password, and so does two-step sign-in, which is
+        offered again with the new password."""
         self._set(db, "owner", None)
         self._set(db, "decoy", None)
+        self.reset_two_step(db)
         db.execute("DELETE FROM auth_sessions")
         self.code_file.unlink(missing_ok=True)
         return self.setup_code(db)
@@ -393,11 +523,15 @@ class Auth:
         self.code_file.unlink(missing_ok=True)
         return self._new_session(db, remember, label)
 
-    def login(self, db, client, password, remember, label=""):
+    def login(self, db, client, password, remember, label="", trusted=None):
         """Signs in with the password, the decoy password, or the emergency erase passcode. All three are checked
         every time, in the same order, so neither the answer nor its timing says which one matched. Returns the
         session value, whether it's remembered, and "real", "decoy", or "distress". A distress session isn't stored
-        yet: the caller erases everything first, then restores it as a decoy session (restore_session)."""
+        yet: the caller erases everything first, then restores it as a decoy session (restore_session).
+
+        With two-step sign-in on, any of the three returns a ticket and "two_step" instead, the same way, and
+        finish_two_step makes the session once the code is right. A browser remembered for two-step sign-in
+        ([trusted], its cookie) skips the code."""
         owner = self._get(db, "owner")
         if owner is None:
             raise Refused(409, "Set up FluidMessages Web first.")
@@ -411,9 +545,15 @@ class Auth:
             self.limiter.miss(client)
             raise Refused(403, "That password isn't right.")
         self.limiter.success(client)
-        if real or decoy:
-            value, persistent = self._new_session(db, remember, label, decoy=not real)
-            return value, persistent, "real" if real else "decoy"
+        outcome = "real" if real else "decoy" if decoy else "distress"
+        if self.two_step_on(db) and not self.trusted_browser(db, trusted):
+            return self._ticket(remember, label, outcome), bool(remember), "two_step"
+        return self._signed_in(db, remember, label, outcome)
+
+    def _signed_in(self, db, remember, label, outcome):
+        if outcome in ("real", "decoy"):
+            value, persistent = self._new_session(db, remember, label, decoy=outcome == "decoy")
+            return value, persistent, outcome
         return secrets.token_urlsafe(32), bool(remember), "distress"
 
     def login_with_token(self, db, client, value, remember, label=""):
@@ -446,6 +586,177 @@ class Auth:
         self.refuse_reuse(db, password, "decoy", "distress")
         self._set(db, "owner", {"password": hash_password(password), "created": int(self.clock() * 1000)})
         self.code_file.unlink(missing_ok=True)
+
+    # Two-step sign-in: a code from an authenticator app after the password
+
+    def two_step_on(self, db):
+        return self.has_owner(db) and self._get(db, "two_step") is not None
+
+    def two_step_status(self, db):
+        """For Settings: whether it's on, how many recovery codes are left, and whether to offer it once after
+        sign-in (an install that had a password before two-step sign-in existed, or one that set a password and
+        hasn't chosen yet)."""
+        state = self._get(db, "two_step") if self.has_owner(db) else None
+        return {"on": state is not None,
+                "recovery_left": len(state["recovery"]["hashes"]) if state else 0,
+                "prompt": self.has_owner(db) and state is None and self._get(db, "two_step_prompted") is None,
+                # The key file (auth-secret.key) went missing, say after copying only the database: codes from the
+                # app can't be checked, but recovery codes still work.
+                "readable": state is None or self.sealer.open(state["secret"]) is not None}
+
+    def _guard_code(self, client):
+        wait = self.code_limiter.wait(client)
+        if wait:
+            raise Refused(429, "Too many wrong codes. Wait " + (f"{wait} seconds" if wait < 90 else f"{(wait + 59) // 60} minutes")
+                          + " and try again.")
+
+    def _recovery_codes(self):
+        codes = ["".join(secrets.choice(CODE_ALPHABET) for _ in range(12)) for _ in range(RECOVERY_COUNT)]
+        salt = secrets.token_hex(16)
+        return [self.pretty(code) for code in codes], {"salt": salt, "hashes": [_digest(salt + code) for code in codes]}
+
+    def begin_two_step(self, db):
+        """Starts turning it on: a new secret, kept aside until a code from the app confirms it."""
+        if not self.has_owner(db):
+            raise Refused(409, "Set a password first.")
+        if self._get(db, "two_step") is not None:
+            raise Refused(409, "Two-step sign-in is already on.")
+        secret = os.urandom(20)
+        self._set(db, "two_step_pending", {"secret": self.sealer.seal(secret), "created": int(self.clock() * 1000)})
+        return {"secret": grouped(secret_text(secret)), "uri": otpauth_uri(secret)}
+
+    def confirm_two_step(self, db, client, code):
+        """Turns it on once a code from the app matches the new secret. Returns the recovery codes, shown only now."""
+        pending = self._get(db, "two_step_pending")
+        if pending is None or self._get(db, "two_step") is not None:
+            raise Refused(409, "Start setting up two-step sign-in again.")
+        self._guard_code(client)
+        secret = self.sealer.open(pending["secret"])
+        step = totp_match(secret, normalize_code(code) if isinstance(code, str) else "", self.clock()) if secret else None
+        if step is None:
+            self.code_limiter.miss(client)
+            raise Refused(403, "That code isn't right. Type the newest 6-digit code from your authenticator app.")
+        self.code_limiter.success(client)
+        shown, recovery = self._recovery_codes()
+        self._set(db, "two_step", {"secret": pending["secret"], "created": int(self.clock() * 1000), "last_step": step,
+                                   "recovery": recovery})
+        self._set(db, "two_step_pending", None)
+        self._set(db, "two_step_browsers", None)
+        self._set(db, "two_step_prompted", {"at": int(self.clock() * 1000)})
+        return shown
+
+    def check_code(self, db, code):
+        """A code from the app ("app") or a recovery code ("recovery"), or None. Uses it up either way: a code from
+        the app, and every one before it, can't be used again; a recovery code is removed."""
+        state = self._get(db, "two_step")
+        given = normalize_code(code) if isinstance(code, str) and len(code) <= 64 else ""
+        if state is None or not given:
+            return None
+        if len(given) == TOTP_DIGITS and given.isdigit():
+            secret = self.sealer.open(state["secret"])
+            step = totp_match(secret, given, self.clock(), after=state.get("last_step", -1)) if secret else None
+            if step is None:
+                return None
+            self._set(db, "two_step", {**state, "last_step": step})
+            return "app"
+        recovery = state["recovery"]
+        wanted = _digest(recovery["salt"] + given)
+        found = [value for value in recovery["hashes"] if hmac.compare_digest(value, wanted)]
+        if not found:
+            return None
+        self._set(db, "two_step", {**state, "recovery": {**recovery, "hashes": [value for value in recovery["hashes"] if value != wanted]}})
+        return "recovery"
+
+    def _require_code(self, db, client, code):
+        self._guard_code(client)
+        used = self.check_code(db, code)
+        if used is None:
+            self.code_limiter.miss(client)
+            raise Refused(403, "That code isn't right.")
+        self.code_limiter.success(client)
+        return used
+
+    def new_recovery_codes(self, db, client, code):
+        if not self.two_step_on(db):
+            raise Refused(409, "Two-step sign-in is off.")
+        self._require_code(db, client, code)
+        shown, recovery = self._recovery_codes()
+        self._set(db, "two_step", {**self._get(db, "two_step"), "recovery": recovery})
+        return shown
+
+    def turn_off_two_step(self, db, client, password, code, here=False):
+        """Asks for the password and a code, except on the computer FluidMessages Web runs on ([here]), where
+        someone locked out of their authenticator app can turn it off without either."""
+        if not here:
+            if not self.two_step_on(db):
+                raise Refused(409, "Two-step sign-in is already off.")
+            self.confirm_password(db, client, password)
+            self._require_code(db, client, code)
+        self.reset_two_step(db)
+        # Off by choice: Settings keeps a gentle notice, but there's no prompt after the next sign-in.
+        self._set(db, "two_step_prompted", {"at": int(self.clock() * 1000)})
+
+    def skip_two_step(self, db):
+        """Not now: the one-time offer after sign-in doesn't come back. Settings still shows that it's off."""
+        self._set(db, "two_step_pending", None)
+        self._set(db, "two_step_prompted", {"at": int(self.clock() * 1000)})
+
+    def reset_two_step(self, db):
+        """Turns it off: the secret, the recovery codes, and remembered browsers. Also `python main.py reset-two-step`."""
+        for key in ("two_step", "two_step_pending", "two_step_browsers", "two_step_prompted"):
+            self._set(db, key, None)
+        with self.tickets_lock:
+            self.tickets.clear()
+
+    def _ticket(self, remember, label, outcome):
+        value = secrets.token_urlsafe(32)
+        now = self.clock()
+        with self.tickets_lock:
+            self.tickets = {key: item for key, item in self.tickets.items() if item["expires"] > now}
+            if len(self.tickets) >= 1000:
+                self.tickets.pop(min(self.tickets, key=lambda key: self.tickets[key]["expires"]))
+            self.tickets[_digest(value)] = {"expires": now + TICKET_SECONDS, "remember": bool(remember), "label": label,
+                                            "outcome": outcome, "tries": 0}
+        return value
+
+    def finish_two_step(self, db, client, ticket, code, remember=None):
+        """The second step of signing in. Returns the session value, whether it's remembered, and the outcome
+        from the password step ("real", "decoy", or "distress"; see login)."""
+        self._guard_code(client)
+        key = _digest(ticket) if isinstance(ticket, str) and 20 <= len(ticket) <= 100 else None
+        with self.tickets_lock:
+            pending = self.tickets.get(key) if key else None
+            if pending is not None and pending["expires"] <= self.clock():
+                self.tickets.pop(key, None)
+                pending = None
+        if pending is None:
+            raise Refused(409, "That took too long. Type your password again.")
+        if self.check_code(db, code) is None:
+            self.code_limiter.miss(client)
+            with self.tickets_lock:
+                pending["tries"] += 1
+                if pending["tries"] >= TICKET_TRIES:
+                    self.tickets.pop(key, None)
+            raise Refused(403, "That code isn't right. Type the newest 6-digit code from your authenticator app, or a recovery code.")
+        self.code_limiter.success(client)
+        with self.tickets_lock:
+            self.tickets.pop(key, None)
+        return self._signed_in(db, pending["remember"] if remember is None else remember, pending["label"], pending["outcome"])
+
+    def trust_browser(self, db):
+        """Remember this browser for 30 days: it skips the code after the password. Returns the cookie's value."""
+        value = secrets.token_urlsafe(32)
+        now = int(self.clock())
+        kept = [item for item in (self._get(db, "two_step_browsers") or []) if item["expires"] > now]
+        kept.append({"hash": _digest(value), "expires": now + REMEMBER_SECONDS})
+        self._set(db, "two_step_browsers", kept[-TRUSTED_BROWSERS:])
+        return value
+
+    def trusted_browser(self, db, value):
+        if not isinstance(value, str) or not 20 <= len(value) <= 100:
+            return False
+        wanted, now = _digest(value), int(self.clock())
+        return any(item["expires"] > now and hmac.compare_digest(item["hash"], wanted) for item in (self._get(db, "two_step_browsers") or []))
 
 
 # A request carrying any of these was passed along by a reverse proxy, load balancer, or tunnel, so whoever sent it

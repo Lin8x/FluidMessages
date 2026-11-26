@@ -445,9 +445,10 @@ final class DirectMatrix implements DirectProtocols.DirectClient {
     }
 
     private InputStream open(String method, String path, InputStream body, String type, int timeout) throws Exception {
+        NetworkGate.requireInternet();
         var url = new URL(account.getString("homeserver").replaceAll("/+$", "") + path);
         if (!"https".equals(url.getProtocol())) throw new IOException("Matrix needs an https:// homeserver");
-        var connection = (HttpsURLConnection) url.openConnection();
+        var connection = (HttpsURLConnection) TorRoute.open(url);
         connection.setConnectTimeout(15_000);
         connection.setReadTimeout(timeout);
         connection.setInstanceFollowRedirects(false);

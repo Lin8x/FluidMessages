@@ -398,6 +398,8 @@ Free. No account. No ads.
 
 <a id="iphone-and-ipad"></a>**iPhone or iPad**: run FluidMessages on a computer at home, open its address in Safari, and tap **Share → Add to Home Screen**. Alerts only come while it is open.
 
+**Check your download**: make sure your copy is the real one and nobody changed it. On Android, open **Settings → About and updates** and look for "Matches the official FluidMessages key". [How to check any download](docs/verify.md).
+
 </details>
 
 <br>

@@ -578,7 +578,8 @@ internal fun gameSites(game: String): List<GameSite> = when (game) {
 
 /** A Lichess game anyone can join, no account needed. Returns the link for you and the one to send. */
 internal fun lichessGame(white: Boolean): Pair<String, String>? = runCatching {
-    val connection = java.net.URL("https://lichess.org/api/challenge/open").openConnection() as javax.net.ssl.HttpsURLConnection
+    NetworkGate.requireInternet()
+    val connection = TorRoute.open(java.net.URL("https://lichess.org/api/challenge/open")) as javax.net.ssl.HttpsURLConnection
     connection.requestMethod = "POST"
     connection.connectTimeout = 10_000
     connection.readTimeout = 15_000

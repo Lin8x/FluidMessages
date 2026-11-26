@@ -31,6 +31,7 @@ from chat_features import ChatFeatures, edit_text
 import irc_client
 import matrix_e2ee
 import message_requests
+import tor_route
 import xmpp_client
 
 INTERNET = ("matrix", "xmpp", "email", "irc")
@@ -291,7 +292,7 @@ class Gateway(ChatFeatures):
         (self.files / "uploads").mkdir(parents=True, exist_ok=True)
         self.accounts = accounts or AccountStore(self.files / "accounts.json", legacy=config, environ={})
         self.tls = ssl.create_default_context()
-        self.http = build_opener(HTTPSHandler(context=self.tls), NoRedirect())
+        self.http = build_opener(tor_route.HTTPSHandler(context=self.tls), NoRedirect())
         self.wake = threading.Event()
         self.clients = {}
         self.calls = collections.deque(maxlen=400)
@@ -1125,8 +1126,8 @@ class Gateway(ChatFeatures):
         """SMTP with TLS from the start on 465 (the default), or STARTTLS on any other port such as 587. Never plain text."""
         port = int(cfg.get("smtp_port") or SMTP_PORT)
         if not smtp_starttls(port):
-            return smtplib.SMTP_SSL(cfg["smtp_host"], port, context=self.tls, timeout=12)
-        server = smtplib.SMTP(cfg["smtp_host"], port, timeout=12)
+            return tor_route.mail(smtplib.SMTP_SSL)(cfg["smtp_host"], port, context=self.tls, timeout=12)
+        server = tor_route.mail(smtplib.SMTP)(cfg["smtp_host"], port, timeout=12)
         try:
             server.ehlo()
             if not server.has_extn("starttls"):
@@ -1142,8 +1143,8 @@ class Gateway(ChatFeatures):
         """IMAP with TLS from the start (993, the default), or STARTTLS on 143. Never plain text."""
         port = int(cfg.get("imap_port") or IMAP_PORT)
         if not imap_starttls(port):
-            return imaplib.IMAP4_SSL(cfg["imap_host"], port, ssl_context=self.tls, timeout=12)
-        mailbox = imaplib.IMAP4(cfg["imap_host"], port, timeout=12)
+            return tor_route.mail(imaplib.IMAP4_SSL)(cfg["imap_host"], port, ssl_context=self.tls, timeout=12)
+        mailbox = tor_route.mail(imaplib.IMAP4)(cfg["imap_host"], port, timeout=12)
         try:
             # Raises if the server doesn't offer STARTTLS, so the password never goes out unencrypted.
             mailbox.starttls(ssl_context=self.tls)
@@ -1263,7 +1264,8 @@ class Gateway(ChatFeatures):
         room = quote(route["target"], safe="")
         secure = self.secure()
         if secure is None and self.matrix_request("rooms/" + room + "/state/m.room.encryption", allow_missing=True) is not None:
-            raise ValueError("This room is end-to-end encrypted. Install matrix-nio[e2e] on FluidMessages Web to use it.")
+            raise ValueError(tor_route.E2EE_HELD if tor_route.enabled() and matrix_e2ee.available() else
+                             "This room is end-to-end encrypted. Install matrix-nio[e2e] on FluidMessages Web to use it.")
         relation = message.get("relation") or {}
         event = relation.get("event_id")
         if revises(relation) and event:
@@ -1516,7 +1518,7 @@ class Gateway(ChatFeatures):
             mine = [r for r in routes if r.get("via", r["protocol"]) == protocol and r["account"] == ident]
             if protocol == "matrix":
                 # Running with no rooms linked yet too, so invitations (and new direct chats) arrive.
-                secure = matrix_e2ee.available()
+                secure = matrix_e2ee.available() and not tor_route.enabled()
                 wanted[ident] = (json.dumps([account, secure], sort_keys=True),
                                  (lambda i=ident, a=account: self.secure_client(i, a)) if secure else
                                  (lambda i=ident, a=account: Poller(lambda: self.receive_matrix(i), 5, auto=lambda: self.reconnects(i),
@@ -1535,7 +1537,7 @@ class Gateway(ChatFeatures):
                 if protocol == "irc":
                     rooms = sorted(set(account.get("channels", [])) | set(rooms), key=str.lower)
                 # Joining or leaving a channel or group chat doesn't reconnect: sync() updates the live session.
-                wanted[ident] = (json.dumps(account, sort_keys=True),
+                wanted[ident] = (json.dumps(account, sort_keys=True) + tor_route.signature(),
                                  lambda i=ident, a=account, r=rooms, p=protocol: self.chat_client(p, i, a, r), rooms)
         return wanted
 
@@ -1569,6 +1571,10 @@ class Gateway(ChatFeatures):
                                                                                            sender, name))
 
     def chat_client(self, protocol, ident, account, rooms):
+        if protocol == "xmpp" and tor_route.enabled():
+            # slixmpp opens its own connections, so XMPP waits with words instead of going around Tor.
+            return Poller(tor_route.hold_xmpp, 60, auto=lambda: self.reconnects(ident),
+                          network=account.get("jid", "").partition("@")[2])
         if protocol == "irc":
             # The network's server chat is in the list from the start, connected or not, so the network you added shows.
             try:

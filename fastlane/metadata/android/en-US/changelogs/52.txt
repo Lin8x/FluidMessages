@@ -1,0 +1,6 @@
+* Chat locks can use your phone's PIN, fingerprint, or face, with switches in chat details and Settings.
+* FluidMessages Web: the chat lock can use the computer's screen lock.
+* Link your phone to FluidMessages Web at an http:// address for testing at home.
+* Wrong phone access tokens are rate-limited.
+* Setup starts with a plain chat. Communities shows after your first IRC, Matrix, or XMPP account.
+* Clearer battery notes for chat services, and "+ Add another way to reach" in chat details.

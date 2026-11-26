@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Signs an unsigned release APK with the FluidMessages release key, with the key rotation proof (lineage) so phones
+# that installed a build signed with the old key accept it. Made by scripts/make-release-key.
+#
+#   ./scripts/sign-apk app/build/outputs/apk/release/app-release-unsigned.apk dist/FluidMessages-1.2.3.apk
+#
+# Prints the signer's SHA-256 fingerprint. Never prints the password.
+set -euo pipefail
+
+IN="${1:?usage: sign-apk unsigned.apk signed.apk}"
+OUT="${2:?usage: sign-apk unsigned.apk signed.apk}"
+DIR="${FLUID_SIGNING_DIR:-$HOME/.config/fluidmessages}"
+OLD_KEYSTORE="${FLUID_OLD_KEYSTORE:-$HOME/.android/debug.keystore}"
+SDK="${ANDROID_HOME:-$HOME/Android/Sdk}"
+TOOLS=$(ls -d "$SDK"/build-tools/*/ 2>/dev/null | sort -V | tail -1)
+fail() { echo "sign-apk: $*" >&2; exit 1; }
+
+[[ -x "${TOOLS}apksigner" && -x "${TOOLS}zipalign" ]] || fail "apksigner and zipalign are missing. Install Android SDK build-tools."
+for name in release.jks release.pass lineage.bin; do
+  [[ -f "$DIR/$name" ]] || fail "$DIR/$name is missing. Run ./scripts/make-release-key first (once), or restore your backup."
+done
+[[ -f "$OLD_KEYSTORE" ]] || fail "The old signing key ($OLD_KEYSTORE) is missing; it signs alongside the new one for older installs."
+
+ALIGNED="$(mktemp --suffix=.apk)"
+trap 'rm -f "$ALIGNED"' EXIT
+"${TOOLS}zipalign" -f -p 4 "$IN" "$ALIGNED"
+# The old key signs the v1/v2 blocks; the new key signs v3 with the lineage, which Android 13+ (minSdk) uses.
+"${TOOLS}apksigner" sign --out "$OUT" \
+  --ks "$OLD_KEYSTORE" --ks-key-alias androiddebugkey --ks-pass pass:android \
+  --next-signer --ks "$DIR/release.jks" --ks-key-alias fluidmessages --ks-pass "file:$DIR/release.pass" \
+  --lineage "$DIR/lineage.bin" "$ALIGNED"
+rm -f "$OUT.idsig"
+"${TOOLS}apksigner" verify --print-certs --min-sdk-version 33 "$OUT" | sed -n 's/.*certificate SHA-256 digest: //p' | tail -1

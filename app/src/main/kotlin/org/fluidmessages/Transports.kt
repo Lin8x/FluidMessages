@@ -134,11 +134,13 @@ private object SmsTransport : MessageTransport {
 
     override fun unavailable(context: Context, prefs: SharedPreferences, conversation: String) = when {
         !protocol.enabled(prefs) -> protocol.disabledReason(prefs)
+        !NetworkGate.textsAllowed(prefs) -> NetworkGate.TEXTS_OFF
         !holdsSmsRole(context) -> "Make FluidMessages your texting app to send texts."
         else -> ""
     }
 
     override fun send(context: Context, message: OutgoingMessage) {
+        check(NetworkGate.textsAllowed(context.getSharedPreferences("fluid", Context.MODE_PRIVATE))) { NetworkGate.TEXTS_OFF }
         // A file makes this an MMS, the same way carriers upgrade a text with an attachment. Locations stay SMS.
         if (message.hasFile) return MmsCarrierTransport.send(context, message)
         for (member in message.members) SmsStore.send(context, member, message.fallbackBody(), message.sim, message.conversation)
@@ -152,12 +154,15 @@ private object MmsCarrierTransport : MessageTransport {
 
     override fun unavailable(context: Context, prefs: SharedPreferences, conversation: String) = when {
         !protocol.enabled(prefs) -> protocol.disabledReason(prefs)
+        !NetworkGate.textsAllowed(prefs) -> NetworkGate.TEXTS_OFF
         !holdsSmsRole(context) -> "Make FluidMessages your texting app to send texts."
         else -> ""
     }
 
-    override fun send(context: Context, message: OutgoingMessage) =
+    override fun send(context: Context, message: OutgoingMessage) {
+        check(NetworkGate.textsAllowed(context.getSharedPreferences("fluid", Context.MODE_PRIVATE))) { NetworkGate.TEXTS_OFF }
         MmsTransport.send(context, message.members, message.fallbackBody(), message.attachment?.takeIf { it.isFile }, message.sim)
+    }
 }
 
 private object RcsPreviewTransport : MessageTransport {
@@ -195,6 +200,26 @@ private class CompanionTransport(
     }
 }
 
+/**
+ * FluidMessages phones close by (DirectNearby): end-to-end encrypted with Noise, text only for now. A message to
+ * someone out of range waits for them and goes as soon as their phone is seen, so it can always be written.
+ */
+private object NearbyTransport : MessageTransport {
+    override val protocol = MessageProtocol.NEARBY
+    override val capabilities = TransportCapabilities(attachments = false, groups = false,
+        nativeReplies = false, nativeReactions = false, encryption = Encryption.END_TO_END)
+
+    override fun unavailable(context: Context, prefs: SharedPreferences, conversation: String) =
+        protocol.disabledReason(prefs).ifEmpty {
+            if (DirectProtocols.route(prefs, conversation, protocol) == null) "Add this person on the Nearby page first." else ""
+        }
+
+    override fun send(context: Context, message: OutgoingMessage) {
+        if (message.hasFile) throw IllegalStateException("Nearby sends words only for now. Photos are coming later.")
+        DirectProtocols.send(context, message.conversation, protocol, message.text, message.fallbackBody(), message.relation, null, message.literal)
+    }
+}
+
 internal object Transports {
     private val companion = mapOf(
         MessageProtocol.MATRIX to CompanionTransport(MessageProtocol.MATRIX, TransportCapabilities(
@@ -213,6 +238,7 @@ internal object Transports {
         MessageProtocol.SMS -> SmsTransport
         MessageProtocol.MMS -> MmsCarrierTransport
         MessageProtocol.RCS -> RcsPreviewTransport
+        MessageProtocol.NEARBY -> NearbyTransport
         else -> companion.getValue(protocol)
     }
 }

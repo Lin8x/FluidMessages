@@ -12,7 +12,9 @@ enum MessageProtocol {
     MATRIX("Matrix", "Homeserver rooms"),
     XMPP("XMPP", "Federated chat"),
     EMAIL("Email", "IMAP and SMTP"),
-    IRC("IRC", "Channels and direct messages");
+    IRC("IRC", "Channels and direct messages"),
+    /** FluidMessages phones close by, with no internet: same Wi-Fi now (DirectNearby). Off until you turn it on. */
+    NEARBY("Nearby", "Friends close by, no internet needed");
 
     final String label;
     final String description;
@@ -31,7 +33,7 @@ enum MessageProtocol {
     }
 
     String key() { return "protocol" + name(); }
-    boolean enabled(SharedPreferences prefs) { return prefs.getBoolean(key(), true); }
+    boolean enabled(SharedPreferences prefs) { return prefs.getBoolean(key(), this != NEARBY); }
     /** With every way to message turned off, FluidMessages is read-only: you can read, but nothing is sent. */
     static boolean anyEnabled(SharedPreferences prefs) {
         for (MessageProtocol format : values()) if (format.enabled(prefs)) return true;

@@ -561,7 +561,9 @@ async function privacyPage(settings, context) {
   const own = typeof privacySections === 'function' ? await privacySections() : [];
   // Requests and spam: unknown senders and automated messages (requests.js).
   const requests = typeof requestSettingsLink === 'function' ? [requestSettingsLink()] : [];
-  return [...own, ...requests, chatCodesSection(), encryption, privateNoteSection(), blockedSection(context), disappearingSection(settings), erase];
+  // Network: Connect through Tor (tor.js).
+  const tor = typeof torSettingsLink === 'function' ? [await torSettingsLink()] : [];
+  return [...own, ...requests, ...tor, chatCodesSection(), encryption, privateNoteSection(), blockedSection(context), disappearingSection(settings), erase];
 }
 
 // Storage and devices → Backups: the phone's .fmb format, unchanged. A web backup holds this server's conversation

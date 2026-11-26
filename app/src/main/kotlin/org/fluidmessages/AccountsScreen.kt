@@ -226,7 +226,8 @@ private fun suggestedNick(context: android.content.Context): String {
  * guessed from a Matrix ID. Any problem keeps the guess.
  */
 private fun discoverHomeserver(guess: String): String = runCatching {
-    val connection = java.net.URL("$guess/.well-known/matrix/client").openConnection() as javax.net.ssl.HttpsURLConnection
+    NetworkGate.requireInternet()
+    val connection = TorRoute.open(java.net.URL("$guess/.well-known/matrix/client")) as javax.net.ssl.HttpsURLConnection
     try {
         connection.connectTimeout = 5000
         connection.readTimeout = 5000

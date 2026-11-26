@@ -3,7 +3,8 @@
 # and creates a GitHub release with the Android app (.apk) and the FluidMessages Web server (.zip, for Docker or
 # self-hosting). GitHub Actions then adds the FluidMessages Web desktop apps to the same release: Windows (.exe),
 # macOS (.dmg), and Linux (.AppImage), built on each system (.github/workflows/desktop.yml). The script waits for
-# them, retries a failed build once, and only finishes when all five files are on the release.
+# them, retries a failed build once, and only finishes when all five files are on the release. SHA256SUMS.txt lists the
+# SHA-256 of every download, so people can check theirs (docs/verify.md).
 #
 #   ./scripts/release                 release the version in app/build.gradle
 #   ./scripts/release --bump          raise the patch version (0.24.0 → 0.24.1) and versionCode first
@@ -27,7 +28,7 @@ while (($#)); do
     --no-main) MAIN=0 ;;
     --no-wait) WAIT=0 ;;
     --notes) NOTES="${2:?--notes needs text}"; shift ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -65,10 +66,18 @@ echo "Releasing FluidMessages $VERSION from branch $BRANCH"
 
 # Build a fresh APK and run the local checks; stop on any failure.
 run ./scripts/test-local --build
-APK=app/build/outputs/apk/debug/app-debug.apk
+# The published APK is a release build (not debuggable), signed with the release key and its rotation proof
+# (scripts/make-release-key, scripts/sign-apk). It must match the key the app and docs/verify.md call official.
+run ./gradlew -q assembleRelease
+APK=app/build/outputs/apk/release/app-release-unsigned.apk
 ASSET="dist/FluidMessages-$VERSION.apk"
 run mkdir -p dist
-run cp "$APK" "$ASSET"
+if ((DRY)); then echo "would run: scripts/sign-apk $APK $ASSET"; else
+  SIGNER=$(./scripts/sign-apk "$APK" "$ASSET") || fail "Couldn't sign the APK."
+  OFFICIAL=$(sed -n 's/.*const val OFFICIAL = "\([0-9a-f]*\)".*/\1/p' app/src/main/kotlin/org/fluidmessages/SigningKey.kt)
+  [[ -n "$SIGNER" && "$SIGNER" == "$OFFICIAL" ]] || fail "The APK's signing key ($SIGNER) isn't the official one in SigningKey.kt ($OFFICIAL)."
+  echo "Signed with the official release key $SIGNER"
+fi
 
 # FluidMessages Web server: the server and its installable web app (PWA), for Docker or scripts/web-app.
 WEB="dist/FluidMessages-Server-$VERSION.zip"
@@ -111,10 +120,15 @@ fi
 run cp "$ASSET" dist/FluidMessages.apk
 run cp "$WEB" dist/FluidMessages-Server.zip
 STABLE=(dist/FluidMessages.apk dist/FluidMessages-Server.zip)
+# SHA-256 of every file uploaded here, in sha256sum's format, so `sha256sum -c SHA256SUMS.txt` checks a download.
+SUMS=dist/SHA256SUMS.txt
+if ((DRY)); then echo "would run: write $SUMS"; else
+  (cd dist && sha256sum "${ASSET#dist/}" "${WEB#dist/}" "${STABLE[@]#dist/}") > "$SUMS"
+fi
 if [[ -n "$NOTES" ]]; then
-  run gh release create "$TAG" "$ASSET" "$WEB" "${STABLE[@]}" --title "FluidMessages $VERSION" --notes "$NOTES"
+  run gh release create "$TAG" "$ASSET" "$WEB" "${STABLE[@]}" "$SUMS" --title "FluidMessages $VERSION" --notes "$NOTES"
 else
-  run gh release create "$TAG" "$ASSET" "$WEB" "${STABLE[@]}" --title "FluidMessages $VERSION" --generate-notes
+  run gh release create "$TAG" "$ASSET" "$WEB" "${STABLE[@]}" "$SUMS" --title "FluidMessages $VERSION" --generate-notes
 fi
 if ((DRY)); then echo "Dry run only: nothing was built, committed, pushed, or published."; exit 0; fi
 echo "Published $TAG with $ASSET and $WEB."
@@ -157,5 +171,13 @@ for attempt in 1 2; do
 done
 LEFT=$(missing)
 [[ -z "$LEFT" ]] || fail "$TAG is published but still missing: $(tr '\n' ' ' <<<"$LEFT"). See GitHub → Actions → FluidMessages Web desktop apps."
+# Add the desktop apps to SHA256SUMS.txt, using the SHA-256 GitHub recorded when Actions uploaded each one.
+ADDED=$(gh release view "$TAG" --json assets -q '.assets[] | select(.name != "SHA256SUMS.txt")
+  | select((.digest // "") | startswith("sha256:")) | "\(.digest | ltrimstr("sha256:"))  \(.name)"' \
+  | while read -r sum name; do grep -qF "  $name" "$SUMS" || echo "$sum  $name"; done)
+if [[ -n "$ADDED" ]]; then
+  echo "$ADDED" >> "$SUMS"
+  gh release upload "$TAG" "$SUMS" --clobber || echo "release: couldn't update SHA256SUMS.txt with the desktop apps." >&2
+fi
 echo "$TAG is complete: Android app, server zip, and the Windows, macOS, and Linux apps are all attached."
 echo "The Docker image (ghcr.io/lin8x/fluidmessages-web) builds separately in GitHub Actions."

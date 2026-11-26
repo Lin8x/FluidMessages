@@ -1505,6 +1505,7 @@ function showWelcome({at = 0} = {}) {
     {title: 'Keep chats private', subtitle: 'Decide who can open FluidMessages, and from where.',
       body: (flow) => [privacyIllustration(flow), guideTips([
         {icon: 'key', title: 'A password', line: 'Other devices sign in with it. Settings → Phone and other devices'},
+        {icon: 'phone', title: 'Two-step sign-in', line: 'After the password, a code from an app on your phone. Set up with your password'},
         {icon: 'laptop', title: 'The computer it runs on', line: 'Opens there without a password, or turn that off'},
         {icon: 'lock', title: 'Chat codes', line: 'Hide a chat until its code is entered. A chat’s Details'},
         {icon: 'people', title: 'Sign out other browsers', line: 'All at once, from Settings'}])]},
@@ -1660,15 +1661,19 @@ async function showSyncGuide({fromSettings = false, connectedStep = false} = {})
         {icon: 'gear', title: 'Open Settings', line: 'The gear at the top of your inbox'},
         {icon: 'laptop', title: 'Storage and devices', line: 'Tap FluidMessages Web'},
         {icon: 'practice', title: 'Set up step by step', line: 'It asks for the address and token on the next step here'}])]},
-    {title: 'Enter these on your phone', subtitle: 'Copy the address and the pairing token into FluidMessages on your phone.',
+    {title: 'Enter these on your phone', subtitle: 'Scan the QR code with FluidMessages on your phone, or copy the address and the pairing token into it.',
       body: (flow) => {
-        const out = [tokenIllustration()];
+        // The QR code holds the pairing token, so it shows only while the token does (companion.js pairingQr).
+        const qr = token && security.reach ? pairingQr(security.reach, token) : null;
+        const out = [qr || tokenIllustration()];
         // The addresses this computer answers at (main.py phone_reach), each with a Copy button and plain-words help.
         if (security.reach) out.push(phoneAddressCard(security.reach));
         else if (!loopback) out.push(copyRow('Address', origin, false));
         if (token) {
           out.push(copyRow('Pairing token', token, true),
             element('p', 'Shown only now. Keep it private: it lets the phone read and send your messages.', 'hint'));
+          const print = fingerprintBlock(security.reach);
+          if (print) out.push(print);
         } else if (security.pairing.web) {
           const row = element('div', '', 'button-row');
           const problem = element('p', '', 'error');

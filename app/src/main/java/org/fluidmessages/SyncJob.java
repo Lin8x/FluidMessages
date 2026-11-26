@@ -92,14 +92,14 @@ public final class SyncJob extends JobService {
         publishInbox(context, preferences, url, token);
         boolean submitted = false;
         for (int count = 0; count < 10 && !Thread.currentThread().isInterrupted(); count++) {
-            JSONObject job = post(url, token, "claim", new JSONObject()).optJSONObject("job");
+            JSONObject job = post(preferences, url, token, "claim", new JSONObject()).optJSONObject("job");
             if (job == null) break;
             String state = "submitted";
             try {
                 String recipient = job.getString("address");
                 if ("call".equals(job.optString("protocol"))) {
                     callRequest(context, recipient);
-                    post(url, token, "result", new JSONObject().put("id", job.getLong("id")).put("state", "submitted"));
+                    post(preferences, url, token, "result", new JSONObject().put("id", job.getLong("id")).put("state", "submitted"));
                     continue;
                 }
                 MessageProtocol.SMS.transport().send(context, new OutgoingMessage(recipient, List.of(recipient),
@@ -108,7 +108,7 @@ public final class SyncJob extends JobService {
             } catch (Exception error) {
                 state = "failed";
             }
-            post(url, token, "result", new JSONObject().put("id", job.getLong("id")).put("state", state));
+            post(preferences, url, token, "result", new JSONObject().put("id", job.getLong("id")).put("state", state));
         }
         if (submitted && !Thread.currentThread().isInterrupted()) publishInbox(context, preferences, url, token);
     }
@@ -203,12 +203,14 @@ public final class SyncJob extends JobService {
             }
         }
         privacy.put("fluid_encryption", new JSONObject().put("protocols", fluidProtocols).put("chats", fluidChats));
-        post(url, token, "sync", new JSONObject().put("messages", messages).put("privacy", privacy)
+        post(prefs, url, token, "sync", new JSONObject().put("messages", messages).put("privacy", privacy)
             .put("appearance", CompanionAppearance.snapshot(prefs, messages)));
     }
 
-    private static JSONObject post(String root, String token, String endpoint, JSONObject data) throws Exception {
-        var connection = (java.net.HttpURLConnection) new URL(root + "/api/" + endpoint).openConnection();
+    private static JSONObject post(android.content.SharedPreferences prefs, String root, String token, String endpoint, JSONObject data) throws Exception {
+        // Pinned to FluidMessages Web's certificate when one was saved (CompanionTls).
+        NetworkGate.requireInternet();
+        var connection = CompanionTls.open(prefs, root + "/api/" + endpoint);
         try {
             connection.setConnectTimeout(8000);
             connection.setReadTimeout(8000);

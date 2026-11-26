@@ -42,7 +42,7 @@ final class GatewayClient {
 
     /** Internet protocols connect automatically once paired; turning every one of them off stops the checks. */
     static boolean wanted(SharedPreferences prefs) {
-        for (MessageProtocol format : MessageProtocol.values()) if (!format.isText() && format.enabled(prefs)) return true;
+        for (MessageProtocol format : MessageProtocol.values()) if (!format.isText() && format != MessageProtocol.NEARBY && format.enabled(prefs)) return true;
         return false;
     }
 
@@ -245,10 +245,11 @@ final class GatewayClient {
 
     /** Streams a prepared file to the companion and returns its upload id. */
     private static String upload(SharedPreferences prefs, MediaSanitizer.Prepared file) throws Exception {
+        NetworkGate.requireInternet();
         String origin = prefs.getString("server", "");
         String token = Privacy.token(prefs);
         if (!CloudBackup.paired(origin, token)) throw new IOException("Pair FluidMessages Web first.");
-        var connection = (java.net.HttpURLConnection) new URL(origin + "/api/protocols/upload").openConnection();
+        var connection = CompanionTls.open(prefs, origin + "/api/protocols/upload");
         try {
             connection.setConnectTimeout(8000);
             connection.setReadTimeout(120_000);
@@ -288,8 +289,9 @@ final class GatewayClient {
         String token = Privacy.token(prefs);
         String id = message.getString("id");
         if (!CloudBackup.paired(origin, token)) throw new IOException("Pair FluidMessages Web first.");
-        var connection = (java.net.HttpURLConnection) new URL(origin + "/api/protocols/file?id="
-            + java.net.URLEncoder.encode(id, StandardCharsets.UTF_8)).openConnection();
+        NetworkGate.requireInternet();
+        var connection = CompanionTls.open(prefs, origin + "/api/protocols/file?id="
+            + java.net.URLEncoder.encode(id, StandardCharsets.UTF_8));
         try {
             connection.setConnectTimeout(8000);
             connection.setReadTimeout(120_000);
@@ -307,7 +309,7 @@ final class GatewayClient {
     static JSONArray enabled(SharedPreferences prefs) {
         var result = new JSONArray();
         for (MessageProtocol format : MessageProtocol.values()) {
-            if (format.enabled(prefs) && !DirectProtocols.on(prefs, format)) result.put(format.name().toLowerCase(Locale.ROOT));
+            if (format.enabled(prefs) && format != MessageProtocol.NEARBY && !DirectProtocols.on(prefs, format)) result.put(format.name().toLowerCase(Locale.ROOT));
         }
         return result;
     }
@@ -669,9 +671,10 @@ final class GatewayClient {
     }
 
     static String matrixLogin(String homeserver, String user, String password, String device) throws Exception {
+        NetworkGate.requireInternet();
         var url = new URL(homeserver.replaceAll("/+$", "") + "/_matrix/client/v3/login");
         if (!"https".equals(url.getProtocol())) throw new IOException("Use an https:// homeserver address.");
-        var connection = (HttpsURLConnection) url.openConnection();
+        var connection = (HttpsURLConnection) TorRoute.open(url);
         try {
             connection.setConnectTimeout(10000);
             connection.setReadTimeout(20000);
@@ -716,10 +719,12 @@ final class GatewayClient {
     }
 
     private static JSONObject send(SharedPreferences prefs, String method, String endpoint, JSONObject payload) throws Exception {
+        NetworkGate.requireInternet();
         String origin = prefs.getString("server", "");
         String token = Privacy.token(prefs);
         if (!CloudBackup.paired(origin, token)) throw new IOException("Pair FluidMessages Web first.");
-        var connection = (java.net.HttpURLConnection) new URL(origin + "/api/" + endpoint).openConnection();
+        // Every FluidMessages Web request opens through CompanionTls, pinned when a certificate fingerprint was saved.
+        var connection = CompanionTls.open(prefs, origin + "/api/" + endpoint);
         try {
             connection.setConnectTimeout(8000);
             connection.setReadTimeout(15000);

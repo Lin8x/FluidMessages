@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Makes the FluidMessages release signing key, once. Run it yourself in a terminal: it asks for a password.
+#
+#   ./scripts/make-release-key
+#
+# It creates, in ~/.config/fluidmessages (or $FLUID_SIGNING_DIR), each readable only by you:
+#   release.jks        the new release key (RSA 4096, valid for about 30 years)
+#   release.pass       its password, so scripts/release can sign without asking
+#   lineage.bin        proof, signed by the old key, that the new key replaces it (APK key rotation). Phones that
+#                      installed a build signed with the old key accept updates signed with the new one, and keep
+#                      their data.
+#
+# BACK UP all three files somewhere safe and offline (for example an encrypted USB drive). If they are lost, no
+# one can ever publish an update that installs over FluidMessages again. If someone copies them, they could sign
+# fake updates. They never go in git.
+set -euo pipefail
+
+DIR="${FLUID_SIGNING_DIR:-$HOME/.config/fluidmessages}"
+OLD_KEYSTORE="${FLUID_OLD_KEYSTORE:-$HOME/.android/debug.keystore}"
+SDK="${ANDROID_HOME:-$HOME/Android/Sdk}"
+APKSIGNER=$(ls -d "$SDK"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+fail() { echo "make-release-key: $*" >&2; exit 1; }
+
+command -v keytool >/dev/null || fail "keytool is missing (it comes with Java)."
+[[ -x "$APKSIGNER" ]] || fail "apksigner is missing. Install Android SDK build-tools."
+[[ -f "$OLD_KEYSTORE" ]] || fail "The old signing key ($OLD_KEYSTORE) isn't here. It's needed once, to hand over to the new key."
+[[ ! -e "$DIR/release.jks" ]] || fail "$DIR/release.jks already exists. Nothing was changed."
+
+umask 077
+mkdir -p "$DIR"
+chmod 700 "$DIR"
+
+echo "Choose a password for the new release key (at least 12 characters). It won't be shown."
+while :; do
+  read -r -s -p "Password: " FLUID_KEY_PASS; echo
+  read -r -s -p "Type it again: " again; echo
+  [[ "$FLUID_KEY_PASS" == "$again" ]] || { echo "They don't match. Try again."; continue; }
+  (( ${#FLUID_KEY_PASS} >= 12 )) || { echo "Use at least 12 characters."; continue; }
+  break
+done
+unset again
+export FLUID_KEY_PASS
+
+keytool -genkeypair -keystore "$DIR/release.jks" -storetype PKCS12 -alias fluidmessages -keyalg RSA -keysize 4096 \
+  -validity 11000 -dname "CN=FluidMessages" -storepass:env FLUID_KEY_PASS -keypass:env FLUID_KEY_PASS >/dev/null
+printf '%s' "$FLUID_KEY_PASS" > "$DIR/release.pass"
+chmod 600 "$DIR/release.jks" "$DIR/release.pass"
+
+# The old key is Android's standard debug key, whose password is the well-known "android".
+"$APKSIGNER" rotate --out "$DIR/lineage.bin" \
+  --old-signer --ks "$OLD_KEYSTORE" --ks-key-alias androiddebugkey --ks-pass pass:android \
+  --new-signer --ks "$DIR/release.jks" --ks-key-alias fluidmessages --ks-pass env:FLUID_KEY_PASS
+chmod 600 "$DIR/lineage.bin"
+unset FLUID_KEY_PASS
+
+echo
+echo "Done. The new key's SHA-256 fingerprint (public, safe to share):"
+keytool -list -v -keystore "$DIR/release.jks" -storepass:file "$DIR/release.pass" -alias fluidmessages 2>/dev/null \
+  | sed -n 's/^[[:space:]]*SHA256: //p'
+echo
+echo "Now back up these files somewhere safe and offline:"
+echo "  $DIR/release.jks"
+echo "  $DIR/release.pass"
+echo "  $DIR/lineage.bin"

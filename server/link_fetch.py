@@ -10,6 +10,8 @@ import re
 import socket
 import ssl
 import time
+
+import tor_route
 from urllib.parse import urljoin, urlsplit
 
 _CACHE = {}
@@ -49,6 +51,14 @@ def public(ip):
     return ip.is_global and not (ip.is_multicast or ip.is_reserved or ip.is_unspecified)
 
 
+def _public_literal(host):
+    """False for an IP address that isn't public; names are left to Tor."""
+    try:
+        return public(ipaddress.ip_address(host.strip("[]")))
+    except ValueError:
+        return True
+
+
 class _Pinned(http.client.HTTPSConnection):
     """An HTTPS connection to an address that was already checked, with the hostname kept for the certificate."""
 
@@ -76,8 +86,14 @@ def fetch(url, limit, accept):
         # Ordinary web ports only, so links can't be used to probe other services.
         if port not in (443, 8443):
             raise Refused("only standard https ports")
-        family, address = _public_address(parts.hostname, port)
-        connection = _Pinned(parts.hostname, port, family, address, 10)
+        if tor_route.enabled():
+            # Through Tor nothing is looked up here (no DNS leak), and Tor's exits can't reach your network.
+            if tor_route.local_host(parts.hostname) or not _public_literal(parts.hostname):
+                raise Refused("not a public address")
+            connection = tor_route.HTTPSConnection(parts.hostname, port, timeout=10, context=ssl.create_default_context())
+        else:
+            family, address = _public_address(parts.hostname, port)
+            connection = _Pinned(parts.hostname, port, family, address, 10)
         path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
         try:
             connection.request("GET", path, headers={"User-Agent": "Mozilla/5.0 (compatible; FluidMessages link preview)",

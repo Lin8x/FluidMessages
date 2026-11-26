@@ -589,7 +589,7 @@ internal object LinkPreviews {
         var html = ""
         for (hop in 0..3) {
             if (!PublicHosts.allowed(target)) return null
-            val connection = target.openConnection() as HttpsURLConnection
+            val connection = TorRoute.open(target) as HttpsURLConnection
             connection.connectTimeout = 8_000
             connection.readTimeout = 10_000
             connection.instanceFollowRedirects = false

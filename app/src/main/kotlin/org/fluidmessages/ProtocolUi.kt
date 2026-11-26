@@ -127,6 +127,7 @@ internal fun MessageProtocol.tint(appearance: Appearance): Color = when (this) {
         val stock = when (this) {
             MessageProtocol.EMAIL -> MessageStyle.Swatch.ORANGE
             MessageProtocol.IRC -> MessageStyle.Swatch.RED
+            MessageProtocol.NEARBY -> MessageStyle.Swatch.MINT
             else -> MessageStyle.Swatch.PINK
         }
         val override = appearance.protocolColors[this]
@@ -161,7 +162,7 @@ internal fun GroupMembers(members: List<GroupMember>) {
 
 object ProtocolSettingsScreen {
     @JvmStatic
-    fun mount(root: LinearLayout, prefs: SharedPreferences, askTexting: Runnable, textingChanged: Runnable) {
+    fun mount(root: LinearLayout, prefs: SharedPreferences, askTexting: Runnable, textingChanged: Runnable, openNearby: Runnable) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -182,11 +183,13 @@ object ProtocolSettingsScreen {
                     }
                     item {
                         PreferencesCard("Chat services") {
-                            for (protocol in MessageProtocol.values().filter { !it.isText() }) {
+                            for (protocol in MessageProtocol.values().filter { !it.isText() && it != MessageProtocol.NEARBY }) {
                                 ProtocolSwitch(prefs, protocol.key(), protocol.label, protocol.description, true)
                             }
                         }
                     }
+                    // Nearby needs no internet, so it has its own card with its explanation and its page.
+                    item { NearbyServiceCard(prefs, openNearby) }
                     item { ServiceBatteryCard(CloudBackup.paired(prefs.getString("server", "").orEmpty(), Privacy.token(prefs))) }
                     item {
                         PreferencesCard("Conversations") {

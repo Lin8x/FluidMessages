@@ -16,6 +16,8 @@ import random
 import re
 import socket
 import ssl
+
+import tor_route
 import threading
 import time
 
@@ -130,6 +132,7 @@ def identify_line(account, password):
 
 
 BLOCKED = re.compile(r"k-?lined|g-?lined|z-?lined|d-?lined|banned|not welcome|you are not allowed", re.IGNORECASE)
+TOR_MENTION = re.compile(r"\btor\b|onion|exit node", re.IGNORECASE)
 
 
 def needs_sasl(text):
@@ -138,12 +141,19 @@ def needs_sasl(text):
                 and re.search(r"requir|need|must|only|identify|authenticat", text or "", re.IGNORECASE))
 
 
-def explain(command, text, network, nick, sasl):
+def explain(command, text, network, nick, sasl, tor=False):
     """Why [network] refused or closed the connection, in plain words with what to do, as (text, fatal), or None.
     [fatal]: trying again won't help until you change something or tap Reconnect. The phone says the same
     (IrcRules.explain)."""
     said = (text or "").strip()[:200]
     quote = f" It said: “{said}”" if said else ""
+    # Through Tor, a refusal is almost always about Tor: Libera.Chat and others only take Tor with SASL, or not at all.
+    if tor and command in ("ERROR", "465", "463") and (needs_sasl(said) or BLOCKED.search(said) or TOR_MENTION.search(said)):
+        return (f"{network} doesn’t let you in through Tor this way. Many IRC networks, like Libera.Chat, only allow Tor for a "
+                "registered nickname signed in with SASL, and some block Tor. "
+                + ("Check the account name and password in the IRC account settings, or turn off Connect through Tor." if sasl else
+                   "Register your nickname without Tor first, then type its password in Password in the IRC account settings. "
+                   "Or turn off Connect through Tor.") + quote, True)
     if command == "ERROR":
         if needs_sasl(said):
             return (f"{network} only lets people signed in to a registered nickname connect from your internet connection. "
@@ -417,7 +427,7 @@ class IrcClient:
         self.sign_in_lock = threading.Lock()
 
     def open_tls(self):
-        raw = socket.create_connection((self.account["server"], int(self.account.get("port", 6697))), timeout=30)
+        raw = tor_route.create_connection((self.account["server"], int(self.account.get("port", 6697))), timeout=30)
         return ssl.create_default_context().wrap_socket(raw, server_hostname=self.account["server"])
 
     def write(self, line):
@@ -454,7 +464,7 @@ class IrcClient:
         return self.account.get("server", "") or "the network"
 
     def explain(self, command, text):
-        return explain(command, text, self.network(), self.wanted, bool(self.account.get("sasl_password")))
+        return explain(command, text, self.network(), self.wanted, bool(self.account.get("sasl_password")), tor_route.enabled())
 
     def run(self):
         attempt = 0

@@ -68,7 +68,7 @@ final class SipAgent {
         main.post(() -> {
             app = context.getApplicationContext();
             var prefs = prefs(app);
-            var account = Calling.sipReady(prefs) ? Calling.sipAccount(prefs) : null;
+            var account = Calling.sipReady(prefs) && NetworkGate.internetAllowed(prefs) ? Calling.sipAccount(prefs) : null;  // Nearby only: no internet.
             String want = mode(prefs);
             boolean wanted = account != null && (ALWAYS.equals(want) || OPEN.equals(want) && appVisible || screen != null);
             String next = wanted ? account.toString() : "";

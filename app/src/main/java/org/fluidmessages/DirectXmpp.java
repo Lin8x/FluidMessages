@@ -126,6 +126,7 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
                     .setResource("FluidMessages")
                     .setSecurityMode(ConnectionConfiguration.SecurityMode.required);
                 if (!account.optString("host").isEmpty()) builder.setHost(account.getString("host")).setPort(account.optInt("port", 5222));
+                TorRoute.xmpp(builder, jid.getDomain().toString(), account.optString("host"));
                 var next = new XMPPTCPConnection(builder.build());
                 next.setUseStreamManagement(true);
                 next.setUseStreamManagementResumption(true);
@@ -277,8 +278,9 @@ final class DirectXmpp implements DirectProtocols.DirectClient {
     /** Downloads a shared file (HTTPS only, up to 25 MB) so it opens like other attachments. */
     private void fetch(JSONObject record, String link) {
         try {
+            NetworkGate.requireInternet();
             var url = new URL(link);
-            var connection = (HttpsURLConnection) url.openConnection();
+            var connection = (HttpsURLConnection) TorRoute.open(url);
             connection.setConnectTimeout(15_000);
             connection.setReadTimeout(60_000);
             String mime = connection.getContentType() == null ? "application/octet-stream" : connection.getContentType().split(";")[0].strip();

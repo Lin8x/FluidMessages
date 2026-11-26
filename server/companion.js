@@ -591,6 +591,8 @@ function devicesSection(settings, rebuild) {
         row.append(out);
       }
       others.append(change, row);
+      // Two-step sign-in: on, or a gentle notice with Turn on (two-step.js).
+      if (typeof twoStepSection === 'function') others.append(twoStepSection(state, (next) => draw(next)));
     }
     if (plain) others.append(element('p', 'This page starts with http://, so anyone on the same Wi-Fi could read your password and messages. That’s fine for testing at home. For everyday use, use an https:// address.', 'notice'));
   };
@@ -599,7 +601,8 @@ function devicesSection(settings, rebuild) {
   return section;
 }
 
-/** Set or change the password, inline. [done] gets the new security state. */
+/** Set or change the password, inline. [done] gets the new security state. A first password goes straight on to
+ * setting up two-step sign-in (two-step.js), with a visible Skip for now; [done] runs once that's finished or skipped. */
 function passwordForm(changing, done) {
   const form = element('form', '', 'stack password-form');
   const current = Object.assign(element('input', ''), {type: 'password', autocomplete: 'current-password', maxLength: 1024, required: changing});
@@ -620,6 +623,10 @@ function passwordForm(changing, done) {
     try {
       const result = await api('auth/password', {current: current.value, password: next.value});
       form.reset();
+      if (!changing && typeof twoStepSetup === 'function' && result.two_step && !result.two_step.on) {
+        form.replaceWith(twoStepSetup((state) => done(state)));
+        return;
+      }
       done(result);
     } catch (error) { status.textContent = error.message; }
     finally { save.disabled = false; }
@@ -657,6 +664,7 @@ function phoneAddressCard(reach) {
     row.append(input, copy);
     card.append(element('span', labels[item.kind] || 'Address', 'guide-copy-label'), row);
   }
+  if (reach?.tls && list.some((item) => item.pinned)) card.append(copyBlock('Port', String(reach.tls.port), false));
   if (!list.length) {
     card.append(element('p', reach?.container
       ? 'Your phone can’t reach FluidMessages yet. It runs in Docker, which only lets this computer in. Remove FLUID_LOCAL_ONLY and publish the port to your network (like "8080:8080") in compose.yaml, then use this computer’s address, like http://192.168.1.20:8080.'
@@ -672,6 +680,85 @@ function phoneAddressCard(reach) {
   const more = element('p', '', 'hint');
   more.append(outside);
   card.append(explain, more);
+  return card;
+}
+
+/** A label, a read-only value, and a Copy button, set as text. [mono] for codes. */
+function copyBlock(label, value, mono, hint) {
+  const wrap = element('div', '', 'guide-copy');
+  const box = element('div', '', 'token-box');
+  const input = Object.assign(element('input', ''), {value, readOnly: true, spellcheck: false, autocomplete: 'off'});
+  input.setAttribute('aria-label', label);
+  if (mono) input.classList.add('mono');
+  input.addEventListener('focus', () => input.select());
+  const copy = element('button', 'Copy', 'primary');
+  copy.type = 'button';
+  copy.setAttribute('aria-label', 'Copy ' + label.toLowerCase());
+  copy.addEventListener('click', () => {
+    const done = () => { copy.textContent = 'Copied'; setTimeout(() => { copy.textContent = 'Copy'; }, 2500); };
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(value).then(done).catch(() => input.select());
+    else { input.focus(); input.select(); }
+  });
+  box.append(input, copy);
+  wrap.append(element('span', label, 'guide-copy-label'), box);
+  if (hint) wrap.append(element('p', hint, 'hint'));
+  return wrap;
+}
+
+/** The certificate fingerprint to type on the phone, when FluidMessages Web serves its own HTTPS (main.py start_tls). */
+function fingerprintBlock(reach) {
+  const print = reach?.tls?.fingerprint;
+  return print ? copyBlock('Certificate fingerprint', print, true,
+    'Optional on the phone. With it, your phone talks only to this computer, even on shared Wi-Fi.') : null;
+}
+
+// pair-payload:start
+/**
+ * What the pairing QR code holds, read by CompanionPairing.parse on the phone:
+ * fluidmessages://pair?a=…&o=…&t=…&f=… with this computer's own HTTPS addresses (a, https:// left off, trusted by the
+ * certificate fingerprint f), other https:// addresses such as your own domain (o, trusted the normal way), and the
+ * pairing token t. The fingerprint is base64url to keep the code small. Addresses are dropped from the end until it
+ * fits in a QR code. Null when there's no https:// address to put in it.
+ */
+function pairPayload(reach, token, origin, fits) {
+  const list = reach?.addresses || [];
+  const print = (reach?.tls?.fingerprint || '').replace(/[^0-9a-f]/gi, '');
+  const pinned = print.length === 64 ? list.filter((item) => item.pinned).map((item) => item.url.replace(/^https:\/\//, '')) : [];
+  const others = list.filter((item) => !item.pinned && item.url.startsWith('https://')).map((item) => item.url);
+  if (origin && origin.startsWith('https://') && !others.includes(origin)
+    && !pinned.includes(origin.replace(/^https:\/\//, ''))) others.push(origin);
+  if (!token || (!pinned.length && !others.length)) return null;
+  const encode = (value) => encodeURIComponent(value).replace(/%3A/gi, ':').replace(/%2F/gi, '/');
+  let fingerprint = '';
+  if (pinned.length) {
+    const bytes = String.fromCharCode(...print.match(/../g).map((pair) => parseInt(pair, 16)));
+    fingerprint = btoa(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  const build = (a, o) => 'fluidmessages://pair?' + [...a.map((value) => 'a=' + encode(value)), ...o.map((value) => 'o=' + encode(value)),
+    't=' + encode(token), ...(a.length ? ['f=' + fingerprint] : [])].join('&');
+  let a = pinned.slice(), o = others.slice();
+  let text = build(a, o);
+  while (fits && !fits(text) && a.length + o.length > 1) {
+    if (o.length && (o.length > 1 || a.length)) o.pop(); else a.pop();
+    text = build(a, o);
+  }
+  return text;
+}
+// pair-payload:end
+
+/**
+ * The pairing QR code, shown only right after a pairing token is made (it holds the token), with the plain-words
+ * line above the typed-in details. Null when there's nothing to scan (no token, or no https:// address).
+ */
+function pairingQr(reach, token) {
+  if (typeof qrSvg !== 'function') return null;
+  const fits = (text) => { try { qrMatrix(text); return true; } catch (error) { return false; } };
+  const text = pairPayload(reach, token, location.origin, fits);
+  if (!text || !fits(text)) return null;
+  const card = element('div', '', 'pair-qr');
+  const code = element('div', '', 'pair-qr-code');
+  code.append(qrSvg(text, 'QR code to connect FluidMessages on your phone'));
+  card.append(code, element('p', 'Scan this with FluidMessages on your phone. Or type these in.', 'hint'));
   return card;
 }
 
@@ -698,10 +785,20 @@ function phoneConnect(state, changed) {
       token.hidden = false;
     }
     const steps = element('ol', '', 'steps');
-    steps.append(element('li', 'Find the address your phone can reach, below. https:// is safest; http:// works for testing at home.'),
-      element('li', 'On Android, open Settings → FluidMessages Web, enter that address and the pairing token, and save.'));
-    if (current.pairing.web || current.pairing.compose || value) box.append(steps, phoneAddressCard(current.reach));
-    box.append(token, actions);
+    steps.append(element('li', 'On Android, open Settings → FluidMessages Web and tap Scan QR code.'),
+      element('li', 'Or type in the address your phone can reach and the pairing token, below, and save. https:// is safest; http:// works for testing at home.'));
+    const shown = current.pairing.web || current.pairing.compose || value;
+    if (shown) {
+      box.append(steps);
+      // The QR code holds the token, so it shows only while the token does: right after it's made.
+      const qr = value ? pairingQr(current.reach, value) : null;
+      if (qr) box.append(qr);
+      box.append(phoneAddressCard(current.reach));
+    }
+    box.append(token);
+    const print = shown ? fingerprintBlock(current.reach) : null;
+    if (print) box.append(print);
+    box.append(actions);
     if (current.pairing.web && !value) box.append(element('p', 'A pairing token is active (made ' + new Date(current.pairing.created).toLocaleDateString() + ').', 'hint'));
     const make = () => api('auth/pairing', {}).then((result) => draw(result, result.token)).catch(showError);
     // The step-by-step guide: a full page with the password, the app, the token, and a live wait for the phone.

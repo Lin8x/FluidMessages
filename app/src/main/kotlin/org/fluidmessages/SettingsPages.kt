@@ -84,7 +84,7 @@ object SettingsPages {
     @JvmStatic
     fun mountAbout(root: LinearLayout, prefs: SharedPreferences, version: String, build: Long, status: String,
                    managed: Boolean, busy: Boolean, check: Runnable, github: Runnable, homepage: Runnable,
-                   githubUrl: String, homepageUrl: String) {
+                   githubUrl: String, homepageUrl: String, fdroid: Boolean, signingKey: String, openVerify: Runnable) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -105,7 +105,8 @@ object SettingsPages {
                     }
                     item {
                         PreferencesCard("App updates") {
-                            if (managed) PreferenceText("Updates managed by your app store", "Open your store to get its latest release.")
+                            if (fdroid) PreferenceText("Updates come from F-Droid", "Open F-Droid to get the newest version.")
+                            else if (managed) PreferenceText("Updates managed by your app store", "Open your store to get its latest release.")
                             else SettingsSwitch("Check automatically", "Check GitHub once a day while the app is open.", automatic) {
                                 automatic = it
                                 prefs.edit().putBoolean("automaticUpdateChecks", it).apply()
@@ -118,6 +119,7 @@ object SettingsPages {
                             Text("Check for updates")
                         }
                     }
+                    item { SigningKeyCard(signingKey, fdroid, openVerify) }
                     item {
                         PreferencesCard("Links") {
                             LinkRow("Website", homepageUrl, homepage)
@@ -329,5 +331,39 @@ private fun LinkRow(title: String, url: String, open: Runnable) {
         Text(title, color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp)
         Text("$display ↗", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp,
             textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
+    }
+}
+
+/** About and updates → This app's signing key: the fingerprint, Copy, and whether it is the official key. */
+@Composable
+private fun SigningKeyCard(fingerprint: String, fdroid: Boolean, openVerify: Runnable) {
+    val scheme = MaterialTheme.colorScheme
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    PreferencesCard("This app's signing key") {
+        Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (fingerprint.isEmpty()) Text("Android didn't share this copy's signing key.", color = scheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium)
+            else {
+                Text("SHA-256 fingerprint", color = scheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+                Text(SigningKey.grouped(fingerprint), color = scheme.onSurface, fontSize = 14.sp, lineHeight = 21.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                OutlinedButton(onClick = {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(SigningKey.colons(fingerprint)))
+                    copied = true
+                }) { Text(if (copied) "Copied" else "Copy") }
+            }
+            when (SigningKey.status(fingerprint, fdroid)) {
+                SigningKey.Status.OFFICIAL -> Text("✓ Matches the official FluidMessages key", color = scheme.onSurface,
+                    style = MaterialTheme.typography.bodyLarge, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                SigningKey.Status.FDROID -> Text("Signed by F-Droid. F-Droid built this copy from FluidMessages' source code " +
+                    "and signed it with its own key.", color = scheme.onSurface, style = MaterialTheme.typography.bodyLarge)
+                SigningKey.Status.SOMEONE_ELSE -> Text("This copy was signed by someone else, not by FluidMessages. It may have been " +
+                    "changed. To be safe, get FluidMessages from its official page.", color = scheme.error,
+                    style = MaterialTheme.typography.bodyLarge)
+            }
+            Text("How to check your download ↗", Modifier.clickable(role = Role.Button, onClick = openVerify::run),
+                color = scheme.primary, fontSize = 15.sp, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
+        }
     }
 }

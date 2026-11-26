@@ -22,11 +22,13 @@ import accounts
 import auth
 import chat_commands
 import cloud_backup
+import companion_tls
 import link_fetch
 import message_requests
 import privacy
 import protocol_gateway
 import sync_merge
+import tor_route
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get("FLUID_DB", "data/fluid.sqlite"))
@@ -43,6 +45,7 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/companion.js": ("companion.js", "text/javascript"), "/call.js": ("shared/call.js", "text/javascript"),
          "/cards.js": ("cards.js", "text/javascript"), "/chess.js": ("shared/chess.js", "text/javascript"),
          "/welcome.js": ("welcome.js", "text/javascript"),
+         "/qr.js": ("qr.js", "text/javascript"), "/two-step.js": ("two-step.js", "text/javascript"),
          "/editor.js": ("editor.js", "text/javascript"), "/media.js": ("media.js", "text/javascript"),
          "/chats.js": ("chats.js", "text/javascript"), "/look.js": ("look.js", "text/javascript"),
          "/features.css": ("features.css", "text/css"), "/settings.js": ("settings.js", "text/javascript"),
@@ -54,7 +57,7 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/notify.js": ("notify.js", "text/javascript"), "/requests.js": ("requests.js", "text/javascript"),
          "/chat-commands.js": ("chat-commands.js", "text/javascript"), "/invites.js": ("invites.js", "text/javascript"),
          "/connections.js": ("connections.js", "text/javascript"), "/meetings.js": ("meetings.js", "text/javascript"),
-         "/chat-features.css": ("chat-features.css", "text/css"),
+         "/chat-features.css": ("chat-features.css", "text/css"), "/tor.js": ("tor.js", "text/javascript"),
          # The sample inbox's fictional portraits, the phone's own (res/drawable-nodpi/sample_*.webp).
          "/samples/maya.webp": ("samples/maya.webp", "image/webp"), "/samples/jordan.webp": ("samples/jordan.webp", "image/webp"),
          # And the photo in the sample Photo Walk group (sample_lakeside.webp).
@@ -776,6 +779,28 @@ def connect():
     return connection
 
 
+def load_tor(db):
+    """Settings → Privacy and security → Connect through Tor (tor_route), off by default. FLUID_TOR_PROXY sets the first
+    proxy address, such as tor:9050 next to a Tor container."""
+    row = db.execute("SELECT value FROM protocol_state WHERE key='tor'").fetchone()
+    stored = json.loads(row[0]) if row else {}
+    tor_route.configure(stored.get("on") is True, stored.get("proxy") or os.environ.get("FLUID_TOR_PROXY") or tor_route.DEFAULT_PROXY)
+
+
+def save_tor(db, data):
+    """Turning it on needs "understood": the warning was shown and accepted, as on the phone."""
+    if not isinstance(data, dict) or type(data.get("on", False)) is not bool:
+        raise ValueError("Invalid Tor setting")
+    proxy = data.get("proxy", tor_route.status()["proxy"])
+    tor_route.parse_proxy(proxy)
+    on = data.get("on", tor_route.enabled())
+    if on and not tor_route.enabled() and data.get("understood") is not True:
+        raise ValueError("Turn on “I understand” first")
+    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('tor', ?)", (json.dumps({"on": on, "proxy": proxy}),))
+    tor_route.configure(on, proxy)
+    return tor_route.status()
+
+
 def protocol_settings(db):
     row = db.execute("SELECT content FROM phone_appearance WHERE id=1").fetchone()
     return json.loads(row["content"]) if row else {}
@@ -784,7 +809,9 @@ def protocol_settings(db):
 CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://lichess.org; "
        "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 COOKIE, SECURE_COOKIE = "fluid-session", "__Host-fluid-session"
-AUTH_OPEN = ("/api/auth/setup", "/api/auth/login", "/api/auth/token", "/api/auth/logout", "/api/auth/local")
+# Two-step sign-in's "Remember this browser for 30 days": skips the code after the password (auth.Auth.trust_browser).
+TRUST_COOKIE, SECURE_TRUST_COOKIE = "fluid-two-step", "__Host-fluid-two-step"
+AUTH_OPEN = ("/api/auth/setup", "/api/auth/login", "/api/auth/token", "/api/auth/logout", "/api/auth/local", "/api/auth/two-step")
 STATIC_CACHE = "no-cache"
 ICON_CACHE = "public, max-age=86400"
 
@@ -822,12 +849,20 @@ def lan_ipv4():
     return sorted(keep, key=lambda value: (not value.startswith("192.168."), ipaddress.ip_address(value) in LAN_NETWORKS[3]))
 
 
-def phone_reach(page_host, https, bind=None, port=None, local_only=None, container=None, addresses=None):
+# The server's own HTTPS for phones (companion_tls): {"port", "fingerprint"} once it's serving, else None.
+TLS = None
+
+
+def phone_reach(page_host, https, bind=None, port=None, local_only=None, container=None, addresses=None, tls=None,
+                page_tls=False):
     """The addresses a phone can type to reach this server (Settings → Phone and other devices, the phone guide):
-    this page's own address when it isn't localhost, and this computer's network addresses with the port. The server
-    itself speaks plain http; https comes from a reverse proxy in front of it."""
+    this page's own address when it isn't localhost, and this computer's network addresses with the port. With the
+    server's own HTTPS port on ([tls], companion_tls), those are https:// addresses on that port, marked "pinned": the
+    phone trusts them by the certificate's fingerprint (also returned, for the QR code). Without it they're http://,
+    and https comes from a reverse proxy in front of the server. [page_tls]: this page came in on the HTTPS port."""
     bind = (os.environ.get("FLUID_BIND", "127.0.0.1") if bind is None else bind).strip()
     port = int(os.environ.get("FLUID_PORT", 8080)) if port is None else port
+    tls = TLS if tls is None else (tls or None)
     local_only = LOCAL_ONLY if local_only is None else local_only
     container = Path("/.dockerenv").exists() if container is None else container
     try:
@@ -839,7 +874,14 @@ def phone_reach(page_host, https, bind=None, port=None, local_only=None, contain
     shown = []
     host = (page_host or "").strip().lower()
     if host and SHOWN_HOST.fullmatch(host) and not auth.loopback_name(host):
-        shown.append({"url": ("https://" if https else "http://") + host, "kind": "page"})
+        if https:
+            shown.append({"url": "https://" + host, "kind": "page", **({"pinned": True} if page_tls and tls else {})})
+        elif tls:
+            # Opened over http at this name: the phone uses the same name on the HTTPS port instead.
+            name = host[:host.index("]") + 1] if host.startswith("[") else host.rsplit(":", 1)[0]
+            shown.append({"url": "https://%s:%d" % (name, tls["port"]), "kind": "page", "pinned": True})
+        else:
+            shown.append({"url": "http://" + host, "kind": "page"})
     # Inside a container its own addresses are Docker's, which a phone can't reach: the page's address is shown instead.
     if listening and not container:
         if bind in ("", "0.0.0.0"):
@@ -847,15 +889,15 @@ def phone_reach(page_host, https, bind=None, port=None, local_only=None, contain
         else:
             ips = [bind]
         for ip in ips:
-            url = "http://%s:%d" % (ip, port)
+            url = "https://%s:%d" % (ip, tls["port"]) if tls else "http://%s:%d" % (ip, port)
             if all(item["url"] != url for item in shown):
                 try:
                     kind = "private" if ipaddress.ip_address(ip) in LAN_NETWORKS[3] else "wifi"
                 except ValueError:
                     kind = "wifi"
-                shown.append({"url": url, "kind": kind})
+                shown.append({"url": url, "kind": kind, **({"pinned": True} if tls else {})})
     return {"addresses": shown, "port": port, "listening": listening, "container": container,
-            "https": bool(https), "bind": bind}
+            "https": bool(https), "bind": bind, "tls": dict(tls) if tls else None}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -865,6 +907,8 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
     session_key = None
     kind = None
+    # Requests on the server's own HTTPS port (TlsHandler).
+    tls = False
     # The session's privacy flags (auth.Auth.session_info): a decoy session, and whether it opened the private folder.
     decoy = False
     private_open = False
@@ -911,7 +955,7 @@ class Handler(BaseHTTPRequestHandler):
     # Signing in
 
     def https(self):
-        return self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() == "https" \
+        return self.tls or self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() == "https" \
             or self.headers.get("Origin", "").startswith("https://")
 
     def client(self):
@@ -923,19 +967,19 @@ class Handler(BaseHTTPRequestHandler):
         proxy on this computer was set up without X-Forwarded-For."""
         return self.request_version == "HTTP/1.1" and auth.from_this_computer(self.client_address[0], self.headers, LOCAL_ONLY, need_origin)
 
-    def cookie(self):
+    def cookie(self, names=(SECURE_COOKIE, COOKIE)):
         try:
             jar = SimpleCookie(self.headers.get("Cookie", ""))
         except CookieError:
             return None
-        for name in (SECURE_COOKIE, COOKIE):
+        for name in names:
             if name in jar:
                 return jar[name].value
         return None
 
-    def set_cookie(self, value, persistent):
+    def set_cookie(self, value, persistent, names=(SECURE_COOKIE, COOKIE)):
         secure = self.https()
-        parts = [(SECURE_COOKIE if secure else COOKIE) + "=" + value, "Path=/", "HttpOnly", "SameSite=Strict"]
+        parts = [(names[0] if secure else names[1]) + "=" + value, "Path=/", "HttpOnly", "SameSite=Strict"]
         if secure:
             parts.append("Secure")
         if persistent:
@@ -1003,7 +1047,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "GET":
                 status, payload = DECOYS.get(db, self.session_key, parts.path, parts.query, defaults, {
                     "https": self.https(), "here": self.here(), "local_only": LOCAL_ONLY, "reach": self.reach(),
-                    "xmpp": protocol_gateway.xmpp_client.available()})
+                    "xmpp": protocol_gateway.xmpp_client.available(), "two_step": authority.two_step_status(db)})
             elif self.command == "POST" and parts.path in ("/api/schedule", "/api/call", "/api/cancel", "/api/settings",
                                                             "/api/protocols/read", "/api/protocols", "/api/protocols/send"):
                 try:
@@ -1050,12 +1094,22 @@ class Handler(BaseHTTPRequestHandler):
             label = (self.headers.get("User-Agent") or "")[:120]
             remember = data.get("remember") is True
             outcome = None
+            trusted = None
             with closing(connect()) as db, db:
                 if path == "/api/auth/setup":
                     value, persistent = authority.setup(db, self.client(), data.get("code"), data.get("password"), remember, label)
                 elif path == "/api/auth/login":
                     # The password, the decoy password, or the emergency erase passcode: answered the same way.
-                    value, persistent, outcome = authority.login(db, self.client(), data.get("password"), remember, label)
+                    value, persistent, outcome = authority.login(db, self.client(), data.get("password"), remember, label,
+                                                                 trusted=self.cookie((SECURE_TRUST_COOKIE, TRUST_COOKIE)))
+                    if outcome == "two_step":
+                        # Not signed in yet: the same page asks for the code next, with this ticket.
+                        self.reply(200, {"signed_in": False, "two_step": True, "ticket": value})
+                        return
+                elif path == "/api/auth/two-step":
+                    value, persistent, outcome = authority.finish_two_step(db, self.client(), data.get("ticket"), data.get("code"))
+                    if data.get("trust") is True:
+                        trusted = authority.trust_browser(db)
                 elif path == "/api/auth/token":
                     value, persistent = authority.login_with_token(db, self.client(), data.get("token"), remember, label)
                 elif path == "/api/auth/local":
@@ -1073,7 +1127,10 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError) as error:
             self.reply(400, {"error": str(error)})
         else:
-            self.reply(200, {"signed_in": True}, headers=[self.set_cookie(value, persistent)])
+            headers = [self.set_cookie(value, persistent)]
+            if trusted:
+                headers.append(self.set_cookie(trusted, True, (SECURE_TRUST_COOKIE, TRUST_COOKIE)))
+            self.reply(200, {"signed_in": True}, headers=headers)
 
     def account_security(self, data):
         """Password, sessions, and the phone's pairing token, once signed in."""
@@ -1092,19 +1149,43 @@ class Handler(BaseHTTPRequestHandler):
                 if type(data.get("enabled")) is not bool:
                     raise ValueError("Invalid setting")
                 authority.set_local(db, data["enabled"])
+            elif self.path.startswith("/api/auth/two-step/"):
+                return self.two_step_change(db, data)
             else:
                 raise ValueError("Unknown endpoint")
             return self.security_view(db)
 
+    def two_step_change(self, db, data):
+        """Two-step sign-in in Settings, from a browser only: the phone's token never changes how people sign in."""
+        if self.kind != "session":
+            raise auth.Refused(403, "Change two-step sign-in from FluidMessages Web in a browser.")
+        action = self.path[len("/api/auth/two-step/"):]
+        # The change first, then the state it leaves.
+        if action == "begin":
+            setup = authority.begin_two_step(db)
+            return {**self.security_view(db), "setup": setup}
+        if action in ("confirm", "recovery"):
+            make = authority.confirm_two_step if action == "confirm" else authority.new_recovery_codes
+            codes = make(db, self.client(), data.get("code"))
+            return {**self.security_view(db), "recovery_codes": codes}
+        if action == "off":
+            authority.turn_off_two_step(db, self.client(), data.get("password"), data.get("code"), here=self.here(need_origin=True))
+        elif action == "later":
+            authority.skip_two_step(db)
+        else:
+            raise ValueError("Unknown endpoint")
+        return self.security_view(db)
+
     def security_view(self, db):
         return {"owner": authority.has_owner(db), "sessions": authority.session_count(db),
                 "pairing": authority.pairing_status(db), "https": self.https(),
+                "two_step": authority.two_step_status(db),
                 "local": authority.local_enabled(db), "here": self.here(), "local_only": LOCAL_ONLY, "reach": self.reach()}
 
     def reach(self):
         """Where a phone can reach this server (phone_reach), from the address this page was opened at."""
         forwarded = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip()
-        return phone_reach(forwarded or self.headers.get("Host", ""), self.https())
+        return phone_reach(forwarded or self.headers.get("Host", ""), self.https(), page_tls=self.tls)
 
     # Privacy and security: the private folder, decoy mode, and the emergency erase passcode (privacy.py)
 
@@ -1350,6 +1431,8 @@ class Handler(BaseHTTPRequestHandler):
                                  self.private_check(db)))
             elif self.path == "/api/privacy":
                 self.reply(200, self.privacy_status(db))
+            elif self.path == "/api/tor":
+                self.reply(200, tor_route.status())
             elif self.path.startswith("/api/calls?since="):
                 since = self.path.removeprefix("/api/calls?since=")
                 self.reply(200, gateway.call_events(int(since) if since.isdigit() else 0))
@@ -1603,6 +1686,8 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('web_enabled', ?)",
                                    (json.dumps([key for key in sync_merge.INTERNET if key in chosen]),))
                 return gateway.snapshot(db, data.get("enabled"))
+            if self.path == "/api/tor" and self.kind == "session":
+                return save_tor(db, data)
             if self.path == "/api/protocols/send":
                 return gateway.enqueue(db, data)
             if self.path == "/api/protocols/command":
@@ -1797,6 +1882,34 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Unknown endpoint")
 
 
+class TlsHandler(Handler):
+    tls = True
+
+
+def start_tls():
+    """The phone's HTTPS port (companion_tls), next to the http one. It's skipped, with a plain message, when it's
+    turned off, openssl is missing, or the port is taken; the http port works the same either way."""
+    global TLS
+    port = companion_tls.tls_port(int(os.environ.get("FLUID_PORT", 8080)))
+    if not port:
+        return
+    made = companion_tls.ensure(DB.parent)
+    if not made:
+        print("FluidMessages Web: HTTPS for phones is off because the openssl command isn't installed. Phones can still "
+              "pair at an http:// address, or through your own https:// address.", flush=True)
+        return
+    try:
+        server = companion_tls.TlsServer((os.environ.get("FLUID_BIND", "127.0.0.1"), port), TlsHandler, *made)
+    except OSError:
+        print("FluidMessages Web: HTTPS for phones is off because port %d is in use. Set FLUID_TLS_PORT to another "
+              "port, or to 0 to turn it off." % port, flush=True)
+        return
+    TLS = {"port": port, "fingerprint": companion_tls.fingerprint(made[0])}
+    threading.Thread(target=server.serve_forever, name="fluid-tls", daemon=True).start()
+    print("FluidMessages Web: phones pair over https on port %d. Certificate fingerprint (SHA-256): %s"
+          % (port, TLS["fingerprint"]), flush=True)
+
+
 if __name__ == "__main__":
     if TOKEN and len(TOKEN) < 32:
         raise SystemExit("FLUID_TOKEN is optional. If you set it, use a random string of at least 32 characters.")
@@ -1823,6 +1936,12 @@ if __name__ == "__main__":
         print("FluidMessages Web: the password and every browser sign-in were removed.")
         print("Open FluidMessages Web and enter this one-time setup code to choose a new password: " + authority.pretty(code))
         raise SystemExit(0)
+    if sys.argv[1:] == ["reset-two-step"]:
+        # Locked out of the authenticator app and without recovery codes: the password alone signs in again.
+        with closing(connect()) as db, db:
+            authority.reset_two_step(db)
+        print("FluidMessages Web: two-step sign-in is off. Sign in with your password, then turn it on again in Settings.")
+        raise SystemExit(0)
     with closing(connect()) as db, db:
         code = authority.setup_code(db)
     if code:
@@ -1836,5 +1955,8 @@ if __name__ == "__main__":
     account_store = accounts.AccountStore(DB.parent / "protocol-accounts.json", legacy=legacy)
     gateway = protocol_gateway.Gateway(connect, legacy, files, account_store)
     merger = sync_merge.Merge(gateway, merge_hooks())
+    with closing(connect()) as db:
+        load_tor(db)
     gateway.start()
+    start_tls()
     ThreadingHTTPServer((os.environ.get("FLUID_BIND", "127.0.0.1"), int(os.environ.get("FLUID_PORT", 8080))), Handler).serve_forever()

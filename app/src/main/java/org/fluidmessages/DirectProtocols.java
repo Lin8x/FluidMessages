@@ -413,16 +413,20 @@ final class DirectProtocols {
         var app = context.getApplicationContext();
         var prefs = prefs(app);
         boolean service = false;
-        for (MessageProtocol protocol : new MessageProtocol[]{MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC}) {
+        for (MessageProtocol protocol : new MessageProtocol[]{MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC,
+                MessageProtocol.NEARBY}) {
             // A protocol turned off for messages stays connected when it's still allowed for calls.
             var account = on(prefs, protocol) && (protocol.enabled(prefs) || Calling.keepsConnected(prefs, protocol)) ? account(app, protocol) : null;
             var existing = clients.get(protocol);
             boolean always = account != null && stayConnected(prefs, protocol);
             // Never a second IRC connection beside FluidMessages Web's with the same nick.
-            boolean wanted = account != null && (foreground || always) && !deferredToWeb(prefs, protocol, account);
+            boolean wanted = account != null && (foreground || always) && !deferredToWeb(prefs, protocol, account)
+                && (protocol == MessageProtocol.NEARBY || NetworkGate.internetAllowed(prefs));  // Nearby only: no internet.
             service |= always && wanted;
             // IRC follows channel changes on its open connection, so a new channel or direct chat never reconnects.
-            String signature = account == null ? "" : protocol == MessageProtocol.IRC ? account.toString() : account.toString() + routes(prefs);
+            // Nearby reads its people as it goes, so adding someone doesn't restart it either.
+            String signature = account == null ? "" : protocol == MessageProtocol.IRC || protocol == MessageProtocol.NEARBY
+                ? account.toString() : account.toString() + routes(prefs);
             if (existing instanceof DirectIrc irc && wanted && signature.equals(existing.toString())) irc.syncChannels();
             if (existing != null && (!wanted || !signature.equals(existing.toString()))) {
                 existing.stop();
@@ -436,6 +440,7 @@ final class DirectProtocols {
                     case MATRIX -> new DirectMatrix(signature);
                     case XMPP -> new DirectXmpp(signature);
                     case EMAIL -> new DirectEmail(signature);
+                    case NEARBY -> new DirectNearby(signature);
                     default -> new DirectIrc(signature);
                 };
                 clients.put(protocol, client);
@@ -450,6 +455,7 @@ final class DirectProtocols {
     static void poll(Context context) {
         var app = context.getApplicationContext();
         var prefs = prefs(app);
+        if (!NetworkGate.internetAllowed(prefs)) return;  // Nearby only: no internet.
         for (MessageProtocol protocol : new MessageProtocol[]{MessageProtocol.MATRIX, MessageProtocol.EMAIL}) {
             if (!on(prefs, protocol) || !protocol.enabled(prefs)) continue;
             // Reconnect automatically off: no checks in the background either, until you tap Reconnect.
@@ -572,16 +578,18 @@ final class DirectProtocols {
             message.put(field, updates.get(field));
         }
         message.remove("queued");
-        message.put("status", "Sent");
+        message.put("status", MessageProtocol.parse(message.optString("protocol")) == MessageProtocol.NEARBY ? NearbyWire.SENT : "Sent");
         ProtocolStore.get(context).put(message);
     }
 
     static final String QUEUED = "Queued · sends when you’re back online";
 
     private static void queue(Context context, JSONObject message) throws Exception {
-        message.put("queued", true).put("status", QUEUED);
+        // Nearby waits for the person to be in range, and sends as soon as their phone is seen (DirectNearby).
+        boolean nearby = MessageProtocol.parse(message.optString("protocol")) == MessageProtocol.NEARBY;
+        message.put("queued", true).put("status", nearby ? NearbyWire.INSTANCE.waiting(message.optString("title")) : QUEUED);
         ProtocolStore.get(context).put(message);
-        Outbox.schedule(context);
+        if (!nearby) Outbox.schedule(context);
     }
 
     /** Sends messages that were queued while offline, oldest first. True when nothing is left waiting. */
@@ -604,13 +612,16 @@ final class DirectProtocols {
                     store.put(message.put("status", "Couldn’t send · " + format.label + " is no longer set up"));
                     continue;
                 }
-                if (client == null) { done = false; continue; }
+                boolean nearby = format == MessageProtocol.NEARBY;
+                if (client == null) { if (!nearby) done = false; continue; }
                 MediaSanitizer.Prepared file = null;
                 try {
                     var attachment = Attachment.fromJson(message.optJSONObject("attachment"), store.file(message));
                     if (attachment != null && attachment.isFile()) file = MediaSanitizer.prepare(app, attachment, MediaSanitizer.MAX_FILE);
                     deliver(app, client, route, message, file);
                 } catch (java.io.IOException offline) {
+                    // Not in range: it keeps waiting for that person, with no limit, and the rest still go.
+                    if (nearby) { store.put(message.put("status", NearbyWire.INSTANCE.waiting(message.optString("title")))); continue; }
                     done = false;
                     int tries = message.optInt("tries") + 1;
                     if (tries >= 30) {

@@ -31,7 +31,11 @@ final class ReleaseUpdates {
     record Release(String version, URL download, long size, String digest) {}
     record Result(Release update, String status) {}
 
+    /** True for F-Droid's build (-Pfdroid=true): F-Droid delivers updates, so the app never checks or downloads them itself. */
+    static boolean fdroidBuild() { return BuildConfig.FDROID; }
+
     static boolean managedByStore(Context context) {
+        if (fdroidBuild()) return true;
         try {
             String installer = context.getPackageManager().getInstallSourceInfo(context.getPackageName()).getInstallingPackageName();
             return installer != null && MANAGED_INSTALLERS.contains(installer);
@@ -43,6 +47,7 @@ final class ReleaseUpdates {
     }
 
     static Result check(String installedVersion) throws Exception {
+        if (fdroidBuild()) return new Result(null, "Updates come from F-Droid.");
         var connection = connect(new URL(API));
         connection.setRequestProperty("Accept", "application/vnd.github+json");
         try {
@@ -91,6 +96,7 @@ final class ReleaseUpdates {
     }
 
     static File download(Context context, Release release) throws Exception {
+        if (fdroidBuild()) throw new IOException("Updates come from F-Droid.");
         File directory = new File(context.getCacheDir(), "app-updates");
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Could not prepare an update download");
         File[] oldFiles = directory.listFiles();
@@ -151,10 +157,21 @@ final class ReleaseUpdates {
         if (update == null || !current.packageName.equals(update.packageName) || update.getLongVersionCode() <= current.getLongVersionCode()) {
             throw new IOException("The downloaded APK is not a newer FluidMessages build");
         }
-        if (current.signingInfo == null || update.signingInfo == null ||
-                !signers(current.signingInfo.getApkContentsSigners()).equals(signers(update.signingInfo.getApkContentsSigners()))) {
+        if (current.signingInfo == null || update.signingInfo == null || !sameOrRotated(
+                signers(current.signingInfo.getApkContentsSigners()), signers(update.signingInfo.getApkContentsSigners()),
+                update.signingInfo.hasPastSigningCertificates() ? signers(update.signingInfo.getSigningCertificateHistory()) : Set.of())) {
             throw new IOException("This release uses a different signing key. Use your original installation channel.");
         }
+    }
+
+    /**
+     * The update is signed by this copy's key, or by a newer key that this copy's key handed over to (APK key rotation:
+     * the update's signing history, its lineage, includes every key this copy is signed with). Android checks the
+     * same thing when it installs.
+     */
+    static <T> boolean sameOrRotated(Set<T> current, Set<T> update, Set<T> updateHistory) {
+        if (current.isEmpty() || update.isEmpty()) return false;
+        return current.equals(update) || updateHistory.containsAll(current) && updateHistory.containsAll(update);
     }
 
     private static Set<Signature> signers(Signature[] signatures) {
@@ -167,7 +184,8 @@ final class ReleaseUpdates {
     }
 
     private static HttpsURLConnection connect(URL url) throws IOException {
-        var connection = (HttpsURLConnection) url.openConnection();
+        NetworkGate.requireInternet();
+        var connection = (HttpsURLConnection) TorRoute.open(url);
         connection.setConnectTimeout(10000);
         connection.setReadTimeout(20000);
         connection.setInstanceFollowRedirects(false);

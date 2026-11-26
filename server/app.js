@@ -9,7 +9,7 @@ const colors = {
   email: 'email', emailInk: 'email-ink', irc: 'irc', ircInk: 'irc-ink',
 };
 // Same order and names as the phone. RCS, SMS, and MMS share one text conversation.
-const labels = {rcs: 'RCS', sms: 'SMS', mms: 'MMS', matrix: 'Matrix', xmpp: 'XMPP', email: 'Email', irc: 'IRC'};
+const labels = {rcs: 'RCS', sms: 'SMS', mms: 'MMS', matrix: 'Matrix', xmpp: 'XMPP', email: 'Email', irc: 'IRC', nearby: 'Nearby'};
 const family = (protocol) => ['rcs', 'mms', undefined, ''].includes(protocol) ? 'sms' : protocol;
 let enabled = new Set(['sms', 'mms', 'matrix', 'xmpp', 'email', 'irc']);
 const jobStates = {scheduled: 'Queued', claimed: 'Claimed by phone', submitted: 'Submitted by phone',
@@ -1271,20 +1271,29 @@ async function queueSms(body, address, due) {
 // Signing in: a password you create on first visit, then a session cookie. No access token to type.
 
 let signInMode = 'login';
+// Two-step sign-in: the ticket from the password step, kept only in this page until the code is typed.
+let twoStepTicket = '';
 
 function showSignIn(mode, message = '') {
   signInMode = mode;
   get('pair').hidden = false;
   get('workspace').hidden = true;
-  for (const [id, name] of [['setup-form', 'setup'], ['login-form', 'login'], ['token-form', 'token']]) get(id).hidden = mode !== name;
-  get('sign-in-title').textContent = mode === 'setup' ? 'Set up FluidMessages' : 'Welcome back';
+  if (mode !== 'two-step') twoStepTicket = '';
+  for (const [id, name] of [['setup-form', 'setup'], ['login-form', 'login'], ['token-form', 'token'], ['two-step-form', 'two-step']]) {
+    get(id).hidden = mode !== name;
+  }
+  get('two-step-offer').hidden = true;
+  get('two-step-offer').replaceChildren();
+  get('sign-in-title').textContent = mode === 'setup' ? 'Set up FluidMessages' : mode === 'two-step' ? 'Two-step sign-in' : 'Welcome back';
   get('sign-in-intro').textContent = mode === 'setup'
     ? 'You’re opening FluidMessages from another device. Enter the setup code from the server and choose a password for your other devices.'
     : mode === 'token' ? 'Sign in with an access token: the server’s FLUID_TOKEN or a phone pairing token.'
-      : 'Enter your FluidMessages password to open your chats.';
+      : mode === 'two-step' ? 'Your password is right. Now open your authenticator app for the code.'
+        : 'Enter your FluidMessages password to open your chats.';
   get('pair-error').textContent = message;
-  get('reset-help').hidden = mode === 'setup';
-  const first = {setup: 'setup-code', login: 'login-password', token: 'token'}[mode];
+  get('reset-help').hidden = mode === 'setup' || mode === 'two-step';
+  get('two-step-lost').hidden = mode !== 'two-step';
+  const first = {setup: 'setup-code', login: 'login-password', token: 'token', 'two-step': 'two-step-code'}[mode];
   requestAnimationFrame(() => get(first)?.focus());
 }
 
@@ -1293,7 +1302,7 @@ async function authCall(path, body) {
     headers: {...REQUEST_HEADERS, 'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
   let result = {};
   try { result = await response.json(); } catch (error) { /* not JSON */ }
-  if (!response.ok) throw new Error(result.error || 'Couldn’t sign in. Try again.');
+  if (!response.ok) throw Object.assign(new Error(result.error || 'Couldn’t sign in. Try again.'), {status: response.status});
   return result;
 }
 
@@ -1302,7 +1311,8 @@ async function enterWorkspace() {
   signedIn = true;
   await refresh();
   if (currentSession !== session) return;
-  for (const id of ['setup-form', 'login-form', 'token-form']) get(id).reset();
+  for (const id of ['setup-form', 'login-form', 'token-form', 'two-step-form']) get(id).reset();
+  twoStepTicket = '';
   get('pair-error').textContent = '';
   get('pair').hidden = true;
   // First run: a short welcome (look, accounts, and the optional phone) before the inbox.
@@ -1319,7 +1329,8 @@ function signInForm(id, run) {
     button.disabled = true;
     get('pair-error').textContent = '';
     try {
-      await run();
+      // false: the sign-in page shows its next step (the two-step code, or the offer to turn it on).
+      if (await run() === false) return;
       await enterWorkspace();
     } catch (error) {
       signedIn = false;
@@ -1332,8 +1343,44 @@ signInForm('setup-form', async () => {
   const password = get('setup-password').value;
   if (password !== get('setup-confirm').value) throw new Error('The two passwords don’t match.');
   await authCall('setup', {code: get('setup-code').value.trim(), password, remember: get('setup-remember').checked});
+  // A new password goes straight on to two-step sign-in, with a visible Skip for now.
+  return offerTwoStep(true);
 });
-signInForm('login-form', () => authCall('login', {password: get('login-password').value, remember: get('login-remember').checked}));
+signInForm('login-form', async () => {
+  const result = await authCall('login', {password: get('login-password').value, remember: get('login-remember').checked});
+  if (result.two_step) {
+    get('login-form').reset();
+    showSignIn('two-step');
+    twoStepTicket = result.ticket;
+    return false;
+  }
+  return offerTwoStep(false);
+});
+signInForm('two-step-form', async () => {
+  try {
+    await authCall('two-step', {ticket: twoStepTicket, code: get('two-step-code').value.trim(), trust: get('two-step-trust').checked});
+  } catch (error) {
+    // The code took too long or was wrong too many times: back to the password, saying why.
+    if (error.status === 409) { showSignIn('login', error.message); return false; }
+    get('two-step-code').select();
+    throw error;
+  }
+});
+get('two-step-back').addEventListener('click', () => showSignIn('login'));
+
+/**
+ * After a password sign-in without two-step sign-in: right after setting the password ([always]), or once on an
+ * install that had a password before it existed (the server's two_step.prompt). Returns false while it shows.
+ */
+async function offerTwoStep(always) {
+  if (typeof showTwoStepOffer !== 'function') return true;
+  let state;
+  try { state = await api('auth/security'); } catch (error) { return true; }
+  if (!state.two_step || state.two_step.on || !(always || state.two_step.prompt)) return true;
+  signedIn = true;
+  showTwoStepOffer(() => enterWorkspace().catch((error) => showSignIn('login', error.message)), {skipLabel: always ? 'Skip for now' : 'Not now'});
+  return false;
+}
 signInForm('token-form', () => authCall('token', {token: get('token').value.trim(), remember: get('remember').checked}));
 get('use-token').addEventListener('click', () => showSignIn('token'));
 get('setup-use-token').addEventListener('click', () => showSignIn('token'));

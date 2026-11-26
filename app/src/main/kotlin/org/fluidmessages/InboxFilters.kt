@@ -33,6 +33,7 @@ internal object InboxFilters {
         Filter("xmpp", "XMPP", "XMPP chats and group chats", "XMPP"),
         Filter("email", "Email", "Email conversations", "EMAIL"),
         Filter("irc", "IRC", "IRC channels and direct messages", "IRC"),
+        Filter("nearby", "Nearby", "Chats with people close by, with no internet", "NEARBY"),
         // Message requests and automated senders (MessageRequests).
         Filter("requests", "Requests", "Chats from people you don't know, waiting for you to accept them"),
         Filter("automated", "Automated", "Short codes and sender IDs, like delivery updates and sign-in codes"),

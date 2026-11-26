@@ -1,0 +1,33 @@
+FluidMessages is a free, open-source texting app for Android, with no ads and no tracking. It takes the place of the texting app your phone came with. You keep your same phone number, you text the same people, and your old texts are already there.
+
+<b>Better texting</b>
+<ul>
+<li>Real reactions: sentences like Loved "See you at 7" turn back into hearts, even from iPhone friends.</li>
+<li>Replies and forwarding for one message at a time.</li>
+<li>Polls, plans, games, and effects like confetti. Friends without the app get a plain text with simple directions, so nothing breaks for them.</li>
+<li>Works with two SIM cards.</li>
+</ul>
+
+<b>More than texts</b>
+FluidMessages also reaches people on open chat services in the same inbox: Matrix, XMPP, Email, and IRC. It can't connect to closed apps like WhatsApp or iMessage.
+
+<b>Privacy you can see</b>
+Every chat shows a lock: green when only you and the other person can read it, yellow when it is protected on the way but the service could read it, and red for plain texts your carrier can read. Two FluidMessages users can lock their texts to each other with a secret code they both type in.
+<ul>
+<li>App lock with your fingerprint, face, or screen lock.</li>
+<li>A private folder that keeps chats out of your inbox.</li>
+<li>Decoy mode, an emergency erase code, and disappearing messages.</li>
+<li>Private keyboard: asks your keyboard not to learn what you type.</li>
+<li>Removes location and camera details from photos and files you send.</li>
+</ul>
+
+<b>Never lose a text</b>
+Backups are locked with your password. Save them on your phone, your own computer, or a file server you choose.
+
+<b>Make it yours</b>
+Eight color themes, each in light and dark. Change bubble colors, wallpapers, sounds, and motion, or give one chat its own look.
+
+<b>Text from your computer</b>
+FluidMessages Web runs on a computer you own. Link your phone to read and send your texts there. It takes some setup.
+
+What it doesn't do yet: RCS chats. Your texts go as SMS and MMS. If RCS chats is on in Google Messages, turn it off there before you switch.

@@ -213,6 +213,14 @@ internal fun ConnectionCard(account: String, extras: List<SettingsAction>) {
         }
         if (busy.isNotEmpty()) Text(busy, Modifier.padding(horizontal = 15.dp), color = scheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall)
+        // This phone's own connection while Connect through Tor is on: Tor's state, checked every few seconds.
+        if (!sample && TorRoute.on() && PhoneChat.onPhone(context, account)) {
+            var tor by remember(account) { mutableStateOf(TorRoute.words(TorRoute.Status.CONNECTING)) }
+            LaunchedEffect(account) {
+                while (true) { tor = TorRoute.words(withContext(Dispatchers.IO) { TorRoute.status(context) }); delay(5000) }
+            }
+            Text(tor, Modifier.padding(horizontal = 15.dp), color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
         if (!shown.serviceOff) Row(Modifier.padding(start = 15.dp, end = 15.dp, bottom = 12.dp, top = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (shown.off) AppButton(onClick = { act("Connecting…") { PhoneChat.connect(context, account) } }) { Text("Connect") }

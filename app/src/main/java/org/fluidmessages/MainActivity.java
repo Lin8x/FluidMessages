@@ -478,7 +478,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "theme", "backups", "messaging", "about", "protocols", "privacy", "reset", "calls", "gifs", "payments", "sounds", "communities-intro" -> settings();
             case "recording", "meetingLinks" -> callsSettings();
             case "recordings" -> recordingSettings();
-            case "locks", "hiddenChats", "decoyMode", "encryption", "requestsSettings" -> privacySettings();
+            case "locks", "hiddenChats", "decoyMode", "encryption", "requestsSettings", "tor" -> privacySettings();
             case "requestConfirm" -> requestBack.run();
             case "phone" -> inbox();
             case "samplePhone" -> sampleInbox();
@@ -487,6 +487,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "backupForm", "backupReview", "companion" -> backupBack.run();
             case "syncGuide" -> { if (syncStep > 0) syncGuide(syncStep - 1, syncBack); else syncBack.run(); }
             case "syncConflicts" -> conflictsBack.run();
+            case "pairScan" -> scanBack.run();
             default -> inbox();
         }
     }
@@ -666,7 +667,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     }
     private EditText field(String hint) {
         var palette = uiColors();
-        EditText view = new EditText(this);
+        // Private keyboard: decided when the keyboard opens, from the field's own input type (PrivateKeyboard).
+        EditText view = new EditText(this) {
+            @Override public android.view.inputmethod.InputConnection onCreateInputConnection(android.view.inputmethod.EditorInfo out) {
+                var connection = super.onCreateInputConnection(out);
+                out.imeOptions = PrivateKeyboard.imeOptions(out.imeOptions, out.inputType, PrivateKeyboard.enabled(prefs));
+                return connection;
+            }
+        };
         view.setHint(hint);
         view.setTextColor(palette.ink());
         view.setHintTextColor(palette.muted());
@@ -1685,6 +1693,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         List<SettingsAction> allowed = new ArrayList<>();
         for (var method : Calling.Method.values()) {
             boolean on = Calling.allowed(prefs, method);
+            if (TorRoute.holdsCalls(prefs, method)) { allowed.add(action(method.label, "Off while Connect through Tor is on", this::torSettings)); continue; }
             allowed.add(toggleRow(method.label, method.detail, on, () -> {
                 Calling.set(prefs, method, !on);
                 DirectProtocols.restart(this);
@@ -1935,7 +1944,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     /** Says why a call can't start: every way to call is off, or just this one. */
     private boolean callBlocked(Calling.Method method) {
         if (Calling.allowed(prefs, method)) return false;
-        if (!Calling.anyAllowed(prefs)) toast(Calling.CALLS_OFF);
+        if (TorRoute.holdsCalls(prefs, method)) toast(TorRoute.CALLS_HELD);
+        else if (!Calling.anyAllowed(prefs)) toast(Calling.CALLS_OFF);
         else toast(method.label + " calls are turned off in Settings → Calls");
         return true;
     }
@@ -3996,7 +4006,20 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     prefs.edit().putBoolean(ANNOUNCE_SETTINGS, !prefs.getBoolean(ANNOUNCE_SETTINGS, true)).apply();
                     privacySettings();
                 }))));
+        sections.add(new SettingsSection("Typing", List.of(toggleRow("Private keyboard",
+            "Ask your keyboard not to learn or remember what you type in FluidMessages.", PrivateKeyboard.enabled(prefs), () -> {
+                prefs.edit().putBoolean(PrivateKeyboard.PREF, !PrivateKeyboard.enabled(prefs)).apply();
+                privacySettings();
+            }))));
+        sections.add(new SettingsSection("Network", List.of(action("Connect through Tor", TorSettingsPage.summary(prefs), this::torSettings))));
         SettingsPages.mount(root, prefs, sections);
+    }
+
+    /** Settings → Privacy and security → Connect through Tor (TorRoute). Connections restart to use the new route. */
+    private void torSettings() {
+        render("tor");
+        heading("Connect through Tor", "Privacy and security", this::privacySettings);
+        TorSettingsPage.mount(root, prefs, () -> { DirectProtocols.restart(this); SipAgent.sync(this); });
     }
 
     /** Settings → Privacy and security → Requests and spam (MessageRequests). FluidMessages Web follows on the next sync. */
@@ -4044,7 +4067,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void locksSettings() {
         List<SettingsAction> codes = new ArrayList<>();
         for (var format : List.of(MessageProtocol.SMS, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL,
-                MessageProtocol.IRC)) {
+                MessageProtocol.IRC, MessageProtocol.NEARBY)) {
             String scope = Privacy.protocolScope(format);
             String label = format == MessageProtocol.SMS ? "All texts" : "All " + format.label + " chats";
             lockRows(scope, label.toLowerCase(Locale.ROOT), "these chats", label, codes, this::locksSettings);
@@ -4614,7 +4637,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     this::privacySettings))),
             new SettingsSection("Storage and devices", List.of(
                 action("Backups", "Save and restore your messages and settings", this::backups),
-                action("FluidMessages Web", CloudBackup.paired(this) ? "On · your messages in a browser" : "Off · your messages in a browser",
+                action("FluidMessages Web", prefs.getBoolean(CompanionTls.CHANGED, false) ? "Its certificate changed · pair again"
+                    : CloudBackup.paired(this) ? "On · your messages in a browser" : "Off · your messages in a browser",
                     this::companion),
                 action("Battery and sync", SyncPolicy.backgroundLabel(SyncPolicy.backgroundMinutes(prefs)) + " in the background",
                     this::batterySettings))),
@@ -4677,7 +4701,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             SettingsPages.mountAbout(root, prefs, installed.versionName, installed.getLongVersionCode(), status,
                 ReleaseUpdates.managedByStore(this), checkingUpdates || downloadingUpdate, () -> checkUpdates(true),
                 () -> openWebsite(ReleaseUpdates.REPOSITORY + "/releases"),
-                () -> openWebsite(HOMEPAGE), ReleaseUpdates.REPOSITORY + "/releases", HOMEPAGE);
+                () -> openWebsite(HOMEPAGE), ReleaseUpdates.REPOSITORY + "/releases", HOMEPAGE,
+                ReleaseUpdates.fdroidBuild(), SigningKey.installed(this), () -> openWebsite(SigningKey.VERIFY_PAGE));
         } catch (PackageManager.NameNotFoundException error) { toast("Could not read app version"); }
     }
 
@@ -4784,7 +4809,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void protocolSettings() {
         render("protocols");
         heading("Chat services", "Back", this::settings);
-        ProtocolSettingsScreen.mount(root, prefs, () -> turnOnTexting(this::protocolSettings), this::textingChanged);
+        ProtocolSettingsScreen.mount(root, prefs, () -> turnOnTexting(this::protocolSettings), this::textingChanged, () -> nearby("home"));
+    }
+
+    /** Settings → Chat services → Nearby, and its pages: your code, scan theirs, type it, and Add nearby person. */
+    private void nearby(String step) {
+        render("nearby");
+        heading(NearbyScreen.title(step), "Back", step.equals("home") ? this::protocolSettings : () -> nearby("home"));
+        NearbyScreen.mount(root, prefs, step, this::nearby, address -> chat(address, MessageProtocol.NEARBY));
     }
 
     private void accounts() { accounts(this::settings); }
@@ -5714,6 +5746,15 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             return;
         }
         if (request == CALL_LOG_PERMISSION) { if (page.equals("phone")) phone(); return; }
+        if (request == CAMERA_PERMISSION) {
+            if (!page.equals("pairScan")) return;
+            boolean allowed = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+            // Asked again after "Don't allow": Android doesn't show the question, so this says where to allow it.
+            pairScan(scanBack, scanPaired, allowed ? null : shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+                ? "Without the camera, FluidMessages can’t read the code. Tap Allow camera to try again, or type the address and link code instead."
+                : "The camera is off for FluidMessages. To scan, allow it in Android Settings → Apps → FluidMessages → Permissions. Or type the address and link code instead.");
+            return;
+        }
         if (request == NOTIFICATION_PERMISSION) { if (page.equals("sounds")) soundsSettings(); return; }
         if (request == PICKER_CONTACT_PERMISSION) {
             contacts.invalidate();
@@ -5751,10 +5792,30 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             SettingsPages.mount(root, prefs, List.of(new SettingsSection("Not set up", List.of(
                 action("Set up step by step", "Start FluidMessages Web on a computer, then connect this phone",
                     () -> syncGuide(0, () -> companion(back))),
+                action("Scan QR code", "FluidMessages Web shows it when you connect your phone",
+                    () -> startPairScan(() -> companion(back), () -> {
+                        new Thread(() -> { try { SyncMergeRun.run(getApplicationContext(), true); } catch (Exception ignored) {} }, "fluid-merge").start();
+                        if (prefs.getBoolean("syncSms", false)) sync(true);
+                        back.run();
+                        toast("Connected to FluidMessages Web");
+                    })),
                 action("Enter address and link code", "If you already have a link code", () -> companion(back, true))))));
             return;
         }
-        item(root, text("In FluidMessages Web, open Settings → Phone and other devices → Connect your phone, then enter the address it shows and the link code here. "
+        // The pinned certificate stopped matching (CompanionTls): said plainly, at the top, with the way to fix it.
+        if (prefs.getBoolean(CompanionTls.CHANGED, false)) {
+            TextView changed = text(CompanionTls.CHANGED_MESSAGE, 16, uiColors().ink());
+            changed.setPadding(dp(14), dp(12), dp(14), dp(12));
+            changed.setBackground(shape(uiColors().raised(), 14));
+            item(root, changed);
+        }
+        item(root, button("Scan QR code", true, () -> startPairScan(() -> companion(back, setup), () -> {
+            new Thread(() -> { try { SyncMergeRun.run(getApplicationContext(), true); } catch (Exception ignored) {} }, "fluid-merge").start();
+            if (prefs.getBoolean("syncSms", false)) sync(true);
+            back.run();
+            toast("Connected to FluidMessages Web");
+        })));
+        item(root, text("In FluidMessages Web, open Settings → Phone and other devices → Connect your phone, then scan its QR code, or enter the address it shows and the link code here. "
             + "Linking turns on cloud backups. Browser messaging also syncs the newest 2,000 texts and sends texts you write on the web.", 16, uiColors().muted()));
         EditText url = field("https://messages.example.net");
         url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
@@ -5775,11 +5836,18 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         token.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
         token.setText(Privacy.token(prefs));
         item(root, token);
+        // Optional: with it, this phone trusts only FluidMessages Web's own certificate (CompanionTls).
+        EditText pin = field("Certificate fingerprint (optional)");
+        pin.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        String savedPin = prefs.getString(CompanionTls.PIN, "");
+        pin.setText(savedPin.isEmpty() ? "" : CompanionPairing.shown(savedPin));
+        item(root, pin);
+        item(root, text(CompanionPairing.FINGERPRINT_HELP, 14, uiColors().muted()));
         CheckBox syncMessages = option(root, "Enable browser messaging",
             prefs.getBoolean("syncSms", CloudBackup.paired(this)));
         syncMessages.setMinHeight(dp(48));
         item(root, button("Save connection", true, () -> {
-            String problem = saveCompanion(url.getText().toString(), token.getText().toString(), syncMessages.isChecked());
+            String problem = saveCompanion(url.getText().toString(), token.getText().toString(), syncMessages.isChecked(), pin.getText().toString());
             if (problem != null) { toast(problem); return; }
             // Settings combine with the web's now, with browser messaging on or off (the guide's test does the same).
             new Thread(() -> { try { SyncMergeRun.run(getApplicationContext(), true); } catch (Exception ignored) {} }, "fluid-merge").start();
@@ -5794,7 +5862,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         if (connected) item(root, button("Disconnect phone", false, () -> {
             // Differences waiting for a choice go; the pair id stays, so reconnecting to the same FluidMessages Web
             // merges against what both last agreed on (a different or erased one has a new pair id and combines).
-            prefs.edit().remove("server").remove("token").remove("merge.pending").apply();
+            prefs.edit().remove("server").remove("token").remove(CompanionTls.PIN).remove(CompanionTls.CHANGED).remove("merge.pending").apply();
             WebContacts.forget(prefs);
             // Keeps the background job only if disappearing timers or phone-direct accounts still need it.
             SyncJob.reschedule(this);
@@ -5806,17 +5874,24 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
      * Checks and saves the FluidMessages Web address and pairing token, for the settings form and the step-by-step
      * guide. Returns what to fix, or null once it's saved.
      */
-    private String saveCompanion(String address, String pairingToken, boolean messaging) {
+    private String saveCompanion(String address, String pairingToken, boolean messaging, String fingerprint) {
         if (messaging && !hasRole()) return "To text from a browser, make FluidMessages your texting app first. Or turn browser messaging off to link for backups only.";
         var checked = CompanionAddress.check(address);
         String token = pairingToken.trim();
         if (checked == null || token.length() < 32) {
             return "Enter the address FluidMessages Web shows (like https://messages.example.net or http://192.168.1.20:8080) and the link code from its Settings";
         }
+        String typedPin = fingerprint == null ? "" : fingerprint.trim();
+        String pin = typedPin.isEmpty() ? "" : CompanionPairing.normalize(typedPin);
+        if (pin == null) return "That certificate fingerprint isn’t right. It’s 64 letters and numbers, shown under the link code in FluidMessages Web. Or leave it empty.";
+        if (!pin.isEmpty() && checked.getPlain()) return "A certificate fingerprint works only with an https:// address. Use the https:// address FluidMessages Web shows, or leave the fingerprint empty.";
         // Keeps the scheme you typed: https://, or http:// for testing at home (the form shows a warning for it).
-        prefs.edit().putString("server", checked.getOrigin())
+        // The fingerprint sits next to the address, the same way; a new pairing clears a changed-certificate notice.
+        var editor = prefs.edit().putString("server", checked.getOrigin())
             .putString("token", Privacy.seal(prefs, token))
-            .putBoolean("syncSms", messaging).apply();
+            .putBoolean("syncSms", messaging).remove(CompanionTls.CHANGED);
+        if (pin.isEmpty()) editor.remove(CompanionTls.PIN); else editor.putString(CompanionTls.PIN, pin);
+        editor.apply();
         SyncJob.reschedule(this);
         return null;
     }
@@ -5826,7 +5901,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         new Thread(() -> {
             String problem = null;
             try { CloudBackup.targets(this); }
-            catch (Exception error) { problem = "Couldn't reach FluidMessages Web. Check the address and the link code, and that this phone can reach that computer (for an address like http://192.168.1.20:8080, the same Wi-Fi)."; }
+            catch (Exception error) { problem = CompanionTls.changed(error) || prefs.getBoolean(CompanionTls.CHANGED, false) ? CompanionTls.CHANGED_MESSAGE : "Couldn't reach FluidMessages Web. Check the address and the link code, and that this phone can reach that computer (for an address like http://192.168.1.20:8080, the same Wi-Fi)."; }
             // Combines this phone's settings with the web's now, so the guide can go straight to any differences.
             if (problem == null) try { SyncMergeRun.run(getApplicationContext(), true); } catch (Exception ignored) {}
             String result = problem;
@@ -5849,7 +5924,64 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         SyncGuideScreen.mount(root, prefs, step, () -> syncGuide(step + 1, back),
             () -> { if (step > 0) syncGuide(step - 1, back); else back.run(); }, back, this::recolorWindow,
             () -> openWebsite(ReleaseUpdates.REPOSITORY + "/blob/main/docs/self-hosting.md#https-and-connecting-your-phone"), hasRole(), this::saveCompanion, this::testCompanion,
-            () -> syncConflicts(() -> syncGuide(5, back), () -> syncGuide(step, back)));
+            () -> syncConflicts(() -> syncGuide(5, back), () -> syncGuide(step, back)),
+            // Scanning from "Enter it here": once saved, straight on to the connection test.
+            () -> startPairScan(() -> syncGuide(step, back), () -> syncGuide(step + 1, back)));
+    }
+
+    private static final int CAMERA_PERMISSION = 61;
+    private Runnable scanBack, scanPaired;
+
+    /** Scan QR code: asks for the camera only now, the first time, then opens the scanner page. */
+    private void startPairScan(Runnable back, Runnable paired) {
+        boolean allowed = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        pairScan(back, paired, null);
+        if (!allowed) requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
+    }
+
+    /** The scanner, a full page (PairScanScreen). [problem]: why the camera isn't on, shown inline. */
+    private void pairScan(Runnable back, Runnable paired, String problem) {
+        scanBack = back;
+        scanPaired = paired;
+        render("pairScan");
+        boolean allowed = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        PairScanScreen.mount(root, prefs, this, this::recolorWindow, allowed, problem,
+            () -> requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION), back, back,
+            (payload, done) -> pairFromCode(payload, paired, done));
+    }
+
+    /**
+     * Tries a scanned code's addresses in order (this computer's own, trusted by the fingerprint, then any other
+     * https:// address) and saves the first that answers, with its fingerprint. [done] gets what went wrong, if all fail.
+     */
+    private void pairFromCode(CompanionPairing.Payload payload, Runnable paired, java.util.function.Consumer<String> done) {
+        boolean messaging = prefs.getBoolean("syncSms", hasRole()) && hasRole();
+        new Thread(() -> {
+            CompanionPairing.Attempt found = null;
+            boolean refused = false, wrongCertificate = false, waiting = false;
+            for (var attempt : CompanionPairing.attempts(payload)) {
+                int answer = CompanionTls.probe(attempt.getOrigin(), attempt.getFingerprint(), payload.getToken());
+                if (answer == 200) { found = attempt; break; }
+                if (answer == 401 || answer == 403) refused = true;
+                else if (answer == 429) waiting = true;
+                else if (answer == CompanionTls.WRONG_CERTIFICATE) wrongCertificate = true;
+            }
+            var chosen = found;
+            String problem = chosen != null ? null
+                : waiting ? "FluidMessages Web asked this phone to wait after too many tries. Wait a minute, then tap Try again."
+                : refused ? "FluidMessages Web didn’t accept this link code. Make a new pairing token there, then scan the new code."
+                : wrongCertificate ? "The certificate didn’t match the code. Make a new pairing token in FluidMessages Web, then scan the new code."
+                : "Couldn’t reach FluidMessages Web at the addresses in the code. Check that this phone is on the same Wi-Fi as that computer, or can reach it another way.";
+            runOnUiThread(() -> {
+                if (isDestroyed() || !page.equals("pairScan")) return;
+                if (chosen == null) { done.accept(problem); return; }
+                String saved = saveCompanion(chosen.getOrigin(), payload.getToken(), messaging,
+                    chosen.getFingerprint() == null ? "" : chosen.getFingerprint());
+                if (saved != null) { done.accept(saved); return; }
+                done.accept(null);
+                paired.run();
+            });
+        }, "fluid-pair-scan").start();
     }
 
     private Runnable conflictsBack;
@@ -5907,7 +6039,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 SyncJob.sync(getApplicationContext());
                 if (report) runOnUiThread(() -> toast("FluidMessages Web synced"));
             } catch (Exception error) {
-                if (report) runOnUiThread(() -> toast("Could not sync. Check the address and the link code, and that this phone can reach FluidMessages Web."));
+                if (report) runOnUiThread(() -> toast(CompanionTls.changed(error) ? CompanionTls.CHANGED_MESSAGE
+                    : "Could not sync. Check the address and the link code, and that this phone can reach FluidMessages Web."));
             } finally {
                 runOnUiThread(() -> syncing = false);
             }

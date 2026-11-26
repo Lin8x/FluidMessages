@@ -80,6 +80,15 @@ internal object IrcRules {
 
     private val blocked = Regex("k-?lined|g-?lined|z-?lined|d-?lined|banned|not welcome|you are not allowed", RegexOption.IGNORE_CASE)
 
+    private val torMention = Regex("\\btor\\b|onion|exit node", RegexOption.IGNORE_CASE)
+
+    /** A network that won't take this connection through Tor. FluidMessages Web says the same (irc_client.explain). */
+    private fun torRefusal(network: String, sasl: Boolean, quote: String) = Problem("$network doesn’t let you in through Tor this way. "
+        + "Many IRC networks, like Libera.Chat, only allow Tor for a registered nickname signed in with SASL, and some block Tor. "
+        + (if (sasl) "Check the account name and password in the IRC account settings, or turn off Connect through Tor."
+        else "Register your nickname without Tor first, then type its password in Password in the IRC account settings. "
+            + "Or turn off Connect through Tor.") + quote, true)
+
     /** Whether a server notice or closing reason says this connection must sign in with SASL first. */
     @JvmStatic
     fun needsSasl(text: String) = Regex("\\bsasl\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
@@ -90,10 +99,13 @@ internal object IrcRules {
      * ("ERROR", "465", "432", "904"…) and its [text], which is quoted as the network said it. [sasl]: a SASL password
      * is set. Null for replies that aren't a problem with connecting.
      */
-    @JvmStatic
-    fun explain(command: String, text: String, network: String, nick: String, sasl: Boolean): Problem? {
+    @JvmStatic @JvmOverloads
+    fun explain(command: String, text: String, network: String, nick: String, sasl: Boolean, tor: Boolean = false): Problem? {
         val said = text.trim().take(200)
         val quote = if (said.isEmpty()) "" else " It said: “$said”"
+        // Through Tor (TorRoute), a refusal is almost always about Tor: Libera.Chat and others only take Tor with SASL, or not at all.
+        if (tor && (command == "ERROR" || command == "465" || command == "463") &&
+            (needsSasl(said) || blocked.containsMatchIn(said) || torMention.containsMatchIn(said))) return torRefusal(network, sasl, quote)
         return when (command) {
             "ERROR" -> when {
                 needsSasl(said) -> Problem("$network only lets people signed in to a registered nickname connect from your internet connection. "

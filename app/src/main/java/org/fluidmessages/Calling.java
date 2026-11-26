@@ -23,6 +23,7 @@ final class Calling {
     private Calling() {}
 
     static boolean allowed(SharedPreferences prefs, Method method) {
+        if (TorRoute.holdsCalls(prefs, method)) return false; // Internet calls can't go through Tor (Connect through Tor).
         // Meeting links used their own switch before calling had a section of its own.
         boolean fallback = method != Method.MEETING || prefs.getBoolean("meetingLinks", true);
         return prefs.getBoolean("call." + method.name(), fallback);

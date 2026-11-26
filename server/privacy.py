@@ -341,7 +341,9 @@ class DecoyWorld:
         if path == "/api/auth/security":
             return 200, {"owner": True, "sessions": 1, "pairing": {"compose": False, "web": False, "created": None},
                          "https": context["https"], "local": False, "here": context["here"], "local_only": context["local_only"],
-                         "reach": context.get("reach")}
+                         "reach": context.get("reach"),
+                         # The same as the real one, since signing in asked for a code either way, but never an offer.
+                         "two_step": {**context.get("two_step", {"on": False, "recovery_left": 0, "readable": True}), "prompt": False}}
         if path == "/api/privacy":
             return 200, self.status()
         if path == "/api/protocols/accounts":

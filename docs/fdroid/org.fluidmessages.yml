@@ -1,0 +1,43 @@
+# Draft recipe for fdroiddata (https://gitlab.com/fdroid/fdroiddata), saved there as metadata/org.fluidmessages.yml.
+# See docs/fdroid/README.md before submitting. In particular, the Builds entry must point at the first release that
+# has the fdroid Gradle flag (the release after 0.44.0), and the two reproducible-build lines need a matching APK.
+Categories:
+  - Phone & SMS
+  - Messaging
+License: Apache-2.0
+SourceCode: https://github.com/Lin8x/FluidMessages
+IssueTracker: https://github.com/Lin8x/FluidMessages/issues
+Changelog: https://github.com/Lin8x/FluidMessages/releases
+
+AutoName: FluidMessages
+
+# GIF search opens GIPHY or Tenor, and meeting and payment links can open closed services. All are optional.
+AntiFeatures:
+  NonFreeNet:
+    en-US: Optional GIF search and some link types use closed online services, such as GIPHY and Tenor.
+
+RepoType: git
+Repo: https://github.com/Lin8x/FluidMessages.git
+
+# Reproducible builds: F-Droid builds the app itself, compares it with this APK, and publishes the developer's signed
+# copy if they match. Needs a release-variant APK built with -Pfdroid=true and attached to each release (see README).
+#Binaries: https://github.com/Lin8x/FluidMessages/releases/download/v%v/FluidMessages-%v-fdroid.apk
+
+Builds:
+  - versionName: 0.44.0
+    versionCode: 52
+    commit: v0.44.0
+    subdir: app
+    gradle:
+      - yes
+    # BuildConfig.FDROID = true: no update checks or downloads from GitHub; About says "Updates come from F-Droid".
+    gradleprops:
+      - fdroid=true
+
+# The official signing certificate (SHA-256, docs/verify.md). Only valid together with Binaries above.
+AllowedAPKSigningKeys: 2d0980ee4c11bf655482e7ee9279c6e66b56636e8e18c8ac063e1f08785df5bc
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v[0-9]+\.[0-9]+\.[0-9]+$
+CurrentVersion: 0.44.0
+CurrentVersionCode: 52

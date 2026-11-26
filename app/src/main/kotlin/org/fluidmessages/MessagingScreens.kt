@@ -333,6 +333,7 @@ internal class InboxScreen(
                         color = palette.muted, fontSize = 14.sp)
                     if (connected && !canSend) Text("Read-only · sending is off in Settings → Chat services",
                         Modifier.padding(top = 3.dp, bottom = 4.dp), color = palette.muted, fontSize = 14.sp)
+                    if (!sample) NearbyOnlyBanner(prefs, palette.ink, palette.muted, palette.action)
                     // Chats | Communities: the phone has no room for a third tab, so Communities lives here.
                     if (communitiesOffered && (sample || connected)) InboxSwitch(palette, showingCommunities,
                         if (Communities.show(prefs)) 0 else counts?.communities ?: 0) { side ->

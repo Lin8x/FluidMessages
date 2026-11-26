@@ -35,7 +35,7 @@ import java.util.function.IntConsumer
 import kotlinx.coroutines.delay
 
 /** Checks and saves the address and token (MainActivity.saveCompanion). Returns what to fix, or null once saved. */
-fun interface CompanionSaver { fun save(address: String, token: String, messaging: Boolean): String? }
+fun interface CompanionSaver { fun save(address: String, token: String, messaging: Boolean, fingerprint: String): String? }
 
 /** Tries the saved connection (MainActivity.testCompanion) and reports null when it works, or what went wrong. */
 fun interface CompanionTester { fun test(done: Consumer<String?>) }
@@ -50,7 +50,7 @@ object SyncGuideScreen {
         Triple("what", "Your texts on a computer", "Read and send your texts from a browser, with FluidMessages Web. Optional."),
         Triple("start", "Start FluidMessages Web", "On your computer, start it one of these ways."),
         Triple("token", "Copy the link code", "In FluidMessages Web, open Settings → Phone and other devices."),
-        Triple("enter", "Enter it here", "The address you open FluidMessages Web at, and the link code."),
+        Triple("enter", "Enter it here", "Scan the QR code FluidMessages Web shows. Or type the address and the link code."),
         Triple("test", "Test the connection", "Checking that this phone can reach FluidMessages Web."),
         Triple("done", "You’re connected", "Your texts show up in FluidMessages Web within a few minutes."),
     )
@@ -58,7 +58,7 @@ object SyncGuideScreen {
     @JvmStatic
     fun mount(root: LinearLayout, prefs: SharedPreferences, step: Int, next: Runnable, back: Runnable, close: Runnable,
               recolor: IntConsumer, learnWeb: Runnable, hasRole: Boolean, saver: CompanionSaver, tester: CompanionTester,
-              review: Runnable) {
+              review: Runnable, scan: Runnable) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -69,6 +69,9 @@ object SyncGuideScreen {
                 val (key, title, subtitle) = steps[step]
                 var address by remember { mutableStateOf(prefs.getString("server", "").orEmpty()) }
                 var token by remember { mutableStateOf(Privacy.token(prefs)) }
+                var fingerprint by remember {
+                    mutableStateOf(prefs.getString(CompanionTls.PIN, "").orEmpty().let { if (it.isEmpty()) "" else CompanionPairing.shown(it) })
+                }
                 var messaging by remember { mutableStateOf(prefs.getBoolean("syncSms", hasRole) && hasRole) }
                 var problem by remember { mutableStateOf<String?>(null) }
                 // The connection test: null while it runs, then "" when it worked or the problem.
@@ -137,6 +140,12 @@ object SyncGuideScreen {
                             }
                             "enter" -> {
                                 item {
+                                    AppButton(onClick = scan::run, modifier = Modifier.fillMaxWidth().heightIn(min = 49.dp)) { Text("Scan QR code") }
+                                }
+                                item {
+                                    Text("Or type these in:", color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+                                }
+                                item {
                                     OutlinedTextField(address, { address = it.trim(); problem = null }, Modifier.fillMaxWidth(), singleLine = true,
                                         label = { Text("Address") }, placeholder = { Text("https://messages.example.net") },
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
@@ -150,6 +159,14 @@ object SyncGuideScreen {
                                     OutlinedTextField(token, { token = it.trim(); problem = null }, Modifier.fillMaxWidth(), singleLine = true,
                                         label = { Text("Link code") }, visualTransformation = PasswordVisualTransformation(),
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+                                }
+                                item {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        OutlinedTextField(fingerprint, { fingerprint = it; problem = null }, Modifier.fillMaxWidth(), singleLine = true,
+                                            label = { Text("Certificate fingerprint (optional)") },
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii))
+                                        Text(CompanionPairing.FINGERPRINT_HELP, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                                    }
                                 }
                                 item {
                                     PreferencesCard("Messages") {
@@ -195,7 +212,7 @@ object SyncGuideScreen {
                     }
                     when (key) {
                         "enter" -> AppButton(onClick = {
-                            val missing = saver.save(address, token, messaging)
+                            val missing = saver.save(address, token, messaging, fingerprint)
                             if (missing == null) next.run() else problem = missing
                         }, modifier = Modifier.fillMaxWidth().heightIn(min = 49.dp)) { Text("Save and continue") }
                         // A first pairing with differences goes straight to choosing what to keep (SyncConflictScreen).

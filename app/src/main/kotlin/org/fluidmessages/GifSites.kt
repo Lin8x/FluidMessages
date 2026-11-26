@@ -124,7 +124,7 @@ internal object GifFetch {
         var result: Long? = null
         for (hop in 0..3) {
             if (!PublicHosts.allowed(target)) break
-            val connection = target.openConnection() as HttpsURLConnection
+            val connection = TorRoute.open(target) as HttpsURLConnection
             connection.connectTimeout = 8_000
             connection.readTimeout = 8_000
             connection.instanceFollowRedirects = false
@@ -150,7 +150,7 @@ internal object GifFetch {
         var html = ""
         for (hop in 0..3) {
             if (!PublicHosts.allowed(target)) break
-            val connection = target.openConnection() as HttpsURLConnection
+            val connection = TorRoute.open(target) as HttpsURLConnection
             connection.connectTimeout = 8_000
             connection.readTimeout = 10_000
             connection.instanceFollowRedirects = false
@@ -194,7 +194,7 @@ internal object GifFetch {
             var saved = false
             for (hop in 0..3) {
                 if (!PublicHosts.allowed(target)) break
-                val connection = target.openConnection() as HttpsURLConnection
+                val connection = TorRoute.open(target) as HttpsURLConnection
                 connection.connectTimeout = 15_000
                 connection.readTimeout = 30_000
                 connection.instanceFollowRedirects = false
@@ -367,7 +367,8 @@ internal fun GifSiteBrowser(prefs: SharedPreferences, startQuery: String, dismis
                         Modifier.weight(1f), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSecondaryContainer)
                     TextButton(onClick = { tip = false; prefs.edit().putBoolean("gifSite.tipSeen", true).apply() }) { Text("Got it") }
                 }
-                if (site == null) {
+                if (TorRoute.on(prefs)) Text(TorRoute.GIF_SITES_HELD, Modifier.padding(20.dp))
+                else if (site == null) {
                     Text("All GIF sites are turned off. Turn one on in Settings → Media, GIFs, and fun.", Modifier.padding(20.dp))
                 } else AndroidView(factory = { viewContext ->
                     WebView(viewContext).apply {

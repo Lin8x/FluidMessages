@@ -18,6 +18,8 @@
 <script src="/reactions.js" defer></script>
 <script src="/app.js" defer></script>
 <script src="/companion.js" defer></script>
+<script src="/qr.js" defer></script>
+<script src="/two-step.js" defer></script>
 <script src="/meetings.js" defer></script>
 <script src="/chess.js" defer></script>
 <script src="/cards.js" defer></script>
@@ -39,6 +41,7 @@
 <script src="/invites.js" defer></script>
 <script src="/connections.js" defer></script>
 <script src="/requests.js" defer></script>
+<script src="/tor.js" defer></script>
 </head>
 <body>
 <header class="topbar">
@@ -75,6 +78,16 @@
       <button class="primary">Sign in</button>
       <button id="use-token" type="button" class="quiet">Use an access token instead</button>
     </form>
+    <form id="two-step-form" class="sign-in-form" hidden>
+      <label>Type the 6-digit code from your authenticator app
+        <input id="two-step-code" required autocomplete="one-time-code" inputmode="numeric" spellcheck="false" maxlength="20" placeholder="123456" aria-describedby="two-step-help">
+      </label>
+      <p id="two-step-help" class="hint">Lost your phone? Type one of your recovery codes instead, like XXXX-XXXX-XXXX.</p>
+      <label class="remember"><input id="two-step-trust" type="checkbox"> Remember this browser for 30 days</label>
+      <button class="primary">Sign in</button>
+      <button id="two-step-back" type="button" class="quiet">Back</button>
+    </form>
+    <div id="two-step-offer" class="two-step-offer" hidden></div>
     <form id="token-form" class="sign-in-form" hidden>
       <label>Access token<input id="token" type="password" required autocomplete="off" spellcheck="false"></label>
       <label class="remember"><input id="remember" type="checkbox"> Keep me signed in for 30 days</label>
@@ -85,6 +98,10 @@
     <details id="reset-help" class="help">
       <summary>Forgot your password?</summary>
       <p>Open FluidMessages on the computer it runs on: it opens there without a password, and <strong>Settings → Phone and other devices</strong> sets a new one. Or, on the server, run <code>docker compose exec fluidmessages python main.py reset-password</code>. Your messages and accounts stay.</p>
+    </details>
+    <details id="two-step-lost" class="help" hidden>
+      <summary>Lost your authenticator app and your recovery codes?</summary>
+      <p>Open FluidMessages on the computer it runs on and turn two-step sign-in off in <strong>Settings → Phone and other devices</strong>. No code is needed there. Or, on the server, run <code>docker compose exec fluidmessages python main.py reset-two-step</code>. Then sign in with just your password.</p>
     </details>
   </section>
   <section id="welcome" class="welcome" aria-labelledby="welcome-title" hidden></section>
@@ -104,7 +121,7 @@
       <div id="inbox-view" class="inbox-view" role="group" aria-label="Show chats or communities" hidden></div>
       <nav id="threads" aria-label="Conversations"></nav>
       <div class="search-dock">
-        <input id="search" type="search" placeholder="Search" aria-label="Search conversations">
+        <input id="search" type="search" placeholder="Search" aria-label="Search conversations" autocomplete="off">
         <button id="new" class="new-chat" type="button" title="Start a new chat" aria-label="New chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5M18.4 2.6a2 2 0 0 1 2.9 2.9L12 14.8 8 16l1.2-4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="new-chat-label">New chat</span></button>
       </div>
     </aside>
@@ -129,7 +146,8 @@
           <button id="cancel-effect" type="button" class="icon-button small" aria-label="Send without an effect">×</button>
         </div>
         <div class="compose-row">
-          <textarea id="body" maxlength="1600" rows="1" placeholder="Message" aria-label="Message"></textarea>
+          <!-- autocomplete="off" keeps typed messages out of the browser's saved form entries. A web page can't ask the phone's keyboard not to learn; only the Android app can (Private keyboard). -->
+          <textarea id="body" maxlength="1600" rows="1" placeholder="Message" aria-label="Message" autocomplete="off"></textarea>
           <button class="primary send-button" id="send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="visually-hidden">Send</span></button>
         </div>
         <details id="later"><summary>Send later</summary>

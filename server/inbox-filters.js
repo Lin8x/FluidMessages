@@ -17,6 +17,8 @@ const INBOX_FILTERS = [
   {id: 'xmpp', label: 'XMPP', about: 'XMPP chats and group chats', service: 'xmpp'},
   {id: 'email', label: 'Email', about: 'Email conversations', service: 'email'},
   {id: 'irc', label: 'IRC', about: 'IRC channels and direct messages', service: 'irc'},
+  // Nearby chats stay on the phone (no internet), so this shows only if one ever syncs; it keeps the phone's order intact.
+  {id: 'nearby', label: 'Nearby', about: 'Chats with people close by, with no internet', service: 'nearby'},
   // Message requests and automated senders (requests.js).
   {id: 'requests', label: 'Requests', about: 'Chats from people you don’t know, waiting for you to accept them'},
   {id: 'automated', label: 'Automated', about: 'Short codes and sender IDs, like delivery updates and sign-in codes'},

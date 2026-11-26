@@ -42,6 +42,9 @@ services:
     ports:
       # This computer only. Keep FLUID_LOCAL_ONLY above only while this stays 127.0.0.1.
       - "127.0.0.1:8080:8080"
+      # HTTPS for phones, with FluidMessages Web's own certificate (pair by scanning the QR code). Publish it the same
+      # way as 8080 (like "8081:8081") when your phone should reach it.
+      - "127.0.0.1:8081:8081"
     volumes:
       - fluid-data:/data
     restart: unless-stopped

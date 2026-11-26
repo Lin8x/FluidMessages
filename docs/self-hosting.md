@@ -59,7 +59,23 @@ FluidMessages Web holds your messages and account passwords, so it lets in only 
 - **Guessing:** five wrong passwords or setup codes from one address make it wait 30 seconds, then longer, up to 15 minutes. Behind a reverse proxy on the same host or network, the address is the one your proxy puts last in `X-Forwarded-For`.
 - **Other sites:** requests that change anything must come from FluidMessages Web's own page (the browser's `Sec-Fetch-Site` or `Origin`, plus a header other sites can't send), so a page elsewhere can't act for you.
 - **Settings → Phone and other devices** changes your password (which signs out every other browser), signs out other browsers, and connects or disconnects your phone.
-- **Forgot your password?** Open FluidMessages on the computer it runs on and set a new one in Settings. Or run `docker compose exec fluidmessages python main.py reset-password`: it removes the password and every browser sign-in and prints a new setup code. Messages and accounts stay.
+- **Forgot your password?** Open FluidMessages on the computer it runs on and set a new one in Settings. Or run `docker compose exec fluidmessages python main.py reset-password`: it removes the password, two-step sign-in, and every browser sign-in and prints a new setup code. Messages and accounts stay.
+
+### Two-step sign-in
+
+Two-step sign-in: after your password, type a code from an authenticator app on your phone (like Aegis or 2FAS). Then a stolen password alone can't get in.
+
+- **On by default.** Whenever a password is set (the first-visit setup page, **Set up a password** in Settings, or the first step of **Connect your phone**), setup goes straight on to two-step sign-in: scan the QR code (or type the key shown in groups of four), type the 6-digit code from the app, then save the 10 recovery codes (Copy or Download). **Skip for now** is always there; if you skip, **Settings → Phone and other devices** shows "Two-step sign-in is off" with **Turn on**.
+- **Installs from before this** keep signing in with just the password. They see the same notice in Settings and a one-time offer after the next password sign-in. Nothing is forced and nobody is locked out.
+- **Signing in:** password first, then the code on the same page. **Remember this browser for 30 days** skips the code in that browser (an `HttpOnly`, `SameSite=Strict` cookie, like the sign-in cookie). Signing in on this computer without a password, and the phone's pairing token or `FLUID_TOKEN`, never ask for a code.
+- **Recovery codes** each work once, in place of a code from the app. **Settings → Two-step sign-in → Make new recovery codes** (asks for a code) replaces them and shows how many are left. **Turn off** asks for your password and a code.
+- **How it works:** standard TOTP (RFC 6238: 6 digits, 30-second steps, SHA-1), allowing one step early or late for a phone clock that's a little off. A code can't be used twice. Five wrong codes from one address make it wait, like wrong passwords.
+- **What's stored:** the app's secret is encrypted with a random key kept in a private file in the data folder, `auth-secret.key`, so a copy of the database alone can't make codes. Back up that file with the database; without it, codes from the app stop working but recovery codes still do. Recovery codes are stored only as hashes.
+
+**Locked out?** (lost your phone and your recovery codes)
+
+- On the computer FluidMessages Web runs on, open it (it opens there without a password, unless you turned that off) and go to **Settings → Phone and other devices → Two-step sign-in → Turn off**. No password or code is needed there, by the same "this computer" rule as above.
+- Or run `docker compose exec fluidmessages python main.py reset-two-step` on the server (`python server/main.py reset-two-step` without Docker). It turns two-step sign-in off and forgets remembered browsers. Then sign in with just your password and turn it on again.
 
 Keep FluidMessages Web on HTTPS whenever it leaves your computer, so your password and messages are encrypted on the way.
 
@@ -89,12 +105,25 @@ These open `http://localhost:8080` in an app window, with no password on this co
 
 ## HTTPS and connecting your phone
 
-Your phone connects to FluidMessages Web over your network. In FluidMessages Web, **Settings → Phone and other devices → Connect your phone** shows the address to type on the phone, like `http://192.168.1.20:8080`, with a Copy button.
+Your phone connects to FluidMessages Web over your network. In FluidMessages Web, **Settings → Phone and other devices → Connect your phone** shows a QR code. On the phone, open **Settings → FluidMessages Web** and tap **Scan QR code**. That's all: the code holds the address, the link code, and the certificate fingerprint (below). Under the QR code are the same details to type in instead, like `https://192.168.1.20:8081`, each with a Copy button.
+
+### Real HTTPS without a domain name
+
+On its first start, FluidMessages Web makes its own certificate and key and keeps them in its data folder (`companion-cert.pem`, and `companion-key.pem`, which only its own user can read and which is never shown or logged). It then answers over HTTPS on a second port, so your phone's connection is encrypted even on shared Wi-Fi, with no domain name or certificate authority:
+
+- **The port** is `FLUID_PORT` + 1, so `8081` by default. Set `FLUID_TLS_PORT` to choose another, or to `0` to turn it off. The `http://` port (`8080`) stays exactly as it was, for your browser.
+- **The certificate fingerprint** is a long code (64 letters and numbers in pairs, like `AB:CD:…`) that belongs to this one certificate. The QR code carries it, and the server prints it when it starts. Your phone saves it next to the address and then trusts only that certificate, at that address, for FluidMessages Web. So no warning shows: the connection is private. Nothing else in the app is affected.
+- **If the certificate ever changes** (you erased the data folder or reinstalled), the phone stops connecting and says so plainly in **Settings → FluidMessages Web**. It never falls back to a weaker check. Scan a new QR code to pair again. If you didn't change anything, someone may be trying to listen in.
+- **Typing it in:** the phone's **Certificate fingerprint** field is optional. Leave it empty for an address with a real certificate (your own domain, below), which uses the phone's normal checks.
+- **Needs the `openssl` command**, which the Docker image includes and macOS and Linux have. Without it, the server says HTTPS for phones is off and everything else works as before.
+- **Docker:** publish `8081` the same way as `8080` (`compose.yaml` has both). **Firewalls:** allow `8081` too.
+
+Browsers keep using `http://localhost:8080`, or your own `https://` address through a reverse proxy, as before.
 
 ### What the address means
 
 - **The IP address** (like `192.168.1.20`) is this computer’s number on your home network. Your router hands one to every device on your Wi-Fi.
-- **The port** (the number after the colon, like `8080`) is which “door” on that computer FluidMessages answers on. It’s `8080` unless you set `FLUID_PORT`.
+- **The port** (the number after the colon, like `8081`) is which “door” on that computer FluidMessages answers on. Browsers use `8080` (`FLUID_PORT`); phones use the HTTPS port, `8081` (`FLUID_TLS_PORT`).
 - **http:// or https://** says whether the connection is encrypted. `https://` is. `http://` is not: anyone on the same Wi-Fi could read your messages and the link code. That’s fine for testing at home. For everyday use, use an `https://` address (below).
 
 ### Finding them
@@ -112,10 +141,10 @@ Home network addresses usually start with `192.168.`, `10.`, or `172.16.` to `17
 1. Let other devices reach FluidMessages. By default it only answers this computer.
    - **From the source:** start it with `FLUID_BIND=0.0.0.0`, like `FLUID_BIND=0.0.0.0 ./scripts/web-app` (on Windows, `$env:FLUID_BIND='0.0.0.0'` before `scripts\web-app.ps1`).
    - **The desktop app** only answers this computer. To connect a phone, run it from the source or with Docker instead.
-   - **Docker Compose:** delete the `FLUID_LOCAL_ONLY` line and change the port to `"8080:8080"` in `compose.yaml`, then run `docker compose up -d` again.
-   - If your computer has a firewall, allow the port (for example `sudo ufw allow 8080/tcp`, or allow Python when Windows asks).
+   - **Docker Compose:** delete the `FLUID_LOCAL_ONLY` line and change the ports to `"8080:8080"` and `"8081:8081"` in `compose.yaml`, then run `docker compose up -d` again.
+   - If your computer has a firewall, allow the ports (for example `sudo ufw allow 8080/tcp` and `sudo ufw allow 8081/tcp`, or allow Python when Windows asks).
 2. Set a password in **Settings → Phone and other devices**, since other devices can now reach it.
-3. Put your phone on the same Wi-Fi, and type the address (like `http://192.168.1.20:8080`) with the link code in the app. It warns you that `http://` isn’t encrypted; it still saves.
+3. Put your phone on the same Wi-Fi and scan the QR code. Or type the address (like `https://192.168.1.20:8081`), the link code, and the certificate fingerprint. An `http://` address (like `http://192.168.1.20:8080`) still works for testing, with a warning that it isn't encrypted.
 
 Your router may give the computer a new IP address later. If the phone stops connecting, check the address again, or ask your router to always give this computer the same one (often called a “DHCP reservation”).
 
@@ -143,8 +172,8 @@ Caddy gets and renews the certificate by itself. On a home connection, your rout
 
 ### Connecting, step by step
 
-1. In FluidMessages Web, open **Settings → Phone and other devices** and choose **Connect your phone**. Without a password yet, step 1 sets one (your phone’s browser and other devices sign in with it). Then copy the address and the pairing token; the token is shown once, and only a hash is kept. A server with `FLUID_TOKEN` can use that instead.
-2. On Android, select **Settings → FluidMessages Web**. Tap **Set up step by step** if the status is **Not set up**, then enter the address and the pairing token, check **Enable browser messaging**, and tap **Save connection**. An address typed without `http://` or `https://` uses `https://`. Leave browser messaging off to pair for cloud backups alone.
+1. In FluidMessages Web, open **Settings → Phone and other devices** and choose **Connect your phone**. Without a password yet, step 1 sets one (your phone’s browser and other devices sign in with it). Then it shows the QR code, with the address, port, pairing token, and certificate fingerprint below it. The token, and so the QR code, is shown only once, when it's made; only a hash is kept. A server with `FLUID_TOKEN` can use that instead (type it in).
+2. On Android, select **Settings → FluidMessages Web** and tap **Scan QR code** (also in **Set up step by step**, on its **Enter it here** step). The phone asks for the camera only then; the camera reads the code on the phone and nothing is recorded. It tries the code's addresses in order and saves the first one that answers. To type instead, enter the address, the pairing token, and optionally the certificate fingerprint, check **Enable browser messaging**, and tap **Save connection**. An address typed without `http://` or `https://` uses `https://`. Leave browser messaging off to pair for cloud backups alone.
 3. **Make a new pairing token** replaces the old one, and **Disconnect phone** removes the token a phone uses.
 
 Over `http://` or `https://`, every request still needs a signed-in browser, the phone’s pairing token (sent in a header, never in the address), or this computer’s own browser. Wrong passwords and wrong tokens make that address wait before trying again.
@@ -168,6 +197,12 @@ The inbox shows the newest 2,000 synced SMS messages along with Matrix, XMPP, Em
 A queued job can be cancelled under **Scheduled** before the phone claims it. **Submitted** means the phone handed the message to Android's SMS API. Check the SMS thread for the sending result. **Claimed** can persist if sync was interrupted mid-send. Check the phone before scheduling a replacement. The server does not reclaim interrupted sends automatically, to avoid duplicate texts.
 
 The server stores the synced SMS and scheduled messages in readable form so the browser can display them. Protect the server's data volume separately from encrypted Android backup files.
+
+## Tor
+
+**Settings → Privacy and security → Connect through Tor** sends the server's own IRC, Matrix, and email connections, and link previews, through a Tor SOCKS proxy. It's off by default and shows the same warning as the phone. The proxy is `127.0.0.1:9050` unless you change it on that page or set `FLUID_TOR_PROXY` (for example `tor:9050` for a Tor container in the same Compose project). The page says whether the proxy answers, and how to install Tor if it doesn't (`sudo apt install tor` on Debian or Ubuntu, `brew install tor` on macOS).
+
+Server names go to Tor unresolved, so the server doesn't look them up itself. While Tor is on but the proxy doesn't answer, connections wait with a message instead of going direct. XMPP waits, and encrypted Matrix rooms can't be used, while Tor is on, because their libraries open their own connections. Cloud backups (rclone) and servers on your own network connect directly.
 
 ## Install it as an app (PWA)
 

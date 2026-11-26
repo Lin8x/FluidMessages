@@ -542,10 +542,12 @@ object SyncMergeRun {
     class HttpProblem(val code: Int, message: String) : IOException(message)
 
     private fun open(prefs: SharedPreferences, endpoint: String): java.net.HttpURLConnection {
+        NetworkGate.requireInternet()
         val origin = prefs.getString("server", "").orEmpty()
         val token = Privacy.token(prefs)
         if (!CloudBackup.paired(origin, token)) throw IOException("Pair FluidMessages Web first.")
-        val connection = URL("$origin/api/$endpoint").openConnection() as java.net.HttpURLConnection
+        // Pinned to FluidMessages Web's certificate when one was saved (CompanionTls).
+        val connection = CompanionTls.open(prefs, "$origin/api/$endpoint")
         connection.connectTimeout = 8000
         connection.readTimeout = 20000
         connection.instanceFollowRedirects = false

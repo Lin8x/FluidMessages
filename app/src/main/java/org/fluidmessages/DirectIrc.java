@@ -240,7 +240,7 @@ final class DirectIrc implements DirectProtocols.DirectClient {
     private boolean autoReconnect() { return DirectProtocols.autoReconnect(DirectProtocols.prefs(context), MessageProtocol.IRC); }
 
     private IrcRules.Problem explain(String command, String text) {
-        return IrcRules.explain(command, text, network(), wanted == null ? "" : wanted, !account.optString("sasl_password").isEmpty());
+        return IrcRules.explain(command, text, network(), wanted == null ? "" : wanted, !account.optString("sasl_password").isEmpty(), TorRoute.on());
     }
 
     /** Remembers why the network said no and says so in the server chat, in plain words. */
@@ -253,8 +253,7 @@ final class DirectIrc implements DirectProtocols.DirectClient {
 
     private void session() throws Exception {
         String server = account.getString("server");
-        var plain = new java.net.Socket();
-        plain.connect(new InetSocketAddress(server, account.optInt("port", 6697)), 20_000);
+        var plain = TorRoute.connect(server, account.optInt("port", 6697), 20_000);
         socket = (SSLSocket) ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(plain, server, account.optInt("port", 6697), true);
         SSLParameters parameters = socket.getSSLParameters();
         parameters.setEndpointIdentificationAlgorithm("HTTPS");

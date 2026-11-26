@@ -196,11 +196,13 @@ final class FileServers {
     private interface SftpWork { Object run(ChannelSftp channel) throws Exception; }
 
     private static void sftp(Context context, JSONObject server, SftpWork work) throws Exception {
+        NetworkGate.requireInternet();
         var jsch = new JSch();
         var session = jsch.getSession(server.optString("username"), server.optString("host"), server.optInt("port", 22));
         session.setPassword(server.optString("password"));
         session.setConfig("StrictHostKeyChecking", "no");
         session.setTimeout(20_000);
+        TorRoute.sftp(session, server.optString("host"));
         session.connect(20_000);
         try {
             // Trust on first use: remember the server's key, and stop if it ever changes.
@@ -234,10 +236,12 @@ final class FileServers {
     private interface FtpWork { Object run(FTPClient client) throws Exception; }
 
     private static void ftp(JSONObject server, FtpWork work) throws Exception {
+        NetworkGate.requireInternet();
         boolean secure = FTPS.equals(server.optString("kind"));
         FTPClient client = secure ? new FTPSClient(false) : new FTPClient();
         client.setConnectTimeout(20_000);
         client.setDefaultTimeout(30_000);
+        TorRoute.ftp(server.optString("host"));
         client.connect(server.optString("host"), server.optInt("port", 21));
         try {
             if (!FTPReply.isPositiveCompletion(client.getReplyCode())) throw new IOException("The FTP server refused the connection");
@@ -260,6 +264,7 @@ final class FileServers {
     private record Dav(String host, int port, String path, String auth) {}
 
     private static Dav dav(JSONObject server, String name) throws IOException {
+        NetworkGate.requireInternet();
         String base = server.optString("host").replaceAll("/+$", "");
         if (base.startsWith("http://")) throw new IOException("WebDAV needs an https:// address");
         if (!base.startsWith("https://")) base = "https://" + base;
@@ -274,7 +279,7 @@ final class FileServers {
     private static HttpURLConnection webdav(JSONObject server, String name, String method) throws IOException {
         var target = dav(server, name);
         var url = new URL("https", target.host(), target.port() == 443 ? -1 : target.port(), target.path());
-        var connection = (HttpsURLConnection) url.openConnection();
+        var connection = (HttpsURLConnection) TorRoute.openOwn(url);
         connection.setConnectTimeout(20_000);
         connection.setReadTimeout(120_000);
         connection.setInstanceFollowRedirects(false);
@@ -289,7 +294,7 @@ final class FileServers {
      */
     private static Object[] davRequest(Dav target, String method, String depth, String body) throws IOException {
         var factory = (javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLSocketFactory.getDefault();
-        try (var socket = (javax.net.ssl.SSLSocket) factory.createSocket(target.host(), target.port())) {
+        try (var socket = (javax.net.ssl.SSLSocket) factory.createSocket(TorRoute.connect(target.host(), target.port(), 20_000), target.host(), target.port(), true)) {
             socket.setSoTimeout(30_000);
             socket.startHandshake();
             if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(target.host(), socket.getSession())) {

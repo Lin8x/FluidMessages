@@ -98,7 +98,8 @@ internal object GifSettings {
     }
 
     private fun get(url: String): JSONObject? = try {
-        val connection = URL(url).openConnection() as HttpsURLConnection
+        NetworkGate.requireInternet()
+        val connection = TorRoute.open(URL(url)) as HttpsURLConnection
         connection.connectTimeout = 10_000
         connection.readTimeout = 15_000
         try {

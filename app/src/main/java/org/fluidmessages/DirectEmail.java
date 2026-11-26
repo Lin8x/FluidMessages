@@ -54,7 +54,7 @@ final class DirectEmail implements DirectProtocols.DirectClient {
         if (thread != null) thread.interrupt();
     }
 
-    private Session session() {
+    private Session session() throws java.io.IOException {
         var properties = new Properties();
         properties.put("mail.imaps.ssl.checkserveridentity", "true");
         properties.put("mail.imaps.connectiontimeout", "15000");
@@ -77,6 +77,7 @@ final class DirectEmail implements DirectProtocols.DirectClient {
             properties.put("mail.smtp.ssl.checkserveridentity", "true");
         }
         properties.put("mail.smtp.auth", "true");
+        TorRoute.mail(properties, account.optString("imap_host"), account.optString("smtp_host"));
         return Session.getInstance(properties);
     }
 

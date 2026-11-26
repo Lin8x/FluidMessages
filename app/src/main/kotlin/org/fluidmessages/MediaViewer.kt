@@ -89,7 +89,10 @@ internal object MediaDecoding {
  */
 internal object PublicHosts {
     fun allowed(url: URL): Boolean {
+        if (!NetworkGate.internetAllowed()) return false  // Nearby only: no internet at all.
         if (url.protocol != "https" || url.host.isNullOrEmpty()) return false
+        // Through Tor the name isn't looked up here (no DNS leak); Tor's exits can't reach your network anyway.
+        if (TorRoute.on()) return !TorRoute.localHost(url.host)
         val addresses = runCatching { java.net.InetAddress.getAllByName(url.host) }.getOrNull() ?: return false
         return addresses.isNotEmpty() && addresses.all { public(it) }
     }
@@ -124,7 +127,7 @@ internal object RemoteMedia {
             var hops = 0
             while (true) {
                 if (!PublicHosts.allowed(target)) return null
-                connection = target.openConnection() as HttpsURLConnection
+                connection = TorRoute.open(target) as HttpsURLConnection
                 connection.connectTimeout = 15_000
                 connection.readTimeout = 30_000
                 connection.setRequestProperty("User-Agent", "FluidMessages")

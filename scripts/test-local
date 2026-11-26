@@ -36,7 +36,8 @@ def companion(port, token, cloud_fixtures=False, extra_env=None):
         env = dict(os.environ, FLUID_DB=str(Path(directory) / "demo.sqlite"),
                    FLUID_TOKEN=token, FLUID_BIND="127.0.0.1", FLUID_PORT=str(port),
                    RCLONE_CONFIG=str(Path(directory) / "rclone.conf"))
-        env.update({"FLUID_LOCAL_ONLY": "", **(extra_env or {})})
+        # The phone's HTTPS port is off unless a test turns it on (companion_tls_test), so ports never clash.
+        env.update({"FLUID_LOCAL_ONLY": "", "FLUID_TLS_PORT": "0", **(extra_env or {})})
         # FLUID_TOKEN is optional: an empty one means browsers sign in with a password only.
         for key in CLOUD_TARGETS:
             folder = Path(directory) / key
@@ -2991,6 +2992,281 @@ def local_access_test():
     print("PASS  this computer opens without a password; proxies, other hosts, other sites, and other devices sign in; FLUID_LOCAL_ONLY; icons")
 
 
+def two_step_test():
+    """Two-step sign-in: RFC 6238 codes, enrollment, the code after the password, recovery codes, replay, rate limits,
+    remembered browsers, the phone's token, the this-computer reset, the server command, and the QR encoder."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import auth
+    import base64
+    import hashlib
+    import sqlite3
+    # RFC 6238 Appendix B (8 digits; the seeds are the RFC's ASCII strings).
+    seeds = {hashlib.sha1: b"12345678901234567890", hashlib.sha256: b"12345678901234567890123456789012",
+             hashlib.sha512: b"1234567890" * 6 + b"1234"}
+    vectors = {59: ("94287082", "46119246", "90693936"), 1111111109: ("07081804", "68084774", "25091201"),
+               1111111111: ("14050471", "67062674", "99943326"), 1234567890: ("89005924", "91819424", "93441116"),
+               2000000000: ("69279037", "90698825", "38618901"), 20000000000: ("65353130", "77737706", "47863826")}
+    for moment, expected in vectors.items():
+        for (digest, seed), code in zip(seeds.items(), expected):
+            check(auth.totp(seed, moment, digits=8, digest=digest) == code, f"RFC 6238 vector failed at {moment}")
+    seed = seeds[hashlib.sha1]
+    check(auth.totp(seed, 59) == "287082", "6-digit codes should be the last six digits")
+    now = 1_700_000_000
+    step = now // 30
+    check(auth.totp_match(seed, auth.hotp(seed, step - 1), now) == step - 1 and auth.totp_match(seed, auth.hotp(seed, step + 1), now) == step + 1,
+          "One step early or late should match")
+    check(auth.totp_match(seed, auth.hotp(seed, step + 2), now) is None, "Two steps away matched")
+    check(auth.totp_match(seed, auth.hotp(seed, step), now, after=step) is None, "A used step matched again")
+    check(auth.totp_match(seed, "12345", now) is None and auth.totp_match(seed, "abcdef", now) is None, "A malformed code matched")
+
+    with tempfile.TemporaryDirectory(prefix="fluid-two-step-") as directory:
+        folder = Path(directory)
+        sealer = auth.Sealer(folder / "auth-secret.key")
+        box = sealer.seal(b"fictional secret")
+        check(oct((folder / "auth-secret.key").stat().st_mode & 0o777) == "0o600", "The key file must be private")
+        check(sealer.open(box) == b"fictional secret" and b"fictional secret".hex() not in json.dumps(box), "Sealing didn't round-trip")
+        check(sealer.open({**box, "data": "00" + box["data"][2:]}) is None, "A changed sealed value was opened")
+        check(auth.Sealer(folder / "other.key").open(box) is None, "A sealed value opened without its key")
+
+        clock = [float(now)]
+        db = sqlite3.connect(":memory:")
+        db.executescript(auth.SCHEMA)
+        auth.Auth.migrate(db)
+        authority = auth.Auth(lambda: db, folder, clock=lambda: clock[0])
+        password = "maple lantern harbor"
+        authority.change_password(db, "198.51.100.1", None, password)
+        check(authority.two_step_status(db) == {"on": False, "recovery_left": 0, "prompt": True, "readable": True},
+              "A new password should be offered two-step sign-in")
+        check(authority.login(db, "198.51.100.1", password, False)[2] == "real", "Without two-step sign-in, the password alone should sign in")
+        setup = authority.begin_two_step(db)
+        secret = base64.b32decode(setup["secret"].replace(" ", "") + "=" * (-len(setup["secret"].replace(" ", "")) % 8))
+        check(len(secret) == 20 and setup["uri"].startswith("otpauth://totp/FluidMessages%20Web?secret=") and "issuer=FluidMessages%20Web" in setup["uri"],
+              "The setup link isn't an otpauth:// link")
+        stored = json.dumps(db.execute("SELECT * FROM auth_state").fetchall())
+        check(setup["secret"].replace(" ", "") not in stored and secret.hex() not in stored, "The secret must be stored encrypted")
+        try:
+            authority.confirm_two_step(db, "198.51.100.1", "000000" if auth.totp(secret, clock[0]) != "000000" else "111111")
+            raise RuntimeError("A wrong code turned on two-step sign-in")
+        except auth.Refused as error:
+            check(error.status == 403, "A wrong setup code should be refused")
+        codes = authority.confirm_two_step(db, "198.51.100.1", auth.totp(secret, clock[0]))
+        check(len(codes) == 10 and len(set(codes)) == 10 and all(re.fullmatch(r"[2-9A-Z]{4}-[2-9A-Z]{4}-[2-9A-Z]{4}", code) for code in codes),
+              "Ten recovery codes should be made")
+        stored = json.dumps(db.execute("SELECT * FROM auth_state").fetchall())
+        check(not any(code in stored or code.replace("-", "") in stored for code in codes), "Recovery codes must be stored only as hashes")
+        check(authority.two_step_status(db) == {"on": True, "recovery_left": 10, "prompt": False, "readable": True}, "Two-step sign-in didn't turn on")
+
+        def sign_in(code, client="198.51.100.2", trusted=None):
+            ticket, _, outcome = authority.login(db, client, password, True, trusted=trusted)
+            if outcome != "two_step":
+                return outcome
+            return authority.finish_two_step(db, client, ticket, code)[2]
+
+        # The code used to turn it on can't sign in again (replay), but the next one can, once.
+        check(authority.login(db, "198.51.100.2", password, True)[2] == "two_step", "The password alone signed in")
+        try:
+            sign_in(auth.totp(secret, clock[0]))
+            raise RuntimeError("The setup code was used again")
+        except auth.Refused:
+            pass
+        clock[0] += 30
+        code = auth.totp(secret, clock[0])
+        check(sign_in(code) == "real", "A code from the app didn't sign in")
+        try:
+            sign_in(code)
+            raise RuntimeError("A code was used twice")
+        except auth.Refused as error:
+            check(error.status == 403, "A replayed code should be refused")
+        check(sign_in(codes[0].lower().replace("-", " ")) == "real", "A recovery code didn't sign in")
+        try:
+            sign_in(codes[0])
+            raise RuntimeError("A recovery code worked twice")
+        except auth.Refused:
+            pass
+        check(authority.two_step_status(db)["recovery_left"] == 9, "A used recovery code wasn't removed")
+        # Too many wrong codes from one address: it waits, and the ticket ends.
+        ticket = authority.login(db, "203.0.113.5", password, False)[0]
+        for _ in range(5):
+            try:
+                authority.finish_two_step(db, "203.0.113.5", ticket, "000000")
+            except auth.Refused as error:
+                check(error.status in (403, 409), "A wrong code signed in")
+        try:
+            authority.finish_two_step(db, "203.0.113.5", ticket, auth.totp(secret, clock[0] + 30))
+            raise RuntimeError("Wrong codes weren't slowed down")
+        except auth.Refused as error:
+            check(error.status == 429, "Repeated wrong codes should wait")
+        clock[0] += 30
+        check(sign_in(auth.totp(secret, clock[0]), client="203.0.113.6") == "real", "One address's wrong codes locked out another")
+        # A ticket expires.
+        ticket = authority.login(db, "198.51.100.3", password, False)[0]
+        clock[0] += auth.TICKET_SECONDS + 1
+        try:
+            authority.finish_two_step(db, "198.51.100.3", ticket, auth.totp(secret, clock[0]))
+            raise RuntimeError("An old ticket still worked")
+        except auth.Refused as error:
+            check(error.status == 409, "An old ticket should ask for the password again")
+        # Remember this browser: skips the code there only.
+        trusted = authority.trust_browser(db)
+        check(authority.login(db, "198.51.100.4", password, False, trusted=trusted)[2] == "real", "A remembered browser was asked for a code")
+        check(authority.login(db, "198.51.100.4", password, False, trusted="x" * 43)[2] == "two_step", "An unknown browser skipped the code")
+        # New recovery codes need a code; the old ones stop working.
+        clock[0] += 30
+        fresh = authority.new_recovery_codes(db, "198.51.100.1", auth.totp(secret, clock[0]))
+        check(len(fresh) == 10 and authority.two_step_status(db)["recovery_left"] == 10, "New recovery codes weren't made")
+        try:
+            sign_in(codes[1])
+            raise RuntimeError("An old recovery code still worked")
+        except auth.Refused:
+            pass
+        # Turning off asks for the password and a code, except on this computer.
+        for wrong in ((("not my password", fresh[0])), (password, "000000")):
+            try:
+                authority.turn_off_two_step(db, "198.51.100.9", *wrong)
+                raise RuntimeError("Two-step sign-in turned off without the password and a code")
+            except auth.Refused:
+                pass
+        check(authority.two_step_on(db), "A refused turn-off still turned it off")
+        authority.turn_off_two_step(db, "198.51.100.1", password, fresh[1])
+        check(authority.two_step_status(db) == {"on": False, "recovery_left": 0, "prompt": False, "readable": True},
+              "Turning off left two-step sign-in on, or offered it again")
+        check(authority.login(db, "198.51.100.4", password, False, trusted=trusted)[2] == "real", "The password alone didn't sign in after turning off")
+
+    # The QR encoder: Reed-Solomon and format bits from ISO/IEC 18004, and a module grid of the right size.
+    node = os.environ.get("NODE") or shutil.which("node")
+    if node:
+        script = (ROOT / "server/qr.js").read_text() + r"""
+        const out = [];
+        const data = [0x10, 0x20, 0x0C, 0x56, 0x61, 0x80, 0xEC, 0x11, 0xEC, 0x11, 0xEC, 0x11, 0xEC, 0x11, 0xEC, 0x11];
+        out.push(qrRemainder(data, qrDivisor(10)).join(','));
+        out.push(qrFormatBits(0).toString(2).padStart(15, '0'), qrVersionBits(7).toString(2).padStart(18, '0'));
+        const uri = 'otpauth://totp/FluidMessages%20Web?secret=' + 'A'.repeat(32) + '&issuer=FluidMessages%20Web&algorithm=SHA1&digits=6&period=30';
+        const grid = qrMatrix(uri);
+        const finder = [0, 1, 2, 3, 4, 5, 6].every((i) => grid[0][i] && grid[6][i] && grid[i][0] && grid[i][6]) && grid[3][3] && !grid[1][1];
+        out.push(grid.length, finder, grid.every((row) => row.length === grid.length));
+        console.log(JSON.stringify(out));
+        """
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+        check(result.returncode == 0, "The QR encoder failed: " + result.stderr[-400:])
+        out = json.loads(result.stdout)
+        check(out[0] == "165,36,212,193,237,54,199,135,44,85", "QR error correction bytes don't match the standard's example")
+        check(out[1] == "101010000010010" and out[2] == "000111110010010100", "QR format or version bits are wrong")
+        check(out[3] == 49 and out[4] is True and out[5] is True, "The setup link's QR code has the wrong size or finder patterns")
+    else:
+        print("Skipped running the QR encoder: node isn't installed (set NODE to its path)")
+
+    with companion(free_port(), "") as (origin, request, _):
+        opener = build_opener(ProxyHandler({}))
+
+        def call(path, body=None, cookie=None, headers=None):
+            sent = {"X-Fluid-Request": "1", "Content-Type": "application/json", "Origin": origin, **(headers or {})}
+            sent = {key: value for key, value in sent.items() if value is not None}
+            if cookie:
+                sent["Cookie"] = cookie
+            data = json.dumps(body).encode() if body is not None else None
+            try:
+                with opener.open(Request(origin + path, data=data, headers=sent), timeout=15) as response:
+                    return response.status, json.loads(response.read() or b"{}"), response.headers.get_all("Set-Cookie") or []
+            except HTTPError as error:
+                return error.code, json.loads(error.read() or b"{}"), error.headers.get_all("Set-Cookie") or []
+
+        def secret_of(setup):
+            text = setup["secret"].replace(" ", "")
+            return base64.b32decode(text + "=" * (-len(text) % 8))
+
+        remote = {"X-Forwarded-For": "198.51.100.40", "Origin": None}
+        password = "harbor lantern morning"
+        here = call("/api/auth/local", {})[2][0].split(";")[0]
+        check(call("/api/auth/security", cookie=here)[1]["two_step"]["on"] is False, "security_view should say two-step sign-in is off")
+        check(call("/api/auth/two-step/begin", {}, cookie=here)[0] == 409, "Two-step sign-in started without a password")
+        check(call("/api/auth/password", {"password": password}, cookie=here)[1]["two_step"]["prompt"] is True,
+              "Setting a password should go on to two-step sign-in")
+        # An install with a password and no two-step sign-in still signs in with the password alone.
+        status, body, cookies = call("/api/auth/login", {"password": password}, headers=remote)
+        check(status == 200 and body == {"signed_in": True} and cookies, "An install without two-step sign-in was locked out")
+        laptop = cookies[0].split(";")[0]
+        status, body, _ = call("/api/auth/two-step/begin", {}, cookie=laptop, headers=remote)
+        check(status == 200 and body["setup"]["uri"].startswith("otpauth://totp/"), "Couldn't start two-step sign-in")
+        secret = secret_of(body["setup"])
+        status, body, _ = call("/api/auth/two-step/confirm", {"code": auth.totp(secret, time.time())}, cookie=laptop, headers=remote)
+        check(status == 200 and len(body["recovery_codes"]) == 10 and body["two_step"]["on"] and body["two_step"]["recovery_left"] == 10,
+              "Couldn't turn on two-step sign-in")
+        recovery = body["recovery_codes"]
+        with closing(sqlite3.connect(request.directory / "demo.sqlite")) as db:
+            stored = json.dumps(db.execute("SELECT * FROM auth_state").fetchall())
+        check(body.get("setup") is None and base64.b32encode(secret).decode().rstrip("=") not in stored
+              and not any(code.replace("-", "") in stored or code in stored for code in recovery), "Two-step secrets must not be stored in the clear")
+        check(oct((request.directory / "auth-secret.key").stat().st_mode & 0o777) == "0o600", "auth-secret.key must be private")
+
+        # Signing in: the password gives a ticket, not a cookie; the code gives the cookie.
+        status, body, cookies = call("/api/auth/login", {"password": password, "remember": True}, headers=remote)
+        check(status == 200 and body["two_step"] is True and body["signed_in"] is False and not cookies, "The password alone signed in")
+        code = auth.hotp(secret, int(time.time() // 30) + 1)
+        status, _, cookies = call("/api/auth/two-step", {"ticket": body["ticket"], "code": "000000" if code != "000000" else "111111"}, headers=remote)
+        check(status == 403 and not cookies, "A wrong code signed in")
+        status, _, cookies = call("/api/auth/two-step", {"ticket": body["ticket"], "code": code[:3] + " " + code[3:]}, headers=remote)
+        check(status == 200 and len(cookies) == 1 and "Max-Age=" in cookies[0], "The code didn't sign in")
+        check(call("/api/inbox", cookie=cookies[0].split(";")[0])[0] == 200, "The two-step session didn't open the inbox")
+        ticket = call("/api/auth/login", {"password": password}, headers=remote)[1]["ticket"]
+        check(call("/api/auth/two-step", {"ticket": ticket, "code": code}, headers=remote)[0] == 403, "A code was used twice")
+        # A recovery code, once, and Remember this browser.
+        status, _, cookies = call("/api/auth/two-step", {"ticket": ticket, "code": recovery[0], "trust": True}, headers=remote)
+        check(status == 200 and len(cookies) == 2 and any(item.startswith("fluid-two-step=") and "HttpOnly" in item and "SameSite=Strict" in item
+                                                          and "Max-Age=" in item for item in cookies), "A recovery code didn't sign in and remember the browser")
+        remembered = next(item for item in cookies if item.startswith("fluid-two-step=")).split(";")[0]
+        status, body, cookies = call("/api/auth/login", {"password": password}, cookie=remembered, headers=remote)
+        check(status == 200 and body == {"signed_in": True} and cookies, "A remembered browser was asked for the code")
+        ticket = call("/api/auth/login", {"password": password}, headers=remote)[1]["ticket"]
+        check(call("/api/auth/two-step", {"ticket": ticket, "code": recovery[0]}, headers=remote)[0] == 403, "A recovery code worked twice")
+        check(call("/api/auth/security", cookie=laptop)[1]["two_step"]["recovery_left"] == 9, "Recovery codes left wasn't updated")
+        # Wrong codes slow down.
+        guesser = {"X-Forwarded-For": "203.0.113.50", "Origin": None}
+        for _ in range(5):
+            ticket = call("/api/auth/login", {"password": password}, headers=guesser)[1]["ticket"]
+            check(call("/api/auth/two-step", {"ticket": ticket, "code": "000000" if code != "000000" else "111111"}, headers=guesser)[0] == 403,
+                  "A wrong code signed in")
+        ticket = call("/api/auth/login", {"password": password}, headers=guesser)[1]["ticket"]
+        check(call("/api/auth/two-step", {"ticket": ticket, "code": recovery[1]}, headers=guesser)[0] == 429, "Wrong codes weren't slowed down")
+
+        # The phone's bearer token never needs a code, and can't change two-step sign-in.
+        token = call("/api/auth/pairing", {}, cookie=laptop)[1]["token"]
+        check(request("/api/inbox", authorized=False, extra_headers={"Authorization": "Bearer " + token})["messages"] == [],
+              "Two-step sign-in got in the way of the phone's pairing token")
+        try:
+            request("/api/auth/two-step/off", {}, authorized=False, extra_headers={"Authorization": "Bearer " + token})
+            raise RuntimeError("The phone's token turned off two-step sign-in")
+        except HTTPError as error:
+            check(error.code == 403, "The phone's token should be refused for two-step settings")
+
+        # Turning off from another device needs the password and a code; on this computer, neither.
+        check(call("/api/auth/two-step/off", {}, cookie=laptop, headers=remote)[0] == 403, "Turned off from another device without a code")
+        check(call("/api/auth/two-step/recovery", {"code": "000000" if code != "000000" else "111111"}, cookie=laptop, headers=remote)[0] == 403,
+              "New recovery codes were made without a code")
+        status, body, _ = call("/api/auth/two-step/off", {}, cookie=here)
+        check(status == 200 and body["two_step"] == {"on": False, "recovery_left": 0, "prompt": False, "readable": True},
+              "This computer couldn't turn off two-step sign-in without a code")
+        check(call("/api/auth/login", {"password": password}, headers=remote)[1] == {"signed_in": True}, "Turned off, but still asked for a code")
+
+        # The server command, for a lockout with no way onto this computer.
+        secret = secret_of(call("/api/auth/two-step/begin", {}, cookie=here)[1]["setup"])
+        check(call("/api/auth/two-step/confirm", {"code": auth.totp(secret, time.time())}, cookie=here)[0] == 200, "Couldn't turn it back on")
+        check(call("/api/auth/login", {"password": password}, headers=remote)[1].get("two_step") is True, "It didn't turn back on")
+        result = subprocess.run([sys.executable, str(ROOT / "server/main.py"), "reset-two-step"], env=request.env,
+                                capture_output=True, text=True, timeout=30)
+        check(result.returncode == 0 and "two-step sign-in is off" in result.stdout, "reset-two-step didn't run")
+        check(call("/api/auth/login", {"password": password}, headers=remote)[1] == {"signed_in": True}, "reset-two-step didn't turn it off")
+        state = call("/api/auth/security", cookie=here)[1]["two_step"]
+        check(state["on"] is False and state["prompt"] is True, "After a reset, the next sign-in should offer it again")
+        check(call("/api/auth/two-step/later", {}, cookie=here)[1]["two_step"]["prompt"] is False, "Not now didn't stop the offer")
+    page = (ROOT / "server/index.html").read_text()
+    sw = (ROOT / "server/sw.js").read_text()
+    check(all(name in page and "'" + name + "'" in sw for name in ("/qr.js", "/two-step.js")), "The page or the offline cache is missing qr.js or two-step.js")
+    check('id="two-step-form"' in page and "Remember this browser for 30 days" in page, "The sign-in page has no two-step code step")
+    sys.path.remove(str(ROOT / "server"))
+    print("PASS  two-step sign-in: RFC 6238 vectors, encrypted secret, hashed single-use recovery codes, replay, rate limits, "
+          "remembered browsers, the phone's token, the this-computer reset, reset-two-step, and the QR encoder")
+
+
 def erase_test():
     """Settings → Privacy and security → Erase everything on this server: a signed-in browser only, CSRF, the word ERASE,
     the password again, a rate limit, and afterward nothing of the old data, sessions, tokens, or password is left."""
@@ -4869,6 +5145,109 @@ process.stdout.write(JSON.stringify(wrong));
     print("PASS  web parity rules in Node: failed message choices, kind locks, palette contrast and readable tints, chat colors, theme reset")
 
 
+def tor_test():
+    """Connect through Tor: the SOCKS5 handshake (remote DNS) against a fake local SOCKS server, which connections go
+    through Tor, that nothing goes direct when Tor is on but not running, and the Settings API."""
+    import threading
+    sys.path.insert(0, str(ROOT / "server"))
+    import irc_client
+    import tor_route
+    seen = {}
+
+    def fake_socks(server):
+        client, _ = server.accept()
+        with client:
+            seen["greeting"] = client.recv(3)
+            client.sendall(b"\x05\x00")
+            head = client.recv(5)
+            name = client.recv(head[4])
+            port = int.from_bytes(client.recv(2), "big")
+            seen["request"], seen["name"], seen["port"] = head[:4], name.decode(), port
+            client.sendall(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x50")
+            client.sendall(b"hello")
+
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        worker = threading.Thread(target=fake_socks, args=(server,), daemon=True)
+        worker.start()
+        tor_route.configure(True, "127.0.0.1:%d" % server.getsockname()[1])
+        try:
+            with tor_route.create_connection(("irc.example.org", 6697), timeout=5) as sock:
+                check(sock.recv(5) == b"hello", "The SOCKS tunnel didn't carry data")
+            worker.join(5)
+            check(seen["greeting"] == b"\x05\x01\x00", "The SOCKS5 greeting is wrong")
+            check(seen["request"] == b"\x05\x01\x00\x03", "SOCKS5 CONNECT must send the host name (remote DNS)")
+            check(seen["name"] == "irc.example.org" and seen["port"] == 6697, "Tor must get the name and port unresolved")
+            check(tor_route.ready() is False, "A closed proxy isn't ready")
+        finally:
+            tor_route.configure(False)
+    # Refusals in plain words.
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+
+        def refuse():
+            client, _ = server.accept()
+            with client:
+                client.recv(3)
+                client.sendall(b"\x05\x00")
+                client.recv(300)
+                client.sendall(b"\x05\x04\x00\x01\x00\x00\x00\x00\x00\x00")
+        threading.Thread(target=refuse, daemon=True).start()
+        tor_route.configure(True, "127.0.0.1:%d" % server.getsockname()[1])
+        try:
+            tor_route.create_connection(("matrix.example.org", 443), timeout=5)
+            raise RuntimeError("A refused Tor connection went ahead")
+        except tor_route.TorError as error:
+            check("couldn’t reach that server" in str(error) or "couldn't reach that server" in str(error), "Tor's refusal needs plain words")
+        finally:
+            tor_route.configure(False)
+    # On but not running: never direct.
+    closed = free_port()
+    tor_route.configure(True, "127.0.0.1:%d" % closed)
+    try:
+        with socket.socket() as direct:
+            direct.bind(("127.0.0.1", 0))
+            direct.listen(1)
+            try:
+                tor_route.create_connection(("example.org", direct.getsockname()[1]), timeout=2)
+                raise RuntimeError("Tor on but not running connected without Tor")
+            except tor_route.TorError as error:
+                check(str(error) == tor_route.NOT_READY, "Tor not running needs the plain message")
+        # Your own network still connects directly.
+        with socket.socket() as local:
+            local.bind(("127.0.0.1", 0))
+            local.listen(1)
+            tor_route.create_connection(("127.0.0.1", local.getsockname()[1]), timeout=2).close()
+    finally:
+        tor_route.configure(False)
+    check(tor_route.decide(False, False, False) == "direct", "Tor off changes nothing")
+    check(tor_route.decide(True, True, False) == "tor" and tor_route.decide(True, False, False) == "wait", "Tor on goes through Tor or waits")
+    check(tor_route.decide(True, False, True) == "direct", "Your own network connects directly")
+    for host in ("192.168.1.4", "10.1.2.3", "fluid.local", "nas", "box.tail1.ts.net", "100.64.1.1", "::1"):
+        check(tor_route.local_host(host), host + " is on your own network")
+    for host in ("irc.libera.chat", "8.8.8.8", "abc.onion", "2606:4700::1"):
+        check(not tor_route.local_host(host), host + " is on the internet")
+    check(tor_route.parse_proxy("tor:9050") == ("tor", 9050), "A container name works as the proxy")
+    for bad in ("", "127.0.0.1", "127.0.0.1:0", "a b:9050"):
+        try:
+            tor_route.parse_proxy(bad)
+            raise RuntimeError("Accepted a bad proxy address " + repr(bad))
+        except ValueError:
+            pass
+    words, fatal = irc_client.explain("ERROR", "Closing Link: banned (Tor exit node)", "Libera.Chat", "kit", False, tor=True)
+    check(fatal and "through Tor" in words and "SASL" in words, "IRC refusals over Tor say so in plain words")
+    check("Tor" not in irc_client.explain("ERROR", "K-lined", "Libera.Chat", "kit", False)[0], "Without Tor the earlier words stay")
+    sys.path.remove(str(ROOT / "server"))
+    # The setting: off by default, the warning needs "I understand", and it's saved.
+    with companion(free_port(), secrets.token_urlsafe(32)) as (_, request, _process):
+        status = request("/api/tor")
+        check(status["on"] is False and status["proxy"] == "127.0.0.1:9050", "Connect through Tor is off by default")
+        check("slower and less reliable" in status["warning"], "The Tor warning is missing")
+    print("PASS  Tor: SOCKS5 with remote DNS, nothing direct while Tor isn't running, IRC refusals, and the setting")
+
+
 def find_apk(explicit):
     if explicit:
         return explicit.resolve()
@@ -5014,6 +5393,124 @@ def phone_reach_and_access_test():
     print("PASS  access over http: every sampled /api endpoint asks to sign in, no token in the address, wrong tokens wait, CSRF and cookie flags hold")
 
 
+def companion_tls_test():
+    """FluidMessages Web's own certificate (companion_tls.py): made once with the key private, served on the second
+    port, the fingerprint in the answer matches the certificate the port really shows, and the pairing QR code
+    (companion.js pairPayload) carries that fingerprint, the token, and the https:// addresses."""
+    import base64
+    import hashlib
+    import ssl
+    import stat
+    sys.path.insert(0, str(ROOT / "server"))
+    import companion_tls
+    import main as server
+    check(companion_tls.tls_port(8080, "") == 8081 and companion_tls.tls_port(8080, "0") == 0
+          and companion_tls.tls_port(8080, "off") == 0 and companion_tls.tls_port(8080, "9443") == 9443, "FLUID_TLS_PORT rules")
+    with tempfile.TemporaryDirectory(prefix="fluid-tls-") as folder:
+        made = companion_tls.ensure(folder)
+        if made is None:
+            print("Skipped the HTTPS port checks: the openssl command isn't installed")
+            return
+        cert, key = made
+        check(stat.S_IMODE(os.stat(key).st_mode) == 0o600, "The certificate's key can be read by others")
+        again = companion_tls.ensure(folder)
+        check(again == made and companion_tls.fingerprint(cert) == companion_tls.fingerprint(again[0]), "A second start made a new certificate")
+        check(re.fullmatch(r"([0-9A-F]{2}:){31}[0-9A-F]{2}", companion_tls.fingerprint(cert)), "Fingerprint format")
+    tls = {"port": 8081, "fingerprint": "AB:" * 31 + "CD"}
+    reach = server.phone_reach("127.0.0.1:8080", False, bind="0.0.0.0", port=8080, local_only=False, container=False,
+                               addresses=["192.168.1.20"], tls=tls)
+    check(reach["addresses"] == [{"url": "https://192.168.1.20:8081", "kind": "wifi", "pinned": True}] and reach["tls"] == tls,
+          "With HTTPS on, the phone's LAN address should be https:// on its port: " + repr(reach))
+    reach = server.phone_reach("nas.example:8080", False, bind="0.0.0.0", port=8080, local_only=False, container=True, tls=tls)
+    check(reach["addresses"] == [{"url": "https://nas.example:8081", "kind": "page", "pinned": True}], "Page address with HTTPS on: " + repr(reach))
+    reach = server.phone_reach("messages.example.net", True, bind="127.0.0.1", port=8080, local_only=False, container=False, tls=tls)
+    check(reach["addresses"] == [{"url": "https://messages.example.net", "kind": "page"}], "A proxy's address isn't the pinned certificate's")
+
+    token = secrets.token_hex(32)
+    tls_port = free_port()
+    with companion(free_port(), token, extra_env={"FLUID_TLS_PORT": str(tls_port)}) as (origin, request, process):
+        cert_file = request.directory / companion_tls.CERT_NAME
+        key_file = request.directory / companion_tls.KEY_NAME
+        for _ in range(50):
+            try:
+                with socket.create_connection(("127.0.0.1", tls_port), timeout=2):
+                    break
+            except OSError:
+                time.sleep(0.05)
+        check(cert_file.exists() and stat.S_IMODE(key_file.stat().st_mode) == 0o600, "The server didn't make its certificate, or its key isn't private")
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with socket.create_connection(("127.0.0.1", tls_port), timeout=5) as raw, context.wrap_socket(raw) as conn:
+            served = hashlib.sha256(conn.getpeercert(binary_form=True)).hexdigest()
+        on_disk = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert_file.read_text())).hexdigest()
+        check(served == on_disk, "The HTTPS port shows a different certificate than the one in the data folder")
+        opener = build_opener(ProxyHandler({}), __import__("urllib.request").request.HTTPSHandler(context=context))
+        with opener.open(Request(f"https://127.0.0.1:{tls_port}/api/inbox", headers={"Authorization": "Bearer " + token}), timeout=5) as response:
+            check(response.status == 200, "The pairing token doesn't work on the HTTPS port")
+        with opener.open(Request(f"https://127.0.0.1:{tls_port}/"), timeout=5) as response:
+            check(b"FluidMessages" in response.read(), "The HTTPS port doesn't serve the app")
+        # Plain http keeps working the same.
+        check(b"FluidMessages" in request("/", authorized=False), "The http port stopped working with HTTPS on")
+        reach = request("/api/auth/security", extra_headers={"Host": "192.168.1.20:8080"})["reach"]
+        check(reach["tls"]["port"] == tls_port and reach["tls"]["fingerprint"].replace(":", "").lower() == on_disk
+              and reach["addresses"] == [{"url": "https://192.168.1.20:%d" % tls_port, "kind": "page", "pinned": True}],
+              "The pairing info doesn't match the certificate: " + repr(reach))
+        check(key_file.read_text().strip() not in json.dumps(reach), "The key reached the page")
+
+    node = os.environ.get("NODE") or shutil.which("node")
+    companion_js = (ROOT / "server/companion.js").read_text()
+    block = re.search(r"// pair-payload:start[^\n]*\n(.*?)// pair-payload:end", companion_js, re.S)
+    check(block, "companion.js has no pairing payload")
+    if not node:
+        print("Skipped running the pairing QR code payload: node isn't installed (set NODE to its path)")
+    else:
+        script = (ROOT / "server/qr.js").read_text() + "\n" + block.group(1) + """
+const [reach, token] = JSON.parse(process.argv[1]);
+const fits = (text) => { try { qrMatrix(text); return true; } catch (error) { return false; } };
+const many = {...reach, addresses: [...reach.addresses, ...Array.from({length: 12}, (_, i) => ({url: 'https://192.168.7.' + (100 + i) + ':' + reach.tls.port, kind: 'wifi', pinned: true}))]};
+process.stdout.write(JSON.stringify({text: pairPayload(reach, token, 'http://192.168.1.20:8080', fits),
+  proxy: pairPayload(reach, token, 'https://messages.example.net', fits), none: pairPayload(reach, '', '', fits),
+  long: pairPayload(many, token, 'https://messages.example.net', fits), longFits: fits(pairPayload(many, token, 'https://messages.example.net', fits))}));
+"""
+        result = subprocess.run([node, "-e", script, json.dumps([reach, token])], capture_output=True, text=True, timeout=30)
+        check(result.returncode == 0, "The pairing payload didn't run: " + result.stderr[:400])
+        made = json.loads(result.stdout)
+        from urllib.parse import parse_qs, urlsplit
+        link = urlsplit(made["text"])
+        fields = parse_qs(link.query)
+        fingerprint = base64.urlsafe_b64decode(fields["f"][0] + "=").hex()
+        check(link.scheme == "fluidmessages" and link.netloc == "pair" and fields["t"] == [token]
+              and fields["a"] == ["192.168.1.20:%d" % tls_port] and "o" not in fields and fingerprint == on_disk,
+              "The QR code's payload is wrong: " + made["text"].replace(token, "<token>"))
+        check(parse_qs(urlsplit(made["proxy"]).query).get("o") == ["https://messages.example.net"], "The page's https:// origin isn't in the QR code")
+        check(made["none"] is None, "A QR code was made without a pairing token")
+        long_fields = parse_qs(urlsplit(made["long"]).query)
+        check(made["longFits"] and long_fields["a"][0] == "192.168.1.20:%d" % tls_port and long_fields["t"] == [token],
+              "With many addresses the QR code should drop the last ones and still fit")
+    welcome_js = (ROOT / "server/welcome.js").read_text()
+    check("value ? pairingQr(current.reach, value)" in companion_js and "token && security.reach ? pairingQr(security.reach, token)" in welcome_js
+          and "Scan this with FluidMessages on your phone. Or type these in." in companion_js
+          and "fingerprintBlock(security.reach)" in welcome_js and "copyBlock('Port'" in companion_js,
+          "The QR code should show only with a fresh token, above the address, port, token, and fingerprint")
+    check("'/qr.js'" in (ROOT / "server/sw.js").read_text() and 'src="/qr.js"' in (ROOT / "server/index.html").read_text(),
+          "qr.js isn't loaded or cached")
+    gradle = (ROOT / "app/build.gradle").read_text()
+    check("com.google.zxing:core" in gradle and "androidx.camera:camera-camera2" in gradle
+          and "play-services" not in gradle and "mlkit" not in gradle, "The scanner should use CameraX and ZXing only")
+    scan = (ROOT / "app/src/main/kotlin/org/fluidmessages/PairScanScreen.kt").read_text()
+    activity = (ROOT / "app/src/main/java/org/fluidmessages/MainActivity.java").read_text()
+    check("Dialog" not in scan and "startPairScan" in activity and "CAMERA_PERMISSION" in activity
+          and 'render("pairScan")' in activity, "The scanner should be a full page that asks for the camera when tapped")
+    for name in ("CloudBackup.java", "SyncJob.java", "GatewayClient.java"):
+        java = (ROOT / "app/src/main/java/org/fluidmessages" / name).read_text()
+        check("CompanionTls.open(prefs" in java and 'URL(origin + "/api' not in java and 'URL(root + "/api' not in java,
+              name + " opens FluidMessages Web without the certificate pin")
+    guide = (ROOT / "docs/self-hosting.md").read_text()
+    check("FLUID_TLS_PORT" in guide and "fingerprint" in guide and "QR code" in guide, "docs/self-hosting.md is missing the QR pairing")
+    print("PASS  phone HTTPS: own certificate made once with a private key, served on the second port, QR payload has the served fingerprint")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--demo", action="store_true", help="open a temporary browser demo after smoke checks")
@@ -5027,6 +5524,7 @@ def main():
         smoke_test()
         sign_in_test()
         local_access_test()
+        two_step_test()
         erase_test()
         web_privacy_test()
         cloud_smoke_test()
@@ -5056,6 +5554,8 @@ def main():
         irc_calls_and_nickserv_test()
         irc_join_requirements_test()
         phone_reach_and_access_test()
+        companion_tls_test()
+        tor_test()
         android(args)
         if args.demo:
             demo(args.no_browser)

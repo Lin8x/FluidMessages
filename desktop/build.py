@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "FluidMessages Web"
-SERVER_MODULES = ["main", "auth", "accounts", "cloud_backup", "link_fetch", "protocol_gateway", "irc_client", "matrix_e2ee", "xmpp_client"]
+SERVER_MODULES = ["main", "auth", "accounts", "cloud_backup", "companion_tls", "link_fetch", "protocol_gateway", "irc_client", "matrix_e2ee", "xmpp_client"]
 
 
 def icons(work):

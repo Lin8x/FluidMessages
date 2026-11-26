@@ -25,6 +25,8 @@ internal object SampleInbox {
         arrayOf("#radio-club", "RC", "The antenna tuning session starts at seven.", "I’ll bring the analyzer.", "Today", "IRC"),
         arrayOf("#trail-maps", "TM", "I traced the new switchbacks on the east ridge.", "Nice, the old map skipped those.", "Yesterday", "IRC"),
         arrayOf("Book Swap", "BS", "Three new paperbacks on the shelf by the window.", "I’ll trade my mystery for the sci-fi one.", "Today", "Matrix"),
+        // A Nearby chat: someone on the same Wi-Fi, with no internet.
+        arrayOf("Rosa Lindqvist", "RL", "The power’s out on our street too. Are you okay?", "We’re fine. Come by for tea, we have a gas stove.", "Today", "Nearby"),
         // A message request: a new number you've never answered, so it has no reply (MessageRequests).
         arrayOf(REQUEST, "#", "Hi! Is this the bike repair co-op? I found this number on the library flyer.", "", "Today", "SMS"),
     )

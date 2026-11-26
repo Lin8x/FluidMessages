@@ -3,7 +3,8 @@
 # Running Portainer on a server you reach from another computer? Delete the FLUID_LOCAL_ONLY line, then open the
 # app from your computer and enter the one-time setup code from the container's Logs to choose a password.
 # Optional: add an environment variable FLUID_TOKEN (openssl rand -hex 32) for a fixed token for your phone or scripts.
-# For your phone, put an HTTPS reverse proxy in front of port 8080 (and delete FLUID_LOCAL_ONLY).
+# For your phone: delete FLUID_LOCAL_ONLY, publish both ports to your network (like "8080:8080" and "8081:8081"), and
+# scan the QR code in Settings → Phone and other devices. Port 8081 is HTTPS with FluidMessages Web's own certificate.
 services:
   fluidmessages:
     image: ghcr.io/lin8x/fluidmessages-web:latest
@@ -14,6 +15,7 @@ services:
       RCLONE_CONFIG: /data/rclone.conf
     ports:
       - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081"
     volumes:
       - fluid-data:/data
     restart: unless-stopped

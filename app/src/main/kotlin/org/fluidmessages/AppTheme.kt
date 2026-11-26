@@ -61,7 +61,7 @@ internal fun AppTheme(appearance: Appearance, content: @Composable () -> Unit) {
         // Pages are ComposeViews without a Surface at their root, so text with no color of its own would fall back to
         // Material's black (unreadable on dark themes). The palette's ink is the default instead.
         CompositionLocalProvider(LocalControlTint provides appearance.controls, LocalAppearance provides appearance,
-            LocalContentColor provides ink, content = content)
+            LocalContentColor provides ink) { PrivateKeyboard.Provide(content) }
     }
 }
 

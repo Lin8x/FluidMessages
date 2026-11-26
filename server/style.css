@@ -534,6 +534,10 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
 .token-box { display: grid; grid-template-columns: 1fr auto; gap: .45rem; align-items: center; }
 .token-box input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; }
 .token-box .hint { grid-column: 1 / -1; }
+/* The phone pairing QR code (companion.js pairingQr): always dark on white, so any camera reads it. */
+.pair-qr { display: grid; gap: .6rem; justify-items: center; text-align: center; }
+.pair-qr-code { width: min(240px, 72vw); border-radius: 14px; overflow: hidden; background: #ffffff; }
+.pair-qr-code .qr-code { display: block; width: 100%; height: auto; }
 #jobs { max-height: none; }
 
 /* Money: two steps, like the phone. */

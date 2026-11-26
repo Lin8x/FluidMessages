@@ -81,10 +81,12 @@ final class CloudBackup {
     private static HttpURLConnection connect(Context context, String suffix, String method, String expectedOrigin) throws Exception {
         var prefs = context.getSharedPreferences("fluid", Context.MODE_PRIVATE);
         var settings = prefs.getAll();
+            NetworkGate.requireInternet();
         String origin = settings.get("server") instanceof String value ? value : "";
         if (!CompanionAddress.usable(origin)) throw new IOException("Pair an FluidMessages Web first");
         if (expectedOrigin != null && !expectedOrigin.equals(origin)) throw new IOException("The FluidMessages Web has changed");
-        var connection = (HttpURLConnection) new URL(origin + "/api/backups" + suffix).openConnection();
+        // Pinned to FluidMessages Web's certificate when one was saved (CompanionTls).
+        var connection = CompanionTls.open(prefs, origin + "/api/backups" + suffix);
         connection.setInstanceFollowRedirects(false);
         connection.setConnectTimeout(10000);
         connection.setReadTimeout(195000);
