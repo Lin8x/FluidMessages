@@ -1,0 +1,6 @@
+- Quick setup: pick Everything on, Standard, App lock + fewer leaks, Encrypted only, Encrypted + Tor, or Nearby only. Each says who it's for and what it doesn't protect.
+- Only send encrypted messages switch.
+- What is Nearby? and What is Tor? pages.
+- Nearby has its own turquoise color.
+- Add server explains Communities and each service first.
+- Battery and sync is clearer.
