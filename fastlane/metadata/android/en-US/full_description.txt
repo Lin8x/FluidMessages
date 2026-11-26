@@ -9,7 +9,15 @@ FluidMessages is a free, open-source texting app for Android, with no ads and no
 </ul>
 
 <b>More than texts</b>
-FluidMessages also reaches people on open chat services in the same inbox: Matrix, XMPP, Email, and IRC. It can't connect to closed apps like WhatsApp or iMessage.
+FluidMessages also reaches people on open chat services in the same inbox: Matrix, XMPP, Email, and IRC. Friends can use any app that speaks the same service. It can't connect to closed apps like WhatsApp or iMessage.
+<ul>
+<li>Communities: IRC networks, Matrix homeservers, and XMPP servers with their channels and rooms, a tap away from your chats.</li>
+<li>XMPP chats can be locked with OMEMO, and work with Conversations and other XMPP apps.</li>
+<li>A short guide for each service explains what it is and helps you sign up.</li>
+</ul>
+
+<b>No internet? Use Nearby</b>
+Message FluidMessages friends close by with no internet or cell signal, over the same Wi-Fi or Bluetooth. See who is nearby and tap to chat, or add each other with a code. Messages are locked between you two, and phones nearby can carry them along until they reach the other person. Community channels help a whole street share news during a blackout. A built-in guide explains how to stay in touch without internet.
 
 <b>Privacy you can see</b>
 Every chat shows a lock: green when only you and the other person can read it, yellow when it is protected on the way but the service could read it, and red for plain texts your carrier can read. Two FluidMessages users can lock their texts to each other with a secret code they both type in.
@@ -18,6 +26,7 @@ Every chat shows a lock: green when only you and the other person can read it, y
 <li>A private folder that keeps chats out of your inbox.</li>
 <li>Decoy mode, an emergency erase code, and disappearing messages.</li>
 <li>Private keyboard: asks your keyboard not to learn what you type.</li>
+<li>Connect through Tor with the Orbot app, for every chat or just some, with an onion mark on chats that go through Tor.</li>
 <li>Removes location and camera details from photos and files you send.</li>
 </ul>
 
@@ -28,6 +37,9 @@ Backups are locked with your password. Save them on your phone, your own compute
 Eight color themes, each in light and dark. Change bubble colors, wallpapers, sounds, and motion, or give one chat its own look.
 
 <b>Text from your computer</b>
-FluidMessages Web runs on a computer you own. Link your phone to read and send your texts there. It takes some setup.
+FluidMessages Web runs on a computer you own. Link your phone by scanning a QR code to read and send your texts there. FluidMessages Web supports two-step sign-in.
+
+<b>See what's running</b>
+Settings → Running now shows everything FluidMessages keeps going in the background, so you always know what uses your battery.
 
 What it doesn't do yet: RCS chats. Your texts go as SMS and MMS. If RCS chats is on in Google Messages, turn it off there before you switch.

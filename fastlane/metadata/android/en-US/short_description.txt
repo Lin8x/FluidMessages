@@ -1,1 +1,1 @@
-Texting app with chat services, locks, themes, and backups. No ads or tracking.
+Texting, open chat services, and offline Nearby messages. No ads or tracking.

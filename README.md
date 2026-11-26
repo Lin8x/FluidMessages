@@ -14,8 +14,6 @@ A free messaging app with no ads, no tracking, and no big company in the middle.
 
 <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages.apk"><img src="docs/images/button-android.svg" height="56" alt="Download for Android"></a> <a href="#get-it"><img src="docs/images/button-desktop.svg" height="56" alt="Use it on any computer"></a>
 
-**🌐 [fluidmessages.danieljalali.com](https://fluidmessages.danieljalali.com)**
-
 </div>
 
 <br>
@@ -496,6 +494,5 @@ FluidMessages is free and open source under the [Apache License 2.0](LICENSE).
 <div align="center">
 <br>
 <img src="docs/images/logo.png" width="40" alt=""><br>
-<sub>Made with 💚 for everyone tired of the walls.</sub><br>
-<sub><a href="https://fluidmessages.danieljalali.com">fluidmessages.danieljalali.com</a></sub>
+<sub>Made with 💚 for everyone tired of the walls.</sub>
 </div>
