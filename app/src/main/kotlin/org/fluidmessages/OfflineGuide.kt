@@ -1,12 +1,17 @@
 package org.fluidmessages
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -54,37 +59,86 @@ internal object OfflineGuide {
             note = "FluidMessages doesn’t connect to these yet."),
     )
 
+    /** One row of the page's list. Each tip is its own row with a steady [key], so rows are kept and reused while scrolling. */
+    data class Row(val key: String, val kind: Kind, val section: Int = -1, val tip: Int = -1)
+    enum class Kind { INTRO, OPEN_NEARBY, SECTION, TIP, NOTE }
+
+    /** The page's rows, in order. [openNearby]: the tip that opens the Nearby page (not shown when the guide was opened from it). */
+    fun rows(openNearby: Boolean): List<Row> = buildList {
+        add(Row("intro", Kind.INTRO))
+        if (openNearby) add(Row("open-nearby", Kind.OPEN_NEARBY))
+        sections.forEachIndexed { s, section ->
+            add(Row("section-$s", Kind.SECTION, s))
+            section.tips.indices.forEach { t -> add(Row("tip-$s-$t", Kind.TIP, s, t)) }
+            if (section.note.isNotEmpty()) add(Row("note-$s", Kind.NOTE, s))
+        }
+    }
+
+    /** How long a row waits before it fades in when the page opens: a short, capped stagger down the first screen. */
+    fun revealDelay(order: Int): Long = order.coerceIn(0, 8) * 45L
+
     /** Every line of the page, in order, for the test that keeps it and docs/offline-guide.md in step. */
     fun text(): List<String> = listOf(TITLE, SUBTITLE) + sections.flatMap { section ->
         listOf(section.title) + section.tips.flatMap { listOf(it.title, it.line) } + listOfNotNull(section.note.ifEmpty { null })
     }
 }
 
-/** The guide page. [openNearby] is shown as a tip that opens the Nearby page; null when the guide was opened from it. */
+/** Whether guide pages animate: motion speed above 0 and the system not removing animations (reduced motion). */
+internal fun guideMotionOn(context: android.content.Context, speed: Int): Boolean = speed > 0 &&
+    android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
+
+/**
+ * The guide page. [openNearby] is shown as a tip that opens the Nearby page; null when the guide was opened from it.
+ * [showTitle] is false under a page heading that already says the title (NearbyScreen), so it isn't shown twice.
+ *
+ * Rows fade in once, only those on screen as the page opens, by alpha and offset only, so no row changes size. (It used
+ * to put whole sections of slide-in [Tips] in single lazy rows: a section below the fold started its stagger only when
+ * scrolled to and grew from nothing, pushing the page around, and replayed each time it came back on screen.)
+ */
 @Composable
-internal fun OfflineGuidePage(prefs: android.content.SharedPreferences, openNearby: (() -> Unit)?) {
+internal fun OfflineGuidePage(prefs: android.content.SharedPreferences, openNearby: (() -> Unit)?, showTitle: Boolean = true) {
     val appearance = remember { Appearance.read(prefs) }
+    val context = LocalContext.current
+    val motion = remember { guideMotionOn(context, appearance.speed) }
     val scheme = MaterialTheme.colorScheme
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 14.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Text(OfflineGuide.TITLE, Modifier.semantics { heading() }, fontSize = 32.sp, lineHeight = 36.sp, color = scheme.onSurface,
-                    fontWeight = FontWeight.Bold)
-                Text(OfflineGuide.SUBTITLE, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
-            }
-        }
-        if (openNearby != null) item {
-            Tips(listOf(Tip(TipIcon.PEOPLE, "Open Nearby", "Set it up, see who’s close by, and add your family", openNearby)), appearance.speed)
-        }
-        for (section in OfflineGuide.sections) {
-            item {
-                Text(section.title, Modifier.padding(top = 6.dp).semantics { heading() }, color = scheme.onSurface,
-                    style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-            }
-            item { Tips(section.tips, appearance.speed) }
-            if (section.note.isNotEmpty()) item {
-                Text(section.note, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+    val rows = remember(openNearby != null) { OfflineGuide.rows(openNearby != null) }
+    val open by rememberUpdatedState(openNearby)
+    val openTip = remember { Tip(TipIcon.PEOPLE, "Open Nearby", "Set it up, see who’s close by, and add your family") { open?.invoke() } }
+    // True only for the rows composed in the page's first frame: the ones on screen as it opens.
+    var opening by remember { mutableStateOf(motion) }
+    LaunchedEffect(Unit) { if (motion) { withFrameNanos { }; opening = false } }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 14.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        itemsIndexed(rows, key = { _, row -> row.key }, contentType = { _, row -> row.kind }) { index, row ->
+            Reveal(remember { opening }, index, appearance.speed) {
+                when (row.kind) {
+                    OfflineGuide.Kind.INTRO -> Column(Modifier.padding(bottom = 3.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        if (showTitle) Text(OfflineGuide.TITLE, Modifier.semantics { heading() }, fontSize = 32.sp, lineHeight = 36.sp,
+                            color = scheme.onSurface, fontWeight = FontWeight.Bold)
+                        Text(OfflineGuide.SUBTITLE, color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
+                    }
+                    OfflineGuide.Kind.OPEN_NEARBY -> TipCard(openTip)
+                    OfflineGuide.Kind.SECTION -> Text(OfflineGuide.sections[row.section].title, Modifier.padding(top = 9.dp).semantics { heading() },
+                        color = scheme.onSurface, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    OfflineGuide.Kind.TIP -> TipCard(OfflineGuide.sections[row.section].tips[row.tip])
+                    OfflineGuide.Kind.NOTE -> Text(OfflineGuide.sections[row.section].note, color = scheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium)
+                }
             }
         }
     }
+}
+
+/** Fades and lifts [content] in once when [animate]; otherwise shows it as is. Draw-only, so the row's size never changes. */
+@Composable
+internal fun Reveal(animate: Boolean, order: Int, speed: Int, content: @Composable () -> Unit) {
+    if (!animate) { content(); return }
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(OfflineGuide.revealDelay(order))
+        progress.animateTo(1f, tween(speed * 2, easing = FastOutSlowInEasing))
+    }
+    Box(Modifier.graphicsLayer {
+        alpha = progress.value
+        translationY = (1f - progress.value) * 18.dp.toPx()
+    }) { content() }
 }

@@ -39,27 +39,33 @@ internal data class Tip(val icon: TipIcon, val title: String, val line: String, 
 /** Tips that slide in one after another (all at once when motion is off). */
 @Composable
 internal fun Tips(tips: List<Tip>, speed: Int) {
-    val scheme = MaterialTheme.colorScheme
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         tips.forEachIndexed { index, tip ->
             var shown by remember(tips) { mutableStateOf(speed == 0) }
             LaunchedEffect(tips) { if (speed > 0) { delay(120L + index * 140L); shown = true } }
             AnimatedVisibility(shown, enter = fadeIn(tween(speed.coerceAtLeast(1) * 2)) +
                 slideInVertically(tween(speed.coerceAtLeast(1) * 2)) { it / 3 }) {
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(scheme.surfaceContainer)
-                    .then(if (tip.action != null) Modifier.clickable(role = androidx.compose.ui.semantics.Role.Button) { tip.action.invoke() } else Modifier)
-                    .padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(44.dp).background(scheme.primaryContainer, CircleShape), contentAlignment = Alignment.Center) {
-                        TipGlyph(tip.icon, scheme.onPrimaryContainer)
-                    }
-                    Column(Modifier.weight(1f).padding(start = 14.dp)) {
-                        Text(tip.title, style = MaterialTheme.typography.titleMedium, color = scheme.onSurface, fontWeight = FontWeight.SemiBold)
-                        Text(tip.line, style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
-                    }
-                    if (tip.action != null) Text("›", color = scheme.primary, fontSize = 26.sp, modifier = Modifier.padding(start = 8.dp))
-                }
+                TipCard(tip)
             }
         }
+    }
+}
+
+/** One tip card, with no animation of its own: for long scrolling pages that animate their rows themselves (OfflineGuide). */
+@Composable
+internal fun TipCard(tip: Tip) {
+    val scheme = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(scheme.surfaceContainer)
+        .then(if (tip.action != null) Modifier.clickable(role = androidx.compose.ui.semantics.Role.Button) { tip.action.invoke() } else Modifier)
+        .padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(44.dp).background(scheme.primaryContainer, CircleShape), contentAlignment = Alignment.Center) {
+            TipGlyph(tip.icon, scheme.onPrimaryContainer)
+        }
+        Column(Modifier.weight(1f).padding(start = 14.dp)) {
+            Text(tip.title, style = MaterialTheme.typography.titleMedium, color = scheme.onSurface, fontWeight = FontWeight.SemiBold)
+            Text(tip.line, style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
+        }
+        if (tip.action != null) Text("›", color = scheme.primary, fontSize = 26.sp, modifier = Modifier.padding(start = 8.dp))
     }
 }
 

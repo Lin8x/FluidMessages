@@ -22,7 +22,7 @@ A free messaging app with no ads, no tracking, and no big company in the middle.
   <img src="docs/images/fm-devices.svg" width="600" alt="One FluidMessages inbox gathers texts (SMS) and open chat services: Matrix, XMPP, Email, and IRC. The same inbox shows on an Android phone and on a computer, with a lock on every chat. The Android phone sends your texts. A computer, iPhone, or iPad gets the chat services on its own, and texts too if you link your Android phone.">
 </p>
 
-**Jump to:** [What it is](#what-is-fluidmessages) · [The problem](#who-can-read-your-texts) · [For Android](#on-android-the-texting-app-you-should-have-had) · [No Android phone?](#no-android-phone-message-people-another-way) · [Get it](#get-it)
+**Jump to:** [What it is](#what-is-fluidmessages) · [The problem](#who-can-read-your-texts) · [For Android](#on-android-the-texting-app-you-should-have-had) · [No Android phone?](#no-android-phone-message-people-another-way) · [No internet?](#no-internet-use-nearby) · [Get it](#get-it)
 
 <br>
 
@@ -277,6 +277,25 @@ You also get voice and video calls, meeting links for Zoom, Google Meet, Teams, 
 | 🤖 Android phone | Install the app | ✅ | ✅ |
 | 🪟 Windows, 🍎 Mac, 🐧 Linux | Install the computer app | ✅ | ✅ if you link an Android phone (takes some setup) |
 | 📱 iPhone, iPad | Open it in your browser from a computer that runs FluidMessages, then add it to your home screen | ✅ | ✅ if you link an Android phone (takes some setup) |
+
+<br>
+
+# No internet? Use Nearby
+
+<p align="center">
+  <img src="docs/images/fm-nearby.svg" width="600" alt="No internet and no cell signal. Four phones stand in a row, linked by dotted lines. A locked message, Meet at the library, hops from your phone to two phones nearby and on to Sam. Sam gets it. A green lock says only you and Sam can read it, not the phones that carried it.">
+</p>
+
+When the power is out, the cell towers are down, or the Wi-Fi has no internet, **Nearby** still lets you message FluidMessages friends close by. It works over Bluetooth or the same Wi-Fi, with no internet and no cell signal. It's good for blackouts, big events, camping, and school or office Wi-Fi that won't go online.
+
+- **See who's close by.** People with Nearby on show up in the app. Tap someone to chat.
+- **Locked between you two.** Only you and your friend can read your messages.
+- **Phones help carry messages.** Other phones nearby can pass a message along, so it can reach someone a bit farther away, a little later. They can't read it.
+- **Community channels.** Open rooms, like “Neighborhood”, for everyone close by.
+
+Nearby can't reach people far away with no phones in between, and it can't make calls. It's on the Android app only, and it's off until you turn it on.
+
+Read **[Staying in touch without internet](docs/offline-guide.md)** to see what still works when the internet or the cell network is down, and what to set up before you need it.
 
 <br>
 

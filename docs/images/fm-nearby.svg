@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="560" viewBox="0 0 720 560" role="img" aria-label="No internet and no cell signal. Four phones stand in a row, linked by dotted lines. A locked message, Meet at the library, hops from your phone to two phones nearby and on to Sam. Sam gets it. A green lock says only you and Sam can read it, not the phones that carried it.">
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".12"/></filter>
+    <style>
+      text { font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+      .hop { animation: hop 10s ease-in-out infinite; }
+      .glow1 { animation: glow1 10s ease-out infinite; }
+      .glow2 { animation: glow2 10s ease-out infinite; }
+      .got { animation: got 10s ease-out infinite; }
+      .tag { animation: tag 10s ease-out infinite; }
+      @keyframes hop {
+        0% { opacity: 0; transform: translateX(-424px); }
+        5%, 12% { opacity: 1; transform: translateX(-424px); }
+        22%, 30% { opacity: 1; transform: translateX(-254px); }
+        40%, 48% { opacity: 1; transform: translateX(-94px); }
+        58%, 92% { opacity: 1; transform: none; }
+        97%, 100% { opacity: 0; transform: none; }
+      }
+      @keyframes glow1 { 0%, 18% { opacity: 0; } 22%, 30% { opacity: 1; } 36%, 100% { opacity: 0; } }
+      @keyframes glow2 { 0%, 36% { opacity: 0; } 40%, 48% { opacity: 1; } 54%, 100% { opacity: 0; } }
+      @keyframes got { 0%, 56% { opacity: 0; transform: scale(.6); } 61%, 92% { opacity: 1; transform: none; } 97%, 100% { opacity: 0; } }
+      @keyframes tag { 0%, 60% { opacity: 0; transform: translateY(8px); } 66%, 92% { opacity: 1; transform: none; } 97%, 100% { opacity: 0; } }
+      .got { transform-origin: 640px 262px; }
+      @media (prefers-reduced-motion: reduce) {
+        .hop, .got, .tag { animation: none !important; opacity: 1 !important; transform: none !important; }
+        .glow1, .glow2 { animation: none !important; opacity: 0 !important; }
+      }
+    </style>
+  </defs>
+  <rect width="720" height="560" rx="32" fill="#f2f4f8"/>
+  <text x="360" y="64" fill="#141820" font-size="38" font-weight="800" text-anchor="middle">No internet? Use Nearby</text>
+  <text x="360" y="104" fill="#5b6070" font-size="23" text-anchor="middle">Phones close by pass your message along.</text>
+
+  <rect x="24" y="132" width="672" height="400" rx="26" fill="#fff" filter="url(#shadow)"/>
+
+  <!-- No internet, no signal -->
+  <g transform="translate(206 144)">
+    <rect width="308" height="44" rx="22" fill="#eef0f5"/>
+    <g transform="translate(22 11)" fill="none" stroke="#8a8f9c" stroke-width="3" stroke-linecap="round">
+      <path d="M0 9a16 16 0 0 1 24 0"/><path d="M5 15a9 9 0 0 1 14 0"/><circle cx="12" cy="20" r="1.5" fill="#8a8f9c"/>
+      <path d="M-1 0 L25 23" stroke="#d32f2f"/>
+    </g>
+    <text x="62" y="29" fill="#3a3e4a" font-size="19" font-weight="700">No internet · No cell signal</text>
+  </g>
+
+  <!-- Dotted links between the phones -->
+  <path d="M146 300 H284 M356 300 H444 M516 300 H604" stroke="#c3c8d4" stroke-width="3" stroke-dasharray="2 9" stroke-linecap="round"/>
+
+  <!-- Phones: you, two phones nearby, Sam -->
+  <g>
+    <rect x="76" y="244" width="64" height="112" rx="14" fill="#1a73e8"/>
+    <rect x="84" y="256" width="48" height="80" rx="6" fill="#e8f0fe"/>
+    <rect x="98" y="342" width="20" height="4" rx="2" fill="#e8f0fe"/>
+    <text x="108" y="386" fill="#141820" font-size="21" font-weight="700" text-anchor="middle">You</text>
+  </g>
+  <g>
+    <rect class="glow1" x="278" y="236" width="84" height="128" rx="20" fill="#d6f0de"/>
+    <rect x="288" y="244" width="64" height="112" rx="14" fill="none" stroke="#8a8f9c" stroke-width="3"/>
+    <rect x="310" y="342" width="20" height="4" rx="2" fill="#8a8f9c"/>
+    <text x="320" y="386" fill="#5b6070" font-size="19" text-anchor="middle">Phone nearby</text>
+  </g>
+  <g>
+    <rect class="glow2" x="438" y="236" width="84" height="128" rx="20" fill="#d6f0de"/>
+    <rect x="448" y="244" width="64" height="112" rx="14" fill="none" stroke="#8a8f9c" stroke-width="3"/>
+    <rect x="470" y="342" width="20" height="4" rx="2" fill="#8a8f9c"/>
+    <text x="480" y="386" fill="#5b6070" font-size="19" text-anchor="middle">Phone nearby</text>
+  </g>
+  <g>
+    <rect x="608" y="244" width="64" height="112" rx="14" fill="#1a73e8"/>
+    <rect x="616" y="256" width="48" height="80" rx="6" fill="#e8f0fe"/>
+    <rect x="630" y="342" width="20" height="4" rx="2" fill="#e8f0fe"/>
+    <text x="640" y="386" fill="#141820" font-size="21" font-weight="700" text-anchor="middle">Sam</text>
+    <g class="got">
+      <circle cx="640" cy="290" r="17" fill="#1e8e3e"/>
+      <path d="M632 290 l6 6 l11 -12" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+
+  <!-- The locked message, hopping phone to phone -->
+  <g class="hop">
+    <rect x="462" y="197" width="220" height="40" rx="20" fill="#1e8e3e"/>
+    <g transform="translate(478 205)"><path d="M3 10V6a5 5 0 0 1 10 0v4" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><rect x="0" y="10" width="16" height="12" rx="3" fill="#fff"/></g>
+    <text x="504" y="224" fill="#fff" font-size="18" font-weight="600">Meet at the library</text>
+  </g>
+
+  <!-- What it means -->
+  <g class="tag">
+    <rect x="52" y="426" width="136" height="46" rx="23" fill="#1e8e3e"/>
+    <g transform="translate(70 436)"><path d="M3 11V7a5 5 0 0 1 10 0v4" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/><rect x="0" y="11" width="16" height="13" rx="3" fill="#fff"/></g>
+    <text x="96" y="457" fill="#fff" font-size="20" font-weight="700">Locked</text>
+    <text x="206" y="446" fill="#141820" font-size="20">Only you and Sam can read it.</text>
+    <text x="206" y="472" fill="#5b6070" font-size="18">The phones that carried it can’t.</text>
+  </g>
+  <text x="360" y="510" fill="#8a8f9c" font-size="17" text-anchor="middle">Over Bluetooth or the same Wi-Fi, between FluidMessages phones.</text>
+</svg>

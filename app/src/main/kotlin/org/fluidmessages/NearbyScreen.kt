@@ -104,9 +104,13 @@ object NearbyScreen {
     @JvmStatic
     fun title(step: String) = NearbyText.title(step)
 
-    /** The Nearby pages: [step] is "home", "code", "scan", "type", or "pair". [go] opens another step; [open] opens a chat. */
+    /**
+     * The Nearby pages: [step] is "home", "code", "scan", "type", "pair", "guide", or "intro" ("guide:settings" and
+     * "intro:settings" from Settings → Help). [go] opens another step; [open] opens a chat; [back] leaves, as the
+     * heading's Back does (Not now on the first-time What is Nearby? page).
+     */
     @JvmStatic
-    fun mount(root: LinearLayout, prefs: SharedPreferences, step: String, go: Consumer<String>, open: Consumer<String>) {
+    fun mount(root: LinearLayout, prefs: SharedPreferences, step: String, go: Consumer<String>, open: Consumer<String>, back: Runnable) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -114,11 +118,30 @@ object NearbyScreen {
                 val context = LocalContext.current
                 val me = remember { mutableStateOf(DirectNearby.identity(context)) }
                 val missing = remember { NoiseCrypto.selfCheck() }
+                // The first time Nearby is turned on, What is Nearby? comes before the name step.
+                var introDue by remember { mutableStateOf(NearbyIntro.due(prefs, me.value != null)) }
                 when {
-                    step == "guide" -> OfflineGuidePage(prefs, null)
-                    step == "guide:settings" -> OfflineGuidePage(prefs) { go.accept("home") }
+                    // The page heading already says the title, so the guide starts with its subtitle.
+                    step == "guide" -> OfflineGuidePage(prefs, null, showTitle = false)
+                    step == "guide:settings" -> OfflineGuidePage(prefs, { go.accept("home") }, showTitle = false)
+                    step == "intro" || step == "intro:settings" -> {
+                        val on = me.value != null && MessageProtocol.NEARBY.enabled(prefs)
+                        NearbyIntroPage(prefs, on, start = {
+                            NearbyIntro.markSeen(prefs)
+                            // Set up but switched off: Turn on Nearby turns it back on.
+                            if (me.value != null && !on) {
+                                prefs.edit().putBoolean(MessageProtocol.NEARBY.key(), true).apply()
+                                restartQuietly(context)
+                            }
+                            go.accept("home")
+                        }, later = { back.run() })
+                    }
                     // A phone without X25519 or ChaCha20-Poly1305: Nearby says so and stays off, rather than failing later.
                     missing.isNotEmpty() -> Page { item { Note(missing, MaterialTheme.colorScheme.error) } }
+                    me.value == null && introDue -> NearbyIntroPage(prefs, false, start = {
+                        NearbyIntro.markSeen(prefs)
+                        introDue = false
+                    }, later = { back.run() })
                     // Turning on asks only for a name, then goes straight to People nearby.
                     me.value == null -> SetUp(prefs, null) {
                         me.value = DirectNearby.identity(context)
@@ -496,10 +519,14 @@ private fun VisibilityCard(prefs: SharedPreferences, helping: Boolean) {
 @Composable
 private fun GuideLink(go: Consumer<String>) {
     PreferencesCard("Help") {
-        Row(Modifier.fillMaxWidth().heightIn(min = 55.dp).clickable(role = Role.Button) { go.accept("guide") }
-            .padding(horizontal = 15.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            PreferenceText(OfflineGuide.TITLE, "Texts, Nearby, and other ways to reach people when the internet is down", Modifier.weight(1f))
-            Text("›", color = MaterialTheme.colorScheme.primary, fontSize = 26.sp)
+        for ((step, title, detail) in listOf(
+            Triple("intro", NearbyIntro.TITLE, "What it does, who it’s for, and what it can’t do"),
+            Triple("guide", OfflineGuide.TITLE, "Texts, Nearby, and other ways to reach people when the internet is down"))) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 55.dp).clickable(role = Role.Button) { go.accept(step) }
+                .padding(horizontal = 15.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                PreferenceText(title, detail, Modifier.weight(1f))
+                Text("›", color = MaterialTheme.colorScheme.primary, fontSize = 26.sp)
+            }
         }
     }
 }

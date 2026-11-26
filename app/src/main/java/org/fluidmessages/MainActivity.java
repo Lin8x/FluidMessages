@@ -4702,6 +4702,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 action("Communities", "Servers with their channels and rooms, beside your chats", this::communitiesIntro),
                 action(OfflineGuide.TITLE, "Texts, Nearby, and other ways to reach people when the internet is down",
                     () -> nearby("guide:settings")),
+                action(NearbyIntro.TITLE, "Message friends close by with no internet or cell signal",
+                    () -> nearby("intro:settings")),
                 action("About and updates", "Version and updates", this::about),
                 action("Reset or erase", "Start over with default settings, or remove everything", this::resetPage)))));
     }
@@ -4931,9 +4933,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         render("nearby");
         Runnable back = step.equals("home") ? this::protocolSettings
             : step.startsWith("verify:") ? () -> chat(step.substring(7), MessageProtocol.NEARBY)
-            : step.equals("guide:settings") ? this::settings : () -> nearby("home");
+            : step.endsWith(":settings") ? this::settings : () -> nearby("home");
         heading(NearbyScreen.title(step), "Back", back);
-        NearbyScreen.mount(root, prefs, step, this::nearby, address -> chat(address, MessageProtocol.NEARBY));
+        NearbyScreen.mount(root, prefs, step, this::nearby, address -> chat(address, MessageProtocol.NEARBY), back);
     }
 
     private void accounts() { accounts(this::settings); }
