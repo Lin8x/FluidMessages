@@ -19,6 +19,8 @@ enum class Encryption(val label: String) {
     PREVIEW("RCS isn’t available in FluidMessages yet"),
     COMPANION_E2EE("End-to-end encrypted · decrypted on FluidMessages Web"),
     FLUIDMESSAGES("Encrypted by FluidMessages with the key you share"),
+    /** End-to-end, locked to a key first seen nearby and not checked yet (Nearby trust on first use). Yellow, like unverified OMEMO. */
+    UNVERIFIED("End-to-end encrypted · not verified yet"),
 }
 
 internal data class TransportCapabilities(

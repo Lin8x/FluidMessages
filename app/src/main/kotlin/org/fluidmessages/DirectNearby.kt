@@ -13,12 +13,15 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import java.io.BufferedInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
@@ -42,10 +45,14 @@ import org.json.JSONObject
  * so both sides prove who they are and each connection has its own keys. Two kinds of connection:
  * - **With someone you've added**: one-to-one messages ([NearbyWire.Packet.Text], confirmed with an Ack), plus the
  *   community envelopes below.
- * - **With anyone else nearby**, only while you've joined a channel or Help pass messages along is on: envelopes only
- *   (NearbyMesh): channel and room messages, and one-to-one messages sealed to someone else that this phone carries
- *   without being able to read. A one-to-one message is never taken from someone you haven't added.
+ * - **With anyone else nearby**, while Who can see me nearby is Everyone nearby, or you've joined a channel, or Help
+ *   pass messages along is on: envelopes (NearbyMesh): channel and room messages, and one-to-one messages sealed to
+ *   someone else that this phone carries without being able to read. Phones that said they can be seen are listed
+ *   under People nearby; tapping one starts a chat pinned to the key it proved (trust on first use, NearbyPeople).
+ *   A one-to-one message from someone you haven't added lands as a message request, only while you're seen by
+ *   everyone nearby; otherwise it's never taken.
  * While Add nearby person is open on both phones, they also connect and show a safety code (NearbyWire.safetyCode).
+ * A phone showing the ID of someone you've added with another key puts their chat on hold until you check it.
  *
  * A one-to-one message waits in the shared outbox (DirectProtocols) until the person's phone is connected, and is
  * sent oldest first. While it waits, a sealed copy also travels from phone to phone ([NearbyRelay]: 8 hops, 7 days,
@@ -101,12 +108,29 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
 
     /** A connection: TCP on Wi-Fi or RFCOMM on Bluetooth, as two streams. */
     private class Link(val input: InputStream, val output: OutputStream, val kind: String, private val closer: () -> Unit,
-                       val setTimeout: (Int) -> Unit = {}) {
+                       val setTimeout: (Int) -> Unit = {}, val host: InetAddress? = null) {
         fun close() { try { closer() } catch (ignored: Exception) {} }
     }
 
     /** Someone on the Add nearby person page who isn't added yet, with the safety code both phones show. */
     data class Candidate(val key: String, val name: String, val id: String, val code: String)
+
+    /**
+     * Someone under People nearby: their name, the short tag from their key, how they're close by, the chat with them
+     * if there is one, and the name of someone you've added if it's the same name with another key.
+     */
+    data class Near(val key: String, val name: String, val tag: String, val way: String, val address: String,
+                    val added: Boolean, val sameNameAs: String)
+
+    /** Looking for phones on this Wi-Fi: how many addresses were tried, how many phones answered, and whether it's done. */
+    class Look {
+        @Volatile var tried = 0
+        @Volatile var found = 0
+        @Volatile var done = false
+        @Volatile var cancelled = false
+        @Volatile var problem = ""
+        fun cancel() { cancelled = true }
+    }
 
     override fun start(context: Context, account: JSONObject) {
         app = context.applicationContext
@@ -166,6 +190,12 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
         if (route.optBoolean("group")) return shareInChannel(route, message, body)
         if (body.toByteArray(Charsets.UTF_8).size > NearbyWire.MAX_TEXT_BYTES) throw IllegalArgumentException("That message is too long to send nearby")
         val peer = route.optString("target")
+        val person = person(app, route)
+        if (person.blocked) throw IllegalStateException("You blocked ${route.optString("title")}")
+        // Their key changed: nothing goes until you check it (NearbyPeople.keyChanged), like OMEMO's rule.
+        if (!NearbyPeople.canSend(person)) throw IllegalStateException("${route.optString("title")}’s key changed. Check it in this chat’s details first.")
+        // Replying to a request accepts it, so the reply goes now.
+        if (!NearbyPeople.added(person)) MessageRequests.decide(prefs, route.optString("address"), MessageRequests.ACCEPTED)
         val wireId = NearbyWire.wireId(message.getString("id"))
         val text = NearbyWire.Packet.Text(wireId, message.optLong("date"), body)
         val session = sessions[peer]?.takeIf { it.contact }
@@ -228,7 +258,7 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
     private fun tcp(socket: Socket): Link {
         socket.tcpNoDelay = true
         return Link(BufferedInputStream(socket.getInputStream()), socket.getOutputStream(), "Wi-Fi", { socket.close() },
-            { socket.soTimeout = it })
+            { socket.soTimeout = it }, socket.inetAddress)
     }
 
     private fun register(port: Int) {
@@ -265,6 +295,13 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
         }
         discovery = listener
         manager.discoverServices(NearbyWire.SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+    }
+
+    /** Look for people on this Wi-Fi: starts finding phones afresh, as if Nearby had just turned on. */
+    private fun refreshDiscovery() {
+        try { discovery?.let { nsd?.stopServiceDiscovery(it) } } catch (ignored: Exception) {}
+        discovery = null
+        try { discover() } catch (ignored: Exception) {}
     }
 
     /** One resolve at a time: older Android versions refuse a second while one is running. */
@@ -449,7 +486,7 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
      * Runs the handshake on a new connection, then reads from it until it closes. Returns the other phone's key once
      * it's known (or [SELF]); null when the handshake didn't finish.
      */
-    private fun open(link: Link, initiator: Boolean): String? {
+    private fun open(link: Link, initiator: Boolean, known: (String) -> Unit = {}): String? {
         // Bluetooth streams have no read timeout, so a stalled handshake is closed by the timer.
         var adopted = false
         val guard = timer.schedule({ if (!adopted) link.close() }, 12, TimeUnit.SECONDS)
@@ -457,8 +494,11 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
         try {
             link.setTimeout(10_000)
             val handshake = NoiseHandshake(NoisePattern.XX, initiator, NearbyWire.PROLOGUE, identity.keys)
-            val hello = NearbyWire.encode(NearbyWire.Packet.Hello(identity.name, identity.id,
-                identity.sign?.public?.let(NoiseCrypto::hex).orEmpty(), pairing()))
+            // Whether this phone can be listed: the side that starts knows who it's talking to; the other side sends
+            // Seen once it does (adopt).
+            fun hello(peerAdded: Boolean) = NearbyWire.encode(NearbyWire.Packet.Hello(identity.name, identity.id,
+                identity.sign?.public?.let(NoiseCrypto::hex).orEmpty(), pairing(), modern = true,
+                visible = NearbyPeople.shown(visibility(), peerAdded)))
             val theirs: NearbyWire.Packet
             if (initiator) {
                 link.output.write(NearbyWire.frame(handshake.writeMessage(ByteArray(0))))
@@ -466,25 +506,27 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
                 theirs = NearbyWire.decode(handshake.readMessage(readFrame(link.input)))
                 peer = NoiseCrypto.hex(handshake.remoteStatic!!)
                 // Decide before saying who this phone is, so a phone you haven't let in never learns your key.
-                if (!welcome(peer)) { link.close(); return if (peer == identity.card.keyHex) SELF else peer }
-                link.output.write(NearbyWire.frame(handshake.writeMessage(hello)))
+                if (!welcome(peer)) { link.close(); return (if (peer == identity.card.keyHex) SELF else peer).also(known) }
+                link.output.write(NearbyWire.frame(handshake.writeMessage(hello(contactRoute(app, peer) != null))))
                 link.output.flush()
             } else {
                 handshake.readMessage(readFrame(link.input))
-                link.output.write(NearbyWire.frame(handshake.writeMessage(hello)))
+                link.output.write(NearbyWire.frame(handshake.writeMessage(hello(false))))
                 link.output.flush()
                 theirs = NearbyWire.decode(handshake.readMessage(readFrame(link.input)))
                 peer = NoiseCrypto.hex(handshake.remoteStatic!!)
-                if (!welcome(peer)) { link.close(); return if (peer == identity.card.keyHex) SELF else peer }
+                if (!welcome(peer)) { link.close(); return (if (peer == identity.card.keyHex) SELF else peer).also(known) }
             }
             val greeting = theirs as? NearbyWire.Packet.Hello ?: throw IOException("Expected a hello")
             val session = Session(link, handshake.transport(), peer, greeting.name, greeting.id,
                 starter = if (initiator) identity.card.keyHex else peer, code = NearbyWire.safetyCode(handshake.handshakeHash),
-                signKey = greeting.signKey, known = { contactRoute(app, peer) != null })
+                signKey = greeting.signKey, modern = greeting.modern, known = { contactRoute(app, peer) != null })
             session.pairing = greeting.pairing
+            session.visible = greeting.visible
             link.setTimeout(70_000)
             adopted = true
             guard.cancel(false)
+            known(peer)
             if (!adopt(session)) return peer
             read(session)
             return peer
@@ -498,14 +540,21 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
     private fun readFrame(input: InputStream): ByteArray = NearbyWire.readFrame(input) ?: throw IOException("Closed")
 
     /**
-     * Whether to go on with someone: a person you've added; anyone while Add nearby person is open; and anyone, for
-     * channels and passing messages along only, while those are on (a few at a time). Never yourself.
+     * Whether to go on with someone: a person you've added or who sent you a request; anyone while Add nearby person
+     * is open; and anyone else (a few at a time) while you're seen by everyone nearby, or for channels and passing
+     * messages along. Never yourself, and never someone you blocked.
      */
     private fun welcome(key: String): Boolean {
         if (key == identity.card.keyHex) return false
-        if (contactRoute(app, key) != null || pairing()) return true
-        return community(app) && sessions.values.count { !it.contact } < MAX_COMMUNITY
+        val person = personRoute(app, key)
+        if (person != null && blocked(prefs, person.optString("address"))) return false
+        if (person != null || pairing()) return true
+        return strangersWelcome() && sessions.values.count { !it.contact } < MAX_COMMUNITY
     }
+
+    private fun visibility() = visibility(prefs)
+
+    private fun strangersWelcome() = NearbyPeople.welcomesStrangers(visibility(), community(app))
 
     private fun pairing() = System.currentTimeMillis() < pairingUntil
 
@@ -520,13 +569,41 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
             sessions[session.peer] = session
             existing?.close()
         }
-        if (session.contact) arrived(session)
+        if (session.contact) arrived(session) else checkKeyChange(session)
         // Each side says what it has, and gets what it's missing.
         workers.execute {
-            try { session.write(NearbyWire.Packet.Have(store.items().take(NearbyRelay.INVENTORY).map { it.id })) }
-            catch (error: Exception) { session.close() }
+            try {
+                // Phones from before People nearby only see "Add nearby person is open" from Mode.
+                if (pairing() && !session.modern) session.write(NearbyWire.Packet.Mode(true))
+                if (session.modern) session.write(NearbyWire.Packet.Seen(NearbyPeople.shown(visibility(), session.contact)))
+                session.write(NearbyWire.Packet.Have(store.items().take(NearbyRelay.INVENTORY).map { it.id }))
+            } catch (error: Exception) { session.close() }
         }
         return true
+    }
+
+    /** A phone showing the ID of someone you've added, with another key: their chat says so and waits for your OK. */
+    private fun checkKeyChange(session: Session) {
+        if (personRoute(app, session.peer) != null) return
+        val route = claimedBy(session) ?: return
+        if (route.optString("changed_key") == session.peer || route.optString("kept_key") == session.peer) return
+        val address = route.optString("address")
+        updateRoute(app, address) { it.put("changed_key", session.peer).put("changed_name", session.name) }
+        notice(route, "${route.optString("title")}’s key changed. This could be a new phone, or someone pretending. " +
+            "Messages are on hold until you check it in this chat’s details.")
+    }
+
+    /** The person whose ID this phone shows with a different key, if any. */
+    private fun claimedBy(session: Session): JSONObject? =
+        people(app).firstOrNull { NearbyPeople.keyChanged(person(app, it), session.id, session.peer) }
+
+    /** A line in the chat about its encryption, like XMPP's. */
+    private fun notice(route: JSONObject, text: String) {
+        try {
+            val now = System.currentTimeMillis()
+            DirectProtocols.incoming(app, DirectProtocols.record(route, "nearby-note-" + NearbyWire.newId(), text, false, now, "")
+                .put("event", true).put("read", 1))
+        } catch (ignored: Exception) {}
     }
 
     /** Someone you've added is connected: their waiting messages go now. */
@@ -544,6 +621,7 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
                     is NearbyWire.Packet.Text -> received(session, packet)
                     is NearbyWire.Packet.Ack -> acks[packet.id]?.countDown()
                     is NearbyWire.Packet.Mode -> session.pairing = packet.pairing
+                    is NearbyWire.Packet.Seen -> session.visible = packet.visible
                     is NearbyWire.Packet.Have -> handOver(session, packet.ids.toSet())
                     is NearbyWire.Packet.Carry -> carried(session, packet.envelope)
                     NearbyWire.Packet.Ping, is NearbyWire.Packet.Hello -> {}
@@ -558,9 +636,29 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
     }
 
     private fun received(session: Session, packet: NearbyWire.Packet.Text) {
-        // One-to-one messages come only from people you've added, never over a connection kept for channels.
-        val route = contactRoute(app, session.peer)
-        if (store(session.peer, route, packet)) session.write(NearbyWire.Packet.Ack(packet.id))
+        // From people you've added or who sent you a request; someone new lands as a request (NearbyPeople.intake).
+        val route = personRoute(app, session.peer)
+        val impersonates = route == null && claimedBy(session) != null
+        val chat = when (NearbyPeople.intake(route?.let { person(app, it) }, impersonates, visibility(), session.modern)) {
+            NearbyPeople.Intake.STORE -> route
+            NearbyPeople.Intake.REQUEST -> requestFrom(session)
+            NearbyPeople.Intake.REFUSE -> null
+        }
+        if (store(session.peer, chat, packet)) session.write(NearbyWire.Packet.Ack(packet.id))
+    }
+
+    private val requestTimes = java.util.ArrayDeque<Long>()
+
+    /** A message request's chat: their key pinned, not verified, at most 20 new ones an hour. */
+    private fun requestFrom(session: Session): JSONObject? = synchronized(requestTimes) {
+        val now = System.currentTimeMillis()
+        while (requestTimes.isNotEmpty() && now - requestTimes.peekFirst() > 3_600_000L) requestTimes.removeFirst()
+        if (requestTimes.size >= 20) return null
+        requestTimes.addLast(now)
+        try {
+            DirectProtocols.linkQuietly(app, MessageProtocol.NEARBY, session.peer, NearbyPeople.label(session.name, NoiseCrypto.hex(session.peer)),
+                false, JSONObject().put("nearby_id", session.id).put("tofu", true).put("verified", false).put("request", true))
+        } catch (error: Exception) { null }
     }
 
     /** Stores a one-to-one message once; true when it should be confirmed. */
@@ -595,7 +693,11 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
         if (!intake.keep) return
         when (envelope.kind) {
             Envelope.DIRECT -> if (mine) {
-                NearbyMesh.openDirect(envelope, identity.keys)?.let { direct -> store(direct.sender, contactRoute(app, direct.sender), direct.text) }
+                // Carried messages come only from people with a chat here; someone new can't start one this way.
+                NearbyMesh.openDirect(envelope, identity.keys)?.let { direct ->
+                    val route = personRoute(app, direct.sender)?.takeIf { NearbyPeople.canSend(person(app, it)) }
+                    store(direct.sender, route, direct.text)
+                }
             }
             Envelope.CHANNEL -> {
                 // A message that isn't signed by its sender is dropped, never shown or passed on.
@@ -624,11 +726,14 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
     }
 
     private class Session(val link: Link, val transport: NoiseTransport, val peer: String, val name: String, val id: String,
-                          val starter: String, val code: String, val signKey: String, private val known: () -> Boolean) {
+                          val starter: String, val code: String, val signKey: String, val modern: Boolean,
+                          private val known: () -> Boolean) {
         /** Someone you've added, checked each time: adding them on Add nearby person keeps this same connection. */
         val contact: Boolean get() = known()
         @Volatile var alive = true
         @Volatile var pairing = false
+        /** They said this phone may list them under People nearby. */
+        @Volatile var visible = false
         /** Envelopes this phone already has or was given, so none is sent to it twice. */
         val sent: MutableSet<String> = ConcurrentHashMap.newKeySet()
         @Volatile var received = 0
@@ -667,7 +772,7 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
     fun stopPairing() {
         pairingUntil = 0
         for (session in sessions.values) {
-            if (contactRoute(app, session.peer) == null && !community(app)) session.close()
+            if (personRoute(app, session.peer) == null && !strangersWelcome()) session.close()
             else try { session.write(NearbyWire.Packet.Mode(false)) } catch (ignored: Exception) {}
         }
     }
@@ -685,8 +790,117 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
 
     /** Settings for channels or passing messages along changed: open or drop connections with phones you haven't added. */
     fun communityChanged() {
-        if (!community(app) && !pairing()) for (session in sessions.values) if (!session.contact) session.close()
+        if (!strangersWelcome() && !pairing()) for (session in sessions.values) if (personRoute(app, session.peer) == null) session.close()
         retryAll()
+    }
+
+    /** Who can see me nearby changed: phones connected now hear it right away. */
+    fun visibilityChanged() {
+        for (session in sessions.values) if (session.modern && session.alive) {
+            try { session.write(NearbyWire.Packet.Seen(NearbyPeople.shown(visibility(), session.contact))) } catch (ignored: Exception) {}
+        }
+        communityChanged()
+    }
+
+    /** People nearby: phones connected now that said they can be seen, and your people from before People nearby. */
+    fun peopleNearby(): List<Near> {
+        val mine = contacts(app)
+        return sessions.values.filter { it.alive && (it.visible || it.contact && !it.modern) }.map { session ->
+            val route = personRoute(app, session.peer)
+            val twin = if (route == null) mine.firstOrNull { NearbyPeople.sameName(it.optString("title").substringBefore(" · "), session.name) } else null
+            Near(session.peer, session.name, NearbyPeople.tag(NoiseCrypto.hex(session.peer)), NearbyPeople.way(session.link.kind),
+                route?.optString("address").orEmpty(), session.contact, twin?.optString("title").orEmpty())
+        }.sortedWith(compareBy({ !it.added }, { it.name.lowercase() }))
+    }
+
+    /**
+     * Tap someone under People nearby: a chat with them right away, pinned to the key their phone proved (trust on
+     * first use). Not verified until you compare the safety code or scan their code. Returns the chat's link.
+     */
+    fun startChat(key: String): JSONObject {
+        personRoute(app, key)?.let { route ->
+            // They sent you a request: tapping them accepts it.
+            if (!NearbyPeople.added(person(app, route))) MessageRequests.decide(prefs, route.optString("address"), MessageRequests.ACCEPTED)
+            added(key)
+            return route
+        }
+        val session = sessions[key]?.takeIf { it.alive } ?: throw IllegalStateException("They aren’t close by anymore")
+        val route = DirectProtocols.linkQuietly(app, MessageProtocol.NEARBY, key, NearbyPeople.label(session.name, NoiseCrypto.hex(key)),
+            false, JSONObject().put("nearby_id", session.id).put("tofu", true).put("verified", false))
+        added(key)
+        if (session.modern) workers.execute {
+            try { session.write(NearbyWire.Packet.Seen(NearbyPeople.shown(visibility(), true))) } catch (ignored: Exception) {}
+        }
+        return route
+    }
+
+    /** The safety code with this person, while their phone is connected; "" otherwise. */
+    fun safetyCode(key: String): String = sessions[key]?.takeIf { it.alive }?.code.orEmpty()
+
+    /**
+     * Look for people on this Wi-Fi: finds phones afresh, then, for networks that block finding phones, tries the
+     * Nearby port on each address of this phone's own Wi-Fi network (at most a /24, never mobile data or a public
+     * range), at most [NearbyPeople.MAX_PER_SECOND] a second, each answered with the usual Nearby hello. Call
+     * [Look.cancel] when the page closes.
+     */
+    fun lookOnWifi(): Look {
+        val look = Look()
+        refreshDiscovery()
+        retryAll()
+        workers.execute { try { lookThrough(look) } finally { look.done = true } }
+        return look
+    }
+
+    @Suppress("DEPRECATION")
+    private fun lookThrough(look: Look) {
+        val connectivity = app.getSystemService(ConnectivityManager::class.java) ?: return
+        // A Wi-Fi network with no internet often isn't the default one, so find it by itself and send only over it.
+        val wifi = connectivity.allNetworks.firstOrNull { network ->
+            connectivity.getNetworkCapabilities(network)?.let {
+                NearbyPeople.mayLook(it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI), it.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+                    it.hasTransport(NetworkCapabilities.TRANSPORT_VPN))
+            } == true
+        }
+        if (wifi == null) { look.problem = "Connect to a Wi-Fi network first. Looking never uses mobile data."; return }
+        val own = connectivity.getLinkProperties(wifi)?.linkAddresses?.firstOrNull { it.address is Inet4Address }
+        val targets = own?.let { NearbyPeople.addressesToTry(it.address.address, it.prefixLength) }.orEmpty()
+        if (targets.isEmpty()) { look.problem = "FluidMessages looks only on home and local Wi-Fi networks, and this isn’t one."; return }
+        val phones: MutableSet<String> = ConcurrentHashMap.newKeySet()
+        val busy = HashSet<InetAddress>()
+        for (session in sessions.values) if (session.alive && session.link.host != null) { busy += session.link.host; phones += session.peer }
+        look.found = phones.size
+        val pending = Semaphore(16)
+        for (target in targets) {
+            if (look.cancelled || !running) break
+            val address = InetAddress.getByAddress(target)
+            if (address in busy) continue
+            pending.acquire()
+            look.tried++
+            workers.execute {
+                var socket: Socket? = null
+                try {
+                    socket = wifi.socketFactory.createSocket()
+                    socket.connect(InetSocketAddress(address, PORT), NearbyPeople.TIMEOUT_MS)
+                } catch (error: Exception) {
+                    try { socket?.close() } catch (ignored: IOException) {}
+                    socket = null
+                } finally { pending.release() }
+                val connected = socket ?: return@execute
+                if (look.cancelled || !handshakes.tryAcquire(3, TimeUnit.SECONDS)) { connected.close(); return@execute }
+                try {
+                    open(tcp(connected), initiator = true) { peer ->
+                        if (peer == SELF) return@open
+                        phones += peer
+                        look.found = phones.size
+                        found.putIfAbsent("look:" + address.hostAddress, Found(address, PORT).also { it.peer = peer })
+                    }
+                } finally { handshakes.release() }
+            }
+            Thread.sleep(NearbyPeople.SPACING_MS)
+        }
+        // Let the last tries finish before saying how many answered.
+        if (pending.tryAcquire(16, NearbyPeople.TIMEOUT_MS * 2L, TimeUnit.MILLISECONDS)) pending.release(16)
+        Thread.sleep(1500)
     }
 
     /** This phone's addresses on the local network, for Connect by address. */
@@ -796,8 +1010,93 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
                 .filter { MessageProtocol.parse(it.optString("protocol")) == MessageProtocol.NEARBY }
         }
 
-        /** People you've added, as their links. */
-        @JvmStatic fun contacts(context: Context): List<JSONObject> = nearbyRoutes(context).filter { !it.optBoolean("group") }
+        /** Everyone with a one-to-one chat here: people you've added, and message requests. */
+        @JvmStatic fun people(context: Context): List<JSONObject> = nearbyRoutes(context).filter { !it.optBoolean("group") }
+
+        /** People you've added (or whose request you accepted), as their links. */
+        @JvmStatic fun contacts(context: Context): List<JSONObject> = people(context).filter { NearbyPeople.added(person(context, it)) }
+
+        @JvmStatic fun personRoute(context: Context, key: String): JSONObject? =
+            people(context).firstOrNull { it.optString("target").equals(key, ignoreCase = true) }
+
+        /** A chat's trust, from its link (NearbyPeople.Person). */
+        @JvmStatic fun person(context: Context, route: JSONObject): NearbyPeople.Person = person(DirectProtocols.prefs(context), route)
+
+        @JvmStatic fun person(prefs: SharedPreferences, route: JSONObject): NearbyPeople.Person {
+            val address = route.optString("address")
+            return NearbyPeople.Person(route.optString("target"), route.optString("nearby_id"), route.optBoolean("tofu"),
+                route.optBoolean("verified"), route.optBoolean("request"), MessageRequests.decision(prefs, address),
+                route.optString("changed_key"), blocked(prefs, address))
+        }
+
+        @JvmStatic fun blocked(prefs: SharedPreferences, address: String) = MainActivity.addressList(prefs, "blocked").contains(address)
+
+        /** A Nearby request chat, for MessageRequests: only one-to-one chats someone else started. */
+        @JvmStatic fun requestRoute(prefs: SharedPreferences, address: String): JSONObject? =
+            DirectProtocols.route(prefs, address, MessageProtocol.NEARBY)?.takeIf { it.optBoolean("request") && !it.optBoolean("group") }
+
+        @JvmStatic fun visibility(prefs: SharedPreferences) = NearbyPeople.Visibility.parse(prefs.getString(NearbyPeople.VISIBILITY, null))
+
+        @JvmStatic fun setVisibility(context: Context, choice: NearbyPeople.Visibility) {
+            DirectProtocols.prefs(context).edit().putString(NearbyPeople.VISIBILITY, choice.key).apply()
+            current?.visibilityChanged()
+        }
+
+        /** Marks a chat verified: you compared the safety code or scanned their code, and it matched. */
+        @JvmStatic fun markVerified(context: Context, address: String) {
+            updateRoute(context, address) { it.put("verified", true) }
+            MmsTransport.changed(context)
+        }
+
+        /** Their code, scanned or typed while verifying: true when it holds the key this chat is locked to. */
+        @JvmStatic fun verifyCard(context: Context, address: String, card: NearbyWire.Card): Boolean {
+            val route = DirectProtocols.route(DirectProtocols.prefs(context), address, MessageProtocol.NEARBY) ?: return false
+            if (!route.optString("target").equals(card.keyHex, ignoreCase = true)) return false
+            markVerified(context, address)
+            return true
+        }
+
+        /** Their key changed and you checked it with them: the chat moves to the new key, not verified yet. */
+        @JvmStatic fun acceptNewKey(context: Context, address: String) {
+            var key = ""
+            updateRoute(context, address) { route ->
+                key = route.optString("changed_key")
+                if (key.isNotEmpty()) route.put("target", key).put("verified", false).put("tofu", true)
+                route.remove("changed_key"); route.remove("changed_name"); route.remove("kept_key")
+            }
+            if (key.isNotEmpty()) current?.added(key)
+            MmsTransport.changed(context)
+        }
+
+        /** Keep the key you had: the other one is refused from now on, and messages go again. */
+        @JvmStatic fun keepOldKey(context: Context, address: String) {
+            updateRoute(context, address) { route ->
+                route.optString("changed_key").takeIf { it.isNotEmpty() }?.let { route.put("kept_key", it) }
+                route.remove("changed_key"); route.remove("changed_name")
+            }
+            MmsTransport.changed(context)
+        }
+
+        private fun updateRoute(context: Context, address: String, change: (JSONObject) -> Unit) {
+            synchronized(DirectProtocols::class.java) {
+                val prefs = DirectProtocols.prefs(context)
+                val routes = DirectProtocols.routes(prefs)
+                for (i in 0 until routes.length()) {
+                    val route = routes.optJSONObject(i) ?: continue
+                    if (route.optString("address") == address && MessageProtocol.parse(route.optString("protocol")) == MessageProtocol.NEARBY) change(route)
+                }
+                prefs.edit().putString(DirectProtocols.ROUTES, routes.toString()).commit()
+            }
+        }
+
+        /** The phone owner's first name, to start the Nearby name with, or "". Needs the contacts permission. */
+        @JvmStatic fun ownerName(context: Context): String = try {
+            if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) "" else
+                context.contentResolver.query(android.provider.ContactsContract.Profile.CONTENT_URI,
+                    arrayOf(android.provider.ContactsContract.Profile.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) NearbyPeople.firstName(it.getString(0)) else ""
+                }.orEmpty()
+        } catch (error: Exception) { "" }
 
         /** Channels and rooms you've joined, as their links. */
         @JvmStatic fun channels(context: Context): List<JSONObject> = nearbyRoutes(context).filter { it.optBoolean("group") }
@@ -834,6 +1133,15 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
             val mine = identity(context) ?: throw IllegalStateException("Set your Nearby name first")
             if (card.keyHex == mine.card.keyHex) throw IllegalArgumentException("That’s your own code")
             contactRoute(context, card.keyHex)?.let { return it }
+            // Already a chat from People nearby or a request: adding them in person verifies it.
+            personRoute(context, card.keyHex)?.let { route ->
+                val address = route.optString("address")
+                if (!NearbyPeople.added(person(context, route))) MessageRequests.decide(DirectProtocols.prefs(context), address, MessageRequests.ACCEPTED)
+                markVerified(context, address)
+                current?.added(card.keyHex)
+                return route
+            }
+            // Added in person (a scanned or typed code, or matching safety codes): verified from the start.
             val route = DirectProtocols.linkQuietly(context, MessageProtocol.NEARBY, card.keyHex, card.name, false,
                 JSONObject().put("nearby_id", card.id))
             current?.added(card.keyHex)
@@ -874,14 +1182,24 @@ internal class DirectNearby(private val signature: String) : DirectProtocols.Dir
         /** The lock a Nearby chat shows: open channels aren't secret; rooms and people are end-to-end encrypted. */
         @JvmStatic fun encryption(prefs: SharedPreferences, address: String): Encryption {
             val route = DirectProtocols.route(prefs, address, MessageProtocol.NEARBY) ?: return Encryption.END_TO_END
-            return if (route.optBoolean("group") && !route.optBoolean("room")) Encryption.NONE else Encryption.END_TO_END
+            if (route.optBoolean("group")) return if (route.optBoolean("room")) Encryption.END_TO_END else Encryption.NONE
+            // People met under People nearby: yellow "Not verified yet" until you check them, like OMEMO's blind trust.
+            val person = person(prefs, route)
+            return if (NearbyPeople.verified(person) && person.changedKey.isEmpty()) Encryption.END_TO_END else Encryption.UNVERIFIED
+        }
+
+        /** The words under a one-to-one chat's lock in its details. */
+        @JvmStatic fun trustWords(prefs: SharedPreferences, address: String): String {
+            val route = DirectProtocols.route(prefs, address, MessageProtocol.NEARBY) ?: return ""
+            return NearbyPeople.lockWords(person(prefs, route), route.optString("title").substringBefore(" · "))
         }
 
         /** The note above the composer: what others can see in this chat. "" for one-to-one chats. */
         @JvmStatic fun notice(prefs: SharedPreferences, address: String): String {
             val route = DirectProtocols.route(prefs, address, MessageProtocol.NEARBY) ?: return ""
             return when {
-                !route.optBoolean("group") -> ""
+                !route.optBoolean("group") -> if (route.optString("changed_key").isEmpty()) "" else
+                    "${route.optString("title")}’s key changed. Messages are on hold: open this chat’s details to check it."
                 route.optBoolean("room") -> NearbyText.ROOM_NOTICE
                 else -> NearbyText.OPEN_NOTICE
             }

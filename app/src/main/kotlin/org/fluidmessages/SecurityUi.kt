@@ -30,7 +30,7 @@ internal enum class SecurityTone(val fill: Color, val ink: Color) {
 internal val Encryption.tone: SecurityTone
     get() = when (this) {
         Encryption.NONE, Encryption.PREVIEW -> SecurityTone.RED
-        Encryption.IN_TRANSIT -> SecurityTone.YELLOW
+        Encryption.IN_TRANSIT, Encryption.UNVERIFIED -> SecurityTone.YELLOW
         Encryption.END_TO_END, Encryption.COMPANION_E2EE, Encryption.FLUIDMESSAGES -> SecurityTone.GREEN
     }
 
@@ -42,6 +42,7 @@ val Encryption.shortLabel: String
         Encryption.END_TO_END -> "End-to-end encrypted"
         Encryption.COMPANION_E2EE -> "End-to-end · via FluidMessages Web"
         Encryption.FLUIDMESSAGES -> "Encrypted by FluidMessages"
+        Encryption.UNVERIFIED -> "Not verified yet"
     }
 
 /** A padlock, open when nothing protects the conversation. */
@@ -75,7 +76,7 @@ internal fun EncryptionBadge(encryption: Encryption, compact: Boolean = false, m
         LockGlyph(tone.ink, open = tone == SecurityTone.RED, modifier = Modifier.size(if (compact) 11.dp else 12.dp))
         Text(if (compact) when (tone) {
             SecurityTone.RED -> "Not encrypted"
-            SecurityTone.YELLOW -> "In transit"
+            SecurityTone.YELLOW -> if (encryption == Encryption.UNVERIFIED) "Not verified" else "In transit"
             SecurityTone.GREEN -> if (encryption == Encryption.FLUIDMESSAGES) "FluidMessages" else "End-to-end"
         } else encryption.shortLabel, color = tone.ink, fontSize = if (compact) 11.sp else 12.sp, fontWeight = FontWeight.SemiBold,
             maxLines = 1)

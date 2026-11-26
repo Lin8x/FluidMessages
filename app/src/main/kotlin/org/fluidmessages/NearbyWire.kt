@@ -110,9 +110,11 @@ internal object NearbyWire {
     sealed class Packet {
         /**
          * Who this side is, sent inside the handshake: the name, the random id, the key it signs channel messages with
-         * (hex, "" if none), and whether its Add nearby person page is open.
+         * (hex, "" if none), and one flags byte ([helloFlags]): whether its Add nearby person page is open, whether it
+         * knows People nearby and message requests ([modern]), and whether it may be listed under People nearby.
          */
-        data class Hello(val name: String, val id: String, val signKey: String = "", val pairing: Boolean = false) : Packet()
+        data class Hello(val name: String, val id: String, val signKey: String = "", val pairing: Boolean = false,
+                         val modern: Boolean = false, val visible: Boolean = false) : Packet()
         /** A message. [id] is the sender's own message id, so a message sent twice is stored once. */
         data class Text(val id: String, val date: Long, val text: String) : Packet()
         /** The message with this id is stored on the other phone. */
@@ -123,6 +125,8 @@ internal object NearbyWire {
         data class Mode(val pairing: Boolean) : Packet()
         /** The envelopes this phone already has (NearbyMesh), newest first, so the other sends only what's missing. */
         data class Have(val ids: List<String>) : Packet()
+        /** Whether this phone may be listed under People nearby now. Sent only to phones whose Hello is [Hello.modern]. */
+        data class Seen(val visible: Boolean) : Packet()
         /** An envelope to keep and maybe pass along (NearbyMesh.encode). */
         class Carry(val envelope: ByteArray) : Packet() {
             override fun equals(other: Any?) = other is Carry && other.envelope.contentEquals(envelope)
@@ -137,6 +141,18 @@ internal object NearbyWire {
     private const val MODE = 5
     private const val HAVE = 6
     private const val CARRY = 7
+    private const val SEEN = 8
+
+    private const val PAIRING_FLAG = 1
+    private const val MODERN_FLAG = 2
+    private const val VISIBLE_FLAG = 4
+
+    /**
+     * The Hello's last byte. Phones from before People nearby read it as "Add nearby person is open" only when it is
+     * exactly 1, so a newer phone on that page also sends Mode(true) after the handshake (DirectNearby.adopt).
+     */
+    fun helloFlags(pairing: Boolean, modern: Boolean, visible: Boolean) =
+        (if (pairing) PAIRING_FLAG else 0) or (if (modern) MODERN_FLAG else 0) or (if (visible) VISIBLE_FLAG else 0)
 
     fun encode(packet: Packet): ByteArray {
         val bytes = ByteArrayOutputStream()
@@ -144,7 +160,7 @@ internal object NearbyWire {
             when (packet) {
                 is Packet.Hello -> {
                     out.writeByte(HELLO); writeString(out, packet.name); writeString(out, packet.id)
-                    writeString(out, packet.signKey); out.writeByte(if (packet.pairing) 1 else 0)
+                    writeString(out, packet.signKey); out.writeByte(helloFlags(packet.pairing, packet.modern, packet.visible))
                 }
                 is Packet.Text -> {
                     out.writeByte(TEXT); writeString(out, packet.id); out.writeLong(packet.date); writeString(out, packet.text)
@@ -157,6 +173,7 @@ internal object NearbyWire {
                     out.writeByte(HAVE); out.writeShort(packet.ids.size); for (id in packet.ids) out.write(NoiseCrypto.hex(id))
                 }
                 is Packet.Carry -> { out.writeByte(CARRY); out.writeShort(packet.envelope.size); out.write(packet.envelope) }
+                is Packet.Seen -> { out.writeByte(SEEN); out.writeByte(if (packet.visible) 1 else 0) }
             }
         }
         return bytes.toByteArray()
@@ -175,7 +192,8 @@ internal object NearbyWire {
                     if (input.available() == 0) Packet.Hello(name, id) else {
                         val signKey = readString(input)
                         if (!signKey.matches(Regex("([0-9a-f]{2}){0,200}"))) throw IOException("Bad key")
-                        Packet.Hello(name, id, signKey, input.readUnsignedByte() == 1)
+                        val flags = input.readUnsignedByte()
+                        Packet.Hello(name, id, signKey, flags and PAIRING_FLAG != 0, flags and MODERN_FLAG != 0, flags and VISIBLE_FLAG != 0)
                     }
                 }
                 TEXT -> {
@@ -192,6 +210,7 @@ internal object NearbyWire {
                     Packet.Have(List(count) { ByteArray(16).also(input::readFully).let(NoiseCrypto::hex) })
                 }
                 CARRY -> Packet.Carry(ByteArray(input.readUnsignedShort()).also(input::readFully))
+                SEEN -> Packet.Seen(input.readUnsignedByte() == 1)
                 else -> throw IOException("Unknown packet")
             }
             if (input.available() > 0) throw IOException("Extra bytes")
@@ -235,7 +254,7 @@ internal object NearbyWire {
     data class Receipt(val store: Boolean, val ack: Boolean)
 
     fun receive(alreadyStored: Boolean, fromContact: Boolean): Receipt = when {
-        // Someone not added yet (still comparing safety codes): nothing is kept or confirmed, so it's sent again later.
+        // Refused (NearbyPeople.intake): nothing is kept or confirmed, so it's sent again later.
         !fromContact -> Receipt(store = false, ack = false)
         else -> Receipt(store = !alreadyStored, ack = true)
     }

@@ -14,7 +14,8 @@ import org.json.JSONObject
  * A request is an incoming one-to-one chat from someone you don't know: a text from a number that isn't in your
  * contacts (only while "Filter unknown senders (texts)" is on, off by default like iOS, so delivery and sign-in codes
  * are never missed), or an internet chat from someone who isn't in your contacts or favorites and whom you've never
- * messaged (on by default): a Matrix or XMPP invitation, or an IRC, XMPP, or email chat that wrote first. Network
+ * messaged (on by default): a Matrix or XMPP invitation, an IRC, XMPP, or email chat that wrote first, or a Nearby
+ * message from someone close by you haven't added (DirectNearby.requestRoute; it stays on the phone). Network
  * services (NickServ and the like, servers) and channels or rooms you joined are never requests. Requests stay out of
  * the inbox and the Messages count, notify quietly or not at all, and show under the Requests filter with Accept,
  * Delete, Block, and Block and report spam at the top of the chat. Replying accepts one too.
@@ -149,7 +150,8 @@ internal object MessageRequests {
             if (value != setting.second) items["requests:$name"] = if (value) "on" else "off"
         }
         if (prefs.getString(NOTIFY, "quiet") == "off") items["requests:notify"] = "off"
-        for ((address, value) in decisions(prefs)) if (!private(address)) items["request:$address"] = value
+        // Nearby chats stay on the phone, and so do decisions about them.
+        for ((address, value) in decisions(prefs)) if (!private(address) && !address.startsWith("nearby-")) items["request:$address"] = value
         return items
     }
 
@@ -166,10 +168,11 @@ internal object MessageRequests {
 
     // Live chats
 
-    /** The route a chat came through FluidMessages Web or this phone by, if any. */
+    /** The route a chat came through FluidMessages Web or this phone by, if any. A Nearby request is one too. */
     @JvmStatic
     fun route(prefs: SharedPreferences, address: String): JSONObject? =
         runCatching { GatewayClient.links(prefs, address).firstOrNull() }.getOrNull()
+            ?: runCatching { DirectNearby.requestRoute(prefs, address) }.getOrNull()
 
     /** The facts for one live chat, read straight from Android's stores (for notifications, outside the inbox). */
     @JvmStatic

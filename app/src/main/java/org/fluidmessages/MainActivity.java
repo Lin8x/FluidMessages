@@ -1167,7 +1167,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             String inviter = route == null ? "" : route.optString("inviter");
             runOnUiThread(() -> {
                 if (conversationScreen != screen || isDestroyed()) return;
-                screen.setRequest(liveRequestBar(number, format, name, facts.getInvite(), facts.getGroup(), inviter, route != null));
+                screen.setRequest(liveRequestBar(number, format, name, facts.getInvite(), facts.getGroup(), inviter,
+                    route != null && !route.optBoolean("direct")));
             });
         });
     }
@@ -3457,8 +3458,20 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case COMPANION_E2EE -> "End-to-end encrypted. Your FluidMessages server holds the keys to show it in the web app.";
             case IN_TRANSIT -> "Protected on the way to the server, but the server can read it.";
             case PREVIEW -> "RCS isn't available in FluidMessages yet, so nothing is sent this way.";
+            case UNVERIFIED -> DirectNearby.trustWords(prefs, key);
             default -> activeProtocol == MessageProtocol.NEARBY ? NearbyText.OPEN_NOTICE : "Your carrier and anyone along the way can read these messages.";
         }, () -> {}, true, protection));
+        // Nearby, one to one: Verify <name> (safety code or their code), or Verified.
+        var nearbyPerson = sample || activeProtocol != MessageProtocol.NEARBY ? null : DirectProtocols.route(prefs, key, MessageProtocol.NEARBY);
+        if (nearbyPerson != null && !nearbyPerson.optBoolean("group")) {
+            String who = nearbyPerson.optString("title").split(" · ")[0];
+            var trust = DirectNearby.person(prefs, nearbyPerson);
+            boolean changed = !trust.getChangedKey().isEmpty();
+            security.add(action(changed ? "Check " + who + "’s new key" : NearbyPeople.INSTANCE.verified(trust) ? "Verified" : "Verify " + who,
+                changed ? "Messages are on hold until you decide" : NearbyPeople.INSTANCE.verified(trust)
+                    ? "You checked " + who + "’s key in person" : "Compare the safety code, or scan their code",
+                () -> nearby("verify:" + key)));
+        }
         // IRC, Matrix, and XMPP chats: a Connection section with the status, Reconnect or Connect, Disconnect, and
         // Reconnect automatically (ConnectionsUi); a channel's Rejoin automatically goes there too.
         String connectionAccount = sample ? (SampleInbox.connection(original).isEmpty() ? "" : ConnectionNow.SAMPLE_CHAT + original)
@@ -4683,6 +4696,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 action("Sample inbox", "Practice with made-up chats and calls. Nothing is sent.", this::sampleInbox),
                 action("Setup guide", "A quick tour of what FluidMessages can do", () -> onboarding(0)),
                 action("Communities", "Servers with their channels and rooms, beside your chats", this::communitiesIntro),
+                action(OfflineGuide.TITLE, "Texts, Nearby, and other ways to reach people when the internet is down",
+                    () -> nearby("guide:settings")),
                 action("About and updates", "Version and updates", this::about),
                 action("Reset or erase", "Start over with default settings, or remove everything", this::resetPage)))));
     }
@@ -4875,7 +4890,10 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     /** Settings → Chat services → Nearby, and its pages: your code, scan theirs, type it, and Add nearby person. */
     private void nearby(String step) {
         render("nearby");
-        heading(NearbyScreen.title(step), "Back", step.equals("home") ? this::protocolSettings : () -> nearby("home"));
+        Runnable back = step.equals("home") ? this::protocolSettings
+            : step.startsWith("verify:") ? () -> chat(step.substring(7), MessageProtocol.NEARBY)
+            : step.equals("guide:settings") ? this::settings : () -> nearby("home");
+        heading(NearbyScreen.title(step), "Back", back);
         NearbyScreen.mount(root, prefs, step, this::nearby, address -> chat(address, MessageProtocol.NEARBY));
     }
 
