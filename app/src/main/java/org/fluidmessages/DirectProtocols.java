@@ -212,13 +212,28 @@ final class DirectProtocols {
         catch (Exception error) { return new JSONObject(); }
     }
 
+    private static final String SINCE = "direct.since.";
+
+    /** When [protocol] last became connected; 0 if never. */
+    static long connectedSince(SharedPreferences prefs, MessageProtocol protocol) { return prefs.getLong(SINCE + protocol.name(), 0); }
+
+    /** The protocols with a client running in this process now (Settings → Running now). Read-only. */
+    static synchronized java.util.Set<MessageProtocol> live() {
+        return clients.isEmpty() ? java.util.EnumSet.noneOf(MessageProtocol.class) : java.util.EnumSet.copyOf(clients.keySet());
+    }
+
     private static JSONObject statusOff() {
         try { return new JSONObject().put("state", "off"); } catch (Exception error) { return new JSONObject(); }
     }
 
     static void saveStatus(Context context, MessageProtocol protocol, JSONObject status) {
         var before = status(prefs(context), protocol);
-        prefs(context).edit().putString("direct.status." + protocol.name(), status.toString()).apply();
+        var edit = prefs(context).edit().putString("direct.status." + protocol.name(), status.toString());
+        // When it connected, for Settings → Running now ("Connected · since 9:41").
+        if ("connected".equals(status.optString("state")) && !"connected".equals(before.optString("state"))) {
+            edit.putLong(SINCE + protocol.name(), System.currentTimeMillis());
+        }
+        edit.apply();
         // The inbox's plug follows: it reloads when the connection's mark changes (not on every retry time).
         if (!IrcRules.connectionState(before.optString("state"), before.optBoolean("manual"))
                 .equals(IrcRules.connectionState(status.optString("state"), status.optBoolean("manual")))) {

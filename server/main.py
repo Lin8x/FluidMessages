@@ -27,6 +27,7 @@ import link_fetch
 import message_requests
 import privacy
 import protocol_gateway
+import running_status
 import sync_merge
 import tor_route
 
@@ -58,6 +59,7 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/chat-commands.js": ("chat-commands.js", "text/javascript"), "/invites.js": ("invites.js", "text/javascript"),
          "/connections.js": ("connections.js", "text/javascript"), "/meetings.js": ("meetings.js", "text/javascript"),
          "/chat-features.css": ("chat-features.css", "text/css"), "/tor.js": ("tor.js", "text/javascript"),
+         "/running.js": ("running.js", "text/javascript"),
          "/omemo.js": ("omemo.js", "text/javascript"),
          # The sample inbox's fictional portraits, the phone's own (res/drawable-nodpi/sample_*.webp).
          "/samples/maya.webp": ("samples/maya.webp", "image/webp"), "/samples/jordan.webp": ("samples/jordan.webp", "image/webp"),
@@ -1435,6 +1437,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, self.privacy_status(db))
             elif self.path == "/api/tor":
                 self.reply(200, tor_route.status())
+            elif self.path == "/api/running":
+                # Settings → Running on this server (running.js, running_status.py). Read-only.
+                self.reply(200, running_status.rows(running_status.facts(gateway, db, TLS, tor_route, cloud_backup)))
             elif self.path.startswith("/api/calls?since="):
                 since = self.path.removeprefix("/api/calls?since=")
                 self.reply(200, gateway.call_events(int(since) if since.isdigit() else 0))

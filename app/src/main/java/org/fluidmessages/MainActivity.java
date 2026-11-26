@@ -4653,6 +4653,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         heading("Settings", "Inbox", this::inbox);
         boolean locked = prefs.getBoolean("lock", false);
         SettingsPages.mount(root, prefs, List.of(
+            new SettingsSection("Status", List.of(
+                action("Running now", RunningNowPage.summary(this), this::runningNow))),
             new SettingsSection("Look and feel", List.of(
                 action("Themes and appearance", "Colors, wallpapers, bubbles, and motion", this::theme),
                 action("Messaging", "Timestamps, inbox filters, communities, and gestures", this::messagingSettings))),
@@ -4683,6 +4685,25 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 action("Communities", "Servers with their channels and rooms, beside your chats", this::communitiesIntro),
                 action("About and updates", "Version and updates", this::about),
                 action("Reset or erase", "Start over with default settings, or remove everything", this::resetPage)))));
+    }
+
+    /** Settings → Status → Running now (RunningNowPage): what runs in the background; each row opens its setting. */
+    private void runningNow() {
+        render("running");
+        heading("Running now", "Back", this::settings);
+        RunningNowPage.mount(root, prefs, opens -> {
+            switch (opens) {
+                case ACCOUNTS -> accounts(this::runningNow);
+                case BATTERY -> batterySettings();
+                case COMPANION -> companion(this::runningNow);
+                case BACKUPS -> backups();
+                case NEARBY -> nearby("home");
+                case TOR -> torSettings();
+                case CALLS -> callsSettings();
+                case PRIVACY -> privacySettings();
+                case ABOUT -> about();
+            }
+        });
     }
 
     /** Settings → Help → Communities: the page that shows once after the first IRC, Matrix, or XMPP account. */

@@ -25,6 +25,7 @@ const SETTINGS_ICONS = {
   erase: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zm2.46-7.12 1.41-1.41L12 12.59l2.12-2.12 1.41 1.41L13.41 14l2.12 2.12-1.41 1.41L12 15.41l-2.12 2.12-1.41-1.41L10.59 14l-2.13-2.12zM15.5 4l-1-1h-5l-1 1H5v2h14V4z',
   back: 'M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z',
   chevron: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
+  running: 'M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z',
 };
 
 function settingsIcon(name) {
@@ -49,6 +50,10 @@ const leaveSettingsThen = (run) => () => { showSection('messages'); run(); };
 // The phone's groups and categories, in its order and with its names. "FluidMessages Web" on the phone is this
 // app's own "Phone and other devices"; Battery and sync is phone-only.
 const SETTINGS_GROUPS = [
+  // What this server keeps going right now (running.js), like the phone's Running now.
+  ['Status', [
+    {id: 'running', icon: 'running', title: 'Running on this server', page: () => runningPage(),
+      summary: () => typeof runningSummaryLine === 'function' ? runningSummaryLine() : 'What this server keeps going right now'}]],
   ['Look and feel', [
     {id: 'appearance', icon: 'palette', title: 'Themes and appearance', summary: 'Colors, wallpapers, bubbles, and motion', page: (settings) => [appearanceSection(settings)]},
     {id: 'messaging', icon: 'messaging', title: 'Messaging', summary: 'Timestamps, inbox filters, communities, sending, and gestures', page: messagingPage},

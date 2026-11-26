@@ -9,7 +9,7 @@ import android.content.Context;
 
 /** Sends queued messages once the phone is back online. Android runs it as soon as a network is available. */
 public final class Outbox extends JobService {
-    private static final int JOB = 61;
+    static final int JOB = 61;
     private Thread worker;
 
     static void schedule(Context context) {

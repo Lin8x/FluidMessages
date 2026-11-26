@@ -32,7 +32,8 @@ public final class SyncJob extends JobService {
         }
     }
 
-    private static final int SOON = 201;
+    // Not 201: that's BackupJob.JOB, the phone folder's scheduled backup, which a sync soon used to replace.
+    private static final int SOON = 210;
 
     /**
      * Runs one sync as soon as there's a network, e.g. after disappearing messages were deleted with the app closed,
@@ -53,7 +54,15 @@ public final class SyncJob extends JobService {
             && (prefs.getBoolean("syncSms", true) || GatewayClient.wanted(prefs)));
     }
 
+    /** When the periodic background check last started, and when FluidMessages Web last took this phone's sync. */
+    static final String LAST_CHECK = "status.lastBackgroundCheck", LAST_WEB_SYNC = "status.lastWebSync";
+
+    static final int PERIODIC_ID = PERIODIC, SOON_ID = SOON;
+
     @Override public boolean onStartJob(JobParameters parameters) {
+        if (parameters.getJobId() == PERIODIC) {
+            SyncPolicy.prefs(this).edit().putLong(LAST_CHECK, System.currentTimeMillis()).apply();
+        }
         worker = new Thread(() -> {
             try {
                 var context = getApplicationContext();
@@ -90,6 +99,7 @@ public final class SyncJob extends JobService {
         // Texts go to FluidMessages Web only while texting is on here and FluidMessages is the default messages app.
         if (!preferences.getBoolean("syncSms", true) || !TextingGate.showsTexts(context, preferences)) return;
         publishInbox(context, preferences, url, token);
+        preferences.edit().putLong(LAST_WEB_SYNC, System.currentTimeMillis()).apply();
         boolean submitted = false;
         for (int count = 0; count < 10 && !Thread.currentThread().isInterrupted(); count++) {
             JSONObject job = post(preferences, url, token, "claim", new JSONObject()).optJSONObject("job");

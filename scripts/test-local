@@ -5145,6 +5145,57 @@ process.stdout.write(JSON.stringify(wrong));
     print("PASS  web parity rules in Node: failed message choices, kind locks, palette contrast and readable tints, chat colors, theme reset")
 
 
+def running_status_test():
+    """Settings → Running on this server: /api/running needs sign-in, and lists the server's loops, Tor, the phone, and
+    cloud backups in its groups. running_status.rows is checked on fixed facts too."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import running_status
+    sys.path.remove(str(ROOT / "server"))
+    facts = {"now": 1000, "threads": ["protocol-sender", "protocol-clients", "protocol-disappearing"], "tls": None, "waiting": 2,
+             "accounts": [{"id": "irc:1", "protocol": "irc", "name": "kit@irc.example.org", "client": "connection", "every": None,
+                           "state": "reconnecting", "manual": False, "retry_at": 5000},
+                          {"id": "email:1", "protocol": "email", "name": "kit@example.org", "client": "poll", "every": 300,
+                           "state": "", "manual": False, "retry_at": 0},
+                          {"id": "xmpp:1", "protocol": "xmpp", "name": "kit@example.org", "client": None, "every": None,
+                           "state": "off", "manual": False, "retry_at": 0}],
+             "tor": {"on": False, "proxy": "127.0.0.1:9050", "reachable": False}, "backups": ["s3"],
+             "phone": {"paired": True, "last_sync": 900}, "scheduled": {"texts": 1, "texts_next": 2000, "chats": 0, "chats_next": None}}
+    page = running_status.rows(facts)
+    by_id = {row["id"]: row for group in page["groups"] for row in group["rows"]}
+    check([group["id"] for group in page["groups"]] == ["always", "schedule", "phone", "off"], "Running groups out of order")
+    check(by_id["account-irc:1"]["group"] == "always" and by_id["account-irc:1"]["state"] == "Reconnecting"
+          and by_id["account-irc:1"]["at"] == 5000, "A reconnecting IRC account isn't shown with its next try")
+    check(by_id["account-email:1"]["group"] == "schedule" and by_id["account-email:1"]["state"] == "Checks every 5 minutes",
+          "Email polling isn't on a schedule")
+    check(by_id["account-xmpp:1"]["group"] == "off", "An account without a connection shows as running")
+    check(by_id["sender"]["state"] == "2 waiting to send" and by_id["tor"]["group"] == "off", "The sender or Tor rows are wrong")
+    check(by_id["phone"]["group"] == "phone" and by_id["phone"]["at"] == 900 and "S3" in by_id["backups"]["state"],
+          "The phone or cloud backup rows are wrong")
+    check(page["count"] == 5 and page["summary"] == "5 things running", "Running count is wrong: " + page["summary"])
+    quiet = running_status.rows({**facts, "threads": [], "accounts": [], "waiting": 0})
+    check(quiet["count"] == 0 and quiet["summary"] == running_status.NOTHING, "Nothing running doesn't say so")
+
+    token = secrets.token_hex(32)
+    with companion(free_port(), token) as (origin, request, _):
+        try:
+            request("/api/running", authorized=False)
+            raise RuntimeError("/api/running answered without signing in")
+        except HTTPError as error:
+            check(error.code == 401, f"/api/running without signing in: expected 401, got {error.code}")
+        status = request("/api/running")
+        check(set(status) == {"count", "summary", "groups", "now"} and isinstance(status["count"], int), "Running has the wrong shape")
+        rows = {row["id"]: row for group in status["groups"] for row in group["rows"]}
+        check(all(set(row) >= {"group", "id", "icon", "name", "state", "why", "opens"} for row in rows.values()),
+              "A running row is missing a field")
+        check({"sender", "supervisor", "disappearing"} <= set(rows), "The server's own loops aren't listed: " + ", ".join(rows))
+        check(rows["tor"]["group"] == "off" and rows["phone"]["state"] == "Not connected", "A new server shows Tor or a phone")
+        check(status["count"] == 3 and status["summary"] == "3 things running", "A new server's count is wrong: " + status["summary"])
+        page = request("/", authorized=False).decode()
+        check('src="/running.js"' in page and "'/running.js'" in request("/sw.js", authorized=False).decode()
+              and b"runningPage" in request("/running.js", authorized=False), "running.js isn't served or cached")
+    print("PASS  Running on this server: sign-in required, groups, and words")
+
+
 def tor_test():
     """Connect through Tor: the SOCKS5 handshake (remote DNS) against a fake local SOCKS server, which connections go
     through Tor, that nothing goes direct when Tor is on but not running, and the Settings API."""
@@ -5340,7 +5391,7 @@ def phone_reach_and_access_test():
 
         guarded = [("GET", path) for path in ("/api/inbox", "/api/settings", "/api/jobs", "/api/auth/security", "/api/backups",
                                               "/api/contacts", "/api/merge", "/api/privacy", "/api/protocols/accounts",
-                                              "/api/stickers", "/api/calls/ice", "/api/protocols/file?id=abc", "/api/backups/s3/latest",
+                                              "/api/stickers", "/api/calls/ice", "/api/running", "/api/protocols/file?id=abc", "/api/backups/s3/latest",
                                               "/api/preview?url=https%3A%2F%2Fexample.com", "/api/gifs?q=cat")]
         guarded += [("POST", path) for path in ("/api/sync", "/api/schedule", "/api/claim", "/api/settings", "/api/auth/pairing",
                                                 "/api/auth/password", "/api/erase", "/api/privacy/private/lock", "/api/merge",
@@ -5826,6 +5877,7 @@ def main():
         phone_reach_and_access_test()
         companion_tls_test()
         tor_test()
+        running_status_test()
         omemo_test()
         android(args)
         if args.demo:

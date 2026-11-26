@@ -23,7 +23,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 public final class BackupJob extends JobService {
     private static final String KEY = "fluid_backup_schedule";
-    private static final int JOB = 201;
+    static final int JOB = 201;
     private final java.util.Map<Integer, Thread> workers = new java.util.HashMap<>();
     private static final java.util.Set<CloudBackup.Target> activeCloud =
         java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -46,7 +46,7 @@ public final class BackupJob extends JobService {
         private String secret(SharedPreferences prefs) { return prefs.getString(key("secret", "backupSecret"), ""); }
     }
 
-    private static int cloudJobId(CloudBackup.Target target) { return 202 + target.ordinal(); }
+    static int cloudJobId(CloudBackup.Target target) { return 202 + target.ordinal(); }
 
     static String cloudKey(CloudBackup.Target target, String name) { return "cloudBackup." + target.id + "." + name; }
 

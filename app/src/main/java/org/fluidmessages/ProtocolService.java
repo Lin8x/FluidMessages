@@ -19,6 +19,9 @@ public final class ProtocolService extends Service {
 
     private static volatile boolean running;
 
+    /** Whether the "Staying connected" service is running now (Settings → Running now). */
+    static boolean running() { return running; }
+
     static void update(Context context, boolean needed) {
         if (needed == running) return;
         var intent = new Intent(context, ProtocolService.class);

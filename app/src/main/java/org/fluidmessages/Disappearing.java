@@ -180,6 +180,9 @@ final class Disappearing {
 
     private static final long RETRY_SENDING = 60_000;
     private static final String ALARM_PREFS = "disappear_alarm";
+
+    /** When the alarm for the next disappearing message is set; 0 for none (Settings → Running now). */
+    static long alarmAt(Context context) { return context.getSharedPreferences(ALARM_PREFS, Context.MODE_PRIVATE).getLong("at", 0); }
     static final String ALARM = "org.fluidmessages.DISAPPEAR";
 
     /**
