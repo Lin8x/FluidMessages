@@ -9,6 +9,8 @@ SourceCode: https://github.com/Lin8x/FluidMessages
 IssueTracker: https://github.com/Lin8x/FluidMessages/issues
 Changelog: https://github.com/Lin8x/FluidMessages/releases
 
+AuthorName: Lin8x
+
 AutoName: FluidMessages
 
 # GIF search opens GIPHY or Tenor, and meeting and payment links can open closed services. All are optional.
@@ -26,7 +28,7 @@ Repo: https://github.com/Lin8x/FluidMessages.git
 Builds:
   - versionName: 0.46.1
     versionCode: 55
-    commit: v0.46.1
+    commit: 9fa4bf39a6131aaa1dd207bce2ee64344c617e7e
     subdir: app
     gradle:
       - yes
