@@ -14,7 +14,7 @@ These steps need your own accounts and your name on a merge request, so nobody e
 
 1. **Make a GitLab account** at [gitlab.com](https://gitlab.com/users/sign_up). F-Droid lives on GitLab, not GitHub.
 2. **Fork fdroiddata.** Open [gitlab.com/fdroid/fdroiddata](https://gitlab.com/fdroid/fdroiddata) and choose **Fork**.
-3. **The recipe is ready.** It points at v0.46.0 (the `fdroid` flag arrived in v0.45.0), and uses Option A below (F-Droid signs its own copy). For later versions you don't need to edit it: F-Droid finds new `vX.Y.Z` tags by itself.
+3. **The recipe is ready.** `org.fluidmessages.yml` is in F-Droid's own layout (what `fdroid rewritemeta` writes: no comments, keys in its order), so copy it as is. It points at v0.46.2 by its full commit hash and uses Option A below (F-Droid signs its own copy). For later versions you don't need to edit it: F-Droid finds new `vX.Y.Z` tags by itself.
 4. **Signing:** Option A is set up. Switch to Option B later if you want (see below).
 5. **Add the recipe.** In your fork, make a new branch called `org.fluidmessages` and add the file as `metadata/org.fluidmessages.yml`.
 6. **Check it, if you can.** With [fdroidserver](https://f-droid.org/docs/Installing_the_Server_and_Repo_Tools/) installed, run these in your fork:
@@ -34,12 +34,12 @@ After it's accepted, F-Droid checks for new `vX.Y.Z` tags by itself (`UpdateChec
 
 ## Who signs the app
 
-**Option A, simplest: F-Droid signs it.** Remove the `AllowedAPKSigningKeys` line and leave `Binaries` commented out. F-Droid builds and signs FluidMessages with its own key. It works right away, but the F-Droid copy and the GitHub copy have different keys. Android won't update one with the other, so people switching between them have to uninstall first (after a backup). The app's About page says "Signed by F-Droid" for this copy instead of a warning.
+**Option A, simplest: F-Droid signs it.** There's no `AllowedAPKSigningKeys` or `Binaries` line. F-Droid builds and signs FluidMessages with its own key. It works right away, but the F-Droid copy and the GitHub copy have different keys. Android won't update one with the other, so people switching between them have to uninstall first (after a backup). The app's About page says "Signed by F-Droid" for this copy instead of a warning.
 
 **Option B: F-Droid ships your own signed copy (reproducible builds).** F-Droid builds the app, checks that its build matches yours byte for byte, and then publishes your signed APK. People can then move between GitHub and F-Droid without uninstalling. For this you need, for every release:
 
 1. A **release** build (not debug) made with the flag: `./gradlew assembleRelease -Pfdroid=true`, signed with your key using `apksigner`.
-2. That file attached to the GitHub release as `FluidMessages-<version>-fdroid.apk`. Then uncomment the `Binaries:` line in the recipe and keep `AllowedAPKSigningKeys`.
+2. That file attached to the GitHub release as `FluidMessages-<version>-fdroid.apk`. Then add `Binaries: https://github.com/Lin8x/FluidMessages/releases/download/v%v/FluidMessages-%v-fdroid.apk` after `Repo:`, and `AllowedAPKSigningKeys: 2d0980ee4c11bf655482e7ee9279c6e66b56636e8e18c8ac063e1f08785df5bc` after `Builds:`.
 3. The same build setup F-Droid uses: JDK 17, the same Android build tools, and a build from the clean tag.
 
 The things below stand in the way of Option B today. Check them first.
