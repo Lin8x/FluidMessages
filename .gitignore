@@ -18,3 +18,4 @@ dist/SHA256SUMS.txt
 # Local tool folders
 .claude/
 dist/*.idsig
+dist/*.aab
