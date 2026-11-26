@@ -10,8 +10,8 @@ android {
         applicationId 'org.fluidmessages'
         minSdk 33
         targetSdk 35
-        versionCode 56
-        versionName '0.46.2'
+        versionCode 57
+        versionName '0.47.0'
         // F-Droid builds (./gradlew assembleRelease -Pfdroid=true) leave updates to F-Droid: no update checks or downloads.
         buildConfigField 'boolean', 'FDROID', String.valueOf(project.findProperty('fdroid') == 'true')
     }
