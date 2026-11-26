@@ -110,7 +110,8 @@ def check():
                       FLUID_PORT=str(port), FLUID_FILES=str(folder / "files"))
     sys.path.insert(0, str(server))
     threading.Thread(target=runpy.run_path, args=(str(server / "main.py"),), kwargs={"run_name": "__main__"}, daemon=True).start()
-    for _ in range(150):
+    # Build machines can be slow to unpack and start the app the first time: allow a minute.
+    for _ in range(600):
         if answering(port):
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as page:
                 ok = b"FluidMessages" in page.read()

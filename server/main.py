@@ -2012,6 +2012,8 @@ if __name__ == "__main__":
     merger = sync_merge.Merge(gateway, merge_hooks())
     with closing(connect()) as db:
         load_tor(db)
+    # Listen first, so the page answers at once; chat connections and the phone's HTTPS port come up right after.
+    server = ThreadingHTTPServer((os.environ.get("FLUID_BIND", "127.0.0.1"), int(os.environ.get("FLUID_PORT", 8080))), Handler)
     gateway.start()
-    start_tls()
-    ThreadingHTTPServer((os.environ.get("FLUID_BIND", "127.0.0.1"), int(os.environ.get("FLUID_PORT", 8080))), Handler).serve_forever()
+    threading.Thread(target=start_tls, name="fluid-tls-start", daemon=True).start()
+    server.serve_forever()
