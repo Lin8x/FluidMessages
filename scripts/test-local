@@ -5738,6 +5738,24 @@ def companion_tls_test():
     import main as server
     check(companion_tls.tls_port(8080, "") == 8081 and companion_tls.tls_port(8080, "0") == 0
           and companion_tls.tls_port(8080, "off") == 0 and companion_tls.tls_port(8080, "9443") == 9443, "FLUID_TLS_PORT rules")
+    # Packaged desktop apps hand openssl the system library path, not their bundled one (PyInstaller's _ORIG copies).
+    saved = {name: os.environ.get(name) for name in ("LD_LIBRARY_PATH", "LD_LIBRARY_PATH_ORIG", "DYLD_LIBRARY_PATH")}
+    try:
+        os.environ.update(LD_LIBRARY_PATH="/tmp/_MEIbundle", LD_LIBRARY_PATH_ORIG="/opt/lib", DYLD_LIBRARY_PATH="/tmp/_MEIbundle")
+        sys.frozen = True
+        env = companion_tls.system_env()
+        check(env.get("LD_LIBRARY_PATH") == "/opt/lib" and "DYLD_LIBRARY_PATH" not in env and "LD_LIBRARY_PATH_ORIG" not in env,
+              "openssl would run with the packaged app's libraries: " + repr({k: env.get(k) for k in saved}))
+        del sys.frozen
+        check(companion_tls.system_env().get("LD_LIBRARY_PATH") == "/tmp/_MEIbundle", "A source run should keep its library path")
+    finally:
+        if hasattr(sys, "frozen"):
+            del sys.frozen
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     with tempfile.TemporaryDirectory(prefix="fluid-tls-") as folder:
         made = companion_tls.ensure(folder)
         if made is None:

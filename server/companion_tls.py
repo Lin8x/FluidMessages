@@ -35,6 +35,20 @@ def tls_port(http_port, value=None):
     return port
 
 
+def system_env():
+    """The environment for running the computer's own openssl. The packaged desktop apps (PyInstaller) put their bundled
+    libraries first on the library path, and a newer system openssl can't start with those, so they're put back."""
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        for name in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+            original = env.pop(name + "_ORIG", None)
+            if original:
+                env[name] = original
+            else:
+                env.pop(name, None)
+    return env
+
+
 def ensure(folder, openssl=None):
     """The certificate and key paths in [folder], made on first use. None when openssl isn't installed."""
     folder = Path(folder)
@@ -57,7 +71,8 @@ def ensure(folder, openssl=None):
                         "-addext", "basicConstraints=critical,CA:FALSE",
                         "-addext", "keyUsage=critical,digitalSignature",
                         "-addext", "extendedKeyUsage=serverAuth"],
-                       check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+                       check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
+                       env=system_env())
         os.chmod(new_key, 0o600)
         os.replace(new_key, key)
         os.replace(new_cert, cert)

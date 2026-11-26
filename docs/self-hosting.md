@@ -83,6 +83,8 @@ Keep FluidMessages Web on HTTPS whenever it leaves your computer, so your passwo
 
 Each release includes FluidMessages Web for **Windows** (`.exe`), **macOS** (`.dmg`), and **Linux** (`.AppImage`). Download them from [Releases](https://github.com/Lin8x/FluidMessages/releases/latest).
 
+To install or update with one command instead (it checks the SHA-256 first): on Linux or macOS run `curl -fsSL https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.sh | bash`, and on Windows run `irm https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.ps1 | iex` in PowerShell. Add `--uninstall` (Linux and macOS, as `| bash -s -- --uninstall`) or `-Uninstall` (Windows) to remove it. On a Mac with Homebrew: `brew install --cask lin8x/tap/fluidmessages-web`.
+
 - **What it does:** runs FluidMessages Web on your computer and opens it in its own window, straight into the welcome on first run. A small window shows that it's running, with **Open** and **Quit**. It only listens on this computer, so there's no password to set.
 - **Your data:** stays in a private folder for your user account.
 - **Security warnings:** the apps aren't code-signed yet. On Windows, choose **More info → Run anyway**. On macOS, right-click the app and choose **Open**.
