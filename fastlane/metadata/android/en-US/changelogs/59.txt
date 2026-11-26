@@ -1,0 +1,3 @@
+- Installs from Obtainium, Galaxy Store, and AppGallery leave updates to them.
+- About and updates says when an app store signed your copy.
+- New app bundle for app stores.
