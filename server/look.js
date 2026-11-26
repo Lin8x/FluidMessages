@@ -67,7 +67,7 @@ function applyChatWallpaper() {
 // colors on top. Kept on FluidMessages Web only (web_appearance.chatThemes): the settings merge has no item for
 // them, so they never reach the phone, and the phone's chat themes don't come here. The wallpaper does sync.
 
-const CHAT_ROLES = ['sms', 'rcs', 'automated', 'matrix', 'xmpp', 'email', 'irc'];
+const CHAT_ROLES = ['sms', 'rcs', 'automated', 'matrix', 'xmpp', 'email', 'irc', 'nearby'];
 
 /** The bubble and background colors a chat uses, or null when it follows the global look. */
 function chatColors(address, profile = webLook.chatThemes?.[address]) {
@@ -420,12 +420,19 @@ function inboxPreview() {
   const search = element('span', 'Search', 'preview-search');
   const list = element('div', '', 'preview-rows');
   list.dataset.density = look.density || 'standard';
-  for (const [name, words, time, unread] of [['Maya Chen', 'See you at the trailhead at nine', '9:41', true],
-    ['Jordan Ellis', 'I sent the route for Saturday.', '8:15', false], ['Harbor Street Café', 'Your table is ready.', 'Mon', false]]) {
+  for (const [name, words, time, unread, service] of [['Maya Chen', 'See you at the trailhead at nine', '9:41', true],
+    ['Jordan Ellis', 'I sent the route for Saturday.', '8:15', false], ['Harbor Street Café', 'Your table is ready.', 'Mon', false],
+    ['Sam Rivera', 'I’m by the lake shelter.', 'Mon', false, 'nearby']]) {
     const row = element('div', '', 'preview-row');
     const avatar = setAvatar(element('span', '', 'avatar'), name);
     const text = element('span', '', 'preview-words');
     text.append(element('strong', name), element('small', words));
+    // A service tag in that service's color, like the inbox's (Nearby here, as on the phone's preview).
+    if (service) {
+      const tags = element('span', '', 'tags');
+      tags.append(element('span', labels[service] || service, 'tag p-' + service));
+      text.append(tags);
+    }
     const side = element('span', '', 'preview-side');
     side.append(element('small', time));
     if (unread) side.append(element('span', '', 'preview-unread'));

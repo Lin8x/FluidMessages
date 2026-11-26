@@ -4554,15 +4554,15 @@ def web_parity_test():
         check(call("/api/settings", {"prefs": {"callMatrix": "off"}}, cookie=real)[0] == 400, "A switch accepted a string")
         # Palette contrast, the background, buttons, and toolbar tints, a palette's contrast, and each chat's own theme.
         look = {"theme": "ember", "mode": "dark", "contrast": True, "sendSound": "pop",
-                "colors": {"sms": "#ffd60a", "canvas": "#101820", "controls": "#ff9500", "chrome": "#22303c"},
-                "palettes": {"Sunny": {"theme": "fluid", "colors": {"sms": "#ffd60a"}, "contrast": True}},
+                "colors": {"sms": "#ffd60a", "canvas": "#101820", "controls": "#ff9500", "chrome": "#22303c", "nearby": "#40e0d0"},
+                "palettes": {"Sunny": {"theme": "fluid", "colors": {"sms": "#ffd60a", "nearby": "#40e0d0"}, "contrast": True}},
                 "chatThemes": {"+12025550146": {"theme": "love", "outgoing": "#ffd60a"}, "web-rowan": {"background": "#fff4f8"}}}
         noisy = {**look, "colors": {**look["colors"], "chrome": "url(x)"},
                  "chatThemes": {**look["chatThemes"], "x": {"theme": "neon", "incoming": "red"}, "y": "love", "": {"theme": "love"}},
                  "palettes": {"Sunny": {**look["palettes"]["Sunny"], "contrast": "yes"}}}
         saved = call("/api/settings", {"web_appearance": noisy}, cookie=real)[1]["web_appearance"]
         expected = {**look, "colors": {key: value for key, value in look["colors"].items() if key != "chrome"},
-                    "palettes": {"Sunny": {"theme": "fluid", "colors": {"sms": "#ffd60a"}}}}
+                    "palettes": {"Sunny": {"theme": "fluid", "colors": {"sms": "#ffd60a", "nearby": "#40e0d0"}}}}
         check(saved == expected, "Contrast, tints, or chat themes weren't cleaned: " + json.dumps(saved))
         check(call("/api/settings", {"web_appearance": look}, cookie=real)[1]["web_appearance"] == look, "Contrast, tints, or chat themes weren't saved")
         check(call("/api/settings", {"web_appearance": {**look, "contrast": "yes"}}, cookie=real)[1]["web_appearance"].get("contrast") is None,
@@ -5145,6 +5145,15 @@ say(tinted.colors.canvas === '#101820' && tinted.colors.ink === '#ffffff', 'canv
 say(contrast(tinted.colors.surface, tinted.colors.ink) >= 4.5 && contrast(tinted.colors.raised, tinted.colors.ink) >= 4.5, 'light tint on dark stays readable');
 say(contrast(bubbleFill('#ffd60a'), bubbleInk('#ffd60a')) >= 4.5 && bubbleInk('#ffd60a') === '#ffffff', 'bright fill');
 say(textOn('#f2f2f2') === '#000000' && textOn('#1c1c1e') === '#ffffff', 'neutral fills');
+// Nearby: turquoise in every theme, light and dark and increased contrast, with readable white text once shaded.
+say(plain.colors.nearby === '#00c8b3' && strong.colors.nearby === '#008575' && BUBBLES.includes('nearby') && CHAT_ROLES.includes('nearby'), 'nearby fluid');
+for (const key of Object.keys(THEMES)) for (const mode of ['light', 'dark']) for (const strongColors of [false, true]) {
+  const shown = themeAppearance({theme: key, mode, contrast: strongColors}).colors.nearby;
+  say(/^#[0-9a-f]{6}$/.test(shown || '') && bubbleInk(shown) === '#ffffff' && contrast(bubbleFill(shown), bubbleInk(shown)) >= 4.5,
+    'nearby ' + key + ' ' + mode + (strongColors ? ' increased' : ''));
+  say(key === 'fluid' || THEMES[key].light[6].length === 5, 'nearby color for ' + key);
+}
+say(themeAppearance({theme: 'ember', mode: 'light', colors: {nearby: '#40e0d0'}}).colors.nearby === '#40e0d0', 'own nearby color');
 // Switching or resetting a theme clears its colors and contrast, and keeps sound, haptics, and motion.
 const look = {theme: 'fluid', contrast: true, colors: {canvas: '#101820'}, sendSound: 'pop', haptics: 'soft', speed: 0, soundVolume: 40};
 const next = themeLook(look, 'love');

@@ -6,7 +6,7 @@ const colors = {
   canvas: 'canvas', incoming: 'incoming', incomingInk: 'incoming-ink', sms: 'sms', smsInk: 'sms-ink',
   automated: 'automated', automatedInk: 'automated-ink', accent: 'accent', accentInk: 'accent-ink',
   rcs: 'rcs', rcsInk: 'rcs-ink', matrix: 'matrix', matrixInk: 'matrix-ink', xmpp: 'xmpp', xmppInk: 'xmpp-ink',
-  email: 'email', emailInk: 'email-ink', irc: 'irc', ircInk: 'irc-ink',
+  email: 'email', emailInk: 'email-ink', irc: 'irc', ircInk: 'irc-ink', nearby: 'nearby', nearbyInk: 'nearby-ink',
 };
 // Same order and names as the phone. RCS, SMS, and MMS share one text conversation.
 const labels = {rcs: 'RCS', sms: 'SMS', mms: 'MMS', matrix: 'Matrix', xmpp: 'XMPP', email: 'Email', irc: 'IRC', nearby: 'Nearby'};
@@ -63,27 +63,27 @@ async function api(path, body) {
 }
 
 // Themes, the same named palettes as the phone (MessageStyle.java), light and dark.
-// [canvas, sms, rcs, controls, chrome, automated, [matrix, xmpp, email, irc]]
+// [canvas, sms, rcs, controls, chrome, automated, [matrix, xmpp, email, irc, nearby]]. Nearby is turquoise, tuned per theme.
 const RCS_LIGHT = '#9643eb', RCS_DARK = '#a458f9';
 const THEMES = {
-  fluid: {label: 'Fluid', light: ['#ffffff', '#0088ff', RCS_LIGHT, '#007aff', '#f2f2f7', '#34c759', ['#ff2d55', '#ff2d55', '#ff8d28', '#ff383c']],
-    dark: ['#101012', '#0091ff', RCS_DARK, '#007aff', '#1c1c1e', '#30d158', ['#ff375f', '#ff375f', '#ff9230', '#ff4245']]},
-  midnight: {label: 'Midnight', light: ['#f8f9fe', '#0088ff', RCS_LIGHT, '#007aff', '#eceefa', '#34c759', ['#ff2d55', '#e0408a', '#ff8d28', '#ff383c']],
+  fluid: {label: 'Fluid', light: ['#ffffff', '#0088ff', RCS_LIGHT, '#007aff', '#f2f2f7', '#34c759', ['#ff2d55', '#ff2d55', '#ff8d28', '#ff383c', '#00c8b3']],
+    dark: ['#101012', '#0091ff', RCS_DARK, '#007aff', '#1c1c1e', '#30d158', ['#ff375f', '#ff375f', '#ff9230', '#ff4245', '#00dac3']]},
+  midnight: {label: 'Midnight', light: ['#f8f9fe', '#0088ff', RCS_LIGHT, '#007aff', '#eceefa', '#34c759', ['#ff2d55', '#e0408a', '#ff8d28', '#ff383c', '#00c8b3']],
     dark: ['#08080b', '#0091ff', RCS_DARK, '#007aff', '#23242c', '#30d158']},
-  lavender: {label: 'Lavender', light: ['#fcf8ff', '#7564d8', '#c88330', '#5c43b2', '#efe7fa', '#2f9e83', ['#c4508f', '#a955b8', '#4f86c6', '#cf4a4a']],
+  lavender: {label: 'Lavender', light: ['#fcf8ff', '#7564d8', '#c88330', '#5c43b2', '#efe7fa', '#2f9e83', ['#c4508f', '#a955b8', '#4f86c6', '#cf4a4a', '#1a9fae']],
     dark: ['#15111e', '#9481f4', '#e5ab65', '#c1a8ff', '#2e2441', '#4fc6a6']},
-  evergreen: {label: 'Evergreen', light: ['#f5fcf8', '#2d9e78', '#ac8126', '#176249', '#e6f4ec', '#3f72c4', ['#c2507a', '#9a5bb5', '#d9603a', '#d13f3f']],
+  evergreen: {label: 'Evergreen', light: ['#f5fcf8', '#2d9e78', '#ac8126', '#176249', '#e6f4ec', '#3f72c4', ['#c2507a', '#9a5bb5', '#d9603a', '#d13f3f', '#1f9fb8']],
     dark: ['#0d1814', '#52c59a', '#d3a846', '#8bdabb', '#1b372d', '#74a3f0']},
-  tideline: {label: 'Tideline', light: ['#f5fbff', '#308fd3', '#d37548', '#225d97', '#e4f2fa', '#3a9a4a', ['#c24f86', '#8a62c9', '#c9a227', '#c8434a']],
+  tideline: {label: 'Tideline', light: ['#f5fbff', '#308fd3', '#d37548', '#225d97', '#e4f2fa', '#3a9a4a', ['#c24f86', '#8a62c9', '#c9a227', '#c8434a', '#1fa89a']],
     dark: ['#0e1721', '#54b4f6', '#f5a370', '#9fdaff', '#21374a', '#5cc46d']},
-  ember: {label: 'Ember', light: ['#fff9f1', '#e28b48', '#ce6c6e', '#923c24', '#faeee0', '#5e8f2e', ['#b0508f', '#7d5fc0', '#3f86b8', '#2f9a8c']],
+  ember: {label: 'Ember', light: ['#fff9f1', '#e28b48', '#ce6c6e', '#923c24', '#faeee0', '#5e8f2e', ['#b0508f', '#7d5fc0', '#3f86b8', '#2f9a8c', '#17a2b8']],
     dark: ['#1c120e', '#f1aa68', '#f29194', '#ffbc8a', '#38241b', '#8fc25a']},
-  love: {label: 'Love', light: ['#fff4f8', '#c14770', '#947029', '#9b274f', '#ffe6ef', '#2c8a6e', ['#8a5cc4', '#5b6fd0', '#e0603a', '#3a8fbf']],
+  love: {label: 'Love', light: ['#fff4f8', '#c14770', '#947029', '#9b274f', '#ffe6ef', '#2c8a6e', ['#8a5cc4', '#5b6fd0', '#e0603a', '#3a8fbf', '#18a5a0']],
     dark: ['#211018', '#cf507f', '#d6aa56', '#ffa6c2', '#3d2231', '#4fbf98']},
-  rosewater: {label: 'Rosewater', light: ['#fff8fa', '#d5779f', '#b7784d', '#a13567', '#fbe9f0', '#4f8a66', ['#8c67c7', '#5f7fce', '#d4c13a', '#3d93b8']],
+  rosewater: {label: 'Rosewater', light: ['#fff8fa', '#d5779f', '#b7784d', '#a13567', '#fbe9f0', '#4f8a66', ['#8c67c7', '#5f7fce', '#d4c13a', '#3d93b8', '#2aa69b']],
     dark: ['#1e1119', '#f59abf', '#d99d73', '#ffafd0', '#3a222d', '#7cbf93']},
 };
-const BUBBLES = ['incoming', 'sms', 'automated', 'rcs', 'matrix', 'xmpp', 'email', 'irc'];
+const BUBBLES = ['incoming', 'sms', 'automated', 'rcs', 'matrix', 'xmpp', 'email', 'irc', 'nearby'];
 const LAYOUT = {radius: 18, size: 16, padding: 12};
 
 const rgb = (hex) => [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255);
@@ -120,10 +120,10 @@ function prefersDark() { return !!window.matchMedia?.('(prefers-color-scheme: da
 
 /** The web app's own look: a named theme in light or dark, your color changes, and bubble layout. */
 // Palette contrast → Increased: Fluid's colors from the phone's increased-contrast swatches (MessageStyle.Swatch),
-// [canvas, sms, rcs, controls, chrome, automated, [matrix, xmpp, email, irc]], plus the incoming gray. Every theme also
+// [canvas, sms, rcs, controls, chrome, automated, [matrix, xmpp, email, irc, nearby]], plus the incoming gray. Every theme also
 // gets stronger secondary text, outlines, and buttons.
-const FLUID_CONTRAST = {light: ['#ffffff', '#1e6ef4', '#564ade', '#1e6ef4', '#ebebf0', '#008932', ['#e7124d', '#e7124d', '#c55300', '#e9152d'], '#d8d8dc'],
-  dark: ['#101012', '#5cb8ff', '#a7aaff', '#5cb8ff', '#242426', '#4ad968', ['#ff8ac4', '#ff8ac4', '#ffa056', '#ff6165'], '#363638']};
+const FLUID_CONTRAST = {light: ['#ffffff', '#1e6ef4', '#564ade', '#1e6ef4', '#ebebf0', '#008932', ['#e7124d', '#e7124d', '#c55300', '#e9152d', '#008575'], '#d8d8dc'],
+  dark: ['#101012', '#5cb8ff', '#a7aaff', '#5cb8ff', '#242426', '#4ad968', ['#ff8ac4', '#ff8ac4', '#ffa056', '#ff6165', '#54dfcb'], '#363638']};
 
 function themeAppearance(look) {
   const theme = THEMES[look.theme] || THEMES.fluid;
@@ -144,7 +144,7 @@ function themeAppearance(look) {
   const gray = palette[7] || (dark ? '#2c2c2e' : '#e5e5ea');
   const base = {incoming: own.incoming || gray, sms: own.sms || sms, automated: own.automated || automated,
     rcs: own.rcs || rcs, matrix: own.matrix || protocolColors[0], xmpp: own.xmpp || protocolColors[1], email: own.email || protocolColors[2],
-    irc: own.irc || protocolColors[3]};
+    irc: own.irc || protocolColors[3], nearby: own.nearby || protocolColors[4]};
   const colors = {canvas, ink, surface, raised: chrome,
     muted: readable(mixColor(ink, surface, .4), surface, ink, strong ? 7 : 4.5),
     line: mixColor(surface, ink, strong ? .24 : .14), outline: readable(mixColor(surface, ink, .3), canvas, ink, strong ? 4.5 : 3),

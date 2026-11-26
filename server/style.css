@@ -135,10 +135,10 @@ dialog .sidebar-head { padding-inline: 0; }
   .topbar button { padding-inline: .48rem; font-size: .78rem; }
 }
 
-/* Protocol colors come from the phone's theme; these defaults match the Fluid theme. */
+/* Protocol colors come from the theme (app.js applyAppearance sets them, shaded for white text); these
+   fallbacks match the Fluid theme's shaded fills. */
 :root { --rcs: #6b43f0; --rcs-ink: #fff; --matrix: #e2244b; --matrix-ink: #fff; --xmpp: #e2244b; --xmpp-ink: #fff;
-  --email: #c55300; --email-ink: #fff; --irc: #d9262b; --irc-ink: #fff;
-  --nearby: #008575; --nearby-ink: #fff; }
+  --email: #c55300; --email-ink: #fff; --irc: #d9262b; --irc-ink: #fff; --nearby: #008577; --nearby-ink: #fff; }
 .out.p-rcs .bubble { background: var(--rcs); color: var(--rcs-ink); }
 .out.p-matrix .bubble { background: var(--matrix); color: var(--matrix-ink); }
 .out.p-xmpp .bubble { background: var(--xmpp); color: var(--xmpp-ink); }

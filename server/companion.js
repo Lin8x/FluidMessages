@@ -246,8 +246,10 @@ function appearanceSection(settings) {
     preview.setAttribute('aria-label', previewing === 'inbox' ? 'Preview of the inbox' : 'Preview of a conversation');
     preview.replaceChildren();
     if (previewing === 'inbox') { preview.append(...inboxPreview()); return; }
-    for (const [text, out] of [['Are we still on for Saturday?', false], ['Yes! I’ll bring the map 🗺️', true]]) {
-      const row = element('div', '', out ? 'message out' : 'message');
+    // Nearby's bubble uses its own color, shaded for white text like the others (style.css .out.p-nearby).
+    for (const [text, out, service] of [['Are we still on for Saturday?', false], ['Yes! I’ll bring the map 🗺️', true],
+      ['Nearby preview', true, 'nearby']]) {
+      const row = element('div', '', (out ? 'message out' : 'message') + (service ? ' p-' + service : ''));
       row.append(element('div', text, 'bubble'));
       preview.append(row);
     }
@@ -270,7 +272,7 @@ function appearanceSection(settings) {
   const colorInputs = {};
   // The phone's order: message colors, then the background, buttons, and toolbar tints.
   for (const [key, label] of [['sms', 'Your texts'], ['incoming', 'Incoming'], ['automated', 'Automated texts'], ['rcs', 'RCS (preview)'],
-    ['matrix', 'Matrix'], ['xmpp', 'XMPP'], ['email', 'Email'], ['irc', 'IRC'], ['canvas', 'Background color'],
+    ['matrix', 'Matrix'], ['xmpp', 'XMPP'], ['email', 'Email'], ['irc', 'IRC'], ['nearby', 'Nearby'], ['canvas', 'Background color'],
     ['controls', 'Buttons and unread indicators'], ['chrome', 'Toolbar and composer tint']]) {
     const input = Object.assign(element('input', ''), {type: 'color'});
     input.addEventListener('input', () => { saveWebLook({...webLook, colors: {...(webLook.colors || {}), [key]: input.value}}); drawPreview(); });

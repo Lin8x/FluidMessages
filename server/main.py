@@ -216,7 +216,8 @@ def appearance_snapshot(value):
             key: colors[key] for key in ("canvas", "ink", "muted", "surface", "raised", "line", "outline", "action",
                                           "incoming", "incomingInk", "sms", "smsInk",
                                           "automated", "automatedInk", "accent", "accentInk",
-                                          "rcs", "rcsInk", "matrix", "matrixInk", "xmpp", "xmppInk", "email", "emailInk", "irc", "ircInk")
+                                          "rcs", "rcsInk", "matrix", "matrixInk", "xmpp", "xmppInk", "email", "emailInk", "irc", "ircInk",
+                                          "nearby", "nearbyInk")
             if isinstance(colors.get(key), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", colors[key])
         }
     for key in ("tagMode", "encryptionMode"):
@@ -245,7 +246,7 @@ def appearance_snapshot(value):
 
 THEMES = ("fluid", "midnight", "lavender", "evergreen", "tideline", "ember", "love", "rosewater")
 # Bubble colors, and the background, buttons, and toolbar tints (the phone's canvas, controlColor, and chromeColor).
-OWN_COLORS = ("sms", "rcs", "automated", "incoming", "matrix", "xmpp", "email", "irc", "canvas", "controls", "chrome")
+OWN_COLORS = ("sms", "rcs", "automated", "incoming", "matrix", "xmpp", "email", "irc", "nearby", "canvas", "controls", "chrome")
 
 
 def clean_web_appearance(value):

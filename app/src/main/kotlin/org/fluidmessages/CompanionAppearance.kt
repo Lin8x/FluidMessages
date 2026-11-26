@@ -23,7 +23,8 @@ internal object CompanionAppearance {
         for (address in overrides.keys()) if (address in addresses) senderTypes.put(address, overrides.getString(address))
         val colors = JSONObject()
         // The browser uses the same theme colors and contrast rule for every protocol.
-        for (protocol in listOf(MessageProtocol.RCS, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)) {
+        for (protocol in listOf(MessageProtocol.RCS, MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC,
+            MessageProtocol.NEARBY)) {
             val key = protocol.name.lowercase(Locale.ROOT)
             val base = protocol.tint(appearance)
             colors.put(key, hex(accessibleBubbleFill(base).toArgb())).put(key + "Ink", hex(bubbleTextColor(base).toArgb()))

@@ -83,7 +83,8 @@ object ThemeEditor {
 private const val SAVED_PALETTES = "savedColorThemes"
 private const val ACTIVE_PALETTE = "activeColorTheme"
 private const val PALETTE_PREFIX = "custom:"
-private val internetColors = listOf(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)
+private val internetColors = listOf(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC,
+    MessageProtocol.NEARBY)
 private fun colorKey(protocol: MessageProtocol) = protocol.key() + "Color"
 private val colorRoles = internetColors.map(::colorKey) + listOf("accent", "rcsColor", "automatedColor", "incoming", "canvas", "chromeColor", "controlColor")
 private val paletteKeys = listOf("colorTheme", "dark", "classicColors", "contrastColors") + colorRoles +
@@ -493,7 +494,7 @@ private fun ColorDropdown(
 private fun hex(value: Int) = String.format(Locale.ROOT, "#%06X", value and 0xffffff)
 
 private val internetSamples = listOf(MessageProtocol.MATRIX to "Matrix preview", MessageProtocol.XMPP to "XMPP preview",
-    MessageProtocol.EMAIL to "Email preview", MessageProtocol.IRC to "IRC preview")
+    MessageProtocol.EMAIL to "Email preview", MessageProtocol.IRC to "IRC preview", MessageProtocol.NEARBY to "Nearby preview")
 
 @Composable
 internal fun SampleConversation(appearance: Appearance) {

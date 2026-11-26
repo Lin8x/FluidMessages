@@ -80,32 +80,38 @@ final class MessageStyle {
         Colors colors(boolean darkMode) { return darkMode ? dark : light; }
 
         /**
-         * Theme colors for internet protocols, in Matrix, XMPP, Email, IRC order. Fluid uses the Apple
-         * swatches (pink, pink, orange, red). Each other theme picks hues that sit apart from its SMS, RCS,
-         * and automated colors. Dark mode lightens them; bubble shading then keeps white text readable.
+         * Theme colors for internet protocols and Nearby, in Matrix, XMPP, Email, IRC, Nearby order. Fluid uses
+         * the Apple swatches (pink, pink, orange, red, mint). Nearby is turquoise in every theme, tuned a little
+         * where a theme already has a teal. Each other theme picks hues that sit apart from its SMS, RCS, and
+         * automated colors. Dark mode lightens them; bubble shading then keeps white text readable.
          */
         Integer protocol(MessageProtocol protocol, boolean darkMode) {
             int[] set = switch (this) {
                 case FLUID -> null;
-                case MIDNIGHT -> new int[]{0xff2d55, 0xe0408a, 0xff8d28, 0xff383c};
-                case LAVENDER -> new int[]{0xc4508f, 0xa955b8, 0x4f86c6, 0xcf4a4a};
-                case EVERGREEN -> new int[]{0xc2507a, 0x9a5bb5, 0xd9603a, 0xd13f3f};
-                case TIDELINE -> new int[]{0xc24f86, 0x8a62c9, 0xc9a227, 0xc8434a};
-                case EMBER -> new int[]{0xb0508f, 0x7d5fc0, 0x3f86b8, 0x2f9a8c};
-                case LOVE -> new int[]{0x8a5cc4, 0x5b6fd0, 0xe0603a, 0x3a8fbf};
-                case ROSEWATER -> new int[]{0x8c67c7, 0x5f7fce, 0xd4c13a, 0x3d93b8};
+                case MIDNIGHT -> new int[]{0xff2d55, 0xe0408a, 0xff8d28, 0xff383c, 0x00c8b3};
+                case LAVENDER -> new int[]{0xc4508f, 0xa955b8, 0x4f86c6, 0xcf4a4a, 0x1a9fae};
+                case EVERGREEN -> new int[]{0xc2507a, 0x9a5bb5, 0xd9603a, 0xd13f3f, 0x1f9fb8};
+                case TIDELINE -> new int[]{0xc24f86, 0x8a62c9, 0xc9a227, 0xc8434a, 0x1fa89a};
+                case EMBER -> new int[]{0xb0508f, 0x7d5fc0, 0x3f86b8, 0x2f9a8c, 0x17a2b8};
+                case LOVE -> new int[]{0x8a5cc4, 0x5b6fd0, 0xe0603a, 0x3a8fbf, 0x18a5a0};
+                case ROSEWATER -> new int[]{0x8c67c7, 0x5f7fce, 0xd4c13a, 0x3d93b8, 0x2aa69b};
             };
             int index = switch (protocol) {
                 case MATRIX -> 0;
                 case XMPP -> 1;
                 case EMAIL -> 2;
                 case IRC -> 3;
+                case NEARBY -> 4;
                 default -> -1;
             };
             if (set == null || index < 0) return null;
             int color = set[index];
-            if (!darkMode) return 0xff000000 | color;
-            return 0xff000000 | Color.rgb(lift(Color.red(color)), lift(Color.green(color)), lift(Color.blue(color)));
+            return darkMode ? lifted(color) : 0xff000000 | color;
+        }
+
+        /** [rgb] lightened 22% toward white, for dark mode. Plain integer math, so unit tests can run it. */
+        static int lifted(int rgb) {
+            return 0xff000000 | lift(rgb >> 16 & 0xff) << 16 | lift(rgb >> 8 & 0xff) << 8 | lift(rgb & 0xff);
         }
 
         private static int lift(int channel) { return channel + (255 - channel) * 22 / 100; }
@@ -133,9 +139,10 @@ final class MessageStyle {
     private static int defaultRcs(boolean dark, boolean contrast) {
         int indigo = Swatch.INDIGO.color(dark, contrast);
         int purple = Swatch.PURPLE.color(dark, contrast);
-        return Color.rgb((Color.red(indigo) + Color.red(purple) + 1) / 2,
-            (Color.green(indigo) + Color.green(purple) + 1) / 2,
-            (Color.blue(indigo) + Color.blue(purple) + 1) / 2);
+        // Channel by channel, in plain integer math (the same as Color.rgb of the averages), so unit tests can load the themes.
+        int color = 0xff000000;
+        for (int shift = 16; shift >= 0; shift -= 8) color |= (((indigo >> shift & 0xff) + (purple >> shift & 0xff) + 1) / 2) << shift;
+        return color;
     }
 
     private static Colors colorsOrFluid(SharedPreferences prefs) {

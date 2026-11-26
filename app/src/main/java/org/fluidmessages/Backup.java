@@ -26,7 +26,9 @@ final class Backup {
         "wallpaper", "searchPosition", "toolbarFinish", "chromeOpacity", "inboxDensity", "bubbleTails",
         "radius", "size", "padding", "savedColorThemes", "activeColorTheme",
         "protocolMATRIXColor", "protocolXMPPColor", "protocolEMAILColor", "protocolIRCColor",
-        "protocolMATRIXColorSwatch", "protocolXMPPColorSwatch", "protocolEMAILColorSwatch", "protocolIRCColorSwatch"
+        "protocolMATRIXColorSwatch", "protocolXMPPColorSwatch", "protocolEMAILColorSwatch", "protocolIRCColorSwatch",
+        // Added later: a backup without them restores Nearby to the theme's own color.
+        "protocolNEARBYColor", "protocolNEARBYColorSwatch"
     };
     // Protocol choices, links, and battery settings. Account passwords stay on the companion and are never backed up.
     static final String[] PROTOCOLS = {

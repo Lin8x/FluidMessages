@@ -1986,6 +1986,7 @@ internal fun InboxPreview(appearance: Appearance) {
         ThreadRow("preview-alerts", "Trail Alerts", "TA", "Trail update: the south entrance is open.", "Today", false, false,
             protocol = "SMS", automated = true),
         ThreadRow("preview-irc", "#radio-club", "RC", "I’ll bring the analyzer.", "Today", false, false, protocol = "IRC"),
+        ThreadRow("preview-nearby", "Sam Rivera", "SR", "I’m by the lake shelter.", "Today", false, false, protocol = "Nearby"),
     )
     WallpaperSurface("none", palette.bg, Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))) {
         Box(Modifier.fillMaxWidth()) {
