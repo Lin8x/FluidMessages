@@ -5230,6 +5230,88 @@ def running_status_test():
     print("PASS  Running on this server: sign-in required, groups, and words")
 
 
+def quick_setup_test():
+    """Quick setup on FluidMessages Web: its choices match the phone's, the current one is worked out from the settings,
+    and Only send encrypted messages refuses on the server with the composer's words (quick-setup.js, quick_setup.py)."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import quick_setup
+    quick_js = (ROOT / "server/quick-setup.js").read_bytes()
+    kotlin = (ROOT / "app/src/main/kotlin/org/fluidmessages/QuickSetup.kt").read_text()
+    block = re.search(rb"// quick-setup:start[^\n]*\n(.*?)// quick-setup:end", quick_js, re.S)
+    check(block, "quick-setup.js has no Quick setup rules")
+    # Never called a privacy level, and never named private, secure, or safe.
+    for text in (quick_js.decode(), kotlin):
+        check("privacy level" not in text.lower(), "Quick setup is still called a privacy level somewhere")
+    with companion(free_port(), secrets.token_hex(32)) as (_, request, _):
+        index = request("/", authorized=False).decode()
+        check(index.index("/tor.js") < index.index("/quick-setup.js"), "The page doesn't load quick-setup.js after tor.js")
+        check("'/quick-setup.js'" in request("/sw.js", authorized=False).decode(), "The service worker doesn't cache quick-setup.js")
+        check(b"quickRefusal" in request("/quick-setup.js", authorized=False), "quick-setup.js isn't served")
+        check(request("/api/inbox")["prefs"].get("encryptedOnly") is False, "Only send encrypted messages isn't off by default")
+        draft = {"address": "+15555550123", "body": "Fictional test", "due": int(time.time() * 1000)}
+        check(request("/api/schedule", draft)["id"], "A text didn't queue with Only send encrypted messages off")
+        check(request("/api/settings", {"prefs": {"encryptedOnly": True}})["prefs"]["encryptedOnly"] is True,
+              "Only send encrypted messages wasn't saved")
+        for path, body, protocol in (("/api/schedule", draft, "sms"),
+                                     ("/api/protocols/send", {"address": "irc:#fictional", "protocol": "irc", "body": "Hi",
+                                                              "request": "quick-setup-test"}, "irc")):
+            try:
+                request(path, body)
+                raise RuntimeError("FluidMessages Web sent with Only send encrypted messages on: " + path)
+            except HTTPError as error:
+                reason = json.loads(error.read() or b"{}").get("error", "")
+                check(error.code == 400 and reason == quick_setup.refusal(True, protocol, False),
+                      f"{path} refused with the wrong words: {error.code} {reason}")
+        request("/api/settings", {"prefs": {"encryptedOnly": False}})
+        check(request("/api/schedule", draft)["id"], "Texts didn't queue again after turning the switch off")
+    words = {protocol: quick_setup.refusal(True, protocol, False) for protocol in ("sms", "mms", "irc", "email", "matrix", "xmpp")}
+    check(quick_setup.refusal(False, "irc", False) == "" and quick_setup.refusal(True, "matrix", True) == "",
+          "Only send encrypted messages blocks when it's off, or in an encrypted room")
+    # The phone's choices, in its order, with the same names and who they're for.
+    titles = re.findall(r'Choice\("(\w+)", "([^"]+)", "([^"]+)"', kotlin)
+    check([item[0] for item in titles] == ["everything", "standard", "lock", "encrypted", "tor", "nearby"],
+          "The phone's Quick setup choices aren't in the agreed order")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if not node:
+        print("PASS  Quick setup on FluidMessages Web (the rules in Node skipped: node is missing)")
+        return
+    script = block.group(1).decode() + """
+const [phone, refusals] = JSON.parse(process.argv[1]);
+const wrong = [];
+const expect = (got, want, what) => { if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push([what, got, want]); };
+const use = (id, start = {}, ready = {tor: true}) => ({...start, ...quickPlan(start, ready, quickChoice(id).values).set});
+expect(QUICK_CHOICES.map((choice) => [choice.id, choice.title, choice.forWho]), phone, 'the same choices as the phone');
+expect(quickCurrent({}), 'standard', 'a fresh install is Standard');
+for (const id of ['standard', 'lock', 'encrypted', 'tor']) expect(quickCurrent(use(id)), id, id + ' shows after it is used');
+for (const first of ['standard', 'lock', 'encrypted', 'tor']) for (const second of ['standard', 'lock', 'encrypted', 'tor'])
+  expect(quickCurrent(use(second, use(first))), second, first + ' then ' + second);
+expect(quickCurrent(use('everything', {allServices: false})), 'standard', 'Everything on looks like Standard without Nearby');
+expect(quickCurrent({...use('encrypted'), linkPreviews: true}), 'custom', 'changing one switch shows Custom');
+expect(quickCurrent({...use('standard'), notifyPreview: false}), 'custom', 'notification text off is Custom');
+expect(use('encrypted').encryptedOnly, true, 'Encrypted only turns the switch on');
+expect(use('lock').gifSearch, 'none', 'fewer leaks turns GIF search off');
+expect('gifSearch' in quickPlan({gifSearch: 'giphy'}, {tor: true}, quickChoice('standard').values).set, false, 'Standard leaves GIF search');
+const noTor = quickPlan({}, {tor: false}, quickChoice('tor').values);
+expect(['tor' in noTor.set, noTor.steps, noTor.set.encryptedOnly], [false, [QUICK_NEEDS_TOR], true], 'Tor waits for a proxy that answers');
+expect(quickPlan({}, {tor: true, twoStep: false}, quickChoice('lock').values).notes, [QUICK_TWO_STEP], 'two-step sign-in is suggested');
+expect(Object.keys(quickPlan({}, {tor: true}, quickChoice('standard').values).set), [], 'only changes are saved');
+expect(quickAnswers(use('tor')), {send: 'encrypted', tor: true, fewerLeaks: true}, 'the questions read the settings');
+expect(quickAnswers({linkPreviews: false}).fewerLeaks, null, 'some extras on and some off');
+expect(quickCurrent({...QUICK_ENCRYPTED, ...QUICK_TOR, ...QUICK_FEWER}), 'tor', 'answering the questions reaches the same choice');
+for (const [protocol, words] of Object.entries(refusals)) expect(quickRefusal(true, protocol, false), words, protocol + ' says the server words');
+expect(quickRefusal(true, 'matrix', true), '', 'an encrypted Matrix room sends');
+expect(quickRefusal(false, 'irc', false), '', 'off blocks nothing');
+expect([quickServiceMark(true, 'irc'), quickServiceMark(true, 'matrix'), quickServiceMark(false, 'irc')], ['Can’t encrypt', 'Encrypted rooms only', ''], 'service marks');
+for (const choice of QUICK_CHOICES) if (/private|secure|safe/i.test(choice.title)) wrong.push(['a name says private, secure, or safe', choice.title]);
+process.stdout.write(JSON.stringify(wrong));
+"""
+    phone = [[item[0], item[1], item[2].replace("'", "’")] for item in titles]
+    result = subprocess.run([node, "-e", script, json.dumps([phone, words], ensure_ascii=False)], capture_output=True, text=True, timeout=30)
+    check(result.returncode == 0 and result.stdout == "[]", "The Quick setup rules are wrong: " + (result.stdout or result.stderr)[:900])
+    print("PASS  Quick setup: the phone's six choices on the web, Standard by default, Custom after any change, Tor waits for a proxy, "
+          "and Only send encrypted messages refuses texts and IRC on the server with the composer's words")
+
+
 def tor_test():
     """Connect through Tor: the SOCKS5 handshake (remote DNS) against a fake local SOCKS server, which connections go
     through Tor, that nothing goes direct when Tor is on but not running, and the Settings API."""
@@ -6076,6 +6158,7 @@ def main():
         phone_reach_and_access_test()
         companion_tls_test()
         tor_test()
+        quick_setup_test()
         running_status_test()
         omemo_test()
         android(args)

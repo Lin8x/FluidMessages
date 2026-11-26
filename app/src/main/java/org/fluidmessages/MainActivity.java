@@ -479,7 +479,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "tor-intro", "battery" -> settings();
             case "recording", "meetingLinks" -> callsSettings();
             case "recordings" -> recordingSettings();
-            case "locks", "hiddenChats", "decoyMode", "encryption", "requestsSettings", "tor" -> privacySettings();
+            case "locks", "hiddenChats", "decoyMode", "encryption", "requestsSettings", "tor", "quickSetup" -> privacySettings();
             case "requestConfirm" -> requestBack.run();
             case "phone" -> inbox();
             case "samplePhone" -> sampleInbox();
@@ -2960,6 +2960,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 } catch (Exception ignored) {}
             });
         conversationScreen.setOpenGifSettings(this::gifSettings);
+        conversationScreen.setOpenQuickSetup(this::quickSetup);
         Drafts.attach(conversationScreen, this, prefs, number, Privacy.hidden(prefs, number, format));
         conversationScreen.setSavedSender(LinkLoading.savedSenders(this, prefs, number, phone, groupMembers(number)));
         // The bell with a slash beside the lock while this chat or its server is muted; tapping it opens the mute page.
@@ -3073,6 +3074,12 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         }
         var message = outgoing.forTransport(format);
         var transport = format.transport();
+        // Only send encrypted messages (QuickSetup): the same state as the chat's colored lock decides.
+        String refused = QuickSetup.sendRefused(QuickSetup.encryptedOnly(prefs), format, protection(outgoing.getConversation(), format));
+        if (!refused.isEmpty()) {
+            if (conversationScreen != null) conversationScreen.setError(refused); else toast(refused);
+            return false;
+        }
         String reason = transport.unavailable(this, prefs, message.getConversation());
         if (!reason.isEmpty()) { toast(reason); return false; }
         var current = conversationScreen;
@@ -4027,6 +4034,9 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         boolean locked = prefs.getBoolean("lock", false);
         boolean decoy = Privacy.decoyMode(prefs);
         List<SettingsSection> sections = new ArrayList<>();
+        // Quick setup (QuickSetup): a few settings at once, for people who don't want to learn every switch.
+        sections.add(new SettingsSection("Quick setup", List.of(action(QuickSetup.label(prefs),
+            "Pick what fits you. Each choice says who it's for and what it doesn't protect.", this::quickSetup))));
         sections.add(new SettingsSection("Protect the app", List.of(
             toggleRow("App lock", "Ask for your fingerprint, face, or screen lock to open FluidMessages", locked, () -> toggleLock(locked)),
             action("Chat locks", lockSummary(), this::locksSettings),
@@ -4058,6 +4068,11 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 + "so the other person knows. Off: the setting still changes, nothing is sent", prefs.getBoolean(ANNOUNCE_SETTINGS, true), () -> {
                     prefs.edit().putBoolean(ANNOUNCE_SETTINGS, !prefs.getBoolean(ANNOUNCE_SETTINGS, true)).apply();
                     privacySettings();
+                }),
+            toggleRow("Only send encrypted messages", "Sending is off in chats that can't be encrypted right now, like IRC or plain "
+                + "texts. You can still read everything.", QuickSetup.encryptedOnly(prefs), () -> {
+                    prefs.edit().putBoolean(QuickSetup.ENCRYPTED_ONLY, !QuickSetup.encryptedOnly(prefs)).apply();
+                    privacySettings();
                 }))));
         sections.add(new SettingsSection("Typing", List.of(toggleRow("Private keyboard",
             "Ask your keyboard not to learn or remember what you type in FluidMessages.", PrivateKeyboard.enabled(prefs), () -> {
@@ -4066,6 +4081,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             }))));
         sections.add(new SettingsSection("Network", List.of(action("Connect through Tor", TorSettingsPage.summary(prefs), this::torSettings))));
         SettingsPages.mount(root, prefs, sections);
+    }
+
+    /** Settings → Privacy and security → Quick setup (QuickSetupPage), also opened from Accounts, Chat services, and a chat. */
+    private void quickSetup() {
+        render("quickSetup");
+        heading("Quick setup", "Privacy and security", this::privacySettings);
+        QuickSetupPage.mount(root, prefs, () -> nearby("home"), this::invalidateRows);
     }
 
     /** Settings → Privacy and security → Connect through Tor (TorRoute). Connections restart to use the new route. */
@@ -4934,6 +4956,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void protocolSettings() {
         render("protocols");
         heading("Chat services", "Back", this::settings);
+        QuickSetupPage.mountRow(root, prefs, this::quickSetup);
         ProtocolSettingsScreen.mount(root, prefs, () -> turnOnTexting(this::protocolSettings), this::textingChanged, () -> nearby("home"));
     }
 
@@ -4952,6 +4975,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
     private void accounts(Runnable back) {
         render("accounts");
         heading("Accounts", "Back", back);
+        QuickSetupPage.mountRow(root, prefs, this::quickSetup);
         AccountsScreen.mount(root, prefs, this::companion);
     }
 

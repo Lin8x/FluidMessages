@@ -847,6 +847,20 @@ class Gateway(ChatFeatures):
     def route(self, address, protocol):
         return next((route for route in self.routes if route["address"] == address and route["protocol"] == protocol), None)
 
+    def route_encrypted(self, address, protocol):
+        """Whether this chat is end-to-end encrypted right now: an encrypted Matrix room, or XMPP locked with OMEMO
+        for all trusted devices. The same state as the chat's green lock (routes' "encrypted"). IRC and email never are."""
+        route = self.route(address, protocol) if isinstance(address, str) else None
+        if route is None:
+            return False
+        if route.get("via") == "matrix":
+            secure = self.secure(route.get("account"))
+            return bool(secure is not None and secure.encrypted(route["target"]))
+        if route.get("via") == "xmpp":
+            lock = self.omemo_locks.get((route.get("account"), route["target"]))
+            return bool(lock and lock["color"] == "green")
+        return False
+
     def validate_send(self, db, data):
         address, format, body, request = (data[name] for name in ("address", "protocol", "body", "request"))
         route = self.route(address, format)

@@ -11,6 +11,11 @@ public final class QuickReply extends Service {
         try {
             if (intent != null && intent.getData() != null) {
                 String recipient = intent.getData().getSchemeSpecificPart();
+                // Only send encrypted messages (QuickSetup) applies to replies from a notification too.
+                var prefs = getSharedPreferences("fluid", MODE_PRIVATE);
+                String refused = QuickSetup.sendRefused(QuickSetup.encryptedOnly(prefs), MessageProtocol.SMS,
+                    SmsCrypto.active(prefs, recipient, MessageProtocol.SMS) ? Encryption.FLUIDMESSAGES : Encryption.NONE);
+                if (!refused.isEmpty()) { SmsDelivery.notify(this, "Reply not sent", refused); return START_NOT_STICKY; }
                 MessageProtocol.SMS.transport().send(this, new OutgoingMessage(recipient, List.of(recipient),
                     intent.getStringExtra(Intent.EXTRA_TEXT), null, -1));
             }

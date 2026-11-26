@@ -188,7 +188,7 @@ object ProtocolSettingsScreen {
                     item {
                         PreferencesCard("Chat services") {
                             for (protocol in MessageProtocol.values().filter { !it.isText() && it != MessageProtocol.NEARBY }) {
-                                ProtocolSwitch(prefs, protocol.key(), protocol.label, protocol.description, true)
+                                ProtocolSwitch(prefs, protocol.key(), protocol.label, QuickSetup.serviceLine(prefs, protocol, protocol.description), true)
                             }
                         }
                     }

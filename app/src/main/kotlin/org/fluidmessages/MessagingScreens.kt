@@ -551,6 +551,8 @@ internal class ConversationScreen @JvmOverloads constructor(
     var draftAttachment by mutableStateOf<Attachment?>(null)
     /** Opens Settings → GIFs and stickers from the picker; set by the live chat. */
     var openGifSettings: Runnable? = null
+    /** Opens Quick setup, from the reason shown while Only send encrypted messages keeps this chat from sending. */
+    var openQuickSetup: Runnable? = null
     fun setDraftPhoto(uri: Uri?) { draftAttachment = uri?.let(Attachment::photo) }
     private var sendVia by mutableStateOf<MessageProtocol?>(null)
     private var replyTo by mutableStateOf<ChatLine?>(null)
@@ -587,7 +589,10 @@ internal class ConversationScreen @JvmOverloads constructor(
                 if (it == MessageProtocol.RCS && MessageProtocol.SMS !in routing!!.formats) listOf(it, MessageProtocol.SMS) else listOf(it)
             }
             val via = sendVia?.takeIf { it in sendOptions } ?: routing?.preferredVia?.takeIf { it in sendOptions } ?: active
-            val blocked = via.disabledReason(prefs).ifEmpty { if (via == active) routing?.unavailable.orEmpty() else "" }
+            // Only send encrypted messages (QuickSetup): this chat's lock, or the other route's usual one, decides.
+            val encryptedOnly = if (sample || routing == null) "" else QuickSetup.sendRefused(QuickSetup.encryptedOnly(prefs), via,
+                if (via == active) routing.encryption ?: via.transport().capabilities.encryption else via.transport().capabilities.encryption)
+            val blocked = via.disabledReason(prefs).ifEmpty { if (via == active) routing?.unavailable.orEmpty() else "" }.ifEmpty { encryptedOnly }
             fun styleColor(format: MessageProtocol) = if (routing != null && senderStyle != SenderStyle.AUTOMATED)
                 format.tint(palette.appearance) else when (senderStyle) {
                 SenderStyle.AUTOMATED -> Color(palette.appearance.automated)
@@ -1079,6 +1084,9 @@ internal class ConversationScreen @JvmOverloads constructor(
                     if (blocked.isEmpty() && recording == null) CommandHints(commandFamily, draft, palette) { draft = it }
                     if (blocked.isNotEmpty()) {
                         Text(blocked, Modifier.fillMaxWidth().padding(16.dp), color = palette.muted, fontSize = 14.sp)
+                        if (blocked == encryptedOnly) openQuickSetup?.let { open ->
+                            TextButton(onClick = { open.run() }, Modifier.padding(start = 6.dp, bottom = 6.dp)) { Text("Change quick setup") }
+                        }
                     } else if (recording != null) RecordingBar(recording, sendColor, palette.ink, palette.muted, {
                         recording.cancel(); recorder = null
                     }) {

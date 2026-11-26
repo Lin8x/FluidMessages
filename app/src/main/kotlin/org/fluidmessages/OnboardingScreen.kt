@@ -249,6 +249,8 @@ object OnboardingScreen {
                             }
                             "services" -> {
                                 item { ChatServiceCards(prefs, appearance) }
+                                // Optional: Standard unless a quick setup is chosen here (QuickSetupPage).
+                                item { QuickSetupCard(prefs) }
                                 item {
                                     val paired = CloudBackup.paired(prefs.getString("server", "").orEmpty(),
                                         Privacy.token(prefs))

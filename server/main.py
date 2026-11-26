@@ -27,6 +27,7 @@ import link_fetch
 import message_requests
 import privacy
 import protocol_gateway
+import quick_setup
 import running_status
 import sync_merge
 import tor_route
@@ -59,6 +60,7 @@ FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascrip
          "/chat-commands.js": ("chat-commands.js", "text/javascript"), "/invites.js": ("invites.js", "text/javascript"),
          "/connections.js": ("connections.js", "text/javascript"), "/meetings.js": ("meetings.js", "text/javascript"),
          "/chat-features.css": ("chat-features.css", "text/css"), "/tor.js": ("tor.js", "text/javascript"),
+         "/quick-setup.js": ("quick-setup.js", "text/javascript"),
          "/running.js": ("running.js", "text/javascript"),
          "/omemo.js": ("omemo.js", "text/javascript"),
          # The sample inbox's fictional portraits, the phone's own (res/drawable-nodpi/sample_*.webp).
@@ -86,6 +88,8 @@ OFF_PREFS = ("ircCalls",)
 OFF_PREFS += ("communitiesIntroSeen",)
 # Whether "What is Tor?" has shown, once, the first time Connect through Tor is turned on (tor.js). Off until then.
 OFF_PREFS += ("torIntroSeen",)
+# Settings → Privacy and security → Only send encrypted messages (quick_setup.py). Off unless turned on.
+OFF_PREFS += (quick_setup.PREF,)
 # Messages → Communities' sort order, and Settings → Messaging → Inbox filters: which filters the inbox filter menu
 # shows, in order. A hidden filter is kept with a "-" in front, so its place survives turning it back on.
 COMMUNITY_SORTS = ("recent", "name", "joined")
@@ -1731,6 +1735,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/tor/connection":
                 return save_connection_tor(db, data)
             if self.path == "/api/protocols/send":
+                # Only send encrypted messages: the same lock the chat shows decides (quick_setup.py).
+                quick_setup.check(web_prefs(db), data.get("protocol"), gateway.route_encrypted(data.get("address"), data.get("protocol")))
                 return gateway.enqueue(db, data)
             if self.path == "/api/protocols/command":
                 # A slash command typed in an IRC, Matrix, or XMPP chat (chat_features.py).
@@ -1864,6 +1870,8 @@ class Handler(BaseHTTPRequestHandler):
                 format = data.get("protocol", "sms")
                 if format not in ("sms", "mms"):
                     raise ValueError("Choose a carrier protocol")
+                # Texts from the browser are never encrypted, so Only send encrypted messages keeps them (quick_setup.py).
+                quick_setup.check(web_prefs(db), format, False)
                 settings = protocol_settings(db)
                 if format not in settings.get("enabledProtocols", ("sms", "mms")):
                     raise ValueError("This protocol is turned off on the phone")

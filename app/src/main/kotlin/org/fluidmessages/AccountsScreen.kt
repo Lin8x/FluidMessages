@@ -152,7 +152,7 @@ private fun Accounts(prefs: SharedPreferences, openCompanion: Runnable, start: E
         for (protocol in listOf(MessageProtocol.MATRIX, MessageProtocol.XMPP, MessageProtocol.EMAIL, MessageProtocol.IRC)) item(protocol.name) {
             val entries = accountsOf(protocol)
             val direct = DirectProtocols.account(context, protocol)?.takeIf { DirectProtocols.on(prefs, protocol) }
-            PreferencesCard(protocol.label) {
+            PreferencesCard(QuickSetup.serviceTitle(prefs, protocol)) {
                 var shown = 0
                 if (direct != null) {
                     PreferenceText(summary(protocol, JSONObject().put("fields", direct)).ifEmpty { "Connected" },
