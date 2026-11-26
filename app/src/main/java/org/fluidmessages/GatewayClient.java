@@ -175,8 +175,14 @@ final class GatewayClient {
         var connections = response.optJSONObject("connections");
         // The inbox's plugs follow a server connecting, dropping, or being turned off.
         boolean marks = !connectionMarks(prefs.getString("gatewayConnections", "{}")).equals(connectionMarks(connections == null ? "{}" : connections.toString()));
+        // Each connection's Tor on FluidMessages Web (TorChat): the inbox's onion, and chat details' switch. Older
+        // servers send none, and their chats say to update FluidMessages Web.
+        var tor = response.optJSONObject("tor");
+        String torValue = tor == null ? "{}" : tor.toString();
+        marks = marks || !torRoutes(prefs.getString("gatewayTor", "{}")).equals(torRoutes(torValue));
         prefs.edit().putString("gatewayInvites", invites == null ? "[]" : invites.toString())
-            .putString("gatewayConnections", connections == null ? "{}" : connections.toString()).apply();
+            .putString("gatewayConnections", connections == null ? "{}" : connections.toString())
+            .putString("gatewayTor", torValue).apply();
         var endpoints = response.optJSONArray("routes");
         String value = endpoints == null ? "[]" : endpoints.toString();
         boolean changed = !value.equals(prefs.getString(ROUTES, "[]"));
@@ -184,6 +190,20 @@ final class GatewayClient {
         if (endpoints == null || endpoints.length() == 0) nextCheck = SystemClock.elapsedRealtime() + 15 * 60_000;
         prefs.edit().putString(ROUTES, value).apply();
         return changed || marks || messages != null && messages.length() > 0;
+    }
+
+    /** Each account's Tor route on FluidMessages Web ("tor", "wait", "direct"), to tell whether the onions changed. */
+    private static Map<String, String> torRoutes(String tor) {
+        var routes = new HashMap<String, String>();
+        try {
+            var all = new JSONObject(tor == null ? "{}" : tor);
+            for (var names = all.keys(); names.hasNext(); ) {
+                String id = names.next();
+                var entry = all.optJSONObject(id);
+                if (entry != null) routes.put(id, entry.optString("route"));
+            }
+        } catch (Exception ignored) {}
+        return routes;
     }
 
     /** Each server's inbox mark (IrcRules.connectionState), to tell whether a sync changed any. */

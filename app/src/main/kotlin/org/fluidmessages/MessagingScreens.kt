@@ -111,6 +111,8 @@ internal data class ThreadRow @JvmOverloads constructor(
     val account: String = "",
     /** An IRC, Matrix, or XMPP chat's connection: "connected", "connecting", "disconnected", or "" for no mark (IrcRules). */
     val connection: String = "",
+    /** This chat's connection goes through Tor right now: the onion beside its other marks (TorChat). */
+    val tor: Boolean = false,
 )
 
 /**
@@ -493,9 +495,10 @@ internal fun ConversationRow(thread: ThreadRow, palette: Palette, showProtocol: 
                     DrawGlyph(Glyph.Forward, palette.muted, Modifier.size(12.dp))
                 }
                 if (showProtocol) ProtocolTags(thread, palette.appearance, palette.muted)
-                else if (thread.muted.isNotEmpty() || thread.account.isNotEmpty() || thread.connection.isNotEmpty()) Row(Modifier.padding(top = 3.dp, bottom = 1.dp),
+                else if (thread.muted.isNotEmpty() || thread.account.isNotEmpty() || thread.connection.isNotEmpty() || thread.tor) Row(Modifier.padding(top = 3.dp, bottom = 1.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (thread.connection.isNotEmpty()) ConnectionMark(thread.connection, palette.appearance, palette.muted)
+                    if (thread.tor) TorMark(palette.appearance.dark)
                     if (thread.muted.isNotEmpty()) MutedMark(thread.muted, palette.muted)
                     if (thread.account.isNotEmpty()) AccountHint(thread.account, palette.muted)
                 }
@@ -560,6 +563,8 @@ internal class ConversationScreen @JvmOverloads constructor(
     var commandFamily by mutableStateOf("")
     /** The network account whose connection shows "Disconnected · Reconnect" in this chat (ChatExtras); "" for none. */
     var connectionAccount by mutableStateOf("")
+    /** This chat, for the onion in the top bar while its connection goes through Tor (TorChat); null for none. */
+    var torChat by mutableStateOf<TorChat.Ref?>(null)
     /** /help's page for this chat's service, while it's open. */
     var helpFamily by mutableStateOf<String?>(null)
     /** Accept, Delete, Block, and Block and report spam, while this chat is a message request (MessageRequests). */
@@ -735,6 +740,7 @@ internal class ConversationScreen @JvmOverloads constructor(
                 Column(Modifier.fillMaxSize()) {
                     // This chat's server connection, for the header's mark and the bar under it (ChatExtras).
                     val connection = rememberConnectionNow(connectionAccount)
+                    val torNow = rememberTorNow(torChat)
                     val floating = palette.appearance.toolbarFinish == "floating"
                     val chromeInk = palette.toolbarInk
                     Row(Modifier.fillMaxWidth()
@@ -799,6 +805,11 @@ internal class ConversationScreen @JvmOverloads constructor(
                                         DrawGlyph(Glyph.Unplugged, connectionInk(linkState, palette.toolbarBackground.luminance() < .4f,
                                             chromeInk.copy(alpha = .72f)), Modifier.size(14.dp))
                                     }
+                                }
+                                // Through Tor right now: the onion; tapping it opens the details' Connection section.
+                                if (torNow.value?.marked == true) Box(Modifier.padding(start = 2.dp).clip(RoundedCornerShape(6.dp))
+                                    .clickable(onClickLabel = "Tor details") { details.run() }.padding(3.dp)) {
+                                    TorMark(palette.toolbarBackground.luminance() < .4f, size = 14)
                                 }
                             }
                             }
@@ -1705,7 +1716,9 @@ internal enum class Glyph { Settings, Filter, Compose, Search, Close, Back, Forw
     /** A plug: an IRC, Matrix, or XMPP chat's server is connected (or connecting). */
     Plug,
     /** The plug with a slash, like Muted's: not connected, or turned off. */
-    Unplugged }
+    Unplugged,
+    /** An onion bulb (an original drawing, not Tor's logo): this chat's connection goes through Tor right now. */
+    Onion }
 
 @Composable
 internal fun ActionIcon(label: String, glyph: Glyph, color: Color, action: () -> Unit) {
@@ -1895,6 +1908,23 @@ internal fun DrawGlyph(glyph: Glyph, color: Color, modifier: Modifier) {
                 drawPath(body, color, style = Stroke(stroke, cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
                 drawLine(color, at(8f, 11.4f), at(8f, 14f), stroke, StrokeCap.Round)
                 if (glyph == Glyph.Unplugged) drawLine(color, at(2.5f, 2.5f), at(13.5f, 13.5f), stroke, StrokeCap.Round)
+            }
+            Glyph.Onion -> {
+                // The same outline as FluidMessages Web's (tor.js torMark), on a 16-unit grid: a round bulb that
+                // narrows to its top, one seam down the middle, and a short sprout with a leaf.
+                fun at(x: Float, y: Float) = Offset(x / 16f * size.width, y / 16f * size.height)
+                val bulb = Path().apply {
+                    moveTo(at(8f, 3.4f).x, at(8f, 3.4f).y)
+                    cubicTo(at(8.6f, 5.2f).x, at(8.6f, 5.2f).y, at(13f, 6.8f).x, at(13f, 6.8f).y, at(13f, 10.2f).x, at(13f, 10.2f).y)
+                    cubicTo(at(13f, 12.7f).x, at(13f, 12.7f).y, at(10.8f, 14.2f).x, at(10.8f, 14.2f).y, at(8f, 14.2f).x, at(8f, 14.2f).y)
+                    cubicTo(at(5.2f, 14.2f).x, at(5.2f, 14.2f).y, at(3f, 12.7f).x, at(3f, 12.7f).y, at(3f, 10.2f).x, at(3f, 10.2f).y)
+                    cubicTo(at(3f, 6.8f).x, at(3f, 6.8f).y, at(7.4f, 5.2f).x, at(7.4f, 5.2f).y, at(8f, 3.4f).x, at(8f, 3.4f).y)
+                    close()
+                }
+                drawPath(bulb, color, style = Stroke(stroke, cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                drawLine(color, at(8f, 7f), at(8f, 12.2f), stroke, StrokeCap.Round)
+                drawLine(color, at(8f, 3.4f), at(8f, 1.6f), stroke, StrokeCap.Round)
+                drawLine(color, at(8f, 2.6f), at(9.8f, 1.5f), stroke, StrokeCap.Round)
             }
         }
     }

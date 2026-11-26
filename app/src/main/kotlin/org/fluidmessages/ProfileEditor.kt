@@ -163,7 +163,11 @@ object ConversationDetails {
               /** An IRC, Matrix, or XMPP chat's server account: its Connection section (ConnectionsUi), with [connection]'s rows. */
               connectionAccount: String = "", connection: List<SettingsAction> = emptyList(),
               /** One person's other addresses, linked to this chat; [addWay] links another (null in a group or channel). */
-              ways: List<SettingsAction> = emptyList(), addWay: Runnable? = null, addWayDetail: String = "") {
+              ways: List<SettingsAction> = emptyList(), addWay: Runnable? = null, addWayDetail: String = "",
+              /** This chat, for Connect through Tor in its Connection section (TorChat): its conversation, protocol
+               * name, and a sample chat's name. No conversation leaves it out. */
+              torConversation: String = "", torProtocol: String = "", torSample: String = "") {
+        val tor = if (torConversation.isEmpty()) null else TorChat.Ref(torConversation, MessageProtocol.parse(torProtocol), torSample)
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -193,7 +197,9 @@ object ConversationDetails {
                     if (members.isNotEmpty()) item { GroupMembers(members) }
                     item { DetailGroup("Customize", actions.take(1)) }
                     if (actions.size > 1) item { DetailGroup("Conversation", actions.drop(1)) }
-                    if (connectionAccount.isNotEmpty()) item { ConnectionCard(connectionAccount, connection) }
+                    if (connectionAccount.isNotEmpty()) item { ConnectionCard(connectionAccount, connection, tor) }
+                    // Texts, email, and Nearby have no server connection section: Connect through Tor gets its own.
+                    else if (tor != null) item { TorCard(tor) }
                     if (security.isNotEmpty()) item { DetailGroup("Security", security) }
                     // One person's chat only: in a group, each member's own details has Block.
                     if (block != null) item {

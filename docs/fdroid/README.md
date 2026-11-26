@@ -14,7 +14,7 @@ These steps need your own accounts and your name on a merge request, so nobody e
 
 1. **Make a GitLab account** at [gitlab.com](https://gitlab.com/users/sign_up). F-Droid lives on GitLab, not GitHub.
 2. **Fork fdroiddata.** Open [gitlab.com/fdroid/fdroiddata](https://gitlab.com/fdroid/fdroiddata) and choose **Fork**.
-3. **The recipe is ready.** It points at v0.45.0, the first release with the `fdroid` flag, and uses Option A below (F-Droid signs its own copy). For later versions you don't need to edit it: F-Droid finds new `vX.Y.Z` tags by itself.
+3. **The recipe is ready.** It points at v0.46.0 (the `fdroid` flag arrived in v0.45.0), and uses Option A below (F-Droid signs its own copy). For later versions you don't need to edit it: F-Droid finds new `vX.Y.Z` tags by itself.
 4. **Signing:** Option A is set up. Switch to Option B later if you want (see below).
 5. **Add the recipe.** In your fork, make a new branch called `org.fluidmessages` and add the file as `metadata/org.fluidmessages.yml`.
 6. **Check it, if you can.** With [fdroidserver](https://f-droid.org/docs/Installing_the_Server_and_Repo_Tools/) installed, run these in your fork:

@@ -10,6 +10,10 @@ A minimal SOCKS5 CONNECT client (RFC 1928, no sign-in) lives here, so no extra l
 Not routed: XMPP and encrypted Matrix rooms (slixmpp and matrix-nio open their own connections), so XMPP waits
 with XMPP_HELD and Matrix uses its plain connection, which goes through Tor. Cloud backups run rclone, outside
 this setting. Addresses on your own network (192.168.x.x, .local, Tailscale) connect directly.
+
+Tor per chat: a chat's details choose Tor for its connection (one IRC network, Matrix account, or mailbox), stored as
+{host: True/False} in "hosts" and checked before the setting (wanted). chat_choice says whether a chat can use Tor
+and why not, in the same words as the phone (TorChat.kt).
 """
 import http.client
 import ipaddress
@@ -35,8 +39,17 @@ INSTALL = ("Install Tor on the computer running FluidMessages Web. On Debian or 
            "macOS with Homebrew: brew install tor, then brew services start tor. With Docker, run a Tor container and "
            "set the proxy address to it, for example tor:9050.")
 
+TEXTS = "Texts go over your phone plan, not the internet"
+NEARBY = "Nearby doesn't use the internet"
+XMPP_SWITCH = ("XMPP on FluidMessages Web can't go through Tor yet, because its library opens its own connections. "
+               "Connect XMPP from your phone to use Tor")
+E2EE_SWITCH = ("Encrypted Matrix rooms on FluidMessages Web can't go through Tor yet, because their library opens its "
+               "own connections")
+WORDS = {"tor": "Through Tor", "wait": "Waiting for Tor", "direct": "Not through Tor"}
+
 _lock = threading.Lock()
-_state = {"on": False, "proxy": DEFAULT_PROXY}
+_state = {"on": False, "proxy": DEFAULT_PROXY, "hosts": {}}
+_ready = {"at": 0.0, "value": False}
 
 REPLIES = {1: "Tor couldn't connect", 2: "Tor's rules don't allow that connection", 3: "Tor couldn't reach that network",
            4: "Tor couldn't reach that server", 5: "The server refused the connection through Tor",
@@ -48,19 +61,142 @@ class TorError(OSError):
     pass
 
 
-def configure(on, proxy=None):
+def configure(on, proxy=None, hosts=None):
     with _lock:
         _state["on"] = bool(on)
         _state["proxy"] = proxy or _state["proxy"] or DEFAULT_PROXY
+        if hosts is not None:
+            _state["hosts"] = clean_hosts(hosts)
+        _ready["at"] = 0.0
 
 
 def enabled():
     return _state["on"]
 
 
+def host_key(host):
+    return (host or "").strip().lower().strip("[]").rstrip(".")
+
+
+def clean_hosts(hosts):
+    """The stored per-connection choices, {host: bool}, with anything else dropped."""
+    if not isinstance(hosts, dict):
+        return {}
+    return {host_key(name): value for name, value in hosts.items()
+            if isinstance(name, str) and host_key(name) and len(name) <= 300 and type(value) is bool}
+
+
+def hosts():
+    return dict(_state["hosts"])
+
+
+def wants(on, choices, host):
+    """Whether a connection to [host] goes through Tor: its own choice from chat details first, then the setting."""
+    choice = (choices or {}).get(host_key(host))
+    return on if choice is None else choice
+
+
+def wanted(host):
+    return wants(_state["on"], _state["hosts"], host)
+
+
+def used():
+    """Tor is in use for something: the setting, or one connection's own choice."""
+    return _state["on"] or any(_state["hosts"].values())
+
+
+def with_choice(choices, names, through, on):
+    """The choices after one connection's switch: its [names] follow [through], or the setting again when it agrees."""
+    result = dict(choices or {})
+    for name in names:
+        key = host_key(name)
+        if not key:
+            continue
+        result.pop(key, None)
+        if through != on:
+            result[key] = through
+    return result
+
+
+def choose(names, through):
+    with _lock:
+        _state["hosts"] = with_choice(_state["hosts"], names, through, _state["on"])
+        return dict(_state["hosts"])
+
+
+def account_hosts(protocol, values):
+    """The servers an account's connection opens, which its switch changes together (a mailbox has two)."""
+    values = values if isinstance(values, dict) else {}
+    pick = lambda key: str(values.get(key) or "").strip().lower()
+    if protocol == "irc":
+        found = [pick("server")]
+    elif protocol == "matrix":
+        found = [pick("homeserver").removeprefix("https://").removeprefix("http://").split("/")[0].split(":")[0]]
+    elif protocol == "xmpp":
+        found = [pick("host") or pick("jid").partition("@")[2].split("/")[0]]
+    elif protocol == "email":
+        found = [pick("imap_host"), pick("smtp_host")]
+    else:
+        found = []
+    return list(dict.fromkeys(name for name in found if name))
+
+
+def chat_choice(protocol, local=False, encrypted=False, where=""):
+    """Whether a chat can use Tor, and why not: (allowed, words). The same rules as the phone's (TorChat.choice)."""
+    if protocol in ("sms", "mms", "rcs"):
+        return False, TEXTS
+    if protocol == "nearby":
+        return False, NEARBY
+    if protocol == "xmpp":
+        return False, XMPP_SWITCH
+    if protocol == "matrix" and encrypted:
+        return False, E2EE_SWITCH
+    if protocol not in ("irc", "matrix", "email"):
+        return False, "This chat isn't connected to a server yet"
+    if local:
+        return False, (where or "This server") + (" is on your own network, which Tor can't reach, so it connects "
+                                                  "directly and stays on your network")
+    return True, ""
+
+
+def route(protocol, names, ready_now):
+    """"tor", "wait", or "direct": how an account's connection goes right now. XMPP never goes through Tor here."""
+    names = [name for name in names if not local_host(name)]
+    if not names or not all(wanted(name) for name in names):
+        return "direct"
+    if protocol == "xmpp":
+        return "wait" if enabled() else "direct"
+    return "tor" if ready_now else "wait"
+
+
+def cached_ready():
+    """ready(), asked at most every 5 seconds, for the inbox's marks."""
+    import time
+    now = time.monotonic()
+    if now - _ready["at"] > 5:
+        _ready["value"], _ready["at"] = ready(1), now
+    return _ready["value"]
+
+
+def connection(protocol, values, where):
+    """One account's Tor, for the apps: its route and words, the switch's state, and whether it can be changed."""
+    names = account_hosts(protocol, values)
+    local = bool(names) and all(local_host(name) for name in names)
+    allowed, why = chat_choice(protocol, local, False, where)
+    way = route(protocol, names, cached_ready() if used() else False)
+    on = bool(names) and all(wanted(name) for name in names)
+    return {"route": way, "words": WORDS[way], "on": on and allowed, "allowed": allowed, "why": why, "where": where,
+            "local": local, "status": "" if way != "wait" else "Tor isn't running at " + _state["proxy"]}
+
+
 def signature():
     """Part of a chat client's signature in protocol_gateway, so turning Tor on or off reconnects it."""
     return json.dumps(dict(_state), sort_keys=True)
+
+
+def signature_for(names):
+    """The same, for one account: only its own servers' choices count, so another chat's switch doesn't reconnect it."""
+    return json.dumps({"proxy": _state["proxy"], "on": _state["on"], "through": [wanted(name) for name in names]})
 
 
 def hold_xmpp():
@@ -162,13 +298,15 @@ def status():
     on, proxy = _state["on"], _state["proxy"]
     reachable = ready()
     return {"on": on, "proxy": proxy, "reachable": reachable, "warning": WARNING, "install": INSTALL,
-            "state": "off" if not on else "connected" if reachable else "not_running"}
+            "state": "off" if not on else "connected" if reachable else "not_running",
+            # Connections whose chat details chose Tor (or not) themselves.
+            "chosen": len(_state["hosts"])}
 
 
 def create_connection(address, timeout=None, source_address=None, **_ignored):
     """socket.create_connection, through Tor while it's on. Never falls back to a direct connection."""
     host, port = address[0], int(address[1])
-    way = decide(enabled(), True, local_host(host))
+    way = decide(wanted(host), True, local_host(host))
     if way == "direct":
         return socket.create_connection((host, port), timeout, source_address)
     try:
@@ -183,9 +321,9 @@ def create_connection(address, timeout=None, source_address=None, **_ignored):
         raise
 
 
-def mail(standard):
-    """The mail class to use: [standard] (smtplib.SMTP_SSL and the like) with Tor off, or its routed copy."""
-    if not enabled():
+def mail(standard, host=None):
+    """The mail class to use: [standard] (smtplib.SMTP_SSL and the like) when [host] doesn't use Tor, or its routed copy."""
+    if not (wanted(host) if host else enabled()):
         return standard
     return {"SMTP_SSL": SMTP_SSL, "SMTP": SMTP, "IMAP4_SSL": IMAP4_SSL, "IMAP4": IMAP4}[standard.__name__]
 

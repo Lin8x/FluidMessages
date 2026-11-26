@@ -108,6 +108,8 @@ internal object RunningNowPage {
         known += SyncJob.SOON_ID
 
         val tor = TorRoute.on(prefs)
+        // Built-in Tor or Orbot, and its words ("Starting Tor… 45%", "Connected through Tor"). Checked off the main thread.
+        val torNow = if (tor && checkTor) TorRoute.status(app) else null
         val nearby = DirectNearby.current
         val power = app.getSystemService(PowerManager::class.java)
         return BackgroundStatus.Snapshot(
@@ -133,7 +135,8 @@ internal object RunningNowPage {
             helping = DirectNearby.helping(prefs),
             bluetooth = DirectNearby.bluetoothOn(prefs) && DirectNearby.bluetoothAllowed(app),
             torOn = tor,
-            torWords = if (tor && checkTor) TorRoute.words(TorRoute.status(app)) else "",
+            torWords = torNow?.words.orEmpty(),
+            torEngine = if (torNow != null && !torNow.orbot) "built-in" else "Orbot",
             sipReady = Calling.sipReady(prefs),
             sipMode = SipAgent.mode(prefs),
             sipStatus = SipAgent.status(),

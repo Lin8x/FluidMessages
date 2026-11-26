@@ -88,6 +88,8 @@ internal fun ProtocolTags(thread: ThreadRow, appearance: Appearance, mutedColor:
         }
         // An IRC, Matrix, or XMPP chat's connection, right beside its tag.
         if (thread.connection.isNotEmpty()) ConnectionMark(thread.connection, appearance, mutedColor, Modifier.align(Alignment.CenterVertically))
+        // Through Tor right now: the onion, right after the plug (TorChat).
+        if (thread.tor) TorMark(appearance.dark, Modifier.align(Alignment.CenterVertically))
         // Muted: the bell with a slash, right after the tags.
         if (thread.muted.isNotEmpty()) MutedMark(thread.muted, mutedColor, Modifier.align(Alignment.CenterVertically))
         if (thread.account.isNotEmpty()) AccountHint(thread.account, mutedColor, Modifier.align(Alignment.CenterVertically))

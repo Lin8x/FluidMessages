@@ -1021,7 +1021,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                     .collect(java.util.stream.Collectors.joining(" · ")),
                 sampleStyle(contact[0]) == SenderStyle.AUTOMATED, sampleGroupMembers(contact[0]), server,
                 sampleLastAt(contact, index), server.isEmpty() ? 0L : SampleInbox.SERVERS.size() * 10L - index,
-                Mutes.label(sampleChatMuteEnds("demo:" + contact[0])), "", SampleInbox.connection(contact[0]));
+                Mutes.label(sampleChatMuteEnds("demo:" + contact[0])), "", SampleInbox.connection(contact[0]), SampleInbox.tor(contact[0]));
             // Communities lists every channel and room on the sample servers, whatever the filter.
             if (!server.isEmpty()) channels.add(row);
             if (!Communities.showsInChats(!server.isEmpty(), communityChats)) continue;
@@ -1116,6 +1116,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             },
             samplePhoto(contact[0]), null, routing, sampleGroupMembers(contact[0]));
         conversationScreen.setMuted(Mutes.label(sampleChatMuteEnds(key)));
+        conversationScreen.setTorChat(new TorChat.Ref(key, format, contact[0]));
         ConversationScreen screen = conversationScreen;
         if (sampleIsRequest(contact[0])) screen.setRequest(sampleRequestBar(contact, format));
         conversationScreen.setOpenMute(() -> openSampleMute(key, contact[0], () -> screen.setMuted(Mutes.label(sampleChatMuteEnds(key)))));
@@ -2372,6 +2373,8 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                 var severalAccounts = java.util.EnumSet.noneOf(MessageProtocol.class);
                 // The small connection mark beside an IRC, Matrix, or XMPP chat's tag (PhoneChat.ConnectionStates).
                 var connections = decoy ? null : new PhoneChat.ConnectionStates(this);
+                // The onion beside chats whose connection goes through Tor right now (TorChat).
+                var torMarks = decoy ? null : new TorChat.Marks(this);
                 if (!decoy) for (var format : reachableProtocols(true)) {
                     if (FromAccount.INSTANCE.shows(GatewayClient.sendAccounts(prefs, format))) severalAccounts.add(format);
                 }
@@ -2402,7 +2405,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
                         mutes.isEmpty() ? "" : Mutes.label(Mutes.INSTANCE.chatEnds(mutes.keySet(), mutes, number,
                             serverMutes ? Mutes.serverOf(prefs, number) : "", System.currentTimeMillis())),
                         severalAccounts.contains(format) ? GatewayClient.inboxAccountHint(prefs, number, format) : "",
-                        connections == null ? "" : connections.of(number, format));
+                        connections == null ? "" : connections.of(number, format), torMarks != null && torMarks.of(number, format));
                     entries.add(row);
                     if (!empty) remembered.add(new InboxSnapshot.Entry(row, number, message.optString("protocol"), displayedTimestamp(message),
                         Disappearing.expiry(prefs, message, message.optString("address"))));
@@ -2966,6 +2969,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         String commandFamily = PhoneChat.family(prefs, number, format);
         conversationScreen.setCommandFamily(ChatCommands.isChat(commandFamily) ? commandFamily : "");
         conversationScreen.setConnectionAccount(PhoneChat.chatAccount(this, number, format));
+        conversationScreen.setTorChat(new TorChat.Ref(number, format));
         if (format == MessageProtocol.IRC) {
             // NickServ's identify notices as one card with a password field (NickServ.kt).
             conversationScreen.setNickServ(PhoneNickServ.identifier(getApplicationContext(), number));
@@ -3551,7 +3555,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         ConversationDetails.mount(root, prefs, name, initials(name), subtitle, sample ? samplePhoto(name) : 0,
             contact == null ? null : contact.photo(), key, reachOptions(key, original, name, sample),
             phone ? () -> editContact(key) : null, actions, members, security, info, block, connectionAccount, connection,
-            ways, addWay, ReachWays.detail(linking || sample));
+            ways, addWay, ReachWays.detail(linking || sample), key, activeProtocol.name(), sample ? original : "");
     }
 
     /** The Connections page, from the inbox's filter menu: every server, with its status, a switch, and Reconnect. */

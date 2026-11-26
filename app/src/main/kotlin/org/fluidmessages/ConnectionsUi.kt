@@ -173,7 +173,7 @@ private fun ServerConnectionRow(row: ConnectionRow, dark: Boolean, sample: Boole
  * automatically, and any [extras] (Rejoin automatically for a channel). It checks every few seconds.
  */
 @Composable
-internal fun ConnectionCard(account: String, extras: List<SettingsAction>) {
+internal fun ConnectionCard(account: String, extras: List<SettingsAction>, tor: TorChat.Ref? = null) {
     val context = LocalContext.current
     val scheme = MaterialTheme.colorScheme
     val scope = rememberCoroutineScope()
@@ -213,13 +213,15 @@ internal fun ConnectionCard(account: String, extras: List<SettingsAction>) {
         }
         if (busy.isNotEmpty()) Text(busy, Modifier.padding(horizontal = 15.dp), color = scheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall)
-        // This phone's own connection while Connect through Tor is on: Tor's state, checked every few seconds.
-        if (!sample && TorRoute.on() && PhoneChat.onPhone(context, account)) {
-            var tor by remember(account) { mutableStateOf(TorRoute.words(TorRoute.Status.CONNECTING)) }
+        // A server's own page while Connect through Tor is on: Tor's state, checked every few seconds. A chat's
+        // Connection section has its Tor rows instead (below).
+        if (!sample && tor == null && TorRoute.on() && PhoneChat.onPhone(context, account)) {
+            var torWords by remember(account) { mutableStateOf("") }
             LaunchedEffect(account) {
-                while (true) { tor = TorRoute.words(withContext(Dispatchers.IO) { TorRoute.status(context) }); delay(5000) }
+                while (true) { torWords = withContext(Dispatchers.IO) { TorRoute.status(context).words }; delay(5000) }
             }
-            Text(tor, Modifier.padding(horizontal = 15.dp), color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            if (torWords.isNotEmpty()) Text(torWords, Modifier.padding(horizontal = 15.dp), color = scheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall)
         }
         if (!shown.serviceOff) Row(Modifier.padding(start = 15.dp, end = 15.dp, bottom = 12.dp, top = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -244,6 +246,11 @@ internal fun ConnectionCard(account: String, extras: List<SettingsAction>) {
             val toggle = extra.toggle
             if (toggle != null) SettingsSwitch(extra.label, extra.detail, toggle) { extra.action.run() }
             else TextButton(onClick = extra.action::run, Modifier.padding(horizontal = 6.dp)) { Text(extra.label) }
+        }
+        // Through Tor, Waiting for Tor, or Not through Tor, and this connection's Connect through Tor switch (TorChat).
+        if (tor != null) {
+            HorizontalDivider(Modifier.padding(start = 16.dp), color = scheme.outlineVariant)
+            TorRows(tor)
         }
     }
 }

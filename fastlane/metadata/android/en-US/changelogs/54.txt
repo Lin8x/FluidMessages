@@ -1,0 +1,5 @@
+- Nearby: see people close by and message them in one tap; first messages arrive as requests. Choose who can see you, and look for people on your Wi-Fi.
+- New guide: staying in touch without internet.
+- Tor per chat, with an onion mark on chats that go through Tor. This F-Droid build uses the Orbot app for Tor.
+- Settings: Running now shows what FluidMessages keeps going.
+- What is ...? guides in Accounts and Add server.

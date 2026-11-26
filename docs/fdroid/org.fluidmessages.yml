@@ -24,9 +24,9 @@ Repo: https://github.com/Lin8x/FluidMessages.git
 #Binaries: https://github.com/Lin8x/FluidMessages/releases/download/v%v/FluidMessages-%v-fdroid.apk
 
 Builds:
-  - versionName: 0.45.0
-    versionCode: 53
-    commit: v0.45.0
+  - versionName: 0.46.0
+    versionCode: 54
+    commit: v0.46.0
     subdir: app
     gradle:
       - yes
@@ -40,5 +40,5 @@ Builds:
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags ^v[0-9]+\.[0-9]+\.[0-9]+$
-CurrentVersion: 0.45.0
-CurrentVersionCode: 53
+CurrentVersion: 0.46.0
+CurrentVersionCode: 54

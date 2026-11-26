@@ -788,7 +788,8 @@ def load_tor(db):
     proxy address, such as tor:9050 next to a Tor container."""
     row = db.execute("SELECT value FROM protocol_state WHERE key='tor'").fetchone()
     stored = json.loads(row[0]) if row else {}
-    tor_route.configure(stored.get("on") is True, stored.get("proxy") or os.environ.get("FLUID_TOR_PROXY") or tor_route.DEFAULT_PROXY)
+    tor_route.configure(stored.get("on") is True, stored.get("proxy") or os.environ.get("FLUID_TOR_PROXY") or tor_route.DEFAULT_PROXY,
+                        stored.get("hosts") or {})
 
 
 def save_tor(db, data):
@@ -800,9 +801,37 @@ def save_tor(db, data):
     on = data.get("on", tor_route.enabled())
     if on and not tor_route.enabled() and data.get("understood") is not True:
         raise ValueError("Turn on “I understand” first")
-    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('tor', ?)", (json.dumps({"on": on, "proxy": proxy}),))
+    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('tor', ?)",
+               (json.dumps({"on": on, "proxy": proxy, "hosts": tor_route.hosts()}),))
     tor_route.configure(on, proxy)
     return tor_route.status()
+
+
+def save_connection_tor(db, data):
+    """A chat's Connect through Tor: one account's connection (IRC network, Matrix account, or mailbox) through Tor or
+    not, whatever the setting. XMPP and servers on your own network can't, and say why (tor_route.chat_choice)."""
+    ident = data.get("account") if isinstance(data, dict) else None
+    if not isinstance(ident, str) or type(data.get("on")) is not bool:
+        raise ValueError("Invalid Tor choice")
+    entry = next((item for item in gateway.accounts.all() if item["id"] == ident), None)
+    if entry is None:
+        raise ValueError("That account isn't on FluidMessages Web")
+    current = gateway.tor_states().get(ident)
+    if current is None or not current["allowed"]:
+        raise ValueError((current or {}).get("why") or "This chat can't use Tor")
+    chosen = tor_route.choose(tor_route.account_hosts(entry["protocol"], entry["values"]), data["on"])
+    status = tor_route.status()
+    db.execute("INSERT OR REPLACE INTO protocol_state VALUES ('tor', ?)",
+               (json.dumps({"on": status["on"], "proxy": status["proxy"], "hosts": chosen}),))
+    # Its connection reconnects with the new route; the others keep theirs. In the background, so the switch answers
+    # at once even while a connection takes its time to stop.
+    def refresh():
+        try:
+            gateway.refresh_clients()
+        except Exception:
+            pass
+    threading.Thread(target=refresh, name="tor-refresh", daemon=True).start()
+    return gateway.tor_states()[ident]
 
 
 def protocol_settings(db):
@@ -1422,7 +1451,7 @@ class Handler(BaseHTTPRequestHandler):
                                  # IRC channels' topics and member lists, for a group's details.
                                  "channels": history["channels"],
                                  # Invitations and contact requests waiting on the Invitations page.
-                                 "invites": history["invites"], "connections": history["connections"],
+                                 "invites": history["invites"], "connections": history["connections"], "tor": history["tor"],
                                  "accounts": history["accounts"],
                                  "updated": row["updated"] if row else None,
                                  "appearance": json.loads(row["appearance"]) if row and row["appearance"] else {},
@@ -1695,6 +1724,9 @@ class Handler(BaseHTTPRequestHandler):
                 return gateway.snapshot(db, data.get("enabled"))
             if self.path == "/api/tor" and self.kind == "session":
                 return save_tor(db, data)
+            # A chat's Connect through Tor, from web chat details or the phone's (TorChat).
+            if self.path == "/api/tor/connection":
+                return save_connection_tor(db, data)
             if self.path == "/api/protocols/send":
                 return gateway.enqueue(db, data)
             if self.path == "/api/protocols/command":

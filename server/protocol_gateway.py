@@ -584,6 +584,8 @@ class Gateway(ChatFeatures):
                 "invites": [invite for invite in self.invites() if invite["account"] in names],
                 # Each IRC network's connection state, for the Disconnected · Reconnect bar.
                 "connections": self.connections(),
+                # Each account's Tor (tor_route.connection): the inbox's onion and chat details' Connect through Tor.
+                "tor": self.tor_states(),
                 "accounts": [{"protocol": account["protocol"], "source": account["source"], "id": account["id"],
                               "name": account["name"], "primary": bool(account.get("primary")),
                               "recent": recent.get(account["protocol"]) == account["id"],
@@ -1141,8 +1143,8 @@ class Gateway(ChatFeatures):
         """SMTP with TLS from the start on 465 (the default), or STARTTLS on any other port such as 587. Never plain text."""
         port = int(cfg.get("smtp_port") or SMTP_PORT)
         if not smtp_starttls(port):
-            return tor_route.mail(smtplib.SMTP_SSL)(cfg["smtp_host"], port, context=self.tls, timeout=12)
-        server = tor_route.mail(smtplib.SMTP)(cfg["smtp_host"], port, timeout=12)
+            return tor_route.mail(smtplib.SMTP_SSL, cfg["smtp_host"])(cfg["smtp_host"], port, context=self.tls, timeout=12)
+        server = tor_route.mail(smtplib.SMTP, cfg["smtp_host"])(cfg["smtp_host"], port, timeout=12)
         try:
             server.ehlo()
             if not server.has_extn("starttls"):
@@ -1158,8 +1160,8 @@ class Gateway(ChatFeatures):
         """IMAP with TLS from the start (993, the default), or STARTTLS on 143. Never plain text."""
         port = int(cfg.get("imap_port") or IMAP_PORT)
         if not imap_starttls(port):
-            return tor_route.mail(imaplib.IMAP4_SSL)(cfg["imap_host"], port, ssl_context=self.tls, timeout=12)
-        mailbox = tor_route.mail(imaplib.IMAP4)(cfg["imap_host"], port, timeout=12)
+            return tor_route.mail(imaplib.IMAP4_SSL, cfg["imap_host"])(cfg["imap_host"], port, ssl_context=self.tls, timeout=12)
+        mailbox = tor_route.mail(imaplib.IMAP4, cfg["imap_host"])(cfg["imap_host"], port, timeout=12)
         try:
             # Raises if the server doesn't offer STARTTLS, so the password never goes out unencrypted.
             mailbox.starttls(ssl_context=self.tls)
@@ -1279,7 +1281,7 @@ class Gateway(ChatFeatures):
         room = quote(route["target"], safe="")
         secure = self.secure()
         if secure is None and self.matrix_request("rooms/" + room + "/state/m.room.encryption", allow_missing=True) is not None:
-            raise ValueError(tor_route.E2EE_HELD if tor_route.enabled() and matrix_e2ee.available() else
+            raise ValueError(tor_route.E2EE_HELD if tor_route.used() and matrix_e2ee.available() else
                              "This room is end-to-end encrypted. Install matrix-nio[e2e] on FluidMessages Web to use it.")
         relation = message.get("relation") or {}
         event = relation.get("event_id")
@@ -1533,7 +1535,8 @@ class Gateway(ChatFeatures):
             mine = [r for r in routes if r.get("via", r["protocol"]) == protocol and r["account"] == ident]
             if protocol == "matrix":
                 # Running with no rooms linked yet too, so invitations (and new direct chats) arrive.
-                secure = matrix_e2ee.available() and not tor_route.enabled()
+                # With Tor for this account (the setting or its own choice), only the plain connection goes through Tor.
+                secure = matrix_e2ee.available() and not any(tor_route.wanted(name) for name in tor_route.account_hosts(protocol, account))
                 wanted[ident] = (json.dumps([account, secure], sort_keys=True),
                                  (lambda i=ident, a=account: self.secure_client(i, a)) if secure else
                                  (lambda i=ident, a=account: Poller(lambda: self.receive_matrix(i), 5, auto=lambda: self.reconnects(i),
@@ -1552,7 +1555,7 @@ class Gateway(ChatFeatures):
                 if protocol == "irc":
                     rooms = sorted(set(account.get("channels", [])) | set(rooms), key=str.lower)
                 # Joining or leaving a channel or group chat doesn't reconnect: sync() updates the live session.
-                wanted[ident] = (json.dumps(account, sort_keys=True) + tor_route.signature(),
+                wanted[ident] = (json.dumps(account, sort_keys=True) + tor_route.signature_for(tor_route.account_hosts(protocol, account)),
                                  lambda i=ident, a=account, r=rooms, p=protocol: self.chat_client(p, i, a, r), rooms)
         return wanted
 

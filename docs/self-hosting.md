@@ -204,6 +204,8 @@ The server stores the synced SMS and scheduled messages in readable form so the 
 
 Server names go to Tor unresolved, so the server doesn't look them up itself. While Tor is on but the proxy doesn't answer, connections wait with a message instead of going direct. XMPP waits, and encrypted Matrix rooms can't be used, while Tor is on, because their libraries open their own connections. Cloud backups (rclone) and servers on your own network connect directly.
 
+Each chat's details have **Connect through Tor** too, for the connection the server makes for it: one IRC network, Matrix account, or mailbox, so it also applies to that account's other chats. A connection can use Tor while the setting is off, or skip it while it's on; the choice is saved with the setting and the connection reconnects. XMPP chats, encrypted Matrix rooms, and servers on your own network show the switch turned off with the reason. Chats going through Tor show an onion beside their plug in the inbox and the chat's header. The phone sees the same and can change it from its own chat details (`POST /api/tor/connection` with `account` and `on`).
+
 ## Install it as an app (PWA)
 
 FluidMessages Web installs as an app (a PWA) from Chrome, Edge, or Brave: use the **Install** button in the address bar. It has Calls, Messages, and Settings in a side rail, which turns into tabs at the bottom on a phone. The app caches only its own files, never your messages.

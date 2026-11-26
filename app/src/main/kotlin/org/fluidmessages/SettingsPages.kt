@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
@@ -269,12 +270,18 @@ internal fun PreferenceText(title: String, detail: String, modifier: Modifier = 
 }
 
 @Composable
-internal fun SettingsSwitch(title: String, detail: String, checked: Boolean, changed: (Boolean) -> Unit) {
+internal fun SettingsSwitch(title: String, detail: String, checked: Boolean, changed: (Boolean) -> Unit) =
+    SettingsSwitch(title, detail, checked, true, changed)
+
+@Composable
+internal fun SettingsSwitch(title: String, detail: String, checked: Boolean, enabled: Boolean, changed: (Boolean) -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val fill = Color(MessageStyle.filledControl(LocalControlTint.current))
     val offset by animateDpAsState(if (checked) 21.dp else 3.dp, label = "Switch thumb")
+    // Disabled (with its reason in [detail]): dimmed, and read out as a switch that can't be changed.
     Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
-        .toggleable(value = checked, role = Role.Switch, onValueChange = changed)
+        .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = changed)
+        .alpha(if (enabled) 1f else .5f)
         .padding(horizontal = 15.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         PreferenceText(title, detail, Modifier.weight(1f).padding(end = 12.dp))
         Box(Modifier.size(51.dp, 31.dp)

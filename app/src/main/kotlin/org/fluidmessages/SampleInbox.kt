@@ -90,6 +90,12 @@ internal object SampleInbox {
         }
     }
 
+    /**
+     * The Tor mark: Harbor Net's connection goes through Tor in the sample, so its channels show the onion beside
+     * their plug, and their details say "Through Tor". Tor runs per connection, so both channels show it. Pretend.
+     */
+    @JvmStatic fun tor(name: String): Boolean = serverOf(name) == "sample:irc"
+
     /** Sample contacts that start starred in the sample Phone tab, so the Favorites filter has chats to show. */
     @JvmField val FAVORITES: List<String> = listOf("demo:Maya Chen", "demo:Jordan Ellis", "demo:Nora Patel")
 

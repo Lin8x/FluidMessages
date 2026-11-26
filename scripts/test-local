@@ -5297,6 +5297,117 @@ def tor_test():
         check(status["on"] is False and status["proxy"] == "127.0.0.1:9050", "Connect through Tor is off by default")
         check("slower and less reliable" in status["warning"], "The Tor warning is missing")
     print("PASS  Tor: SOCKS5 with remote DNS, nothing direct while Tor isn't running, IRC refusals, and the setting")
+    tor_chat_test()
+
+
+def tor_chat_test():
+    """Tor per chat: the decision table, one connection's choice changing the route, the mark data, the per-chat switch
+    API, and the browser's rules and onion (tor.js), which must match the phone's words."""
+    sys.path.insert(0, str(ROOT / "server"))
+    import smtplib
+    import tor_route
+    # Which chats can use Tor, and why not, in the phone's words (TorChat.kt).
+    torchat_kt = (ROOT / "app/src/main/kotlin/org/fluidmessages/TorChat.kt").read_text()
+    table = [("sms", False, False, tor_route.TEXTS), ("mms", False, False, tor_route.TEXTS), ("rcs", False, False, tor_route.TEXTS),
+             ("nearby", False, False, tor_route.NEARBY), ("xmpp", False, False, tor_route.XMPP_SWITCH),
+             ("matrix", False, True, tor_route.E2EE_SWITCH), ("matrix", False, False, ""), ("irc", False, False, ""),
+             ("email", False, False, "")]
+    for protocol, local, encrypted, why in table:
+        allowed, words = tor_route.chat_choice(protocol, local, encrypted)
+        check(allowed == (why == "") and words == why, f"Tor per chat is wrong for {protocol}: {words!r}")
+    allowed, words = tor_route.chat_choice("irc", True, False, "nas.local")
+    check(not allowed and words.startswith("nas.local is on your own network"), "A server on your own network says why")
+    for phrase in (tor_route.TEXTS, tor_route.NEARBY, tor_route.E2EE_SWITCH):
+        check(phrase in torchat_kt, "The phone and FluidMessages Web disagree on: " + phrase)
+    # Each connection's own choice comes before the setting, and changes where it connects.
+    check(tor_route.account_hosts("email", {"imap_host": "IMAP.example.org", "smtp_host": "smtp.example.org"})
+          == ["imap.example.org", "smtp.example.org"], "A mailbox's switch covers both its servers")
+    check(tor_route.account_hosts("matrix", {"homeserver": "https://matrix.example.org:8448"}) == ["matrix.example.org"], "Matrix host")
+    check(tor_route.account_hosts("xmpp", {"jid": "kit@example.org"}) == ["example.org"], "XMPP host")
+    check(tor_route.with_choice({}, ["irc.example.org"], True, False) == {"irc.example.org": True}, "Choosing Tor for one network")
+    check(tor_route.with_choice({"irc.example.org": True}, ["irc.example.org"], False, False) == {}, "Back to the setting")
+    check(tor_route.wants(False, {"irc.example.org": True}, "IRC.example.org.") is True, "The choice is per server, any case")
+    check(tor_route.wants(True, {"smtp.example.org": False}, "smtp.example.org") is False, "One mailbox can skip Tor")
+    closed = free_port()
+    tor_route.configure(False, "127.0.0.1:%d" % closed, {"irc.example.org": True})
+    try:
+        check(tor_route.used() and not tor_route.enabled(), "One network's choice uses Tor while the setting is off")
+        try:
+            tor_route.create_connection(("irc.example.org", 6697), timeout=2)
+            raise RuntimeError("A network that chose Tor connected without it")
+        except tor_route.TorError as error:
+            check(str(error) == tor_route.NOT_READY, "A network that chose Tor waits for it")
+        check(tor_route.mail(smtplib.SMTP, "smtp.example.org") is smtplib.SMTP, "Other connections stay direct")
+        tor_route.configure(True, "127.0.0.1:%d" % closed, {"smtp.example.org": False})
+        check(tor_route.mail(smtplib.SMTP, "smtp.example.org") is smtplib.SMTP, "A mailbox that turned Tor off connects directly")
+        check(tor_route.mail(smtplib.SMTP, "imap.other.example") is tor_route.SMTP, "The rest go through Tor")
+        # Mark data: only a connection that really goes through Tor gets "tor".
+        check(tor_route.route("irc", ["irc.example.org"], True) == "tor", "Through Tor")
+        check(tor_route.route("irc", ["irc.example.org"], False) == "wait", "Waiting for Tor")
+        check(tor_route.route("email", ["smtp.example.org"], True) == "direct", "Not through Tor")
+        check(tor_route.route("xmpp", ["example.org"], True) == "wait", "XMPP waits on FluidMessages Web, never marked")
+        check(tor_route.route("irc", ["192.168.1.5"], True) == "direct", "Your own network is never marked")
+        entry = tor_route.connection("email", {"imap_host": "imap.mail.example", "smtp_host": "smtp.mail.example"}, "me@mail.example")
+        check(entry["route"] == "wait" and entry["words"] == "Waiting for Tor" and entry["on"] and entry["allowed"], "Mailbox mark data")
+        xmpp = tor_route.connection("xmpp", {"jid": "kit@example.org"}, "example.org")
+        check(not xmpp["allowed"] and xmpp["why"] == tor_route.XMPP_SWITCH and xmpp["route"] != "tor", "XMPP's switch is disabled")
+    finally:
+        tor_route.configure(False, tor_route.DEFAULT_PROXY, {})
+    sys.path.remove(str(ROOT / "server"))
+    # The browser's rules, run on their own in Node: the same decisions and words, and the onion only while routed.
+    tor_js = (ROOT / "server/tor.js").read_bytes()
+    block = re.search(rb"// tor-chat:start[^\n]*\n(.*?)// tor-chat:end", tor_js, re.S)
+    check(block and b"function torMark()" in tor_js and b"api('tor/connection'" in tor_js and b"head.append(torMark())" in tor_js
+          and b"Connect through Tor" in tor_js, "tor.js is missing the onion, the header mark, or the per-chat switch")
+    node = os.environ.get("NODE") or shutil.which("node")
+    if node:
+        script = block.group(1).decode() + """
+const wrong = [];
+const expect = (got, want, what) => { if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push([what, got, want]); };
+const routed = {route: 'tor', on: true, allowed: true, why: '', where: 'Harbor Net'};
+expect(torChatChoice('sms', routed, false), {allowed: false, why: TOR_TEXTS}, 'texts');
+expect(torChatChoice('nearby', routed, false), {allowed: false, why: TOR_NEARBY}, 'nearby');
+expect(torChatChoice('irc', null, false), {allowed: false, why: TOR_ON_PHONE}, 'a chat this server does not connect');
+expect(torChatChoice('matrix', routed, true), {allowed: false, why: TOR_E2EE}, 'encrypted matrix');
+expect(torChatChoice('xmpp', {allowed: false, why: 'XMPP waits'}, false), {allowed: false, why: 'XMPP waits'}, 'server reason');
+expect(torChatChoice('irc', routed, false), {allowed: true, why: ''}, 'irc');
+expect(torScope('Harbor Net'), 'Also applies to other chats on Harbor Net', 'scope');
+expect(torMarked({allowed: true}, 'tor'), true, 'marked');
+expect(torMarked({allowed: true}, 'wait'), false, 'waiting is not marked');
+expect(torMarked({allowed: false}, 'tor'), false, 'texts are never marked');
+expect(SAMPLE_TOR['sample:irc'], true, 'the sample shows the onion');
+expect(TOR_WORDS, {tor: 'Through Tor', wait: 'Waiting for Tor', direct: 'Not through Tor'}, 'words');
+process.stdout.write(JSON.stringify(wrong));
+"""
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+        check(result.returncode == 0 and result.stdout == "[]", "tor.js's per-chat rules are wrong: " + (result.stdout or result.stderr)[:600])
+    else:
+        print("Skipped running tor.js's rules: node isn't installed (set NODE to its path)")
+    # The API: the snapshot's mark data per account, and the per-chat switch, which is saved and can't apply to XMPP.
+    # Its Tor proxy is a closed port, so a Tor already running on this computer doesn't change the answers.
+    with companion(free_port(), secrets.token_urlsafe(32), extra_env={"FLUID_TOR_PROXY": "127.0.0.1:%d" % free_port()}) as (_, request, _process):
+        request("/api/protocols/accounts", {"protocol": "email", "fields": {"address": "me@example.test", "imap_host": "imap.example.test",
+                "imap_password": "fixture-secret", "smtp_host": "smtp.example.test"}})
+        request("/api/protocols/accounts", {"protocol": "xmpp", "fields": {"jid": "kit@chat.example.test", "password": "fixture-secret"}})
+        tor = request("/api/protocols", {})["tor"]
+        email = next(ident for ident in tor if ident.startswith("email:"))
+        xmpp = next(ident for ident in tor if ident.startswith("xmpp:"))
+        check(tor[email]["route"] == "direct" and tor[email]["on"] is False and tor[email]["allowed"], "Tor is off for a new mailbox")
+        check(tor[xmpp]["allowed"] is False and "XMPP" in tor[xmpp]["why"], "XMPP's switch says why it can't")
+        chosen = request("/api/tor/connection", {"account": email, "on": True})
+        check(chosen["on"] is True and chosen["route"] == "wait" and chosen["where"] == "me@example.test",
+              "One mailbox through Tor waits while no Tor proxy answers, and never connects without it: " + json.dumps(chosen))
+        check(request("/api/tor")["on"] is False and request("/api/tor")["chosen"] == 2, "The setting stays off; both mail servers chose Tor")
+        check(request("/api/protocols", {})["tor"][email]["on"] is True, "The choice is kept")
+        for bad in ({"account": xmpp, "on": True}, {"account": "email:nobody@example.test", "on": True}, {"account": email, "on": "yes"}):
+            try:
+                request("/api/tor/connection", bad)
+                raise RuntimeError("Accepted a Tor choice it can't apply: " + json.dumps(bad))
+            except HTTPError as error:
+                check(error.code == 400, "A Tor choice it can't apply is refused plainly")
+        request("/api/tor/connection", {"account": email, "on": False})
+        check(request("/api/tor")["chosen"] == 0, "Turning it back off follows the setting again")
+    print("PASS  Tor per chat: decision table, per-connection choice, mark data, the switch API, and tor.js's rules")
 
 
 def find_apk(explicit):

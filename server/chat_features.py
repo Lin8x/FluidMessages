@@ -25,6 +25,7 @@ from accounts import CHANNEL, JID, MXID, NICK
 import chat_commands
 import irc_client
 import message_requests
+import tor_route
 
 MAX_INVITES = 100
 # New direct chats a network can open for you in an hour before the rest wait in its server chat, so a spam wave
@@ -654,6 +655,18 @@ class ChatFeatures:
         if data["on"] and entry is not None and hasattr(entry[1], "reconnect_now"):
             entry[1].reconnect_now()
         return {"reconnect": data["on"]}
+
+    def tor_states(self):
+        """Each account's Tor right now, {account id: tor_route.connection(...)}, for IRC, Matrix, XMPP, and email."""
+        found = {}
+        for entry in self.accounts.all():
+            protocol, values = entry["protocol"], entry["values"]
+            if protocol not in ("irc", "matrix", "xmpp", "email"):
+                continue
+            names = tor_route.account_hosts(protocol, values)
+            where = (values.get("address") if protocol == "email" else None) or (names[0] if names else entry["id"])
+            found[entry["id"]] = tor_route.connection(protocol, values, where)
+        return found
 
     def connections(self):
         """Each IRC network's, XMPP account's, and Matrix account's connection: connected, connecting, reconnecting

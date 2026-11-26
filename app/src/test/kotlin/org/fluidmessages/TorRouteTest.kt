@@ -45,6 +45,62 @@ class TorRouteTest {
         assertEquals(Proxy.NO_PROXY, TorRoute.proxyFor(TorRoute.Way.DIRECT))
     }
 
+    @Test fun torInsideTheAppUsesItsOwnLocalPort() {
+        val address = TorRoute.proxyFor(TorRoute.Way.TOR, 39123, TorRoute.NOT_READY).address() as InetSocketAddress
+        assertEquals("127.0.0.1", address.hostString)
+        assertEquals(39123, address.port)
+        try {
+            TorRoute.proxyFor(TorRoute.Way.WAIT, 39123, TorRoute.ORBOT_NOT_READY)
+            fail("A connection went ahead without Tor")
+        } catch (expected: IOException) {
+            assertEquals(TorRoute.ORBOT_NOT_READY, expected.message)
+        }
+        // Its own settings: random ports, on 127.0.0.1 only.
+        assertTrue(BuiltInTor.TORRC.contains("SOCKSPort 127.0.0.1:auto"))
+        assertTrue(BuiltInTor.TORRC.contains("HTTPTunnelPort 127.0.0.1:auto"))
+        assertFalse(BuiltInTor.TORRC.contains("0.0.0.0"))
+    }
+
+    @Test fun aConnectionsOwnChoiceChangesTheRoute() {
+        // Tor off, but one IRC network chose Tor in chat details: only that network goes through Tor.
+        var overrides = TorRoute.withChoice(emptySet(), listOf("irc.libera.chat"), true, false)
+        assertEquals(setOf("+irc.libera.chat"), overrides)
+        assertTrue(TorRoute.wants(false, overrides, "IRC.Libera.Chat."))
+        assertFalse(TorRoute.wants(false, overrides, "matrix.example.org"))
+        assertEquals(TorRoute.Way.TOR, TorRoute.decide(TorRoute.wants(false, overrides, "irc.libera.chat"), true, TorRoute.Use.CHAT, false, false))
+        assertEquals(TorRoute.Way.WAIT, TorRoute.decide(TorRoute.wants(false, overrides, "irc.libera.chat"), false, TorRoute.Use.CHAT, false, false))
+        assertEquals(TorRoute.Way.DIRECT, TorRoute.decide(TorRoute.wants(false, overrides, "matrix.example.org"), true, TorRoute.Use.CHAT, false, false))
+        assertTrue(TorRoute.anyThrough(overrides))
+        // Tor on for everything, but one mailbox (both its servers) turned it off.
+        overrides = TorRoute.withChoice(emptySet(), listOf("imap.example.org", "smtp.example.org"), false, true)
+        assertEquals(setOf("-imap.example.org", "-smtp.example.org"), overrides)
+        assertFalse(TorRoute.wants(true, overrides, "imap.example.org"))
+        assertTrue(TorRoute.wants(true, overrides, "irc.libera.chat"))
+        assertEquals(TorRoute.Way.DIRECT, TorRoute.decide(TorRoute.wants(true, overrides, "smtp.example.org"), false, TorRoute.Use.CHAT, false, false))
+        assertFalse(TorRoute.anyThrough(overrides))
+        // Choosing what the setting already does removes the entry, so the connection follows the setting again.
+        assertEquals(emptySet<String>(), TorRoute.withChoice(overrides, listOf("imap.example.org", "smtp.example.org"), true, true))
+        // No host, or no choices: the setting.
+        assertTrue(TorRoute.wants(true, null, "x.example"))
+        assertFalse(TorRoute.wants(false, setOf("+"), ""))
+    }
+
+    @Test fun bootstrapProgressFromTorsEvents() {
+        assertEquals(45, BuiltInTor.bootstrapPercent("NOTICE BOOTSTRAP PROGRESS=45 TAG=loading_descriptors SUMMARY=\"Loading relay descriptors\""))
+        assertEquals(100, BuiltInTor.bootstrapPercent("NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY=\"Done\""))
+        assertEquals(-1, BuiltInTor.bootstrapPercent("NOTICE CIRCUIT_ESTABLISHED"))
+        assertEquals(-1, BuiltInTor.bootstrapPercent(null))
+    }
+
+    @Test fun torStopsOnlyWhenNothingNeedsIt() {
+        val idle = BuiltInTor.IDLE
+        assertTrue(BuiltInTor.canStop(false, 0, 0, true))
+        assertFalse(BuiltInTor.canStop(true, idle, 0, false))
+        assertFalse(BuiltInTor.canStop(true, 0, idle, false))
+        assertTrue(BuiltInTor.canStop(true, idle, idle, false))
+        assertFalse(BuiltInTor.canStop(true, idle, idle, true))
+    }
+
     @Test fun callsAreOffUnlessAllowedToConnectDirectly() {
         assertEquals(TorRoute.Way.BLOCKED, TorRoute.decide(true, true, TorRoute.Use.CALL, false, false))
         assertEquals(TorRoute.Way.DIRECT, TorRoute.decide(true, true, TorRoute.Use.CALL, false, true))
@@ -84,6 +140,18 @@ class TorRouteTest {
         assertEquals("Connecting to Tor…", TorRoute.words(TorRoute.Status.CONNECTING))
         assertEquals("Connected through Tor", TorRoute.words(TorRoute.Status.CONNECTED))
         assertTrue(TorRoute.words(TorRoute.Status.NOT_RUNNING).startsWith("Tor isn't running"))
+        // Tor inside the app.
+        assertEquals(TorRoute.Status.OFF, TorRoute.builtInStatus(false, BuiltInTor.Phase.ON, true))
+        assertEquals(TorRoute.Status.CONNECTED, TorRoute.builtInStatus(true, BuiltInTor.Phase.ON, true))
+        assertEquals(TorRoute.Status.STARTING, TorRoute.builtInStatus(true, BuiltInTor.Phase.STARTING, false))
+        assertEquals(TorRoute.Status.WAITING, TorRoute.builtInStatus(true, BuiltInTor.Phase.OFF, false))
+        assertEquals(TorRoute.Status.CANT_START, TorRoute.builtInStatus(true, BuiltInTor.Phase.UNSUPPORTED, false))
+        assertEquals("Starting Tor… 45%", TorRoute.words(TorRoute.Status.STARTING, 45))
+        assertEquals("Starting Tor…", TorRoute.words(TorRoute.Status.STARTING, 0))
+        assertEquals("Starting Tor… 99%", TorRoute.words(TorRoute.Status.STARTING, 100))
+        assertEquals("Tor starts when a connection needs it", TorRoute.words(TorRoute.Status.WAITING))
+        assertTrue(TorRoute.words(TorRoute.Status.CANT_START).contains("Orbot app instead"))
+        for (status in TorRoute.Status.values()) assertTrue(status.name, TorRoute.words(status).isNotEmpty())
     }
 
     @Test fun readinessIsASocks5Greeting() {
