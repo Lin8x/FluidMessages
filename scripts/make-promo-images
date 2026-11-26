@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Makes phone-sized promotional images (1080x1920) in docs/promo/ from the fastlane screenshots.
+
+    ./scripts/make-promo-images
+
+Needs Google Chrome or Chromium for rendering. Every screen and message shown is sample data.
+"""
+import base64
+import html
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+SHOTS = ROOT / "fastlane/metadata/android/en-US/images/phoneScreenshots"
+ICON = ROOT / "fastlane/metadata/android/en-US/images/icon.png"
+OUT = ROOT / "docs/promo"
+W, H = 1080, 1920
+
+
+def data_url(path):
+    return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
+
+
+BASE_CSS = f"""
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+html, body {{ width: {W}px; height: {H}px; overflow: hidden; }}
+body {{ font-family: 'Noto Sans', 'Lato', sans-serif; color: #fff; position: relative;
+  background: radial-gradient(1100px 900px at 50% 108%, var(--glow), transparent 70%),
+              radial-gradient(900px 700px at 0% 0%, var(--glow2), transparent 65%),
+              linear-gradient(180deg, #0a120f 0%, #08100c 100%); }}
+.top {{ position: absolute; top: 120px; left: 90px; right: 90px; }}
+.brand {{ display: flex; align-items: center; gap: 18px; font-size: 34px; font-weight: 600; color: #cfe9d7;
+  margin-bottom: 44px; letter-spacing: .3px; }}
+.brand img {{ width: 64px; height: 64px; border-radius: 16px; }}
+h1 {{ font-size: 92px; line-height: 1.04; font-weight: 800; letter-spacing: -1.5px; }}
+h1 em {{ font-style: normal; color: var(--accent); }}
+p.sub {{ margin-top: 30px; font-size: 40px; line-height: 1.35; color: #c4d2ca; }}
+.phone {{ position: absolute; left: 50%; transform: translateX(-50%); width: 720px; top: var(--phone-top, 760px);
+  border-radius: 74px; padding: 18px; background: #1c2420;
+  box-shadow: 0 0 0 3px #334039, 0 50px 120px rgba(0,0,0,.6); }}
+.phone img {{ display: block; width: 100%; border-radius: 58px; }}
+.chips {{ display: flex; flex-wrap: wrap; gap: 14px; margin-top: 34px; }}
+.chip {{ padding: 12px 24px; border-radius: 40px; font-size: 30px; font-weight: 700; color: #fff; }}
+"""
+
+
+def shot_slide(shot, title, sub, glow, glow2, accent, chips=(), phone_top=760):
+    chip_html = "".join(f'<span class="chip" style="background:{c}">{html.escape(t)}</span>' for t, c in chips)
+    return f"""<style>{BASE_CSS} body{{--glow:{glow};--glow2:{glow2};--accent:{accent};--phone-top:{phone_top}px}}</style>
+<div class="top"><div class="brand"><img src="{data_url(ICON)}">FluidMessages</div>
+<h1>{title}</h1><p class="sub">{sub}</p><div class="chips">{chip_html}</div></div>
+<div class="phone"><img src="{data_url(SHOTS / shot)}"></div>"""
+
+
+def tiles_slide(title, sub, glow, glow2, accent, tiles):
+    tile_html = "".join(
+        f"""<div class="tile"><div class="ico" style="background:{color}">{icon}</div>
+<div><div class="tt">{html.escape(name)}</div><div class="td">{html.escape(desc)}</div></div></div>"""
+        for icon, color, name, desc in tiles)
+    css = """.tiles{position:absolute;left:90px;right:90px;top:760px;bottom:110px;display:flex;flex-direction:column;justify-content:center;gap:26px}
+.tile{display:flex;gap:34px;align-items:center;background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.09);
+border-radius:40px;padding:34px 40px}
+.ico{flex:none;width:112px;height:112px;border-radius:32px;display:flex;align-items:center;justify-content:center}
+.ico svg{width:60px;height:60px;fill:none;stroke:#fff;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.tt{font-size:42px;font-weight:800}.td{font-size:31px;color:#b9c8bf;margin-top:6px;line-height:1.3}"""
+    return f"""<style>{BASE_CSS}{css} body{{--glow:{glow};--glow2:{glow2};--accent:{accent}}}</style>
+<div class="top"><div class="brand"><img src="{data_url(ICON)}">FluidMessages</div>
+<h1>{title}</h1><p class="sub">{sub}</p></div><div class="tiles">{tile_html}</div>"""
+
+
+def nearby_slide():
+    # An original illustration: phones passing a message along with no internet. Sample text only.
+    css = """.scene{position:absolute;left:0;right:0;top:820px;height:1000px}
+.ring{position:absolute;border-radius:50%;border:3px dashed rgba(45,212,191,.35)}
+.mini{position:absolute;width:250px;height:470px;border-radius:44px;background:#141c19;
+box-shadow:0 0 0 3px #2f3d37,0 30px 80px rgba(0,0,0,.55);padding:22px 18px}
+.mini .bar{height:14px;width:90px;border-radius:7px;background:#2a3631;margin:4px auto 26px}
+.b{border-radius:26px;padding:14px 18px;font-size:24px;line-height:1.25;margin-bottom:14px;max-width:92%}
+.in{background:#26302c;color:#fff}.out{background:#0f766e;color:#fff;margin-left:auto}
+.tag{display:inline-block;font-size:19px;font-weight:800;color:#5eead4;border:2px solid #5eead4;border-radius:12px;
+padding:2px 10px;margin-bottom:16px}
+.link{position:absolute;height:6px;border-radius:3px;background:repeating-linear-gradient(90deg,#2dd4bf 0 22px,transparent 22px 40px)}
+.wifi{position:absolute;left:50%;transform:translateX(-50%);bottom:40px;font-size:32px;color:#9fb3a9;
+background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.1);border-radius:40px;padding:16px 34px;white-space:nowrap}"""
+    phones = [
+        (90, 170, [("in", "Water at the library until 6"), ("out", "Thanks! Passing it on")]),
+        (415, 40, [("in", "Is the bridge open?"), ("out", "Yes, east side only")]),
+        (740, 210, [("in", "Generator at the school"), ("out", "On my way")]),
+    ]
+    mini = ""
+    for x, y, msgs in phones:
+        bubbles = "".join(f'<div class="b {k}">{html.escape(t)}</div>' for k, t in msgs)
+        mini += f'<div class="mini" style="left:{x}px;top:{y}px"><div class="bar"></div><span class="tag">Nearby</span>{bubbles}</div>'
+    links = ('<div class="link" style="left:330px;top:390px;width:100px;transform:rotate(-20deg)"></div>'
+             '<div class="link" style="left:655px;top:380px;width:100px;transform:rotate(22deg)"></div>')
+    rings = "".join(f'<div class="ring" style="left:{540-r}px;top:{400-r}px;width:{2*r}px;height:{2*r}px"></div>'
+                    for r in (300, 440))
+    return f"""<style>{BASE_CSS}{css} body{{--glow:rgba(20,184,166,.45);--glow2:rgba(13,148,136,.25);--accent:#5eead4}}</style>
+<div class="top"><div class="brand"><img src="{data_url(ICON)}">FluidMessages</div>
+<h1>Keeps working <em>without internet</em></h1>
+<p class="sub">Nearby sends encrypted messages phone to phone over Wi-Fi or Bluetooth, and passes them along. Useful in a blackout.</p></div>
+<div class="scene">{rings}{links}{mini}<div class="wifi">No cell signal or internet needed</div></div>"""
+
+
+def svg(path):
+    return f'<svg viewBox="0 0 24 24">{path}</svg>'
+
+
+LOCK = svg('<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>')
+ONION = svg('<path d="M12 3c0 3-6 6-6 11a6 6 0 0 0 12 0c0-5-6-8-6-11z"/><path d="M12 9c-2 2-3 4-3 6a3 3 0 0 0 6 0c0-2-1-4-3-6z"/>')
+KEY = svg('<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l2 2"/>')
+KEYBOARD = svg('<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>')
+LAPTOP = svg('<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/>')
+
+SLIDES = [
+    ("1-one-inbox", lambda: shot_slide(
+        "1.png", "All your chats in <em>one inbox</em>",
+        "Texts, RCS, Matrix, XMPP, email and IRC, side by side.",
+        "rgba(34,197,94,.45)", "rgba(22,163,74,.22)", "#4ade80",
+        [("SMS", "#15803d"), ("RCS", "#7c3aed"), ("Matrix", "#be123c"), ("XMPP", "#b91c1c"), ("Email", "#b45309"), ("IRC", "#c2410c")],
+        phone_top=900)),
+    ("2-your-colors", lambda: shot_slide(
+        "3.png", "Your colors, <em>every service</em>",
+        "Pick a theme, then make each kind of message its own color.",
+        "rgba(168,85,247,.42)", "rgba(37,99,235,.25)", "#c4b5fd")),
+    ("3-one-person", lambda: shot_slide(
+        "7.png", "One person, <em>every way</em> to reach them",
+        "Link someone's number, Matrix, XMPP and email into one conversation.",
+        "rgba(59,130,246,.45)", "rgba(14,165,233,.22)", "#93c5fd")),
+    ("4-communities", lambda: shot_slide(
+        "5.png", "Communities, <em>right next</em> to your texts",
+        "Join IRC networks and Matrix spaces without another app.",
+        "rgba(249,115,22,.4)", "rgba(234,88,12,.2)", "#fdba74")),
+    ("5-private", lambda: tiles_slide(
+        "Private <em>when you want</em> it", "Turn on what you need. Quick setup explains what each choice does and doesn't protect.",
+        "rgba(34,197,94,.35)", "rgba(20,184,166,.22)", "#4ade80",
+        [(KEY, "#15803d", "Encrypted chats", "End-to-end encryption on services that support it"),
+         (ONION, "#7e22ce", "Tor built in", "Hide where you connect from, per chat or for all"),
+         (LOCK, "#1d4ed8", "App lock", "Open with your phone's PIN, fingerprint or face"),
+         (KEYBOARD, "#b45309", "Private keyboard", "Asks your keyboard not to learn what you type")])),
+    ("6-nearby", nearby_slide),
+    ("7-calls", lambda: shot_slide(
+        "4.png", "Calls and contacts <em>too</em>",
+        "Phone and video calls from the same place as your chats.",
+        "rgba(14,165,233,.42)", "rgba(34,197,94,.2)", "#7dd3fc", phone_top=700)),
+    ("8-computer", lambda: tiles_slide(
+        "Text from <em>your computer</em>", "FluidMessages Web runs on your own computer and talks to your phone over your Wi-Fi.",
+        "rgba(34,197,94,.38)", "rgba(59,130,246,.22)", "#4ade80",
+        [(LAPTOP, "#15803d", "Windows, Mac and Linux", "Or any browser on your home network"),
+         (LOCK, "#1d4ed8", "Pair with a QR code", "Two-step sign-in is on by default"),
+         (KEY, "#7e22ce", "No FluidMessages account", "No cloud service of ours stores your texts")])),
+]
+
+
+def main():
+    chrome = next((c for c in ("google-chrome", "chromium", "chromium-browser") if shutil.which(c)), None)
+    if not chrome:
+        sys.exit("make-promo-images: Chrome or Chromium is needed to render the images.")
+    OUT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, build in SLIDES:
+            page = pathlib.Path(tmp) / f"{name}.html"
+            page.write_text(f"<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>{build()}</body></html>")
+            subprocess.run([chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=1",
+                            f"--user-data-dir={tmp}/profile", f"--window-size={W},{H}",
+                            f"--screenshot={OUT / (name + '.png')}", page.as_uri()],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(OUT / f"{name}.png")
+
+
+if __name__ == "__main__":
+    main()
