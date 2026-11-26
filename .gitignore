@@ -13,6 +13,7 @@ dist/*.exe
 dist/*.dmg
 dist/*.AppImage
 dist/*.tar.gz
+dist/SHA256SUMS.txt
 
 # Local tool folders
 .claude/
