@@ -131,4 +131,5 @@ To build the desktop app (Windows `.exe`, macOS `.dmg` or Linux `.AppImage`) for
 .venv/bin/python desktop/build.py --version 0.0.0
 ```
 
-The result is in `dist/`.
+The result is in `dist/`. On Linux it also makes a `.deb` and an `.rpm` when `dpkg-deb` and `rpmbuild` are installed
+(`sudo apt install rpm` on Debian or Ubuntu), and `snapcraft --destructive-mode` then packs a Snap from the same files.

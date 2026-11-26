@@ -47,6 +47,8 @@ GitHub Actions builds a debug APK for every push.
   - `…-Windows.msix`: for the Microsoft Store, unsigned (the Store signs it). Its identity must match Partner Center → Product identity: set the repository variables `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER` and `MSIX_PUBLISHER_DISPLAY_NAME` (GitHub → Settings → Secrets and variables → Actions → Variables).
   - `…-macOS.dmg`
   - `…-Linux-x86_64.AppImage`
+  - `…-Linux-amd64.deb` and `…-Linux-x86_64.rpm`: the same Linux program as a package, for Debian and Ubuntu (22.04 or Debian 12 and newer) and for Fedora (36 and newer) or openSUSE. `desktop/build.py` makes them when `dpkg-deb` and `rpmbuild` are installed. The program is never stripped, since that breaks it.
+  - `…-Linux-amd64.snap`: the same program as a Snap (`snap/snapcraft.yaml`). It's also sent to the Snap Store's stable channel once the `SNAPCRAFT_STORE_CREDENTIALS` repository secret is set (see [Linux app stores](#linux-app-stores)).
 
   Each one runs FluidMessages Web on the computer, signs in automatically, and opens it in its own window. To build one by hand, run `pip install pyinstaller pillow`, then `python desktop/build.py --version <version>`.
 
@@ -55,10 +57,32 @@ After the desktop apps are attached, the script points the Homebrew tap ([Lin8x/
 - `--bump` raises the patch version first.
 - `--notes "..."` sets the release notes.
 - `--dry-run` previews the steps without changing anything.
-- `--no-wait` skips waiting for the desktop apps. Normally the script waits until GitHub Actions has attached the Windows, macOS, and Linux apps, retries a failed build once, and stops with an error if any of the five files is still missing.
+- `--no-wait` skips waiting for the desktop apps. Normally the script waits until GitHub Actions has attached the Windows, macOS, and Linux apps, retries a failed build once, and stops with an error if any of the desktop files is still missing (the Snap isn't required).
 - `--no-main` leaves `main` where it is. Otherwise, releasing from another branch fast-forwards `main` to it, so the GitHub page, README, and website show the latest release. It never force-pushes: if `main` has commits your branch doesn't, it's left alone with a warning, and the release still goes out.
 
 It needs the GitHub CLI signed in (`gh auth login`). APKs are signed with the FluidMessages release key (`scripts/sign-apk`, made once by `scripts/make-release-key`), so only a computer with those key files can release.
+
+## Linux app stores
+
+These need accounts that only the maintainer can create, so each is set up once by hand.
+
+**Snap Store.** The release workflow builds the Snap every time; it only needs permission to publish it.
+
+1. Create an account at <https://snapcraft.io> and register the name: `snapcraft register fluidmessages-web` (after `sudo snap install snapcraft --classic` and `snapcraft login`).
+2. Make a publishing login for GitHub Actions: `snapcraft export-login --snaps=fluidmessages-web --acls=package_access,package_push,package_release -`.
+3. Save its output as the repository secret `SNAPCRAFT_STORE_CREDENTIALS` (GitHub → Settings → Secrets and variables → Actions → Secrets).
+
+The next release then goes to the stable channel. The first upload is checked by the Store's automated review. The Snap is strictly confined, with only the network, desktop and display permissions.
+
+**Fedora COPR.** COPR builds an RPM from source for each Fedora version, from `deploy/fedora/fluidmessages-web.spec` and `.copr/Makefile` (the version comes from the latest tag). It uses Fedora's own Python libraries, so OMEMO encryption for XMPP is off there; the `.rpm` on each release has everything.
+
+1. Sign in at <https://copr.fedorainfracloud.org> with a Fedora account, and create a project named `fluidmessages` with the Fedora releases (and EPEL, if you like) to build for.
+2. In the project, choose **Packages → New package → SCM**: clone URL `https://github.com/Lin8x/FluidMessages`, committish `main`, build method **make srpm**, and turn on **Auto-rebuild**.
+3. Under **Settings → Integrations**, copy the GitHub webhook URL and add it in GitHub → Settings → Webhooks (content type `application/json`, just the push event). Every push to `main` then rebuilds it.
+
+Users install it with `sudo dnf copr enable lin8x/fluidmessages` and then `sudo dnf install fluidmessages-web`. To test the package locally, run `make -f .copr/Makefile srpm outdir=/tmp/srpm` in a Fedora container, then `rpmbuild --rebuild` the result.
+
+**Debian and Ubuntu.** There's no APT repository yet: people install the `.deb` from the release, and update by installing the next one. An official Debian package needs a Debian Developer to sponsor it and every Python library packaged in Debian.
 
 ## Remaining release work
 

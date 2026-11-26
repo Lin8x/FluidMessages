@@ -81,7 +81,14 @@ Keep FluidMessages Web on HTTPS whenever it leaves your computer, so your passwo
 
 ## Desktop apps
 
-Each release includes FluidMessages Web for **Windows** (`.exe`), **macOS** (`.dmg`), and **Linux** (`.AppImage`). Download them from [Releases](https://github.com/Lin8x/FluidMessages/releases/latest).
+Each release includes FluidMessages Web for **Windows** (`.exe`), **macOS** (`.dmg`), and **Linux** (`.AppImage`, `.deb`, `.rpm`, and `.snap`). Download them from [Releases](https://github.com/Lin8x/FluidMessages/releases/latest).
+
+On Linux you can also install it as a package:
+
+- **Debian or Ubuntu** (22.04 and newer): download `FluidMessages-Web-Linux-amd64.deb`, then `sudo apt install ./FluidMessages-Web-Linux-amd64.deb`.
+- **Fedora, openSUSE and others:** download `FluidMessages-Web-Linux-x86_64.rpm`, then `sudo dnf install ./FluidMessages-Web-Linux-x86_64.rpm` (or `sudo zypper install` on openSUSE).
+- **Snap:** `sudo snap install fluidmessages-web`, once it's on the Snap Store.
+- **Fedora, with updates through dnf:** `sudo dnf copr enable lin8x/fluidmessages`, then `sudo dnf install fluidmessages-web`, once the COPR is set up. This one is built from source with Fedora's own libraries, so OMEMO encryption for XMPP isn't available in it.
 
 To install or update with one command instead (it checks the SHA-256 first): on Linux or macOS run `curl -fsSL https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.sh | bash`, and on Windows run `irm https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.ps1 | iex` in PowerShell. Add `--uninstall` (Linux and macOS, as `| bash -s -- --uninstall`) or `-Uninstall` (Windows) to remove it. On a Mac with Homebrew: `brew install --cask lin8x/tap/fluidmessages-web`.
 
