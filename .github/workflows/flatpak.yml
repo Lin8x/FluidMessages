@@ -39,13 +39,15 @@ jobs:
           [ -n "$commit" ] || { echo "No tag $TAG"; exit 1; }
           sed -i -e "s/^        tag: v.*/        tag: $TAG/" -e "s/^        commit: [0-9a-f]*/        commit: $commit/" "$MANIFEST"
           grep -A2 "type: git" "$MANIFEST"
+      # Running the app in the build container needs a machine ID for its D-Bus session.
+      - run: dbus-uuidgen --ensure=/etc/machine-id || cat /proc/sys/kernel/random/uuid | tr -d - > /etc/machine-id
       - run: flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
       - run: flatpak-builder-lint manifest "$MANIFEST"
       - run: flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean --repo=repo build-dir "$MANIFEST"
       - name: The app starts and serves the web app
-        run: flatpak-builder --run build-dir "$MANIFEST" fluidmessages-web --check
+        run: flatpak-builder --disable-rofiles-fuse --run build-dir "$MANIFEST" fluidmessages-web --check
       - name: Tk works for the running window
-        run: flatpak-builder --run build-dir "$MANIFEST" python3 -c "import tkinter; print('Tk', tkinter.TkVersion)"
+        run: flatpak-builder --disable-rofiles-fuse --run build-dir "$MANIFEST" python3 -c "import tkinter; print('Tk', tkinter.TkVersion)"
       - run: flatpak-builder-lint repo repo
       # The bundle names Flathub as where its runtime comes from, so flatpak offers to add Flathub when it's missing.
       - run: |
