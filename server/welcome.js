@@ -1651,12 +1651,19 @@ async function showSyncGuide({fromSettings = false, connectedStep = false} = {})
       body: () => [phoneSettingsIllustration(), guideTips([
         {icon: 'gear', title: 'Open Settings', line: 'The gear at the top of your inbox'},
         {icon: 'laptop', title: 'Storage and devices', line: 'Tap FluidMessages Web'},
-        {icon: 'practice', title: 'Set up step by step', line: 'It asks for the address and token on the next step here'}])]},
+        {icon: 'practice', title: 'Find my computer', line: 'On the same Wi-Fi, it finds this computer: click Connect here when it shows up'}])]},
     {title: 'Enter these on your phone', subtitle: 'Scan the QR code with FluidMessages on your phone, or copy the address and the pairing token into it.',
       body: (flow) => {
         // The QR code holds the pairing token, so it shows only while the token does (companion.js pairingQr).
         const qr = token && security.reach ? pairingQr(security.reach, token) : null;
         const out = [qr || tokenIllustration()];
+        // Phones on the Wi-Fi asking to connect: Connect here, and straight on to waiting for its first sync.
+        if (security.reach?.nearby) out.unshift(nearbyPhones(security.reach, (result) => {
+          security = result;
+          token = null;
+          since = Date.now();
+          flow.next();
+        }, false));
         // The addresses this computer answers at (main.py phone_reach), each with a Copy button and plain-words help.
         if (security.reach) out.push(phoneAddressCard(security.reach, (reach) => { security = {...security, reach}; flow.redraw(); }));
         else if (!loopback) out.push(copyRow('Address', origin, false));

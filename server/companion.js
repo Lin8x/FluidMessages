@@ -716,11 +716,84 @@ function phoneAccessSwitch(reach, changed, card) {
       problem.hidden = false;
     });
   }, reach.phone_access
-    ? 'Phones on your Wi-Fi can reach this computer over https. They still need the pairing token.'
-    : 'Lets phones on your Wi-Fi reach this computer over https, with the pairing token. Your computer may ask to allow it through its firewall.');
+    ? 'Phones on your Wi-Fi can find and reach this computer over https. Each one still needs your OK here, or the pairing token.'
+    : 'Lets phones on your Wi-Fi find and reach this computer over https. Each one still needs your OK here, or the pairing token. Your computer may ask to allow it through its firewall.');
   const wrap = element('div', '', 'stack');
   wrap.append(row, problem);
   return wrap;
+}
+
+/**
+ * Phones on the same Wi-Fi asking to connect (Find my computer on Android: main.py pair_open, nearby_pair.py),
+ * listed as they appear with the six-digit code each one's screen shows. Connect makes the pairing token, which only
+ * that phone can collect; [paired] gets the new security view and the phone's name. It checks every few seconds
+ * while it's on the page. Empty when phones can't find this computer (the address card says how to let them).
+ */
+function nearbyPhones(reach, paired, replacing) {
+  const card = element('div', '', 'stack nearby-phones');
+  if (!reach?.nearby) return card;
+  const list = element('div', '', 'stack');
+  list.setAttribute('aria-live', 'polite');
+  const problem = element('p', '', 'error');
+  problem.setAttribute('role', 'alert');
+  problem.hidden = true;
+  card.append(element('span', 'Phones on this Wi-Fi', 'guide-copy-label'), list, problem);
+  let shown = null;
+  let busy = false;
+  const empty = () => element('p', 'Looking for phones. On your phone, open FluidMessages → Settings → FluidMessages Web → Find my computer, and it shows up here.', 'hint');
+  const answer = (phone, allow, buttons) => {
+    busy = true;
+    buttons.forEach((button) => { button.disabled = true; });
+    problem.hidden = true;
+    api('auth/pairing/nearby', {id: phone.id, allow}).then((result) => {
+      busy = false;
+      shown = null;
+      if (allow) { stop(); paired(result, result.connected || phone.name); } else check();
+    }).catch((error) => {
+      busy = false;
+      buttons.forEach((button) => { button.disabled = false; });
+      problem.textContent = error.message;
+      problem.hidden = false;
+      shown = null;
+      check();
+    });
+  };
+  const draw = (phones) => {
+    const key = phones.map((phone) => phone.id).join(',');
+    if (key === shown) return;
+    shown = key;
+    if (!phones.length) { list.replaceChildren(empty()); return; }
+    list.replaceChildren(...phones.map((phone) => {
+      const row = element('div', '', 'nearby-phone');
+      const words = element('div', '', 'nearby-phone-words');
+      const code = element('span', phone.code, 'nearby-phone-code');
+      const line = element('p', 'Connect it if its screen shows ', 'hint');
+      line.append(code);
+      words.append(element('strong', phone.name), line);
+      const connect = element('button', 'Connect', 'primary');
+      const no = element('button', 'Not this one', 'quiet');
+      connect.type = no.type = 'button';
+      connect.setAttribute('aria-label', 'Connect ' + phone.name + ', showing ' + phone.code);
+      connect.addEventListener('click', () => answer(phone, true, [connect, no]));
+      no.addEventListener('click', () => answer(phone, false, [connect, no]));
+      const buttons = element('div', '', 'button-row');
+      buttons.append(connect, no);
+      row.append(words, buttons);
+      return row;
+    }));
+    if (replacing) list.append(element('p', 'Connecting a phone here disconnects the one connected now.', 'hint'));
+  };
+  const check = () => {
+    if (busy) return;
+    if (shown !== null && !card.isConnected) { stop(); return; }
+    api('auth/pairing/nearby').then((result) => { if (!busy) draw(result.phones || []); }).catch(() => {});
+  };
+  // Checks even with reduced motion: this is the list, not an animation.
+  const id = setInterval(check, 2500);
+  const stop = () => clearInterval(id);
+  list.append(empty());
+  check();
+  return card;
 }
 
 /** A label, a read-only value, and a Copy button, set as text. [mono] for codes. */
@@ -824,8 +897,13 @@ function phoneConnect(state, changed) {
       token.replaceChildren(input, copy, element('p', 'Shown only now. Keep it private: it lets the phone read and send your messages.', 'hint'));
       token.hidden = false;
     }
+    // Phones on the Wi-Fi asking to connect, approved right here, with no token to copy.
+    box.append(nearbyPhones(current.reach, (result, name) => {
+      draw(result);
+      box.prepend(element('p', 'Connected to ' + name + '. It syncs in a moment.', 'notice'));
+    }, current.pairing.web));
     const steps = element('ol', '', 'steps');
-    steps.append(element('li', 'On Android, open Settings → FluidMessages Web and tap Scan QR code.'),
+    steps.append(element('li', 'On Android, open Settings → FluidMessages Web and tap Find my computer or Scan QR code.'),
       element('li', 'Or type in the address your phone can reach and the pairing token, below, and save. https:// is safest; http:// works for testing at home.'));
     const shown = current.pairing.web || current.pairing.compose || value;
     if (shown) {

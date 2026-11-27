@@ -489,6 +489,7 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             case "syncGuide" -> { if (syncStep > 0) syncGuide(syncStep - 1, syncBack); else syncBack.run(); }
             case "syncConflicts" -> conflictsBack.run();
             case "pairScan" -> scanBack.run();
+            case "findComputer" -> findBack.run();
             default -> inbox();
         }
     }
@@ -5942,6 +5943,13 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
         boolean connected = CloudBackup.paired(this);
         if (!connected && !setup) {
             SettingsPages.mount(root, prefs, List.of(new SettingsSection("Not set up", List.of(
+                action("Find my computer", "Finds FluidMessages Web on this Wi-Fi. You click Connect on the computer",
+                    () -> findComputer(() -> companion(back), () -> {
+                        new Thread(() -> { try { SyncMergeRun.run(getApplicationContext(), true); } catch (Exception ignored) {} }, "fluid-merge").start();
+                        if (prefs.getBoolean("syncSms", false)) sync(true);
+                        back.run();
+                        toast("Connected to FluidMessages Web");
+                    })),
                 action("Set up step by step", "Start FluidMessages Web on a computer, then connect this phone",
                     () -> syncGuide(0, () -> companion(back))),
                 action("Scan QR code", "FluidMessages Web shows it when you connect your phone",
@@ -5961,12 +5969,14 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             changed.setBackground(shape(uiColors().raised(), 14));
             item(root, changed);
         }
-        item(root, button("Scan QR code", true, () -> startPairScan(() -> companion(back, setup), () -> {
+        Runnable connectedNow = () -> {
             new Thread(() -> { try { SyncMergeRun.run(getApplicationContext(), true); } catch (Exception ignored) {} }, "fluid-merge").start();
             if (prefs.getBoolean("syncSms", false)) sync(true);
             back.run();
             toast("Connected to FluidMessages Web");
-        })));
+        };
+        item(root, button("Find my computer", true, () -> findComputer(() -> companion(back, setup), connectedNow)));
+        item(root, button("Scan QR code", false, () -> startPairScan(() -> companion(back, setup), connectedNow)));
         item(root, text("In FluidMessages Web, open Settings → Phone and other devices → Connect your phone, then scan its QR code, or enter the address it shows and the link code here. "
             + "Linking turns on cloud backups. Browser messaging also syncs the newest 2,000 texts and sends texts you write on the web.", 16, uiColors().muted()));
         EditText url = field("https://messages.example.net");
@@ -6078,7 +6088,24 @@ public final class MainActivity extends androidx.activity.ComponentActivity {
             () -> openWebsite(ReleaseUpdates.REPOSITORY + "/blob/main/docs/self-hosting.md#https-and-connecting-your-phone"), hasRole(), this::saveCompanion, this::testCompanion,
             () -> syncConflicts(() -> syncGuide(5, back), () -> syncGuide(step, back)),
             // Scanning from "Enter it here": once saved, straight on to the connection test.
-            () -> startPairScan(() -> syncGuide(step, back), () -> syncGuide(step + 1, back)));
+            () -> startPairScan(() -> syncGuide(step, back), () -> syncGuide(step + 1, back)),
+            () -> findComputer(() -> syncGuide(step, back), () -> syncGuide(step + 1, back)));
+    }
+
+    private Runnable findBack;
+
+    /**
+     * Find my computer, a full page (FindComputerScreen): FluidMessages Web on this Wi-Fi, connected once you click
+     * Connect on the computer. Saved like a scanned code: the address that answered, the token, and the fingerprint.
+     */
+    private void findComputer(Runnable back, Runnable paired) {
+        findBack = back;
+        render("findComputer");
+        boolean messaging = prefs.getBoolean("syncSms", hasRole()) && hasRole();
+        FindComputerScreen.mount(root, prefs, this::recolorWindow, back,
+            () -> startPairScan(back, paired), () -> companion(back, true),
+            (origin, token, fingerprint) -> page.equals("findComputer") ? saveCompanion(origin, token, messaging, fingerprint) : "Closed",
+            paired);
     }
 
     private static final int CAMERA_PERMISSION = 61;

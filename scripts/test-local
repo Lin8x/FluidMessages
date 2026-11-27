@@ -5733,6 +5733,184 @@ def reachable_http(host, port):
         return False
 
 
+def lan_pairing_test():
+    """Find my computer: the mDNS answer (lan_announce.py), phones asking to connect and being approved
+    (nearby_pair.py), the six digits matching the phone's (LanPairingTest), and the endpoints on a running desktop app."""
+    import ssl
+    import struct
+    sys.path.insert(0, str(ROOT / "server"))
+    import lan_announce
+    import nearby_pair
+    print_ = "ab" * 32
+    secret = "0123456789abcdef" * 3
+    check(nearby_pair.code(print_, secret) == "779 835", "The six digits differ from the phone's (LanPairingTest)")
+    check(nearby_pair.code("AB:" * 31 + "AB", secret) == "779 835", "The fingerprint's colons change the digits")
+    now = [1000.0]
+    asks = nearby_pair.Requests(clock=lambda: now[0])
+    for bad in ("short", "x" * 200, "not hex but long enough to count, with spaces"):
+        try:
+            asks.hello("a", "Pixel", bad, print_)
+            check(False, "A bad secret was accepted: " + bad)
+        except ValueError:
+            pass
+    key = asks.hello("a", "Pixel 8\x07", secret, print_)
+    shown = asks.waiting()
+    check(len(shown) == 1 and shown[0]["name"] == "Pixel 8" and shown[0]["code"] == "779 835", "The waiting phone: " + repr(shown))
+    check(asks.wait(key, "f" * 48) == {"state": "gone"}, "Another secret could see the request")
+    check(asks.wait(key, secret) == {"state": "waiting"}, "The phone isn't told to wait")
+    check(asks.answer(key, True, lambda: "t" * 64) == "Pixel 8", "Connect didn't name the phone")
+    check(asks.wait(key, secret) == {"state": "approved", "token": "t" * 64}, "The phone didn't get its token")
+    check(asks.wait(key, secret) == {"state": "gone"}, "The token could be collected twice")
+    key = asks.hello("b", "", "1" * 48, print_)
+    asks.answer(key, False, lambda: check(False, "Not this one made a token"))
+    check(asks.wait(key, "1" * 48)["state"] == "declined" and not asks.waiting(), "Not this one")
+    key = asks.hello("c", "Pixel", "2" * 48, print_)
+    now[0] += nearby_pair.EXPIRES + 1
+    check(asks.wait(key, "2" * 48)["state"] == "gone", "A quiet request didn't expire")
+    # The earlier hello from "c" is over a minute old now, so a full minute's worth fits.
+    for _ in range(nearby_pair.HELLOS_PER_MINUTE):
+        asks.hello("c", "Pixel", "3" * 48, print_)
+    check(len(asks.waiting()) == 1, "The same phone asking again made two requests")
+    try:
+        asks.hello("c", "Pixel", "4" * 48, print_)
+        check(False, "One phone could ask without limit")
+    except OverflowError:
+        pass
+    try:
+        asks.answer("nothing", True, lambda: "t")
+        check(False, "An unknown request was approved")
+    except ValueError:
+        pass
+
+    def question(name, kind=lan_announce.PTR, ident=7):
+        return struct.pack("!HHHHHH", ident, 0, 1, 0, 0, 0) + lan_announce.encode_name(name) + struct.pack("!HH", kind, 1)
+
+    def parse(packet):
+        """The records in an answer: [(name, type, data)], with SRV, TXT and A decoded."""
+        ident, flags, qd, an, ns, ar = struct.unpack("!HHHHHH", packet[:12])
+        offset = 12
+        for _ in range(qd):
+            _, offset = lan_announce.read_name(packet, offset)
+            offset += 4
+        out = []
+        for _ in range(an + ns + ar):
+            name, offset = lan_announce.read_name(packet, offset)
+            kind, _, _, size = struct.unpack("!HHIH", packet[offset:offset + 10])
+            offset += 10
+            data = packet[offset:offset + size]
+            if kind == lan_announce.SRV:
+                data = struct.unpack("!HHH", data[:6])[2]
+            elif kind == lan_announce.TXT:
+                items, at = {}, 0
+                while at < len(data):
+                    item = data[at + 1:at + 1 + data[at]].decode()
+                    at += 1 + data[at]
+                    items[item.split("=", 1)[0]] = item.split("=", 1)[-1]
+                data = items
+            elif kind == lan_announce.A:
+                data = socket.inet_ntoa(data)
+            out.append((name, kind, data))
+            offset += size
+        return ident, out
+
+    shown = lan_announce.Announcement("Studio", 8485, ["192.168.1.20"], "AB:" * 31 + "AB")
+    check(lan_announce.questions(question(lan_announce.SERVICE)) == [(lan_announce.SERVICE, lan_announce.PTR, False)],
+          "An mDNS question wasn't read")
+    check(shown.matches(lan_announce.questions(question(lan_announce.SERVICE))), "The service question isn't answered")
+    check(not shown.matches(lan_announce.questions(question("_printer._tcp.local"))), "Other services' questions are answered")
+    check(not lan_announce.questions(shown.packet()), "An answer was read as a question")
+    _, records = parse(shown.packet())
+    kinds = {kind: data for _, kind, data in records}
+    check(kinds.get(lan_announce.SRV) == 8485 and kinds.get(lan_announce.A) == "192.168.1.20"
+          and kinds.get(lan_announce.TXT, {}).get("fp") == print_ and kinds[lan_announce.TXT].get("name") == "Studio",
+          "The mDNS answer: " + repr(records))
+    check(lan_announce.questions(b"\x00" * 5) == [] and lan_announce.questions(b"\x00\x00\x00\x00\x00\x01" + b"\x00" * 6 + b"\xc0\x0c") == [],
+          "Junk mDNS packets should be ignored")
+
+    import main as server
+    lan = next(iter(server.lan_ipv4()), None)
+    token = "p" * 40
+    desk_port, mdns = free_port(), free_port()
+    with companion(free_port(), token, extra_env={"FLUID_TLS_PORT": str(desk_port), "FLUID_DESKTOP": "1",
+                                                  "FLUID_MDNS_PORT": str(mdns)}) as (origin, request, process):
+        opener = build_opener(ProxyHandler({}))
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        secure = build_opener(ProxyHandler({}), __import__("urllib.request").request.HTTPSHandler(context=context))
+        with opener.open(Request(origin + "/api/auth/local", data=b"{}", headers={"X-Fluid-Request": "1", "Content-Type": "application/json",
+                                                                                 "Origin": origin}), timeout=10) as response:
+            cookie = response.headers.get("Set-Cookie").split(";")[0]
+        page = {"Cookie": cookie, "X-Fluid-Request": "1", "Origin": origin, "Content-Type": "application/json"}
+
+        def post(url, body, headers=None, open_=None):
+            try:
+                with (open_ or opener).open(Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **(headers or {})}),
+                                            timeout=10) as response:
+                    return response.status, json.loads(response.read())
+            except HTTPError as error:
+                return error.code, json.loads(error.read() or b"{}")
+
+        for _ in range(60):
+            if reachable_http("127.0.0.1", desk_port):
+                break
+            time.sleep(0.05)
+        check(not request("/api/auth/security")["reach"]["nearby"], "The desktop app announced itself before Let my phone connect")
+        status, _ = post(origin + "/api/phone-access", {"on": True}, page)
+        check(status == 200, "Let my phone connect didn't turn on")
+        reach = request("/api/auth/security")["reach"]
+        if not lan:
+            print("Skipped finding the computer on the Wi-Fi: this computer has no local network address")
+        else:
+            check(reach["nearby"], "The desktop app isn't announcing itself on the Wi-Fi: " + repr(reach))
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as asker:
+                asker.settimeout(3)
+                answer = None
+                for _ in range(10):
+                    asker.sendto(question(lan_announce.SERVICE, ident=4242), ("127.0.0.1", mdns))
+                    try:
+                        answer = asker.recv(9000)
+                        break
+                    except socket.timeout:
+                        continue
+            check(answer, "Nothing answered the mDNS question")
+            ident, records = parse(answer)
+            kinds = {kind: data for _, kind, data in records}
+            check(ident == 4242 and kinds.get(lan_announce.SRV) == desk_port and kinds.get(lan_announce.TXT, {}).get("fp")
+                  == reach["tls"]["fingerprint"].replace(":", "").lower() and lan in kinds[lan_announce.TXT].get("a", "").split(","),
+                  "The mDNS answer doesn't lead to this computer: " + repr(records))
+        phone = "https://127.0.0.1:%d" % desk_port
+        status, _ = post(origin + "/api/pair/hello", {"name": "Pixel", "secret": "5" * 48})
+        check(status == 400, "Asking to connect worked over plain http: %d" % status)
+        status, hello = post(phone + "/api/pair/hello", {"name": "Pixel 8", "secret": "5" * 48}, open_=secure)
+        check(status == 200 and hello.get("id"), "A phone couldn't ask to connect: " + repr(hello))
+        fingerprint = reach["tls"]["fingerprint"].replace(":", "").lower()
+        try:
+            request("/api/auth/pairing/nearby")
+            check(False, "The phone's token could list phones asking to connect")
+        except HTTPError as error:
+            check(error.code == 403, "Listing phones with a token: %d" % error.code)
+        with opener.open(Request(origin + "/api/auth/pairing/nearby", headers={"Cookie": cookie}), timeout=5) as response:
+            waiting = json.loads(response.read())["phones"]
+        check(len(waiting) == 1 and waiting[0]["name"] == "Pixel 8" and waiting[0]["code"] == nearby_pair.code(fingerprint, "5" * 48),
+              "The phone asking isn't listed with its code: " + repr(waiting))
+        check(post(phone + "/api/pair/wait", {"id": hello["id"], "secret": "5" * 48}, open_=secure)[1] == {"state": "waiting"},
+              "The phone isn't told to wait")
+        status, _ = post(origin + "/api/auth/pairing/nearby", {"id": hello["id"], "allow": True}, {"Authorization": "Bearer " + token})
+        check(status == 403, "The phone's token approved a phone: %d" % status)
+        status, answered = post(origin + "/api/auth/pairing/nearby", {"id": hello["id"], "allow": True}, page)
+        check(status == 200 and answered.get("connected") == "Pixel 8" and answered["pairing"]["web"], "Connect didn't work: " + repr(answered))
+        status, got = post(phone + "/api/pair/wait", {"id": hello["id"], "secret": "5" * 48}, open_=secure)
+        check(got.get("state") == "approved" and len(got.get("token", "")) >= 32, "The phone didn't get its token")
+        with secure.open(Request(phone + "/api/inbox", headers={"Authorization": "Bearer " + got["token"]}), timeout=5) as response:
+            check(response.status == 200, "The approved phone's token doesn't work")
+        check(post(phone + "/api/pair/wait", {"id": hello["id"], "secret": "5" * 48}, open_=secure)[1] == {"state": "gone"},
+              "The token could be collected twice")
+        status, _ = post(origin + "/api/phone-access", {"on": False}, page)
+        check(status == 200 and not request("/api/auth/security")["reach"]["nearby"], "The computer kept announcing after turning it off")
+    print("OK    Find my computer: mDNS answer, phones asking to connect, and approving one")
+
+
 def companion_tls_test():
     """FluidMessages Web's own certificate (companion_tls.py): made once with the key private, served on the second
     port, the fingerprint in the answer matches the certificate the port really shows, and the pairing QR code
@@ -6264,6 +6442,7 @@ def main():
         irc_join_requirements_test()
         phone_reach_and_access_test()
         companion_tls_test()
+        lan_pairing_test()
         tor_test()
         quick_setup_test()
         running_status_test()

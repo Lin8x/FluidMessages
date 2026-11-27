@@ -1,0 +1,1 @@
+- Find my computer: your phone finds FluidMessages Web on the same Wi-Fi, and the computer lists phones looking for it. Check that both show the same six digits, then click Connect on the computer.

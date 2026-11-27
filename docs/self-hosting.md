@@ -118,6 +118,18 @@ These open `http://localhost:8080` in an app window, with no password on this co
 
 Your phone connects to FluidMessages Web over your network. In FluidMessages Web, **Settings → Phone and other devices → Connect your phone** shows a QR code. On the phone, open **Settings → FluidMessages Web** and tap **Scan QR code**. That's all: the code holds the address, the link code, and the certificate fingerprint (below). Under the QR code are the same details to type in instead, like `https://192.168.1.20:8081`, each with a Copy button.
 
+On the same Wi-Fi there's an easier way: [Find my computer](#find-my-computer), with nothing to scan or type.
+
+### Find my computer
+
+On the phone, **Settings → FluidMessages Web → Find my computer** lists the computers running FluidMessages Web on your Wi-Fi, and FluidMessages Web lists the phones looking for it under **Phones on this Wi-Fi** in **Settings → Phone and other devices** (and in **Connect your phone**). Both screens show the same six-digit code. If they match, click **Connect** on the computer, and the phone is connected.
+
+- **How the phone finds the computer:** while its https port answers your Wi-Fi (**Let my phone connect** in the desktop app, or `FLUID_BIND=0.0.0.0`), FluidMessages Web announces itself with multicast DNS, the way printers and TVs are found, as `_fluidmessages._tcp`: its name, https port, addresses and certificate fingerprint. None of that lets anyone in. It's off in Docker (the addresses inside a container aren't your Wi-Fi's), and `FLUID_ANNOUNCE=0` turns it off.
+- **How the computer finds the phone:** while Find my computer is open, the phone asks each computer it finds to connect, with its model name (like "Pixel 8") and nothing else. Requests are kept in memory only and disappear after three quiet minutes.
+- **Why the code:** it's made from a secret the phone keeps and the certificate the phone actually connected to. Someone else on the Wi-Fi pretending to be your computer would have a different certificate, so the codes wouldn't match. If they don't, click **Not this one**.
+- **Connect** makes a new pairing token, which only that phone can collect, once. It replaces the token a phone connected earlier uses, like **Make a new pairing token**.
+- **Firewalls:** allow UDP port 5353 (mDNS) as well as the https port. Some Wi-Fi networks, often at work, school or in hotels, keep devices from seeing each other; scan the QR code there instead.
+
 ### Real HTTPS without a domain name
 
 On its first start, FluidMessages Web makes its own certificate and key and keeps them in its data folder (`companion-cert.pem`, and `companion-key.pem`, which only its own user can read and which is never shown or logged). It then answers over HTTPS on a second port, so your phone's connection is encrypted even on shared Wi-Fi, with no domain name or certificate authority:
@@ -184,7 +196,7 @@ Caddy gets and renews the certificate by itself. On a home connection, your rout
 ### Connecting, step by step
 
 1. In FluidMessages Web, open **Settings → Phone and other devices** and choose **Connect your phone**. Without a password yet, step 1 sets one (your phone’s browser and other devices sign in with it). Then it shows the QR code, with the address, port, pairing token, and certificate fingerprint below it. The token, and so the QR code, is shown only once, when it's made; only a hash is kept. A server with `FLUID_TOKEN` can use that instead (type it in).
-2. On Android, select **Settings → FluidMessages Web** and tap **Scan QR code** (also in **Set up step by step**, on its **Enter it here** step). The phone asks for the camera only then; the camera reads the code on the phone and nothing is recorded. It tries the code's addresses in order and saves the first one that answers. To type instead, enter the address, the pairing token, and optionally the certificate fingerprint, check **Enable browser messaging**, and tap **Save connection**. An address typed without `http://` or `https://` uses `https://`. Leave browser messaging off to pair for cloud backups alone.
+2. On Android, select **Settings → FluidMessages Web** and tap **Find my computer** (above) or **Scan QR code** (both also in **Set up step by step**, on its **Enter it here** step). The phone asks for the camera only then; the camera reads the code on the phone and nothing is recorded. It tries the code's addresses in order and saves the first one that answers. To type instead, enter the address, the pairing token, and optionally the certificate fingerprint, check **Enable browser messaging**, and tap **Save connection**. An address typed without `http://` or `https://` uses `https://`. Leave browser messaging off to pair for cloud backups alone.
 3. **Make a new pairing token** replaces the old one, and **Disconnect phone** removes the token a phone uses.
 
 Over `http://` or `https://`, every request still needs a signed-in browser, the phone’s pairing token (sent in a header, never in the address), or this computer’s own browser. Wrong passwords and wrong tokens make that address wait before trying again.

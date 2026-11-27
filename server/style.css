@@ -537,6 +537,10 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
 .token-box input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; }
 .token-box .hint { grid-column: 1 / -1; }
 /* The phone pairing QR code (companion.js pairingQr): always dark on white, so any camera reads it. */
+.nearby-phone { display: grid; gap: .55rem; padding: .8rem .9rem; border-radius: 14px; background: var(--surface); }
+.nearby-phone-words { display: grid; gap: .15rem; }
+.nearby-phone-words .hint { margin: 0; }
+.nearby-phone-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.15rem; font-weight: 700; color: var(--ink); letter-spacing: .04em; white-space: nowrap; }
 .pair-qr { display: grid; gap: .6rem; justify-items: center; text-align: center; }
 .pair-qr-code { width: min(240px, 72vw); border-radius: 14px; overflow: hidden; background: #ffffff; }
 .pair-qr-code .qr-code { display: block; width: 100%; height: auto; }

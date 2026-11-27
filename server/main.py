@@ -23,8 +23,10 @@ import auth
 import chat_commands
 import cloud_backup
 import companion_tls
+import lan_announce
 import link_fetch
 import message_requests
+import nearby_pair
 import privacy
 import protocol_gateway
 import quick_setup
@@ -896,6 +898,39 @@ def lan_ipv4():
 TLS = None
 TLS_SERVER = None
 TLS_LOCK = threading.Lock()
+# Find my computer: the mDNS answer phones on the Wi-Fi find this computer by (lan_announce), while the HTTPS port
+# listens there, and the phones asking to connect (nearby_pair), approved in Connect your phone.
+ANNOUNCER = None
+PAIR_REQUESTS = nearby_pair.Requests()
+
+
+def computer_name():
+    """This computer's name, as phones list it: its host name without the domain."""
+    return (socket.gethostname() or "").split(".")[0][:50] or "Computer"
+
+
+def announce():
+    """Starts or stops answering phones that look for this computer on the Wi-Fi, to match the HTTPS port."""
+    global ANNOUNCER
+    if ANNOUNCER:
+        ANNOUNCER.stop()
+        ANNOUNCER = None
+    if not TLS or os.environ.get("FLUID_ANNOUNCE", "1").strip() == "0":
+        return
+    reach = phone_reach("", False, tls=TLS)
+    if not reach["listening"] or reach["container"]:
+        return
+    bind = TLS.get("bind") or ""
+    addresses = lan_ipv4() if bind in ("", "0.0.0.0") else [bind]
+    addresses = [value for value in addresses if ipaddress.ip_address(value) not in LAN_NETWORKS[3]] or addresses
+    if not addresses:
+        return
+    announcer = lan_announce.Announcer(lan_announce.Announcement(computer_name(), TLS["port"], addresses, TLS["fingerprint"]))
+    problem = announcer.start()
+    if problem:
+        print("FluidMessages Web: " + problem, flush=True)
+        return
+    ANNOUNCER = announcer
 
 
 def phone_access():
@@ -956,7 +991,8 @@ def phone_reach(page_host, https, bind=None, port=None, local_only=None, contain
                 shown.append({"url": url, "kind": kind, **({"pinned": True} if tls else {})})
     return {"addresses": shown, "port": port, "listening": listening, "container": container,
             "https": bool(https), "bind": bind, "tls": {"port": tls["port"], "fingerprint": tls["fingerprint"]} if tls else None,
-            "desktop": DESKTOP, "phone_access": phone_access()}
+            "desktop": DESKTOP, "phone_access": phone_access(),
+            "nearby": bool(ANNOUNCER and ANNOUNCER.running and tls)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1191,6 +1227,24 @@ class Handler(BaseHTTPRequestHandler):
                 headers.append(self.set_cookie(trusted, True, (SECURE_TRUST_COOKIE, TRUST_COOKIE)))
             self.reply(200, {"signed_in": True}, headers=headers)
 
+    def pair_open(self):
+        """Find my computer on a phone: asking to connect, then waiting for Connect on this computer (nearby_pair).
+        Only on the HTTPS port, since the six-digit code is made from its certificate."""
+        wait_for_erase()
+        try:
+            if not self.tls or not TLS:
+                raise ValueError("Connect at this computer's https address.")
+            data = self.read_json(4000)
+            if self.path == "/api/pair/hello":
+                key = PAIR_REQUESTS.hello(self.client(), data.get("name"), data.get("secret"), TLS["fingerprint"])
+                self.reply(200, {"id": key, "name": computer_name()})
+            else:
+                self.reply(200, PAIR_REQUESTS.wait(data.get("id"), data.get("secret")))
+        except OverflowError as error:
+            self.reply(429, {"error": str(error)})
+        except (ValueError, TypeError) as error:
+            self.reply(400, {"error": str(error)})
+
     def account_security(self, data):
         """Password, sessions, and the phone's pairing token, once signed in."""
         with closing(connect()) as db, db:
@@ -1204,6 +1258,12 @@ class Handler(BaseHTTPRequestHandler):
                 return {**self.security_view(db), "token": token}
             elif self.path == "/api/auth/pairing/delete":
                 authority.remove_pairing(db)
+            elif self.path == "/api/auth/pairing/nearby":
+                # Connect (or Not this one) for a phone on the Wi-Fi that asked, from a browser only.
+                if self.kind != "session":
+                    raise auth.Refused(403, "Connect phones from FluidMessages Web in a browser.")
+                name = PAIR_REQUESTS.answer(data.get("id"), data.get("allow") is True, lambda: authority.make_pairing(db))
+                return {**self.security_view(db), "connected": name if data.get("allow") is True else None}
             elif self.path == "/api/auth/local-access":
                 if type(data.get("enabled")) is not bool:
                     raise ValueError("Invalid setting")
@@ -1424,6 +1484,12 @@ class Handler(BaseHTTPRequestHandler):
             with closing(connect()) as db:
                 self.reply(200, self.security_view(db))
             return
+        if path == "/api/auth/pairing/nearby":
+            if self.kind != "session":
+                self.reply(403, {"error": "Connect phones from FluidMessages Web in a browser."})
+                return
+            self.reply(200, {"phones": PAIR_REQUESTS.waiting(), "nearby": bool(ANNOUNCER and ANNOUNCER.running)})
+            return
         if self.path == "/api/backups":
             self.reply(200, {"targets": list(cloud_backup.remotes())})
             return
@@ -1568,6 +1634,9 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def do_POST(self):
+        if self.path in ("/api/pair/hello", "/api/pair/wait"):
+            self.pair_open()
+            return
         if self.path in AUTH_OPEN:
             self.auth_request(self.path)
             return
@@ -1984,6 +2053,7 @@ def start_tls():
             TLS_SERVER.shutdown()
             TLS_SERVER.server_close()
             TLS_SERVER, TLS = None, None
+            announce()
         bind = tls_bind()
         try:
             server = companion_tls.TlsServer((bind, port), TlsHandler, *made)
@@ -1994,6 +2064,7 @@ def start_tls():
         TLS_SERVER = server
         TLS = {"port": port, "fingerprint": companion_tls.fingerprint(made[0]), "bind": bind}
         threading.Thread(target=server.serve_forever, name="fluid-tls", daemon=True).start()
+        announce()
         print("FluidMessages Web: phones pair over https on port %d%s. Certificate fingerprint (SHA-256): %s"
               % (port, " on your local network" if bind == "0.0.0.0" else "", TLS["fingerprint"]), flush=True)
         return None

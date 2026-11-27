@@ -50,7 +50,7 @@ object SyncGuideScreen {
         Triple("what", "Your texts on a computer", "Read and send your texts from a browser, with FluidMessages Web. Optional."),
         Triple("start", "Start FluidMessages Web", "On your computer, start it one of these ways."),
         Triple("token", "Copy the link code", "In FluidMessages Web, open Settings → Phone and other devices."),
-        Triple("enter", "Enter it here", "Scan the QR code FluidMessages Web shows. Or type the address and the link code."),
+        Triple("enter", "Enter it here", "Find your computer on this Wi-Fi, or scan the QR code FluidMessages Web shows. Or type the address and the link code."),
         Triple("test", "Test the connection", "Checking that this phone can reach FluidMessages Web."),
         Triple("done", "You’re connected", "Your texts show up in FluidMessages Web within a few minutes."),
     )
@@ -58,7 +58,7 @@ object SyncGuideScreen {
     @JvmStatic
     fun mount(root: LinearLayout, prefs: SharedPreferences, step: Int, next: Runnable, back: Runnable, close: Runnable,
               recolor: IntConsumer, learnWeb: Runnable, hasRole: Boolean, saver: CompanionSaver, tester: CompanionTester,
-              review: Runnable, scan: Runnable) {
+              review: Runnable, scan: Runnable, find: Runnable) {
         val view = ComposeView(root.context)
         view.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         view.setContent {
@@ -140,7 +140,10 @@ object SyncGuideScreen {
                             }
                             "enter" -> {
                                 item {
-                                    AppButton(onClick = scan::run, modifier = Modifier.fillMaxWidth().heightIn(min = 49.dp)) { Text("Scan QR code") }
+                                    AppButton(onClick = find::run, modifier = Modifier.fillMaxWidth().heightIn(min = 49.dp)) { Text("Find my computer") }
+                                }
+                                item {
+                                    OutlinedButton(onClick = scan::run, modifier = Modifier.fillMaxWidth().heightIn(min = 49.dp)) { Text("Scan QR code") }
                                 }
                                 item {
                                     Text("Or type these in:", color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
