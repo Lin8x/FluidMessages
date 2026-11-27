@@ -474,6 +474,7 @@ For 64-bit PCs (x86_64). Pick one:
   <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.rpm"><img src="docs/images/get-rpm.svg" height="60" alt="Download the .rpm for Fedora or openSUSE"></a>
   <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage"><img src="docs/images/get-appimage.svg" height="60" alt="Download the AppImage for any Linux"></a>
   <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-amd64.snap"><img src="docs/images/get-snap.svg" height="60" alt="Download the .snap file"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.flatpak"><img src="docs/images/get-flatpak.svg" height="60" alt="Download the .flatpak file"></a>
   <a href="#linux-command"><img src="docs/images/get-command.svg" height="60" alt="Install with one command"></a>
 </p>
 
@@ -490,6 +491,7 @@ For 64-bit PCs (x86_64). Pick one:
   - **Fedora or openSUSE:** [`FluidMessages-Web-Linux-x86_64.rpm`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.rpm), then `sudo dnf install ./FluidMessages-Web-Linux-x86_64.rpm` (or `sudo zypper install` on openSUSE)
   - **Any other Linux:** [`FluidMessages-Web-Linux-x86_64.AppImage`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage). Allow it to run (right-click → **Properties → Allow executing**, or `chmod +x` it), and open it.
   - **Snap:** [`FluidMessages-Web-Linux-amd64.snap`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-amd64.snap), then `sudo snap install --dangerous ./FluidMessages-Web-Linux-amd64.snap`. `--dangerous` is needed because the file doesn't come from the Snap Store, and it won't update itself; install the next version the same way.
+  - **Flatpak:** [`FluidMessages-Web-Linux-x86_64.flatpak`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.flatpak), then `flatpak install --user ./FluidMessages-Web-Linux-x86_64.flatpak`. Flatpak offers to add Flathub for the runtime it needs. It won't update itself until it's on Flathub; install the next version the same way.
 - <a id="linux-command"></a>**With one command:** paste this in a terminal. It checks the download first, adds FluidMessages Web to your app menu, and needs no sudo. Run it again to update.
 
   ```bash
