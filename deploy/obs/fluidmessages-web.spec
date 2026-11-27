@@ -2,7 +2,7 @@
 # The source comes from _service (obs_scm), and scripts/release sets the version below for each release. It runs
 # with the distribution's own Python libraries, so OMEMO encryption for XMPP isn't available in it.
 Name:           fluidmessages-web
-Version:        0.49.1
+Version:        0.50.0
 Release:        0
 Summary:        Your phone's texts, calls, and chats on your computer
 License:        Apache-2.0
