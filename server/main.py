@@ -41,6 +41,9 @@ ORIGINS = {item.strip().rstrip("/") for item in os.environ.get("FLUID_ORIGINS", 
 # Set by the default Docker Compose file together with its 127.0.0.1-only port: only this computer can reach the
 # container, which sees the Docker gateway's address instead of loopback. Remove it before exposing the port.
 LOCAL_ONLY = os.environ.get("FLUID_LOCAL_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
+# The desktop app (desktop/launcher.py) sets this. Its page answers only this computer; "Let my phone connect" opens
+# just the HTTPS port to the local network, where a phone signs in with its pairing token.
+DESKTOP = os.environ.get("FLUID_DESKTOP", "").strip() == "1"
 FILES = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
          "/reactions.js": ("reactions.js", "text/javascript"),
          "/style.css": ("style.css", "text/css"), "/icon.webp": ("icon.webp", "image/webp"),
@@ -889,8 +892,20 @@ def lan_ipv4():
     return sorted(keep, key=lambda value: (not value.startswith("192.168."), ipaddress.ip_address(value) in LAN_NETWORKS[3]))
 
 
-# The server's own HTTPS for phones (companion_tls): {"port", "fingerprint"} once it's serving, else None.
+# The server's own HTTPS for phones (companion_tls): {"port", "fingerprint", "bind"} once it's serving, else None.
 TLS = None
+TLS_SERVER = None
+TLS_LOCK = threading.Lock()
+
+
+def phone_access():
+    """The desktop app's "Let my phone connect": its HTTPS port listens on the local network. Kept in the data folder."""
+    return DESKTOP and (DB.parent / "phone-access").exists()
+
+
+def tls_bind():
+    """Where the HTTPS port listens: everywhere when the desktop app lets phones connect, else where http does."""
+    return "0.0.0.0" if phone_access() else os.environ.get("FLUID_BIND", "127.0.0.1")
 
 
 def phone_reach(page_host, https, bind=None, port=None, local_only=None, container=None, addresses=None, tls=None,
@@ -900,9 +915,12 @@ def phone_reach(page_host, https, bind=None, port=None, local_only=None, contain
     server's own HTTPS port on ([tls], companion_tls), those are https:// addresses on that port, marked "pinned": the
     phone trusts them by the certificate's fingerprint (also returned, for the QR code). Without it they're http://,
     and https comes from a reverse proxy in front of the server. [page_tls]: this page came in on the HTTPS port."""
-    bind = (os.environ.get("FLUID_BIND", "127.0.0.1") if bind is None else bind).strip()
-    port = int(os.environ.get("FLUID_PORT", 8080)) if port is None else port
     tls = TLS if tls is None else (tls or None)
+    if bind is None:
+        # The phone's addresses are on the HTTPS port when it's on, so that port's own listening address counts.
+        bind = tls.get("bind") if tls and tls.get("bind") else os.environ.get("FLUID_BIND", "127.0.0.1")
+    bind = bind.strip()
+    port = int(os.environ.get("FLUID_PORT", 8080)) if port is None else port
     local_only = LOCAL_ONLY if local_only is None else local_only
     container = Path("/.dockerenv").exists() if container is None else container
     try:
@@ -937,7 +955,8 @@ def phone_reach(page_host, https, bind=None, port=None, local_only=None, contain
                     kind = "wifi"
                 shown.append({"url": url, "kind": kind, **({"pinned": True} if tls else {})})
     return {"addresses": shown, "port": port, "listening": listening, "container": container,
-            "https": bool(https), "bind": bind, "tls": dict(tls) if tls else None}
+            "https": bool(https), "bind": bind, "tls": {"port": tls["port"], "fingerprint": tls["fingerprint"]} if tls else None,
+            "desktop": DESKTOP, "phone_access": phone_access()}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1731,6 +1750,12 @@ class Handler(BaseHTTPRequestHandler):
                 return gateway.snapshot(db, data.get("enabled"))
             if self.path == "/api/tor" and self.kind == "session":
                 return save_tor(db, data)
+            if self.path == "/api/phone-access":
+                # Only the person at this computer opens it to the network, never a phone or another device.
+                if self.kind != "session" or not self.here(need_origin=True):
+                    raise auth.Refused(403, "Turn this on from FluidMessages Web on this computer")
+                set_phone_access(bool(data.get("on")))
+                return {"reach": self.reach()}
             # A chat's Connect through Tor, from web chat details or the phone's (TorChat).
             if self.path == "/api/tor/connection":
                 return save_connection_tor(db, data)
@@ -1943,26 +1968,51 @@ class TlsHandler(Handler):
 
 def start_tls():
     """The phone's HTTPS port (companion_tls), next to the http one. It's skipped, with a plain message, when it's
-    turned off, openssl is missing, or the port is taken; the http port works the same either way."""
-    global TLS
-    port = companion_tls.tls_port(int(os.environ.get("FLUID_PORT", 8080)))
-    if not port:
-        return
-    made = companion_tls.ensure(DB.parent)
-    if not made:
-        print("FluidMessages Web: HTTPS for phones is off because the openssl command isn't installed. Phones can still "
-              "pair at an http:// address, or through your own https:// address.", flush=True)
-        return
-    try:
-        server = companion_tls.TlsServer((os.environ.get("FLUID_BIND", "127.0.0.1"), port), TlsHandler, *made)
-    except OSError:
-        print("FluidMessages Web: HTTPS for phones is off because port %d is in use. Set FLUID_TLS_PORT to another "
-              "port, or to 0 to turn it off." % port, flush=True)
-        return
-    TLS = {"port": port, "fingerprint": companion_tls.fingerprint(made[0])}
-    threading.Thread(target=server.serve_forever, name="fluid-tls", daemon=True).start()
-    print("FluidMessages Web: phones pair over https on port %d. Certificate fingerprint (SHA-256): %s"
-          % (port, TLS["fingerprint"]), flush=True)
+    turned off, openssl is missing, or the port is taken; the http port works the same either way. Called again when
+    the desktop app's "Let my phone connect" changes, to listen at the new address. Returns a problem, or None."""
+    global TLS, TLS_SERVER
+    with TLS_LOCK:
+        port = companion_tls.tls_port(int(os.environ.get("FLUID_PORT", 8080)))
+        if not port:
+            return "HTTPS for phones is turned off (FLUID_TLS_PORT=0)."
+        made = companion_tls.ensure(DB.parent)
+        if not made:
+            print("FluidMessages Web: HTTPS for phones is off because the openssl command isn't installed. Phones can still "
+                  "pair at an http:// address, or through your own https:// address.", flush=True)
+            return "HTTPS for phones needs the openssl command, which isn't installed on this computer."
+        if TLS_SERVER:
+            TLS_SERVER.shutdown()
+            TLS_SERVER.server_close()
+            TLS_SERVER, TLS = None, None
+        bind = tls_bind()
+        try:
+            server = companion_tls.TlsServer((bind, port), TlsHandler, *made)
+        except OSError:
+            print("FluidMessages Web: HTTPS for phones is off because port %d is in use. Set FLUID_TLS_PORT to another "
+                  "port, or to 0 to turn it off." % port, flush=True)
+            return "Port %d is already in use by another program." % port
+        TLS_SERVER = server
+        TLS = {"port": port, "fingerprint": companion_tls.fingerprint(made[0]), "bind": bind}
+        threading.Thread(target=server.serve_forever, name="fluid-tls", daemon=True).start()
+        print("FluidMessages Web: phones pair over https on port %d%s. Certificate fingerprint (SHA-256): %s"
+              % (port, " on your local network" if bind == "0.0.0.0" else "", TLS["fingerprint"]), flush=True)
+        return None
+
+
+def set_phone_access(on):
+    """Turns the desktop app's "Let my phone connect" on or off, and moves the HTTPS port to match."""
+    if not DESKTOP:
+        raise ValueError("Only the desktop app has this switch. Set FLUID_BIND to choose where the server listens.")
+    flag = DB.parent / "phone-access"
+    if on:
+        flag.write_text("on\n")
+    else:
+        flag.unlink(missing_ok=True)
+    problem = start_tls()
+    if problem and on:
+        flag.unlink(missing_ok=True)
+        start_tls()
+        raise ValueError("Your phone can't connect yet. " + problem)
 
 
 if __name__ == "__main__":

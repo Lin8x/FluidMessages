@@ -134,8 +134,10 @@ def main():
         open_window(url)
         return
     server = server_folder()
+    # The page answers only this computer. Settings → Phone and other devices → "Let my phone connect" opens just the
+    # HTTPS port to the local network, for pairing a phone (FLUID_DESKTOP, server/main.py).
     os.environ.update(FLUID_TOKEN=token, FLUID_DB=str(folder / "fluid.sqlite"), FLUID_BIND="127.0.0.1",
-                      FLUID_PORT=str(port), FLUID_FILES=str(folder / "protocol-files"))
+                      FLUID_PORT=str(port), FLUID_FILES=str(folder / "protocol-files"), FLUID_DESKTOP="1")
     sys.path.insert(0, str(server))
     thread = threading.Thread(target=runpy.run_path, args=(str(server / "main.py"),), kwargs={"run_name": "__main__"},
                               daemon=True)

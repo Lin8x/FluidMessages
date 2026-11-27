@@ -92,7 +92,7 @@ On Linux you can also install it as a package:
 
 To install or update with one command instead (it checks the SHA-256 first): on Linux or macOS run `curl -fsSL https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.sh | bash`, and on Windows run `irm https://raw.githubusercontent.com/Lin8x/FluidMessages/main/install.ps1 | iex` in PowerShell. Add `--uninstall` (Linux and macOS, as `| bash -s -- --uninstall`) or `-Uninstall` (Windows) to remove it. On a Mac with Homebrew: `brew install --cask lin8x/tap/fluidmessages-web`.
 
-- **What it does:** runs FluidMessages Web on your computer and opens it in its own window, straight into the welcome on first run. A small window shows that it's running, with **Open** and **Quit**. It only listens on this computer, so there's no password to set.
+- **What it does:** runs FluidMessages Web on your computer and opens it in its own window, straight into the welcome on first run. A small window shows that it's running, with **Open** and **Quit**. It only listens on this computer, so there's no password to set. To connect your phone, turn on **Let my phone connect** in **Settings → Phone and other devices**: that opens just its https port to your Wi-Fi, for phones with the pairing token.
 - **Your data:** stays in a private folder for your user account.
 - **Security warnings:** the apps aren't code-signed yet. On Windows, choose **More info → Run anyway**. On macOS, right-click the app and choose **Open**.
 
@@ -149,10 +149,10 @@ Home network addresses usually start with `192.168.`, `10.`, or `172.16.` to `17
 
 1. Let other devices reach FluidMessages. By default it only answers this computer.
    - **From the source:** start it with `FLUID_BIND=0.0.0.0`, like `FLUID_BIND=0.0.0.0 ./scripts/web-app` (on Windows, `$env:FLUID_BIND='0.0.0.0'` before `scripts\web-app.ps1`).
-   - **The desktop app** only answers this computer. To connect a phone, run it from the source or with Docker instead.
+   - **The desktop app:** turn on **Let my phone connect** in **Settings → Phone and other devices**. Only its https port (usually 8485) opens to your Wi-Fi, and phones still need the pairing token; the app's own page keeps answering only this computer. Allow it when your computer's firewall asks. Turn it off again any time.
    - **Docker Compose:** delete the `FLUID_LOCAL_ONLY` line and change the ports to `"8080:8080"` and `"8081:8081"` in `compose.yaml`, then run `docker compose up -d` again.
    - If your computer has a firewall, allow the ports (for example `sudo ufw allow 8080/tcp` and `sudo ufw allow 8081/tcp`, or allow Python when Windows asks).
-2. Set a password in **Settings → Phone and other devices**, since other devices can now reach it.
+2. Set a password in **Settings → Phone and other devices** if you'll also open FluidMessages in a browser on another device. The phone signs in with its pairing token.
 3. Put your phone on the same Wi-Fi and scan the QR code. Or type the address (like `https://192.168.1.20:8081`), the link code, and the certificate fingerprint. An `http://` address (like `http://192.168.1.20:8080`) still works for testing, with a warning that it isn't encrypted.
 
 Your router may give the computer a new IP address later. If the phone stops connecting, check the address again, or ask your router to always give this computer the same one (often called a “DHCP reservation”).

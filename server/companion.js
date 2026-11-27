@@ -651,8 +651,10 @@ const PLAIN_WARNING = 'This address starts with http://, so anyone on the same W
  * button, what an IP address and a port are in plain words, the http:// warning, and what to do when the phone
  * can't reach this computer yet. Everything is set as text, never as HTML.
  */
-function phoneAddressCard(reach) {
+function phoneAddressCard(reach, changed) {
   const card = element('div', '', 'stack phone-address');
+  // The desktop app answers only this computer until "Let my phone connect" opens its HTTPS port to the local network.
+  if (reach?.desktop) card.append(phoneAccessSwitch(reach, changed, card));
   const list = reach?.addresses || [];
   const labels = {page: 'The address of this page', wifi: 'On the same Wi-Fi', private: 'On your private network (like Tailscale)'};
   for (const item of list) {
@@ -675,7 +677,9 @@ function phoneAddressCard(reach) {
   if (!list.length) {
     card.append(element('p', reach?.container
       ? 'Your phone can’t reach FluidMessages yet. It runs in Docker, which only lets this computer in. Remove FLUID_LOCAL_ONLY and publish the port to your network (like "8080:8080") in compose.yaml, then use this computer’s address, like http://192.168.1.20:8080.'
-      : 'Your phone can’t reach FluidMessages yet: it only answers this computer. Start it with FLUID_BIND=0.0.0.0 so other devices on your Wi-Fi can reach it, then open this page again to see the address.', 'notice'));
+      : reach?.desktop
+        ? 'Your phone can’t reach FluidMessages yet: it only answers this computer. Turn on Let my phone connect, above.'
+        : 'Your phone can’t reach FluidMessages yet: it only answers this computer. Start it with FLUID_BIND=0.0.0.0 so other devices on your Wi-Fi can reach it, then open this page again to see the address.', 'notice'));
   } else if (reach && !reach.listening && list.every((item) => item.kind === 'page')) {
     card.append(element('p', 'This is the address you opened this page at. If your phone can’t reach it, start FluidMessages with FLUID_BIND=0.0.0.0.', 'hint'));
   }
@@ -688,6 +692,35 @@ function phoneAddressCard(reach) {
   more.append(outside);
   card.append(explain, more);
   return card;
+}
+
+/**
+ * The desktop app's "Let my phone connect" switch (main.py set_phone_access). On, only the HTTPS port listens on the
+ * local network, and a phone still needs its pairing token. The new addresses replace this card, or go to [changed]
+ * when the caller draws more from them (the QR code).
+ */
+function phoneAccessSwitch(reach, changed, card) {
+  const problem = element('p', '', 'error');
+  problem.setAttribute('role', 'alert');
+  problem.hidden = true;
+  const row = switchRow('Let my phone connect', !!reach.phone_access, (on, box) => {
+    box.disabled = true;
+    problem.hidden = true;
+    api('phone-access', {on}).then((result) => {
+      if (changed) changed(result.reach);
+      else card.replaceWith(phoneAddressCard(result.reach));
+    }).catch((error) => {
+      box.checked = !on;
+      box.disabled = false;
+      problem.textContent = error.message;
+      problem.hidden = false;
+    });
+  }, reach.phone_access
+    ? 'Phones on your Wi-Fi can reach this computer over https. They still need the pairing token.'
+    : 'Lets phones on your Wi-Fi reach this computer over https, with the pairing token. Your computer may ask to allow it through its firewall.');
+  const wrap = element('div', '', 'stack');
+  wrap.append(row, problem);
+  return wrap;
 }
 
 /** A label, a read-only value, and a Copy button, set as text. [mono] for codes. */
@@ -800,7 +833,7 @@ function phoneConnect(state, changed) {
       // The QR code holds the token, so it shows only while the token does: right after it's made.
       const qr = value ? pairingQr(current.reach, value) : null;
       if (qr) box.append(qr);
-      box.append(phoneAddressCard(current.reach));
+      box.append(phoneAddressCard(current.reach, (reach) => draw({...current, reach}, value)));
     }
     box.append(token);
     const print = shown ? fingerprintBlock(current.reach) : null;

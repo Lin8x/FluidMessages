@@ -5710,8 +5710,8 @@ def phone_reach_and_access_test():
     companion_js = (ROOT / "server/companion.js").read_text()
     welcome_js = (ROOT / "server/welcome.js").read_text()
     guide = (ROOT / "docs/self-hosting.md").read_text()
-    check("function phoneAddressCard" in companion_js and "phoneAddressCard(security.reach)" in welcome_js
-          and "phoneAddressCard(current.reach)" in companion_js, "The pairing steps don't show the address to type")
+    check("function phoneAddressCard" in companion_js and "phoneAddressCard(security.reach," in welcome_js
+          and "phoneAddressCard(current.reach," in companion_js and "Let my phone connect" in companion_js, "The pairing steps don't show the address to type")
     check("innerHTML" not in companion_js[companion_js.index("function phoneAddressCard"):companion_js.index("function phoneConnect")],
           "The address card builds HTML from the server's answer")
     check("same Wi-Fi" in companion_js and "FLUID_BIND=0.0.0.0" in companion_js and "#reach-it-from-outside-your-home" in companion_js,
@@ -5723,6 +5723,14 @@ def phone_reach_and_access_test():
           "docs/self-hosting.md is missing the connecting guide")
     print("PASS  phone address: LAN, private network, and page addresses with the port; none when only this computer can reach it")
     print("PASS  access over http: every sampled /api endpoint asks to sign in, no token in the address, wrong tokens wait, CSRF and cookie flags hold")
+
+
+def reachable_http(host, port):
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except OSError:
+        return False
 
 
 def companion_tls_test():
@@ -5807,6 +5815,87 @@ def companion_tls_test():
               and reach["addresses"] == [{"url": "https://192.168.1.20:%d" % tls_port, "kind": "page", "pinned": True}],
               "The pairing info doesn't match the certificate: " + repr(reach))
         check(key_file.read_text().strip() not in json.dumps(reach), "The key reached the page")
+
+    # The desktop app's "Let my phone connect": its page stays on this computer, and only the HTTPS port moves to the
+    # local network, where a phone still needs its token. Only a browser on this computer can flip it.
+    desk = server.phone_reach("localhost:8484", False, port=8484, local_only=False, container=False,
+                               addresses=["192.168.1.20"], tls={**tls, "bind": "0.0.0.0"})
+    check(desk["listening"] and desk["addresses"] == [{"url": "https://192.168.1.20:8081", "kind": "wifi", "pinned": True}]
+          and "bind" not in desk["tls"], "With the HTTPS port on the network, its address should be shown: " + repr(desk))
+    lan = next(iter(server.lan_ipv4()), None)
+    desk_port = free_port()
+    with companion(free_port(), token, extra_env={"FLUID_TLS_PORT": str(desk_port), "FLUID_DESKTOP": "1"}) as (origin, request, process):
+        opener = build_opener(ProxyHandler({}))
+
+        def reachable(host):
+            try:
+                with socket.create_connection((host, desk_port), timeout=2):
+                    return True
+            except OSError:
+                return False
+
+        for _ in range(50):
+            if reachable("127.0.0.1"):
+                break
+            time.sleep(0.05)
+        with opener.open(Request(origin + "/api/auth/local", data=b"{}", headers={"X-Fluid-Request": "1", "Content-Type": "application/json",
+                                                                                 "Origin": origin}), timeout=10) as response:
+            cookie = response.headers.get("Set-Cookie").split(";")[0]
+
+        def flip(on, headers):
+            try:
+                with opener.open(Request(origin + "/api/phone-access", data=json.dumps({"on": on}).encode(),
+                                         headers={"Content-Type": "application/json", **headers}), timeout=10) as response:
+                    return response.status, json.loads(response.read())
+            except HTTPError as error:
+                return error.code, {}
+
+        page = {"Cookie": cookie, "X-Fluid-Request": "1", "Origin": origin}
+        desk = request("/api/auth/security")["reach"]
+        check(desk["desktop"] and not desk["phone_access"] and not desk["listening"], "The desktop app starts open to the network: " + repr(desk))
+        if lan:
+            check(not reachable(lan), "The desktop app's HTTPS port answered the network before Let my phone connect")
+        check(flip(True, {"Authorization": "Bearer " + token})[0] == 403, "The phone's token turned on network access")
+        status, answer = flip(True, page)
+        check(status == 200 and answer["reach"]["phone_access"] and answer["reach"]["listening"], "Let my phone connect didn't turn on: " + repr(answer))
+        check((request.directory / "phone-access").exists(), "Let my phone connect isn't remembered")
+        if lan:
+            check(any(item["url"] == "https://%s:%d" % (lan, desk_port) and item.get("pinned") for item in answer["reach"]["addresses"]),
+                  "The phone's address isn't shown: " + repr(answer["reach"]["addresses"]))
+            for _ in range(50):
+                if reachable(lan):
+                    break
+                time.sleep(0.05)
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            secure = build_opener(ProxyHandler({}), __import__("urllib.request").request.HTTPSHandler(context=context))
+            with secure.open(Request(f"https://{lan}:{desk_port}/api/inbox", headers={"Authorization": "Bearer " + token}), timeout=5) as response:
+                check(response.status == 200, "The phone's token doesn't work over the network")
+            try:
+                secure.open(Request(f"https://{lan}:{desk_port}/api/inbox"), timeout=5)
+                check(False, "The network got in without signing in")
+            except HTTPError as error:
+                check(error.code == 401, "Signing in from the network: %d" % error.code)
+            check(not reachable_http(lan, int(origin.rsplit(":", 1)[1])), "The page's own http port answered the network")
+        status, answer = flip(False, page)
+        check(status == 200 and not answer["reach"]["phone_access"] and not (request.directory / "phone-access").exists(),
+              "Let my phone connect didn't turn off")
+        if lan:
+            check(not reachable(lan), "The HTTPS port still answered the network after turning it off")
+        check(reachable("127.0.0.1"), "The HTTPS port stopped answering this computer after turning network access off")
+    with companion(free_port(), token) as (origin, request, process):
+        with build_opener(ProxyHandler({})).open(Request(origin + "/api/auth/local", data=b"{}", headers={
+                "X-Fluid-Request": "1", "Content-Type": "application/json", "Origin": origin}), timeout=10) as response:
+            cookie = response.headers.get("Set-Cookie").split(";")[0]
+        try:
+            build_opener(ProxyHandler({})).open(Request(origin + "/api/phone-access", data=b'{"on": true}', headers={
+                "Content-Type": "application/json", "Cookie": cookie, "X-Fluid-Request": "1", "Origin": origin}), timeout=10)
+            check(False, "A server that isn't the desktop app accepted Let my phone connect")
+        except HTTPError as error:
+            check(error.code == 400, "Let my phone connect outside the desktop app: %d" % error.code)
+        check("phone_access" in request("/api/auth/security")["reach"] and not request("/api/auth/security")["reach"]["desktop"],
+              "A server says it's the desktop app")
 
     node = os.environ.get("NODE") or shutil.which("node")
     companion_js = (ROOT / "server/companion.js").read_text()

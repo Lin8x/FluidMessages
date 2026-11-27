@@ -1658,7 +1658,7 @@ async function showSyncGuide({fromSettings = false, connectedStep = false} = {})
         const qr = token && security.reach ? pairingQr(security.reach, token) : null;
         const out = [qr || tokenIllustration()];
         // The addresses this computer answers at (main.py phone_reach), each with a Copy button and plain-words help.
-        if (security.reach) out.push(phoneAddressCard(security.reach));
+        if (security.reach) out.push(phoneAddressCard(security.reach, (reach) => { security = {...security, reach}; flow.redraw(); }));
         else if (!loopback) out.push(copyRow('Address', origin, false));
         if (token) {
           out.push(copyRow('Pairing token', token, true),
