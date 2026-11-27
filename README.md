@@ -473,13 +473,23 @@ For 64-bit PCs (x86_64). Pick one:
   <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-amd64.deb"><img src="docs/images/get-deb.svg" height="60" alt="Download the .deb for Debian or Ubuntu"></a>
   <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.rpm"><img src="docs/images/get-rpm.svg" height="60" alt="Download the .rpm for Fedora or openSUSE"></a>
   <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage"><img src="docs/images/get-appimage.svg" height="60" alt="Download the AppImage for any Linux"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-amd64.snap"><img src="docs/images/get-snap.svg" height="60" alt="Download the .snap file"></a>
   <a href="#linux-command"><img src="docs/images/get-command.svg" height="60" alt="Install with one command"></a>
+</p>
+
+<p align="center">
+  <a href="#linux-app-stores"><img src="docs/images/store-snap.svg" height="60" alt="Coming soon to the Snap Store"></a>
+  <a href="#linux-app-stores"><img src="docs/images/store-flathub.svg" height="60" alt="Coming soon to Flathub"></a>
+  <a href="#linux-app-stores"><img src="docs/images/store-aur.svg" height="60" alt="Coming soon to the AUR (Arch Linux)"></a>
+  <a href="#linux-app-stores"><img src="docs/images/store-copr.svg" height="60" alt="Coming soon to Fedora COPR"></a>
+  <a href="#linux-app-stores"><img src="docs/images/store-obs.svg" height="60" alt="Coming soon to the openSUSE Build Service"></a>
 </p>
 
 - **From GitHub:** download the file for your system:
   - **Debian or Ubuntu** (22.04 and newer): [`FluidMessages-Web-Linux-amd64.deb`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-amd64.deb), then `sudo apt install ./FluidMessages-Web-Linux-amd64.deb`
   - **Fedora or openSUSE:** [`FluidMessages-Web-Linux-x86_64.rpm`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.rpm), then `sudo dnf install ./FluidMessages-Web-Linux-x86_64.rpm` (or `sudo zypper install` on openSUSE)
   - **Any other Linux:** [`FluidMessages-Web-Linux-x86_64.AppImage`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage). Allow it to run (right-click → **Properties → Allow executing**, or `chmod +x` it), and open it.
+  - **Snap:** [`FluidMessages-Web-Linux-amd64.snap`](https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-amd64.snap), then `sudo snap install --dangerous ./FluidMessages-Web-Linux-amd64.snap`. `--dangerous` is needed because the file doesn't come from the Snap Store, and it won't update itself; install the next version the same way.
 - <a id="linux-command"></a>**With one command:** paste this in a terminal. It checks the download first, adds FluidMessages Web to your app menu, and needs no sudo. Run it again to update.
 
   ```bash
@@ -487,6 +497,7 @@ For 64-bit PCs (x86_64). Pick one:
   ```
 
   To remove it, add `-s -- --uninstall` after `bash`.
+- <a id="linux-app-stores"></a>**From an app store, with automatic updates:** coming soon. FluidMessages Web is packaged for the **Snap Store**, **Flathub**, the **AUR** (Arch Linux), **Fedora COPR** and the **openSUSE Build Service** (Debian, Ubuntu, Fedora and openSUSE repositories), and is waiting to be published to each one. Until then, use a file above or the one command.
 
 On a computer, link your Android phone in **Settings → Phone and other devices** to see your texts there too.
 
