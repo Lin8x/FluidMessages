@@ -1,11 +1,24 @@
 name: Flatpak
 # Builds the Flathub manifest (deploy/flathub) in Flathub's own build image, checks that the app starts, and runs
-# Flathub's linter on the manifest and the build. Runs for every release and by hand; it never publishes anything.
-# The bundle it keeps (FluidMessages-Web.flatpak) installs with: flatpak install --user FluidMessages-Web.flatpak
+# Flathub's linter. For every published release it builds that release's tag and attaches a single-file bundle,
+# FluidMessages-Web-<version>-Linux-x86_64.flatpak (and FluidMessages-Web-Linux-x86_64.flatpak, so
+# releases/latest/download links work), and adds it to SHA256SUMS.txt. It never publishes to Flathub itself.
+#   flatpak install --user ./FluidMessages-Web-Linux-x86_64.flatpak
 on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, like v0.49.1 (empty builds the tag in the manifest)
+        required: false
+        default: ''
+      upload:
+        description: Attach the bundle to that release
+        type: boolean
+        default: false
+permissions:
+  contents: write
 jobs:
   flatpak:
     runs-on: ubuntu-latest
@@ -14,8 +27,18 @@ jobs:
       options: --privileged
     env:
       MANIFEST: deploy/flathub/io.github.Lin8x.FluidMessages.yml
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      UPLOAD: ${{ github.event_name == 'release' || inputs.upload }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+      - name: Build the release's tag
+        if: env.TAG != ''
+        run: |
+          commit=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/$TAG^{}" "refs/tags/$TAG" | head -1 | cut -f1)
+          [ -n "$commit" ] || { echo "No tag $TAG"; exit 1; }
+          sed -i -e "s/^        tag: v.*/        tag: $TAG/" -e "s/^        commit: [0-9a-f]*/        commit: $commit/" "$MANIFEST"
+          grep -A2 "type: git" "$MANIFEST"
       - run: flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
       - run: flatpak-builder-lint manifest "$MANIFEST"
       - run: flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean --repo=repo build-dir "$MANIFEST"
@@ -24,8 +47,25 @@ jobs:
       - name: Tk works for the running window
         run: flatpak-builder --run build-dir "$MANIFEST" python3 -c "import tkinter; print('Tk', tkinter.TkVersion)"
       - run: flatpak-builder-lint repo repo
-      - run: flatpak build-bundle repo FluidMessages-Web.flatpak io.github.Lin8x.FluidMessages
-      - uses: actions/upload-artifact@v4
+      # The bundle names Flathub as where its runtime comes from, so flatpak offers to add Flathub when it's missing.
+      - run: |
+          flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo repo FluidMessages-Web-Linux-x86_64.flatpak io.github.Lin8x.FluidMessages
+          flatpak install --user -y --noninteractive ./FluidMessages-Web-Linux-x86_64.flatpak
+          flatpak info --user io.github.Lin8x.FluidMessages
+      - if: env.UPLOAD == 'true'
+        run: |
+          version="${TAG#v}"
+          cp FluidMessages-Web-Linux-x86_64.flatpak "FluidMessages-Web-$version-Linux-x86_64.flatpak"
+          gh release upload "$TAG" "FluidMessages-Web-$version-Linux-x86_64.flatpak" FluidMessages-Web-Linux-x86_64.flatpak --clobber -R "$GITHUB_REPOSITORY"
+          # Add both to SHA256SUMS.txt (scripts/release also adds any it finds attached, so either order works).
+          gh release download "$TAG" -p SHA256SUMS.txt -R "$GITHUB_REPOSITORY" --clobber
+          for file in "FluidMessages-Web-$version-Linux-x86_64.flatpak" FluidMessages-Web-Linux-x86_64.flatpak; do
+            grep -v "  $file\$" SHA256SUMS.txt > sums.tmp || true; mv sums.tmp SHA256SUMS.txt
+            sha256sum "$file" >> SHA256SUMS.txt
+          done
+          gh release upload "$TAG" SHA256SUMS.txt --clobber -R "$GITHUB_REPOSITORY"
+      - if: env.UPLOAD != 'true'
+        uses: actions/upload-artifact@v4
         with:
           name: flatpak
-          path: FluidMessages-Web.flatpak
+          path: FluidMessages-Web-Linux-x86_64.flatpak

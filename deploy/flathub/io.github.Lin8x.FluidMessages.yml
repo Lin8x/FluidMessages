@@ -55,7 +55,7 @@ modules:
   - name: python3-tkinter
     buildsystem: simple
     build-commands:
-      - gcc -shared -fPIC -O2 $(python3-config --includes) -IModules -IInclude/internal -I/app/include Modules/_tkinter.c Modules/tkappinit.c
+      - gcc -shared -fPIC -O2 $(python3-config --includes) -IModules -IInclude/internal -I/app/include Modules/_tkinter.c
         -L/app/lib -ltk8.6 -ltcl8.6 -o "_tkinter$(python3-config --extension-suffix)"
       - install -Dm 755 _tkinter*.so -t "${FLATPAK_DEST}/lib/python3.13/site-packages/"
       - cp -r Lib/tkinter "${FLATPAK_DEST}/lib/python3.13/site-packages/"
@@ -167,8 +167,8 @@ modules:
     sources:
       - type: git
         url: https://github.com/Lin8x/FluidMessages.git
-        tag: v0.49.0
-        commit: 5a1b175d782f21e7daf9aec71d0bc01f4d63c36f
+        tag: v0.49.1
+        commit: aec45ae6d56658083be759688644a06dbb2bfa78
         x-checker-data:
           type: git
           tag-pattern: ^v([\d.]+)$
