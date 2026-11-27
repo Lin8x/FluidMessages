@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Regenerates the python3-deps sources in the Flatpak manifest (deploy/flathub/io.github.Lin8x.FluidMessages.yml).
+
+    scripts/flatpak-python-deps
+
+Asks pip, in a Python 3.13 Docker container (the Freedesktop 25.08 runtime's Python), which wheels the computer app's
+libraries resolve to, and writes each one's URL and SHA-256 into the manifest. Keep the list of libraries the same as
+in .github/workflows/desktop.yml. Needs Docker.
+"""
+import json
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+MANIFEST = ROOT / "deploy/flathub/io.github.Lin8x.FluidMessages.yml"
+PYTHON = "python:3.13"
+LIBRARIES = ["slixmpp==1.17.0", "aiohttp>=3.10", "omemo==2.1.0", "doubleratchet==1.3.0", "x3dh==1.3.0", "xeddsa==1.2.0"]
+
+
+def resolve():
+    with tempfile.TemporaryDirectory() as folder:
+        subprocess.run(["docker", "run", "--rm", "--user", f"{__import__('os').getuid()}", "-e", "HOME=/tmp",
+                        "-v", f"{folder}:/out", PYTHON, "pip", "install", "-q", "--disable-pip-version-check",
+                        "--dry-run", "--ignore-installed", "--prefer-binary", "--report", "/out/report.json",
+                        *LIBRARIES], check=True)
+        return json.loads((Path(folder) / "report.json").read_text())["install"]
+
+
+def sources(installs):
+    lines = []
+    for item in sorted(installs, key=lambda i: i["metadata"]["name"].lower()):
+        info = item["download_info"]
+        if not info["url"].endswith(".whl"):
+            sys.exit(f"{item['metadata']['name']} has no wheel for Python 3.13 on x86_64; add it as its own module.")
+        archive = info["archive_info"]
+        sha256 = archive.get("hashes", {}).get("sha256") or archive["hash"].split("=", 1)[1]
+        lines.append(f"      - type: file  # {item['metadata']['name']} {item['metadata']['version']}\n"
+                     f"        url: {info['url']}\n        sha256: {sha256}")
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    text = MANIFEST.read_text()
+    pattern = re.compile(r"(  - name: python3-deps\n(?:.*\n)*?    sources:\n)((?:      .*\n|        .*\n)+)")
+    if not pattern.search(text):
+        sys.exit("Couldn't find the python3-deps sources in the manifest.")
+    MANIFEST.write_text(pattern.sub(lambda m: m.group(1) + sources(resolve()), text, count=1))
+    print("Updated", MANIFEST.relative_to(ROOT))
+
+
+if __name__ == "__main__":
+    main()

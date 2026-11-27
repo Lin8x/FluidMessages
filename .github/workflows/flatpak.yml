@@ -1,0 +1,31 @@
+name: Flatpak
+# Builds the Flathub manifest (deploy/flathub) in Flathub's own build image, checks that the app starts, and runs
+# Flathub's linter on the manifest and the build. Runs for every release and by hand; it never publishes anything.
+# The bundle it keeps (FluidMessages-Web.flatpak) installs with: flatpak install --user FluidMessages-Web.flatpak
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+jobs:
+  flatpak:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    env:
+      MANIFEST: deploy/flathub/io.github.Lin8x.FluidMessages.yml
+    steps:
+      - uses: actions/checkout@v4
+      - run: flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - run: flatpak-builder-lint manifest "$MANIFEST"
+      - run: flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean --repo=repo build-dir "$MANIFEST"
+      - name: The app starts and serves the web app
+        run: flatpak-builder --run build-dir "$MANIFEST" fluidmessages-web --check
+      - name: Tk works for the running window
+        run: flatpak-builder --run build-dir "$MANIFEST" python3 -c "import tkinter; print('Tk', tkinter.TkVersion)"
+      - run: flatpak-builder-lint repo repo
+      - run: flatpak build-bundle repo FluidMessages-Web.flatpak io.github.Lin8x.FluidMessages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: FluidMessages-Web.flatpak
