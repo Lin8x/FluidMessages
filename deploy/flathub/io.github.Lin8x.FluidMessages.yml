@@ -55,7 +55,7 @@ modules:
   - name: python3-tkinter
     buildsystem: simple
     build-commands:
-      - gcc -shared -fPIC -O2 $(python3-config --includes) -IModules -I/app/include Modules/_tkinter.c Modules/tkappinit.c
+      - gcc -shared -fPIC -O2 $(python3-config --includes) -IModules -IInclude/internal -I/app/include Modules/_tkinter.c Modules/tkappinit.c
         -L/app/lib -ltk8.6 -ltcl8.6 -o "_tkinter$(python3-config --extension-suffix)"
       - install -Dm 755 _tkinter*.so -t "${FLATPAK_DEST}/lib/python3.13/site-packages/"
       - cp -r Lib/tkinter "${FLATPAK_DEST}/lib/python3.13/site-packages/"
