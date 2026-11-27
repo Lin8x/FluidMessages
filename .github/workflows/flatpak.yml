@@ -44,16 +44,17 @@ jobs:
       - run: flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
       - run: flatpak-builder-lint manifest "$MANIFEST"
       - run: flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean --repo=repo build-dir "$MANIFEST"
-      - name: The app starts and serves the web app
-        run: flatpak-builder --disable-rofiles-fuse --run build-dir "$MANIFEST" fluidmessages-web --check
-      - name: Tk works for the running window
-        run: flatpak-builder --disable-rofiles-fuse --run build-dir "$MANIFEST" python3 -c "import tkinter; print('Tk', tkinter.TkVersion)"
       - run: flatpak-builder-lint repo repo
       # The bundle names Flathub as where its runtime comes from, so flatpak offers to add Flathub when it's missing.
       - run: |
           flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo repo FluidMessages-Web-Linux-x86_64.flatpak io.github.Lin8x.FluidMessages
           flatpak install --user -y --noninteractive ./FluidMessages-Web-Linux-x86_64.flatpak
           flatpak info --user io.github.Lin8x.FluidMessages
+      # Run from the installed bundle, the way people will.
+      - name: The app starts and serves the web app
+        run: flatpak run --user io.github.Lin8x.FluidMessages --check
+      - name: Tk works for the running window
+        run: flatpak run --user --command=python3 io.github.Lin8x.FluidMessages -c "import tkinter; print('Tk', tkinter.TkVersion)"
       - if: env.UPLOAD == 'true'
         run: |
           version="${TAG#v}"
