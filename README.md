@@ -470,7 +470,9 @@ For Macs with Apple silicon (M1 or newer). Pick one:
 For 64-bit PCs (x86_64). Pick one:
 
 <p align="center">
-  <a href="https://github.com/Lin8x/FluidMessages/releases/latest"><img src="docs/images/get-github.svg" height="60" alt="Download from GitHub"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-amd64.deb"><img src="docs/images/get-deb.svg" height="60" alt="Download the .deb for Debian or Ubuntu"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.rpm"><img src="docs/images/get-rpm.svg" height="60" alt="Download the .rpm for Fedora or openSUSE"></a>
+  <a href="https://github.com/Lin8x/FluidMessages/releases/latest/download/FluidMessages-Web-Linux-x86_64.AppImage"><img src="docs/images/get-appimage.svg" height="60" alt="Download the AppImage for any Linux"></a>
   <a href="#linux-command"><img src="docs/images/get-command.svg" height="60" alt="Install with one command"></a>
 </p>
 
