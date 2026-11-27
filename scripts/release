@@ -109,6 +109,9 @@ print("Packaged", sys.argv[1])
 PY
 fi
 
+# The openSUSE Build Service packages (deploy/obs) build this version once main has it.
+run ./scripts/update-obs version "$VERSION"
+
 # List this release in the Linux AppStream metadata (Flathub and software centers show it).
 METAINFO=desktop/linux/io.github.Lin8x.FluidMessages.metainfo.xml
 if ((DRY)); then echo "would run: add $VERSION to $METAINFO"
@@ -212,5 +215,17 @@ fi
 DMG_SUM=$(gh release view "$TAG" --json assets -q ".assets[] | select(.name == \"FluidMessages-Web-$VERSION-macOS.dmg\") | .digest // \"\"" | sed 's/^sha256://')
 if [[ -n "$DMG_SUM" ]]; then ./scripts/update-homebrew-tap "$VERSION" "$DMG_SUM" || echo "release: couldn't update the Homebrew tap. Run ./scripts/update-homebrew-tap $VERSION $DMG_SUM" >&2
 else echo "release: GitHub didn't report the Mac app's SHA-256, so the Homebrew tap wasn't updated." >&2; fi
+# Point the AUR package at the new .deb (pushed only when an AUR SSH key is set up), and keep deploy/aur in step.
+DEB_SUM=$(gh release view "$TAG" --json assets -q ".assets[] | select(.name == \"FluidMessages-Web-$VERSION-Linux-amd64.deb\") | .digest // \"\"" | sed 's/^sha256://')
+if [[ -n "$DEB_SUM" ]] && ./scripts/update-aur "$VERSION" "$DEB_SUM"; then
+  if ! git diff --quiet -- deploy/aur; then
+    git commit -q -m "AUR: fluidmessages-web-bin $VERSION" -- deploy/aur && git push -q origin "$BRANCH" \
+      && { ((MAIN)) && [[ "$BRANCH" != "main" ]] && git push -q origin "$BRANCH:main" || true; } \
+      || echo "release: couldn't commit and push deploy/aur for $VERSION." >&2
+  fi
+else echo "release: the AUR package wasn't updated. Run ./scripts/update-aur $VERSION <sha256 of the .deb>" >&2; fi
+# Ask the openSUSE Build Service to rebuild from main (only when an OBS token is set up).
+./scripts/update-obs rebuild || echo "release: couldn't ask OBS to rebuild. Run ./scripts/update-obs rebuild" >&2
+echo "The Flatpak bundle is built by its own workflow and attached in about 15 minutes."
 echo "$TAG is complete: Android app and bundle, server zip, and the Windows, macOS, and Linux apps are all attached."
 echo "The Docker image (ghcr.io/lin8x/fluidmessages-web) builds separately in GitHub Actions."

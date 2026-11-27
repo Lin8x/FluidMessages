@@ -1,0 +1,26 @@
+# Maintainer: Lin8x <Lin8x@users.noreply.github.com>
+# FluidMessages Web, the computer app, repackaged from the .deb attached to each GitHub release.
+# scripts/update-aur updates this file and .SRCINFO for every release and pushes them to the AUR.
+pkgname=fluidmessages-web-bin
+pkgver=0.49.1
+pkgrel=1
+pkgdesc="Your phone's texts, calls, and chats on your computer (FluidMessages Web)"
+arch=('x86_64')
+url="https://github.com/Lin8x/FluidMessages"
+license=('Apache-2.0')
+depends=('glibc' 'openssl' 'hicolor-icon-theme')
+optdepends=('xdg-utils: opens FluidMessages in your browser')
+provides=('fluidmessages-web')
+conflicts=('fluidmessages-web')
+# The program unpacks itself when it starts: stripping it would break it.
+options=('!strip' '!debug')
+source=("FluidMessages-Web-${pkgver}-Linux-amd64.deb::https://github.com/Lin8x/FluidMessages/releases/download/v${pkgver}/FluidMessages-Web-${pkgver}-Linux-amd64.deb"
+        "LICENSE-${pkgver}::https://raw.githubusercontent.com/Lin8x/FluidMessages/v${pkgver}/LICENSE")
+noextract=("LICENSE-${pkgver}")
+sha256sums=('2c902169bd5fdfa1641ba80499f5cead65b9d75a7ba84ec085affc5f5430773a'
+            'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30')
+
+package() {
+  bsdtar -xf data.tar.xz -C "$pkgdir"
+  install -Dm644 "LICENSE-${pkgver}" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

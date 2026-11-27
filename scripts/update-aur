@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Points the AUR package fluidmessages-web-bin at a released .deb. scripts/release runs it.
+#
+#   ./scripts/update-aur 0.49.0 <sha256 of FluidMessages-Web-0.49.0-Linux-amd64.deb>
+#
+# Updates deploy/aur/PKGBUILD and .SRCINFO (the next release commits them). It pushes them to the AUR only when an
+# AUR SSH key is set up: the file in $AUR_SSH_KEY, or ~/.ssh/aur. Without one it says so and stops, without failing.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+VERSION="${1:?usage: update-aur VERSION SHA256}"
+SUM="${2:?usage: update-aur VERSION SHA256}"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$SUM" =~ ^[0-9a-f]{64}$ ]] || { echo "update-aur: bad version or SHA-256" >&2; exit 2; }
+DIR=deploy/aur
+OLD=$(sed -n 's/^pkgver=//p' "$DIR/PKGBUILD")
+OLD_SUMS=($(grep -o "[0-9a-f]\{64\}" "$DIR/PKGBUILD"))
+LICENSE_SUM=$(git show "v$VERSION:LICENSE" | sha256sum | awk '{print $1}')
+
+if [[ "$OLD" != "$VERSION" ]]; then
+  for file in "$DIR/PKGBUILD" "$DIR/.SRCINFO"; do
+    sed -i -e "s/^pkgrel=.*/pkgrel=1/" -e "s/^\tpkgrel = .*/\tpkgrel = 1/" \
+      -e "s/${OLD//./\\.}/$VERSION/g" -e "s/${OLD_SUMS[0]}/$SUM/" -e "s/${OLD_SUMS[1]}/$LICENSE_SUM/" "$file"
+  done
+fi
+grep -q "$SUM" "$DIR/.SRCINFO" && grep -q "pkgver = $VERSION" "$DIR/.SRCINFO" || { echo "update-aur: .SRCINFO didn't update" >&2; exit 1; }
+
+KEY="${AUR_SSH_KEY:-$HOME/.ssh/aur}"
+if [[ ! -f "$KEY" ]]; then
+  echo "AUR: no AUR SSH key ($KEY), so fluidmessages-web-bin wasn't pushed. deploy/aur is updated to $VERSION."
+  exit 0
+fi
+export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+git clone -q ssh://aur@aur.archlinux.org/fluidmessages-web-bin.git "$WORK/aur"
+cp "$DIR/PKGBUILD" "$DIR/.SRCINFO" "$WORK/aur/"
+cd "$WORK/aur"
+git add PKGBUILD .SRCINFO
+if git diff --cached --quiet; then echo "AUR: fluidmessages-web-bin is already at $VERSION."; exit 0; fi
+git -c user.name="Lin8x" -c user.email="Lin8x@users.noreply.github.com" commit -qm "Update to $VERSION"
+git push -q origin HEAD:master
+echo "AUR: fluidmessages-web-bin now installs FluidMessages Web $VERSION."

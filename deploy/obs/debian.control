@@ -1,0 +1,21 @@
+Source: fluidmessages-web
+Section: net
+Priority: optional
+Maintainer: Lin8x <Lin8x@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/Lin8x/FluidMessages
+Rules-Requires-Root: no
+
+Package: fluidmessages-web
+Architecture: all
+Depends: ${misc:Depends}, python3 (>= 3.10), python3-aiohttp, python3-tk, openssl, xdg-utils
+Recommends: python3-slixmpp
+Description: Your phone's texts, calls, and chats on your computer
+ FluidMessages Web runs on your computer and shows your Android phone's texts,
+ calls, and chats in an app window. Your phone pairs with it over your own
+ network, and nothing goes through a cloud service. It can also connect to
+ Matrix, XMPP and IRC.
+ .
+ This package runs from source with the distribution's own Python libraries,
+ so OMEMO encryption for XMPP isn't available in it.

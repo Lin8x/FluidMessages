@@ -1,0 +1,24 @@
+<!-- The only file the OBS package needs (home:lin8x/fluidmessages-web). It takes the source from main, which
+     scripts/release moves to each release, and the packaging files below from deploy/obs in the same checkout.
+     scripts/release asks OBS to run it again after every release (scripts/update-obs). -->
+<services>
+  <service name="obs_scm">
+    <param name="scm">git</param>
+    <param name="url">https://github.com/Lin8x/FluidMessages.git</param>
+    <param name="revision">main</param>
+    <param name="filename">fluidmessages-web</param>
+    <param name="versionformat">@PARENT_TAG@</param>
+    <param name="versionrewrite-pattern">v(.*)</param>
+    <param name="extract">deploy/obs/fluidmessages-web.spec</param>
+    <param name="extract">deploy/obs/fluidmessages-web.dsc</param>
+    <param name="extract">deploy/obs/debian.control</param>
+    <param name="extract">deploy/obs/debian.rules</param>
+    <param name="extract">deploy/obs/debian.changelog</param>
+    <param name="extract">deploy/obs/debian.copyright</param>
+  </service>
+  <service name="tar" mode="buildtime"/>
+  <service name="recompress" mode="buildtime">
+    <param name="file">*.tar</param>
+    <param name="compression">gz</param>
+  </service>
+</services>

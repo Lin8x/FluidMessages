@@ -48,6 +48,7 @@ GitHub Actions builds a debug APK for every push.
   - `…-macOS.dmg`
   - `…-Linux-x86_64.AppImage`
   - `…-Linux-amd64.deb` and `…-Linux-x86_64.rpm`: the same Linux program as a package, for Debian and Ubuntu (22.04 or Debian 12 and newer) and for Fedora (36 and newer) or openSUSE. `desktop/build.py` makes them when `dpkg-deb` and `rpmbuild` are installed. The program is never stripped, since that breaks it.
+  - `…-Linux-x86_64.flatpak`: a single-file Flatpak bundle, built from `deploy/flathub` by the separate Flatpak workflow (`.github/workflows/flatpak.yml`) about 15 minutes after the release, and added to `SHA256SUMS.txt`. The release script doesn't wait for it.
   - `…-Linux-amd64.snap`: the same program as a Snap (`snap/snapcraft.yaml`). It's also sent to the Snap Store's stable channel once the `SNAPCRAFT_STORE_CREDENTIALS` repository secret is set (see [Linux app stores](#linux-app-stores)).
 
   Each one runs FluidMessages Web on the computer, signs in automatically, and opens it in its own window. To build one by hand, run `pip install pyinstaller pillow`, then `python desktop/build.py --version <version>`.
@@ -57,7 +58,7 @@ After the desktop apps are attached, the script points the Homebrew tap ([Lin8x/
 - `--bump` raises the patch version first.
 - `--notes "..."` sets the release notes.
 - `--dry-run` previews the steps without changing anything.
-- `--no-wait` skips waiting for the desktop apps. Normally the script waits until GitHub Actions has attached the Windows, macOS, and Linux apps, retries a failed build once, and stops with an error if any of the desktop files is still missing (the Snap isn't required).
+- `--no-wait` skips waiting for the desktop apps. Normally the script waits until GitHub Actions has attached the Windows, macOS, and Linux apps, retries a failed build once, and stops with an error if any of the desktop files is still missing (the Snap and Flatpak bundle aren't required).
 - `--no-main` leaves `main` where it is. Otherwise, releasing from another branch fast-forwards `main` to it, so the GitHub page, README, and website show the latest release. It never force-pushes: if `main` has commits your branch doesn't, it's left alone with a warning, and the release still goes out.
 
 It needs the GitHub CLI signed in (`gh auth login`). APKs are signed with the FluidMessages release key (`scripts/sign-apk`, made once by `scripts/make-release-key`), so only a computer with those key files can release.
@@ -82,7 +83,38 @@ The next release then goes to the stable channel. The first upload is checked by
 
 Users install it with `sudo dnf copr enable lin8x/fluidmessages` and then `sudo dnf install fluidmessages-web`. To test the package locally, run `make -f .copr/Makefile srpm outdir=/tmp/srpm` in a Fedora container, then `rpmbuild --rebuild` the result.
 
-**Debian and Ubuntu.** There's no APT repository yet: people install the `.deb` from the release, and update by installing the next one. An official Debian package needs a Debian Developer to sponsor it and every Python library packaged in Debian.
+**Flathub.** `deploy/flathub/io.github.Lin8x.FluidMessages.yml` builds the app from source on the Freedesktop 25.08 runtime: Tcl/Tk and Python's tkinter (for the "running" window, which the runtime's Python lacks), the XMPP and OMEMO libraries as PyPI wheels pinned by SHA-256, then the server and launcher from a release tag. Its only permissions are the network and X11 (Tk draws through XWayland on Wayland). The Flatpak workflow builds it, runs the app's check and `flatpak-builder-lint`, for every release and by hand.
+
+- **What to update:** the app's `tag` and `commit` at the bottom. Flathub's update bot (`x-checker-data`) opens a pull request for each new tag in the Flathub repository, so that's automatic once it's on Flathub. When the Python libraries change, run `scripts/flatpak-python-deps` to repin them. Keep the `Python-3.13.x` source at the runtime's Python version. Tcl/Tk only change when you choose to.
+- **Wheels:** slixmpp, cryptography and pydantic-core contain Rust code, so building them from source on Flathub would mean vendoring every Rust crate. The manifest uses PyPI's wheels instead. Flathub's reviewers may ask about this; answer that they're pinned and only for x86_64 (`deploy/flathub/flathub.json` limits it to x86_64).
+
+To submit it, which publishes the app, so only you should do it:
+
+1. Fork <https://github.com/flathub/flathub> on GitHub, and in your fork create a branch from `new-pr` (not `master`).
+2. Add `io.github.Lin8x.FluidMessages.yml` and `flathub.json` from `deploy/flathub` at the top of that branch.
+3. Open a pull request against `flathub/flathub`'s `new-pr` branch titled "Add io.github.Lin8x.FluidMessages", and answer the reviewers. Because the ID is `io.github.Lin8x…`, Flathub verifies you through the Lin8x GitHub account.
+4. Once it's merged, Flathub makes the repository `flathub/io.github.Lin8x.FluidMessages` and invites you; later fixes go there.
+
+Users then install it with `flatpak install flathub io.github.Lin8x.FluidMessages`. Until then, the bundle on each release works: `flatpak install --user ./FluidMessages-Web-Linux-x86_64.flatpak`. It needs Flatpak and the Freedesktop 25.08 runtime from Flathub. The bundle names Flathub as where to get the runtime, so Flatpak offers to add it. If that doesn't work, run `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo` first.
+
+**AUR (Arch Linux).** `deploy/aur` has `fluidmessages-web-bin`, which repackages the release `.deb` (tested with `makepkg` and `namcap` on Arch). After each release, `scripts/update-aur` sets the new version and SHA-256s, commits `deploy/aur`, and pushes to the AUR when a key is set up. Without a key it only updates `deploy/aur`.
+
+1. Create an account at <https://aur.archlinux.org> and add an SSH public key to it (My Account → SSH Public Key). Make a key just for this: `ssh-keygen -t ed25519 -f ~/.ssh/aur`.
+2. Publish the package the first time by hand: `git clone ssh://aur@aur.archlinux.org/fluidmessages-web-bin.git` (an empty repository; cloning it claims the name). Copy `deploy/aur/PKGBUILD` and `deploy/aur/.SRCINFO` into it, commit, and `git push`.
+3. From then on, `scripts/release` updates it with that key (`~/.ssh/aur`, or the file in `$AUR_SSH_KEY`).
+
+Users install it with an AUR helper, for example `yay -S fluidmessages-web-bin` or `paru -S fluidmessages-web-bin`.
+
+**openSUSE Build Service (OBS).** OBS builds signed repositories for Debian 12, Ubuntu 22.04 and 24.04, Fedora and openSUSE from source, with each distribution's own Python libraries (so OMEMO is off there, as on COPR). All the files are in `deploy/obs`. The OBS package only needs `_service`, which fetches `main` and the packaging files from `deploy/obs`. Each one was test-built and installed in containers of those distributions, and the app's check passed.
+
+1. Create an account at <https://build.opensuse.org> (your home project is `home:<username>`; these files assume `home:lin8x`, so set `OBS_PROJECT` if yours differs).
+2. Create a package `fluidmessages-web` in your home project and upload only `deploy/obs/_service` to it.
+3. Under **Repositories**, add Debian 12, xUbuntu 22.04, xUbuntu 24.04, Fedora (the current releases) and openSUSE Tumbleweed (and Leap if you like). OBS signs every repository with your project's key.
+4. Make a token that can only rebuild this package: `osc token --create --operation runservice home:lin8x fluidmessages-web`. Put the secret in `~/.config/fluidmessages/obs-token` (or `$OBS_TOKEN`). `scripts/release` then runs `scripts/update-obs rebuild` after each release. It sets the version in `deploy/obs` before every release commit (`scripts/update-obs version`).
+
+To try the packaging without OBS, make a tarball with `git archive --prefix=fluidmessages-web-<version>/`, then build the spec with `rpmbuild -bb` in a Fedora or openSUSE container. Or copy the `debian.*` files into `debian/` in the unpacked tarball and run `dpkg-buildpackage -b -us -uc`.
+
+**Debian and Ubuntu.** The OBS repositories above give `apt` updates. Without them, people install the `.deb` from the release and update by installing the next one. An official Debian package needs a Debian Developer to sponsor it, and every Python library packaged in Debian.
 
 ## Remaining release work
 
